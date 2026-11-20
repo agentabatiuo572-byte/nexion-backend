@@ -9,7 +9,8 @@ public record PlatformMenuTreeOverview(
         int pageCount,
         int activeCount) {
 
-    public record MenuTreeNode(MenuNodeView node, List<MenuTreeNode> children) {
+    public record MenuTreeNode(MenuNodeView node, List<MenuTreeNode> children,
+                               long roleBindingCount, long activePermissionCount) {
     }
 
     public record MenuNodeView(
@@ -23,5 +24,11 @@ public record PlatformMenuTreeOverview(
             Integer sortOrder,
             Integer status,
             String version) {
+        @com.fasterxml.jackson.annotation.JsonProperty(value = "legacyNavigationNode", access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+        public boolean legacyNavigationNode() {
+            if (menuCode == null) return false;
+            if (java.util.Set.of("MENU_HOME", "MENU_UMS", "MENU_CONTENT_I4", "MENU_CONTENT_I5").contains(menuCode)) return true;
+            return routePath != null && routePath.startsWith("/ums/");
+        }
     }
 }

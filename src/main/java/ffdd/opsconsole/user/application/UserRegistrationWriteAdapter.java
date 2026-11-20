@@ -1,9 +1,11 @@
 package ffdd.opsconsole.user.application;
 
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.user.facade.UserRegistrationWriteFacade;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,12 +19,22 @@ public class UserRegistrationWriteAdapter implements UserRegistrationWriteFacade
         if (c == null || c.sandbox() < 0 || c.sandbox() > 1) throw new IllegalArgumentException("Invalid new account");
         // No ID exists in this command: callers cannot turn an existing account into a birth.
         UserEntity user = new UserEntity();
+        user.setId(UserIds.next(mapper::userIdTaken));
         user.setCountryCode(c.countryCode()); user.setPhone(c.phone()); user.setClientIp(c.clientIp());
         user.setPasswordHash(c.passwordHash()); user.setNickname(c.nickname()); user.setReferralCode(c.referralCode());
         user.setSponsorUserId(c.sponsorUserId()); user.setSponsorCode(c.sponsorCode());
         user.setUserLevel(c.userLevel()); user.setVRank(c.vRank()); user.setStatus(c.status());
         user.setSandbox(c.sandbox()); user.setLanguage(c.language()); user.setIsDeleted(0);
-        if (mapper.insert(user) != 1 || user.getId() == null || user.getId() <= 0)
+        int inserted;
+        try {
+            inserted = mapper.insert(user);
+        } catch (DuplicateKeyException collision) {
+            if (UserUniqueConstraints.isGeneratedIdentityCollision(collision)) {
+                throw new BizException(422, "USER_REGISTRATION_GENERATED_IDENTITY_CONFLICT");
+            }
+            throw collision;
+        }
+        if (inserted != 1 || user.getId() == null || user.getId() <= 0)
             throw new IllegalStateException("USER_REGISTRATION_INSERT_FAILED");
         return user.getId();
     }

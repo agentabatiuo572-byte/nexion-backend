@@ -24,19 +24,27 @@ public class SimulatedTaskSettlementService {
     private final SimulatedTaskSettlementMapper mapper;
     private final AppTaskAssignmentMapper assignments;
     private final SupportDeviceFundAdapter funds;
+    private final DeviceMonthlyTargetService monthlyTargets;
     private final EventOutboxService outbox;
     private final AuditLogService audit;
 
     @Transactional(propagation=Propagation.MANDATORY)
-    public void settle(TaskRow task,LocalDateTime postedAt) {
+    public void settle(TaskRow task,LocalDateTime postedAt,BigDecimal dailyUvt,boolean accountLockedBeforeSnapshot) {
         var wallet=mapper.wallet(task.userId());
         if(wallet==null || ((Number)wallet.get("id")).longValue()!=task.walletId()
                 || !task.walletIncarnation().equals(wallet.get("incarnation")))
             throw new BizException(409,"SIMULATED_TASK_WALLET_CHANGED");
         String day=task.dueAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE).withZoneSameInstant(ZoneOffset.UTC).toLocalDate().toString();
         String dailyKey="CLOUD_SHARE_DAILY:"+task.deviceId()+":"+day;
-        BigDecimal daily=task.cloudDailyNex().signum()>0 && assignments.lockDailyCloudShareNex(task.userId(),dailyKey)==null
-                ? task.cloudDailyNex() : BigDecimal.ZERO;
+        BigDecimal daily=BigDecimal.ZERO;
+        if(dailyUvt.signum()>0) {
+            // A command may join an older snapshot and still needs a current read.
+            // The due processor locks the account before reading and can avoid a ledger gap lock.
+            Long existing=accountLockedBeforeSnapshot
+                    ? assignments.dailyUvtLedgerUnderAccountLock(task.userId(),dailyKey)
+                    : assignments.lockDailyCloudShareNex(task.userId(),dailyKey);
+            if(existing==null)daily=dailyUvt;
+        }
         BigDecimal usdt="USDT".equals(task.asset())?task.rewardAmount():BigDecimal.ZERO;
         BigDecimal baseNex="UVT".equals(task.asset())?task.rewardAmount():BigDecimal.ZERO;
         BigDecimal nex=baseNex.add(daily);
@@ -56,6 +64,7 @@ public class SimulatedTaskSettlementService {
             if(daily.signum()>0)mapper.ledger(task.userId(),dailyKey,"UVT",daily,balance,postedAt);
             mapper.earning(task,"EARN-NEX-"+task.receiptNo(),"UVT",nex,postedAt);
         }
+        monthlyTargets.credit(task,usdt);
         funds.recorded(before,task.receiptNo());
         var attribution=assignments.userEventAttribution(task.userId());
         if(attribution==null)throw new BizException(409,"TASK_ASSIGNMENT_EVENT_ATTRIBUTION_UNAVAILABLE");

@@ -1,9 +1,9 @@
 package ffdd.opsconsole.device.web;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.device.dto.E2PhoneTierConfigUpdateRequest;
-import ffdd.opsconsole.device.dto.E2TaskPricingUpdateRequest;
 import ffdd.opsconsole.device.dto.E2YieldComparisonUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
@@ -21,20 +21,21 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/config")
 @RequiredArgsConstructor
 public class OpsDeviceConfigController {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final OpsDeviceService deviceService;
+
+    @GetMapping("/hosting-centers")
+    @PreAuthorize("hasAuthority('device_e1_read')")
+    public ApiResult<HostingCenterService.State> hostingCenters() {
+        return ApiResult.ok(hostingCenters.read());
+    }
 
     @GetMapping("/task-pricing")
     @PreAuthorize("hasAuthority('device_e2_read')")
     public ApiResult<Map<String, Object>> taskPricing() {
-        return deviceService.e2TaskPricing();
-    }
-
-    @PutMapping("/task-pricing")
-    @PreAuthorize("hasAuthority('device_e2_write')")
-    public ApiResult<Map<String, Object>> updateTaskPricing(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody E2TaskPricingUpdateRequest request) {
-        return deviceService.updateE2TaskPricing(idempotencyKey, request);
+        return deviceService.e2TaskPricingForAdmin();
     }
 
     @GetMapping("/phone-tiers")

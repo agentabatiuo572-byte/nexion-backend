@@ -5,6 +5,7 @@ import ffdd.opsconsole.content.domain.SupportRules;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.content.infrastructure.SupportAgentAssignmentEntity;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.*;
@@ -65,6 +66,9 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
         """;
     @Select("<script>SELECT COUNT(*) FROM nx_user scope_customer WHERE scope_customer.id=#{id} " + CUSTOMER_SCOPE_PREDICATE + " FOR SHARE</script>")
     int readableCustomer(@Param("scope") ReadScope scope,@Param("id") Long id);
+    @Select("<script>SELECT scope_customer.id FROM nx_user scope_customer WHERE 1=1 " + CUSTOMER_SCOPE_PREDICATE
+            + " AND scope_customer.id IN <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach></script>")
+    List<Long> readableCustomers(@Param("scope") ReadScope scope,@Param("ids") Collection<Long> ids);
     String SCOPED_POOL_FILTER="FROM nx_support_binding_pool p JOIN nx_user scope_customer ON scope_customer.id=p.customer_id WHERE 1=1 "
             + CUSTOMER_SCOPE_PREDICATE + " AND NOT EXISTS(SELECT 1 FROM nx_support_agent_user_assignment active_pool_binding WHERE active_pool_binding.user_id=p.customer_id AND active_pool_binding.status='ACTIVE' AND active_pool_binding.is_deleted=0 FOR SHARE) <if test='reason != null'>AND p.reason=#{reason}</if> <if test='keyword != null'>AND (scope_customer.nickname LIKE CONCAT('%',#{keyword},'%') OR CAST(scope_customer.id AS CHAR)=#{keyword} OR LOCATE(#{keyword},scope_customer.phone)>0)</if> ";
     @Select("<script>SELECT COUNT(*) "+SCOPED_POOL_FILTER+" FOR SHARE</script>")
@@ -104,7 +108,7 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
     String CUSTOMER_FILTER="FROM nx_user u JOIN nx_support_agent_user_assignment a ON a.user_id=u.id AND a.status='ACTIVE' AND a.is_deleted=0 WHERE u.is_deleted=0 AND a.agent_admin_id=#{actor} <if test='keyword != null'>AND (u.nickname LIKE CONCAT('%',#{keyword},'%') OR CAST(u.id AS CHAR)=#{keyword})</if> <if test='status != null'>AND u.status=#{status}</if> <if test='id != null'>AND u.id=#{id}</if>";
     @Select("<script>SELECT COUNT(*) " + CUSTOMER_FILTER + "</script>")
     long ownedCustomerCount(@Param("actor") Long actor,@Param("keyword") String keyword,@Param("status") String status,@Param("id") Long id);
-    @Select("<script>SELECT u.id " + CUSTOMER_FILTER + " ORDER BY u.id LIMIT #{limit} OFFSET #{offset}</script>")
+    @Select("<script>SELECT u.id " + CUSTOMER_FILTER + " ORDER BY u.created_at, u.id LIMIT #{limit} OFFSET #{offset}</script>")
     List<Long> ownedCustomers(@Param("actor") Long actor,@Param("keyword") String keyword,@Param("status") String status,@Param("id") Long id,@Param("limit") int limit,@Param("offset") long offset);
     @Select("SELECT COUNT(*) FROM nx_conversation_message m LEFT JOIN nx_support_reply_cursor r ON r.conversation_no=m.conversation_no WHERE m.conversation_no=#{no} AND m.is_deleted=0 AND m.sender_type='user' AND m.id>COALESCE(r.through_message_id,0)")
     long pendingReplies(String no);
@@ -179,6 +183,10 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
 
     @Select("<script>SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_FROM + " AND a.id=#{id} FOR SHARE</script>")
     int eligibleAgent(Long id);
+
+    /** Read the existing pause switch under the same profile share lock already taken by eligibleAgent. */
+    @Select("SELECT p.busy FROM nx_support_agent_profile p WHERE p.admin_id=#{id} AND p.is_deleted=0 FOR SHARE")
+    Integer targetBusyForUpdate(@Param("id") Long id);
     @Select("<script>SELECT COUNT(DISTINCT a.id) " + ELIGIBLE_AGENT_BASE_FROM + SupportGroupMapper.UNIQUE_QUALIFICATION_SNAPSHOT + " AND a.id=#{id}</script>")
     int eligibleAgentSnapshot(Long id);
 

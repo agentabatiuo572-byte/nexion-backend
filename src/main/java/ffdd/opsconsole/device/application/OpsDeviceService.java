@@ -13,16 +13,15 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.i18n.AppDisplayText;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.device.domain.ComputeConfigRegistry;
 import ffdd.opsconsole.device.domain.ComputeConfigView;
-import ffdd.opsconsole.device.domain.DatacenterReferenceCount;
 import ffdd.opsconsole.device.domain.PlatformComputeConfigView;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
-import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderDetailView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
@@ -32,6 +31,7 @@ import ffdd.opsconsole.device.domain.OrderCloseReason;
 import ffdd.opsconsole.device.domain.OrderRefundReason;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
+import ffdd.opsconsole.device.domain.StoreDeviceView;
 import ffdd.opsconsole.device.domain.DevicePhaseView;
 import ffdd.opsconsole.device.domain.DevicePhoneTierRewardView;
 import ffdd.opsconsole.device.domain.OnboardingYieldComparisonView;
@@ -47,9 +47,7 @@ import ffdd.opsconsole.device.dto.ComputeConfigParamResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigParamUpdateRequest;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchResponse;
 import ffdd.opsconsole.device.dto.ComputeConfigBatchUpdateRequest;
-import ffdd.opsconsole.device.dto.DatacenterOpsRequest;
 import ffdd.opsconsole.device.dto.DeviceBundleDiscountUpdateRequest;
-import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceE5ActionRequest;
 import ffdd.opsconsole.device.dto.DeviceE5BatchRequest;
 import ffdd.opsconsole.device.dto.DeviceEarlyAccessUpdateRequest;
@@ -70,6 +68,8 @@ import ffdd.opsconsole.device.dto.DeviceRestoreRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuStatusRequest;
 import ffdd.opsconsole.device.dto.DeviceSkuUpsertRequest;
+import ffdd.opsconsole.shared.capacity.MonthlyTargetProjection;
+import ffdd.opsconsole.shared.capacity.ProductSeries;
 import ffdd.opsconsole.device.dto.DeviceTaskPriceRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskStatusRequest;
@@ -82,6 +82,7 @@ import ffdd.opsconsole.device.dto.E3ConfigUpdateRequest;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.finance.facade.E4OrderRefundSettlementFacade;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -106,6 +107,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
@@ -121,6 +123,7 @@ import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -129,8 +132,11 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditReplayable {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private static final ObjectMapper E1_AUDIT_JSON = new ObjectMapper();
-    private static final Set<String> RESTORABLE_STATUSES = Set.of("RECYCLED", "DEACTIVATED", "INACTIVE", "RETIRED");
+    private static final Set<String> RESTORABLE_STATUSES = Set.of("RECYCLED");
     private static final Set<String> SKU_STATUSES = Set.of("on", "off", "pending");
     private static final Set<String> SKU_TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
     private static final Set<String> SKU_LIFECYCLES = Set.of("active", "legacy");
@@ -140,12 +146,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private static final Set<String> TASK_REQUIREMENTS = Set.of("手机+", "S1+", "需 UVELBox Pro", "需 UVELRack");
     private static final List<String> E2_TASK_CLASS_ORDER = SimulatedTaskPolicyService.TASK_CLASSES;
     private static final Set<String> TASK_CLASSES = Set.copyOf(E2_TASK_CLASS_ORDER);
-    private static final Map<String, String> E2_CANONICAL_TASK_ID = Map.of(
+    static final Map<String, String> E2_CANONICAL_TASK_ID = Map.of(
             "LL", "TK-1", "SP", "TK-2", "IG", "TK-3",
             "VG", "TK-4", "FT", "TK-5", "EM", "TK-6");
     private static final Set<String> TASK_KILL_INIT_STATES = Set.of("派发中", "已 kill", "限流中");
     private static final String E2_QUEUE_SATURATION_KEY = "E.task.queueSaturation";
-    private static final Set<String> DATACENTER_STATUSES = Set.of("active", "maintenance", "disabled");
+    private static final String E2_PRICING_LOCK_TYPE = "e2_task_pricing";
+    private static final AuditLockTarget E2_QUEUE_PRICING_TARGET = new AuditLockTarget("E", E2_PRICING_LOCK_TYPE, "queue_saturation");
     private static final Set<String> ORDER_TERMINAL_STATES = Set.of(
             "payment_failed", "expired", "provisioning_failed", "chargeback");
     private static final Set<String> ORDER_STOCK_RELEASE_STATES = Set.of("payment_failed", "expired", "cancelled");
@@ -180,9 +187,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             "stageEarlyEnd",
             "stageMidEnd",
             "cycleMonths",
-            "taskLockS1",
-            "taskLockPro",
-            "taskLockRack",
             "eligibility",
             "promoMult",
             "promoCooldownDays",
@@ -219,7 +223,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             "earlyAccessEnabled",
             "earlyAccessLeadDays");
     private static final Set<String> E3_RETIRED_CONFIG_KEYS = Set.of(
-            "degradeEarly", "degradeMid", "degradeLate", "minEfficiency", "salvagePct", "minHoldingMonths");
+            "degradeEarly", "degradeMid", "degradeLate", "minEfficiency", "salvagePct", "minHoldingMonths",
+            "taskLockS1", "taskLockPro", "taskLockRack");
+    private static final Set<String> E3_RETIRED_HINT_KEYS = Set.of(
+            "taskLockS1", "taskLockPro", "taskLockRack");
     @lombok.NonNull
     private final SupportPaymentAttributionFacade paymentAttribution;
     private final DeviceOpsRepository deviceRepository;
@@ -242,7 +249,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private final TestCloudActivationAdmission testCloudAdmission;
     private final LegacyUnknownZeroCreditService legacyUnknownZeroCredit;
     @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.onboarding.mapper.OnboardingCalibrationMapper calibrationMapper;
+    @org.springframework.beans.factory.annotation.Autowired
     private SimulatedTaskPolicyService simulationPolicies;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceOrderRefundImpactService refundImpacts;
+    @org.springframework.beans.factory.annotation.Autowired
+    private SimulatedTaskWakeService simulationWakes;
 
     public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
             DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
@@ -287,38 +300,49 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 clock, readTimeSeedPolicy, lockMapper, storageService, null, testCloudAdmission);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceMonthlyTargetReadService monthlyTargetReads;
+
+    @org.springframework.beans.factory.annotation.Value("${nexion.simulated-tasks.enabled:false}")
+    private boolean simulatedTasksEnabled;
+
     public ApiResult<Map<String, Object>> overview() {
-        Map<String, Object> response = new LinkedHashMap<>(deviceRepository.overviewCounters());
-        response.put("domain", "E");
-        response.put("service", "nexion-backend");
-        response.put("generatedAt", LocalDateTime.now(clock));
-        response.put("maxDevicesPerUser", e5MaxDevicesPerUser());
-        response.put("sources", List.of(
-                "nx_user_device",
-                "nx_user_device_runtime",
-                "nx_compute_datacenter",
-                "nx_compute_dc_ops_state",
-                "product-policy:MAX_DEVICES=6"));
-        return ApiResult.ok(response);
+        return ApiResult.ok(deviceRepository.overviewCounters());
     }
 
-    public ApiResult<PageResult<DeviceOpsView>> devices(DeviceOpsQueryRequest request) {
-        return ApiResult.ok(deviceRepository.pageDevices(request));
+    public ApiResult<PageResult<StoreDeviceView>> devices(DeviceOpsQueryRequest request) {
+        var page = deviceRepository.pageDevices(request, false);
+        Set<Long> legacyPending = simulatedTasksEnabled
+                ? deviceRepository.legacyPendingDeviceIds(page.getRecords().stream()
+                    .filter(device -> "WAITING_INIT".equals(device.simState())).map(DeviceOpsView::id).toList())
+                : Set.of();
+        var records = monthlyTargetReads.enrich(page.getRecords()).stream()
+                .map(device -> StoreDeviceView.from(device, simulatedTasksEnabled, legacyPending.contains(device.id()))).toList();
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), records));
+    }
+
+    public ApiResult<PageResult<DeviceOpsView>> phones(DeviceOpsQueryRequest request) {
+        var page = deviceRepository.pageDevices(request, true);
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
+                monthlyTargetReads.enrich(page.getRecords())));
     }
 
     private int e5MaxDevicesPerUser() {
         return 6;
     }
 
-    public ApiResult<List<DeviceDatacenterView>> datacenters() {
-        return ApiResult.ok(deviceRepository.datacenterSummaries());
+
+    public ApiResult<PageResult<DeviceOpsView>> userDevicePage(Long userId, long pageNum, long pageSize) {
+        var page = deviceRepository.pageUserDevices(userId, pageNum, pageSize);
+        return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
+                monthlyTargetReads.enrich(page.getRecords())));
     }
 
     public ApiResult<List<DeviceOpsView>> userDevices(Long userId, int limit) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
-        return ApiResult.ok(deviceRepository.listUserDevices(userId, Math.max(1, Math.min(200, limit))));
+        return ApiResult.ok(monthlyTargetReads.enrich(deviceRepository.listUserDevices(userId, Math.max(1, Math.min(200, limit)))));
     }
 
     @Transactional
@@ -357,7 +381,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if(request.expectedVersion()==null||request.expectedVersion()<0)return ApiResult.fail(422,"SIMULATED_POLICY_VERSION_REQUIRED");
         return e1Idempotent("E1_PHONE_TASK_POLICY",idempotencyKey,"phone",request,()->{
             var before=simulationPolicies.productView("phone");
-            var classes=simulationPolicies.writeClasses(request.allowedTaskClasses(),request.allowedTaskTypeIds(),before.allowedTaskClasses(),before.allowedTaskTypeIds());
+            var classes=simulationPolicies.writePools("phone",request.allowedPoolCodes(),before.allowedPoolCodes());
             var after=simulationPolicies.publishProduct("phone",classes,request.expectedVersion(),LocalDateTime.now(clock));
             auditRequired("E1_PHONE_TASK_POLICY_PUBLISHED","DEVICE_SKU","phone",operator(request.operator()),
                     detail("before",before,"after",after,"reason",request.reason(),"idempotencyKey",idempotencyKey));
@@ -367,9 +391,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     @Transactional
     public ApiResult<DeviceSkuView> createSku(String idempotencyKey, DeviceSkuUpsertRequest request) {
+        String scope = "E1_SKU_CREATE";
+        SkuWriteReplay replay = skuWriteReplay(scope, idempotencyKey, "", request, null);
+        if (replay.response() != null) {
+            return replay.response();
+        }
         // Sales is maintained exclusively by the order state machine. A new
         // SKU always starts at zero; tolerate the legacy E1 round-trip field
         // but never let it create a hand-entered sales history.
+        DeviceSkuUpsertRequest incomingRequest=request;
+        request = monthlyTargetRequest(request, null, true);
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -379,7 +410,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return mediaObjectGuard;
         }
         DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
-        return e1Idempotent("E1_SKU_CREATE", idempotencyKey, "", writeRequest, () -> {
+        return e1IdempotentHashed(scope, idempotencyKey, replay.requestHash(), () -> {
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
+        requireSkuDisplayText(incomingRequest);
         String skuId = normalizeSkuId(writeRequest.skuId(), writeRequest.name());
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
@@ -401,8 +434,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return listingGuard;
             }
         }
-        var classes=simulationPolicies.writeClasses(writeRequest.allowedTaskClasses(),writeRequest.allowedTaskTypeIds(),List.of(),List.of());
-        if(!classes.isEmpty() && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
+        var classes=simulationPolicies.writePools(skuId,writeRequest.allowedPoolCodes(),List.of());
+        if((!classes.isEmpty() || writeRequest.monthlyTargetUsdt()!=null) && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
+        simulationPolicies.validateProductScope(skuId,writeRequest.seriesCode(),classes,false,writeRequest.monthlyTargetUsdt(),writeRequest.monthlyTargetBandPct(),"on".equals(writeRequest.status()),Boolean.TRUE.equals(writeRequest.clearMonthlyTarget()));
         LocalDateTime changedAt = LocalDateTime.now(clock);
         DeviceSkuView created = catalogRepository.createSku(skuId, writeRequest, changedAt);
         simulationPolicies.saveProduct(skuId,classes,"on".equals(created.status()),changedAt);
@@ -414,6 +448,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         auditRequired("E1_SKU_CREATED", "DEVICE_SKU", created.skuId(), writeRequest.operator(), detail(
                 "skuId", created.skuId(),
                 "name", created.name(),
+                "seriesCode", created.seriesCode(),
                 "status", created.status(),
                 "reason", writeRequest.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
@@ -424,20 +459,27 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @Transactional
     public ApiResult<DeviceSkuView> updateSku(
             String skuId, String expectedUpdatedAt, String idempotencyKey, DeviceSkuUpsertRequest request) {
+        String scope = "E1_SKU_UPDATE";
+        SkuRevision revision = parseSkuRevision(expectedUpdatedAt);
+        String revisionText = revision.value() == null ? expectedUpdatedAt : revision.value().toString();
+        SkuWriteReplay replay = skuWriteReplay(scope, idempotencyKey, skuId, request, revisionText);
+        if (replay.response() != null) {
+            return replay.response();
+        }
+        DeviceSkuUpsertRequest incomingRequest=request;
+        request = monthlyTargetRequest(request, catalogRepository.findSku(normalizeId(skuId)).orElse(null), true);
         ApiResult<DeviceSkuView> guard = requireSkuCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
-        SkuRevision revision = parseSkuRevision(expectedUpdatedAt);
         if (revision.error() != null) {
             return ApiResult.fail(409, revision.error());
         }
         LocalDateTime expectedRevision = revision.value();
-        // Exclude the order-managed counter from the idempotency payload as
-        // well as from persistence; the current value is restored below.
         DeviceSkuUpsertRequest writeRequest = normalizeSkuPhaseRequest(request, 0L);
-        return e1Idempotent("E1_SKU_UPDATE", idempotencyKey, skuId,
-                Map.of("request", writeRequest, "expectedUpdatedAt", expectedRevision.toString()), () -> {
+        return e1IdempotentHashed(scope, idempotencyKey, replay.requestHash(), () -> {
+        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
+        requireSkuDisplayText(incomingRequest);
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -481,11 +523,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), RetiredBrandGate.REASON);
         }
         String nextStatus = normalizeSkuStatus(writeRequest.status());
-        var classes=simulationPolicies.writeClasses(effectiveWriteRequest.allowedTaskClasses(),effectiveWriteRequest.allowedTaskTypeIds(),
-                before.allowedTaskClasses(),before.allowedTaskTypeIds());
-        boolean scopeChanged=!new java.util.HashSet<>(classes).equals(new java.util.HashSet<>(before.allowedTaskClasses()));
+        var classes=simulationPolicies.writePools(normalized,effectiveWriteRequest.allowedPoolCodes(),before.allowedPoolCodes());
+        boolean scopeChanged=!new java.util.HashSet<>(classes).equals(new java.util.HashSet<>(before.allowedPoolCodes()));
         boolean newlyListed=!"on".equals(before.status()) && "on".equals(nextStatus);
-        if((scopeChanged || newlyListed) && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
+        boolean targetChanged=!sameAmount(before.monthlyTargetUsdt(),effectiveWriteRequest.monthlyTargetUsdt())
+                ||!sameAmount(before.monthlyTargetBandPct(),effectiveWriteRequest.monthlyTargetBandPct());
+        boolean seriesChanged = !Objects.equals(before.seriesCode(), effectiveWriteRequest.seriesCode());
+        if (seriesChanged && before.seriesLocked()) return ApiResult.fail(409, "SKU_SERIES_LOCKED");
+        if((scopeChanged || newlyListed || targetChanged || seriesChanged) && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
         if (!"on".equals(before.status()) && "on".equals(nextStatus)) {
             ApiResult<DeviceSkuView> publishGuard = requireE1SkuPublishable(normalized, effectiveWriteRequest);
             if (publishGuard != null) {
@@ -496,6 +541,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return listingGuard;
             }
         }
+        boolean legacyOnSaleMaintenance="on".equals(before.status()) && !newlyListed && !targetChanged && !scopeChanged
+                && !ProductSeries.valid(effectiveWriteRequest.seriesCode());
+        simulationPolicies.validateProductScope(normalized,effectiveWriteRequest.seriesCode(),classes,!scopeChanged && !newlyListed,
+                effectiveWriteRequest.monthlyTargetUsdt(),effectiveWriteRequest.monthlyTargetBandPct(),
+                "on".equals(nextStatus) && !legacyOnSaleMaintenance,
+                Boolean.TRUE.equals(effectiveWriteRequest.clearMonthlyTarget()));
         LocalDateTime changedAt = LocalDateTime.now(clock);
         DeviceSkuView updated = catalogRepository.updateSku(
                         normalized, effectiveWriteRequest, expectedRevision, changedAt)
@@ -503,8 +554,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (updated == null) {
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
         }
-        if(scopeChanged || newlyListed)
-            simulationPolicies.saveProduct(normalized,classes,"on".equals(updated.status()),changedAt);
+        if(scopeChanged || newlyListed || targetChanged)
+            simulationPolicies.saveProduct(normalized,classes,"on".equals(updated.status()) || (targetChanged || effectiveWriteRequest.monthlyTargetUsdt()!=null) && simulationPolicies.hasPublishedProduct(normalized),
+                    changedAt,scopeChanged || newlyListed);
         updated=updated.withTaskPolicy(simulationPolicies.productView(normalized));
         if (!"on".equals(before.status()) && "on".equals(updated.status())) {
             publishE1SkuLifecycleEvent(normalized, "admin.product_listed", e1SkuStatusEvent(
@@ -579,6 +631,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before.updatedAt() == null || !before.updatedAt().equals(expectedRevision)) {
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
         }
+        if ("on".equals(status) && !"on".equals(before.status())) requireStoreSkuSeries(before.seriesCode(),before.productType());
+        simulationPolicies.validateProductScope(normalized,before.seriesCode(),before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),"on".equals(status),false);
         if (status.equals(before.status())) {
             return ApiResult.ok(before);
         }
@@ -599,7 +653,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(409, "SKU_VERSION_CONFLICT");
         }
         if ("on".equals(status)) {
-            simulationPolicies.publishProduct(normalized,before.allowedTaskClasses(),null,LocalDateTime.now(clock));
+            simulationPolicies.publishProduct(normalized,before.allowedPoolCodes(),null,LocalDateTime.now(clock));
             updated=updated.withTaskPolicy(simulationPolicies.productView(normalized));
             publishE1SkuLifecycleEvent(normalized, "admin.product_listed", e1SkuStatusEvent(
                     normalized, before.status(), updated.status(), trustedRequest.operator(), trustedRequest.reason()));
@@ -816,7 +870,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 compute.domain(), publicFlags, compute.coefficients(), compute.yieldEstimate(),
                 legacyTiers, compute.download(), compute.phoneBinding(), compute.sources());
         return ApiResult.ok(new PlatformComputeConfigView(
-                new PlatformComputeConfigView.FeatureFlags(enabled, false, false, true),
+                new PlatformComputeConfigView.FeatureFlags(enabled, false, false, false),
                 null,
                 new PlatformComputeConfigView.OnlineBonus(
                         BigDecimal.ZERO,
@@ -1310,12 +1364,24 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<DeviceTaskView> createTask(String idempotencyKey, DeviceTaskUpsertRequest request) {
+        return createTask(idempotencyKey, request, null);
+    }
+
+    private ApiResult<DeviceTaskView> createTask(String idempotencyKey, DeviceTaskUpsertRequest request,
+                                                String reviewedRevision) {
         ApiResult<DeviceTaskView> guard = requireTaskCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
         DeviceTaskUpsertRequest trusted = trustedTaskRequest(request);
-        return deviceIdempotent("E2_TASK_CREATE", idempotencyKey, "", trusted, () -> {
+        Supplier<ApiResult<DeviceTaskView>> action = () -> {
+            LocalDateTime now = LocalDateTime.now(clock);
+            LocalDateTime catalogTime = now.truncatedTo(ChronoUnit.SECONDS);
+            if (trusted.simulation() == null) {
+                ApiResult<DeviceTaskView> pricingGuard = guardTaskLifecycle(
+                        catalogRepository.lockTaskCatalog(), null, trusted, catalogTime, reviewedRevision);
+                if (pricingGuard != null) return pricingGuard;
+            }
             boolean enabled = "active".equals(trusted.status()) && !"已 kill".equals(trusted.killInit());
             if (enabled && (trusted.minReward().signum() > 0 || trusted.maxReward().signum() > 0)
                     && coverageBelowRedline()) {
@@ -1327,8 +1393,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
             }
-            LocalDateTime now = LocalDateTime.now(clock);
-            DeviceTaskView created = catalogRepository.createTask(taskId, trusted, now);
+            DeviceTaskView created = catalogRepository.createTask(taskId, trusted, catalogTime);
             if(trusted.simulation()!=null) {
                 publishTaskSimulation(created,trusted.simulation(),now);
                 created=created.withSimulation(simulationPolicies.typeView(taskId));
@@ -1341,26 +1406,46 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     "minVram", created.minVram(), "killInit", created.killInit(),
                     "scheduling", created.scheduling(),
                     "simulation", created.simulation(),
-                    "reason", trusted.reason(), "idempotencyKey", idempotencyKey.trim()));
+                    "reason", trusted.reason(), "idempotencyKey", idempotencyKey.trim(),
+                    "operationId", A2ReplayContext.operationId()));
             return ApiResult.ok(created);
-        });
+        };
+        return reviewedRevision == null ? deviceIdempotent("E2_TASK_CREATE", idempotencyKey, "", trusted, action)
+                : action.get();
     }
 
     public ApiResult<DeviceTaskView> updateTask(String taskId, String idempotencyKey, DeviceTaskUpsertRequest request) {
+        return updateTask(taskId, idempotencyKey, request, null);
+    }
+
+    private ApiResult<DeviceTaskView> updateTask(String taskId, String idempotencyKey, DeviceTaskUpsertRequest request,
+                                                String reviewedRevision) {
+        simulationPolicies.requirePhoneType(taskId);
         ApiResult<DeviceTaskView> guard = requireTaskCommand(idempotencyKey, request);
         if (guard != null) {
             return guard;
         }
-        DeviceTaskUpsertRequest trusted = trustedTaskRequest(request);
-        return deviceIdempotent("E2_TASK_UPDATE", idempotencyKey, taskId, trusted, () -> {
+        DeviceTaskUpsertRequest input = trustedTaskRequest(request);
+        Supplier<ApiResult<DeviceTaskView>> action = () -> {
             if (!A2ReplayContext.isReplaying()
                     && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
             }
             String normalized = normalizeId(taskId);
+            List<DeviceTaskView> catalog = catalogRepository.lockTaskCatalog();
             DeviceTaskView before = catalogRepository.findTaskForUpdate(normalized).orElse(null);
             if (before == null) {
-                return ApiResult.fail(404, "TASK_NOT_FOUND");
+                return reviewedRevision == null ? ApiResult.fail(404, "TASK_NOT_FOUND")
+                        : ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+            }
+            DeviceTaskUpsertRequest trusted = !StringUtils.hasText(request.status())
+                    ? trustedTaskRequest(request, before.status()) : input;
+            LocalDateTime now = LocalDateTime.now(clock);
+            LocalDateTime catalogTime = now.truncatedTo(ChronoUnit.SECONDS);
+            if (reviewedRevision != null) {
+                ApiResult<DeviceTaskView> pricingGuard = guardTaskLifecycle(
+                        catalog, before, trusted, catalogTime, reviewedRevision);
+                if (pricingGuard != null) return pricingGuard;
             }
             if(before.simulation()!=null&&trusted.simulation()==null)
                 return ApiResult.fail(422,"SIMULATED_TASK_SETTINGS_REQUIRED");
@@ -1371,8 +1456,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                         "TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
             }
-            boolean beforeEnabled = "active".equals(before.status()) && !"已 kill".equals(before.killInit());
-            boolean nextEnabled = "active".equals(trusted.status()) && !"已 kill".equals(trusted.killInit());
+            if (reviewedRevision == null && before.simulation() == null) {
+                ApiResult<DeviceTaskView> pricingGuard = guardTaskLifecycle(catalog, before, trusted, catalogTime, null);
+                if (pricingGuard != null) return pricingGuard;
+            }
+            boolean beforeEnabled = before.simulation().enabled();
+            boolean nextEnabled = "active".equals(trusted.status()) && trusted.simulation().enabled();
             if ((e2TaskPricingAmplifiesFinancialOutflow(
                     before.minReward(), before.maxReward(), parseVram(before.minVram()), beforeEnabled,
                     trusted.minReward(), trusted.maxReward(), parseVram(trusted.minVram()), nextEnabled)
@@ -1383,8 +1472,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
-            LocalDateTime now = LocalDateTime.now(clock);
-            DeviceTaskView updated = catalogRepository.updateTask(normalized, trusted, now).orElse(before);
+            DeviceTaskView updated = catalogRepository.updateTask(normalized, trusted, catalogTime).orElse(before);
             if(trusted.simulation()!=null) {
                 publishTaskSimulation(updated,trusted.simulation(),now);
                 updated=updated.withSimulation(simulationPolicies.typeView(normalized));
@@ -1418,9 +1506,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "afterScheduling", updated.scheduling(),
                 "simulation", updated.simulation(),
                 "reason", trusted.reason(),
-                "idempotencyKey", idempotencyKey.trim()));
+                "idempotencyKey", idempotencyKey.trim(),
+                "operationId", A2ReplayContext.operationId()));
             return ApiResult.ok(updated);
-        });
+        };
+        return reviewedRevision == null ? deviceIdempotent("E2_TASK_UPDATE", idempotencyKey, taskId, input, action)
+                : action.get();
     }
 
     public ApiResult<DeviceTaskView> updateTaskPrice(String taskId, String idempotencyKey, DeviceTaskPriceRequest request) {
@@ -1465,12 +1556,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return updateTaskStatus(taskId,idempotencyKey,request,null);
     }
     private ApiResult<DeviceTaskView> updateTaskStatus(String taskId,String idempotencyKey,DeviceTaskStatusRequest request,Long reviewedVersion) {
+        if(request==null || !"PHONE".equals(request.poolCode()))throw new BizException(422,"TASK_POOL_FORMAT_RETIRED");
+        simulationPolicies.requirePhoneType(taskId);
         ApiResult<Map<String, Object>> command = requireE1Command(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
             return ApiResult.fail(command.getCode(), command.getMessage());
         }
         DeviceTaskStatusRequest trusted = new DeviceTaskStatusRequest(
-                request.status(), request.reason().trim(), operator(request.operator()));
+                request.status(), request.reason().trim(), operator(request.operator()),request.poolCode());
         return deviceIdempotent("E2_TASK_STATUS", idempotencyKey, taskId, trusted, () -> {
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
@@ -1489,8 +1582,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
         if(!Objects.equals(reviewedVersion,before.simulation()==null?null:before.simulation().version()))
             return ApiResult.fail(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
-        boolean beforeEnabled = "active".equals(before.status()) && !"已 kill".equals(before.killInit());
-        boolean nextEnabled = "active".equals(status) && !"已 kill".equals(before.killInit());
+        // PHONE status belongs to the immutable SIM policy; the legacy kill flag may reflect a disabled creation.
+        boolean beforeEnabled = before.simulation().enabled();
+        boolean nextEnabled = "active".equals(status);
         if (e2TaskPricingAmplifiesFinancialOutflow(
                 before.minReward(), before.maxReward(), parseVram(before.minVram()), beforeEnabled,
                 before.minReward(), before.maxReward(), parseVram(before.minVram()), nextEnabled)
@@ -1520,35 +1614,121 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<Map<String, Object>> deleteTask(String taskId, String idempotencyKey, DeviceTaskStatusRequest request) {
+        return deleteTask(taskId, idempotencyKey, request, null);
+    }
+
+    private ApiResult<Map<String, Object>> deleteTask(String taskId, String idempotencyKey, DeviceTaskStatusRequest request,
+                                                    String reviewedRevision) {
         ApiResult<Map<String, Object>> command = requireE1Command(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
             return command;
         }
         DeviceTaskStatusRequest trusted = new DeviceTaskStatusRequest(
                 request.status(), request.reason().trim(), operator(request.operator()));
-        return deviceIdempotent("E2_TASK_DELETE", idempotencyKey, taskId, trusted, () -> {
+        Supplier<ApiResult<Map<String, Object>>> action = () -> {
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         String normalized = normalizeId(taskId);
+        List<DeviceTaskView> catalog = catalogRepository.lockTaskCatalog();
         DeviceTaskView before = catalogRepository.findTaskForUpdate(normalized).orElse(null);
         if (before == null) {
-            return ApiResult.fail(404, "TASK_NOT_FOUND");
+            return reviewedRevision == null ? ApiResult.fail(404, "TASK_NOT_FOUND")
+                    : ApiResult.fail(409, "E2_TASK_PRICING_STALE");
         }
-        if(before.simulation()!=null)return ApiResult.fail(422,"SIMULATED_TASK_DISABLE_IN_SETTINGS");
-        ApiResult<Map<String, Object>> inUseGuard = requireTaskNotReferencedBySku(normalized);
-        if (inUseGuard != null) {
-            return inUseGuard;
+        return ApiResult.fail(422, before.simulation() == null ? "TASK_POOL_FORMAT_RETIRED"
+                : "SIMULATED_TASK_DISABLE_IN_SETTINGS");
+        };
+        return reviewedRevision == null ? deviceIdempotent("E2_TASK_DELETE", idempotencyKey, taskId, trusted, action)
+                : action.get();
+    }
+
+    record E2TaskLifecycleReview(AuditLockTarget target, String revision, String before, String after) {}
+
+    ApiResult<E2TaskLifecycleReview> previewTaskLifecycleApproval(Map<String, Object> values, String reason) {
+        String action = str(values, "action");
+        boolean create = "create".equals(action);
+        boolean delete = "delete".equals(action);
+        DeviceTaskUpsertRequest request = delete ? null : buildTaskUpsertRequest(values, reason, null);
+        ApiResult<?> guard = delete ? requireE1Command("review", reason) : requireTaskCommand("review", request, true);
+        if (guard != null) return ApiResult.fail(guard.getCode(), guard.getMessage());
+        DeviceTaskUpsertRequest trusted = delete ? null : trustedTaskRequest(request);
+        List<DeviceTaskView> catalog = catalogRepository.lockTaskCatalog();
+        DeviceTaskView before = create ? null
+                : catalogRepository.findTaskForUpdate(normalizeId(str(values, "taskId"))).orElse(null);
+        if (!create && before == null) return ApiResult.fail(404, "TASK_NOT_FOUND");
+        if (delete && before.simulation() == null) return ApiResult.fail(422, "TASK_POOL_FORMAT_RETIRED");
+        if (create && trusted.simulation() != null || before != null && before.simulation() != null) {
+            return ApiResult.fail(422, "E2_TASK_PRICING_APPROVAL_NOT_REQUIRED");
         }
-        catalogRepository.softDeleteTask(normalized, LocalDateTime.now(clock));
-        auditRequired("E2_TASK_DELETED", "DEVICE_TASK", normalized, trusted.operator(), detail(
-                "taskId", normalized,
-                "name", before.name(),
-                "reason", trusted.reason(),
-                "idempotencyKey", idempotencyKey.trim()));
-        return ApiResult.ok(detail("taskId", normalized, "deleted", true));
-        });
+        if (delete) {
+            guard = requireTaskNotReferencedBySku(before.taskId());
+            if (guard != null) return ApiResult.fail(guard.getCode(), guard.getMessage());
+        } else if (before != null && !before.status().equals(trusted.status())) {
+            return ApiResult.fail(409, "TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
+        }
+        if (trusted != null && trusted.simulation() != null && trusted.simulation().expectedVersion() != 0) {
+            return ApiResult.fail(409, "SIMULATED_TASK_POLICY_VERSION_CONFLICT");
+        }
+        if (trusted != null) {
+            try {
+                TaskSchedulingSettings scheduling = create
+                        ? TaskSchedulingSettings.defaults(trusted.taskClass(), trusted.model()) : before.scheduling();
+                scheduling.merge(trusted);
+            } catch (IllegalArgumentException invalid) {
+                return ApiResult.fail(422, invalid.getMessage());
+            }
+        }
+        var impact = E2TaskLifecycleImpact.compare(
+                catalog, before, trusted, taskCatalogWriteTime(), testCloudAdmission.legacyTaskConfig());
+        if (!impact.widens()) {
+            return ApiResult.fail(422, "E2_TASK_PRICING_APPROVAL_NOT_REQUIRED");
+        }
+        if (e2TaskPricingCoverageBelowRedline()) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        }
+        String targetId = create ? "new-" + trusted.taskClass() : before.taskId();
+        return ApiResult.ok(new E2TaskLifecycleReview(new AuditLockTarget("E", E2TaskPricingApproval.LIFECYCLE_LOCK, targetId),
+                taskLifecycleRevision(impact, before), impact.describe(false), impact.describe(true)));
+    }
+
+    ApiResult<?> executeApprovedTaskLifecycle(String idempotencyKey, Map<String, Object> values, String reason,
+                                              String reviewedRevision, AuditLockTarget target) {
+        if (!holdsE2ApprovalLock(target) || !StringUtils.hasText(reviewedRevision)) {
+            return ApiResult.fail(403, "E2_TASK_PRICING_APPROVAL_FORBIDDEN");
+        }
+        String taskId = str(values, "taskId");
+        return switch (str(values, "action")) {
+            case "create" -> createTask(idempotencyKey, buildTaskUpsertRequest(values, reason, null), reviewedRevision);
+            case "update" -> updateTask(taskId, idempotencyKey, buildTaskUpsertRequest(values, reason, null), reviewedRevision);
+            case "delete" -> deleteTask(taskId, idempotencyKey, new DeviceTaskStatusRequest(null, reason, null), reviewedRevision);
+            default -> ApiResult.fail(422, "E2_TASK_PRICING_PROPOSAL_INVALID");
+        };
+    }
+
+    private <T> ApiResult<T> guardTaskLifecycle(List<DeviceTaskView> catalog, DeviceTaskView before,
+                                               DeviceTaskUpsertRequest request, LocalDateTime now, String reviewedRevision) {
+        var impact = E2TaskLifecycleImpact.compare(catalog, before, request, now, testCloudAdmission.legacyTaskConfig());
+        if (reviewedRevision != null && !reviewedRevision.equals(taskLifecycleRevision(impact, before))) {
+            return ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+        }
+        if (!impact.widens()) return null;
+        if (reviewedRevision == null) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        return e2TaskPricingCoverageBelowRedline()
+                ? ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name())
+                : null;
+    }
+
+    private String taskLifecycleRevision(E2TaskLifecycleImpact.Impact impact, DeviceTaskView before) {
+        return e1RequestHash("E2_TASK_LIFECYCLE_REVISION", before == null ? "" : before.taskId(),
+                detail("impact", impact, "currentTask", before));
+    }
+
+    private LocalDateTime taskCatalogWriteTime() {
+        // The catalog stores timestamps in whole seconds and uses the row id to break ties.
+        return LocalDateTime.now(clock).truncatedTo(ChronoUnit.SECONDS);
     }
 
     private ApiResult<DeviceTaskView> requireTaskNotReferencedBySku(String taskId, String nextStatus) {
@@ -1597,6 +1777,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         // 仅暴露当前真正可执行的渠道。原支付渠道需要 PSP 退款适配器，未接通前必须失败关闭，
         // 也不能在控制台给运营一个注定失败的选项。
         List<String> channels = List.of("WALLET");
+        var devices=catalogRepository.listOrderDevices(normalizedOrderNo);
         return ApiResult.ok(new DeviceOrderDetailView(
                 order,
                 facts.userId(),
@@ -1618,11 +1799,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 redline,
                 projected,
                 refundAllowed,
-                channels));
+                channels,
+                devices,
+                refundImpacts.read(normalizedOrderNo,facts.userId(),facts.orderType(),devices)));
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<DeviceOrderView> refundOrder(String orderNo, String idempotencyKey, DeviceOrderActionRequest request) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())) {
+            return ApiResult.fail(409, "E4_REFUND_APPROVAL_REQUIRED");
+        }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_order", orderNo) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -1641,9 +1827,45 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             refundReasonCode = reason.name();
         }
         DeviceOrderActionRequest trusted = new DeviceOrderActionRequest(
-                request.terminalState(), request.refundChannel(), request.reason().trim(), actor, refundReasonCode);
+                request.terminalState(), request.refundChannel(), request.reason().trim(), actor, refundReasonCode, null,
+                request.refundAmountUsdt() == null ? null : request.refundAmountUsdt().stripTrailingZeros());
         return deviceIdempotent("E4_ORDER_REFUND", idempotencyKey, normalizeId(orderNo), trusted,
                 () -> transitionOrder(orderNo, idempotencyKey, trusted, "refunded", "E4_ORDER_REFUNDED"));
+    }
+
+    public record OrderRefundReview(String state, BigDecimal originalAmountUsdt, BigDecimal refundAmountUsdt) {}
+
+    /** The same refundable ceiling and amount validation serve A2 review and execution. */
+    public OrderRefundReview refundProposalReview(AuditReplayCommand command, String reason) {
+        String orderNo = normalizeId(str(command.params(), "orderNo"));
+        var order = catalogRepository.findOrder(orderNo).orElseThrow(() -> new BizException(404, "ORDER_NOT_FOUND"));
+        var facts = catalogRepository.findOrderFacts(orderNo).orElseThrow(() -> new BizException(404, "ORDER_NOT_FOUND"));
+        if (!ORDER_REFUNDABLE_STATES.contains(normalizeOrderState(order.state()))) {
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        return new OrderRefundReview(order.state(), facts.amountUsdt(),
+                refundAmount(facts, refundAmountParam(command.params()), reason));
+    }
+
+    private static BigDecimal refundAmountParam(Map<String, Object> params) {
+        BigDecimal amount = decimal(params, "refundAmountUsdt");
+        if (params.get("refundAmountUsdt") != null && amount == null) {
+            throw new BizException(422, "E4_REFUND_AMOUNT_INVALID");
+        }
+        return amount;
+    }
+
+    private static BigDecimal refundAmount(DeviceOrderFacts facts, BigDecimal requested, String reason) {
+        BigDecimal full = facts.amountUsdt();
+        BigDecimal amount = requested == null ? full : requested;
+        if (full == null || amount == null || amount.signum() <= 0 || amount.compareTo(full) > 0
+                || amount.stripTrailingZeros().scale() > 6) {
+            throw new BizException(422, "E4_REFUND_AMOUNT_INVALID");
+        }
+        if (amount.compareTo(full) < 0 && !StringUtils.hasText(reason)) {
+            throw new BizException(422, "E4_REFUND_REASON_REQUIRED");
+        }
+        return amount.setScale(6);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -1818,25 +2040,52 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<Map<String, Object>> e1GenerationGates() {
-        int platformMonth = currentPlatformMonth();
+        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
+        int platformMonth = rhythm.currentMonth() >= 1 ? Math.min(rhythm.currentMonth(), 12) : 0;
         List<DeviceGenerationGateView> gates = catalogRepository.listGenerationGates(false);
         Map<String, String> configValues = e1GateConfigValues(gates);
         List<DevicePhaseView> phases = e1PhaseDefs();
-        GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy);
-        String currentPhase = currentE1PhaseId(platformMonth, phases);
+        // E1-BE-08: 读回复用写入实际使用的目录解析；H1 原阶段与写入阶段分开返回。
+        String h1CurrentPhase = rhythm.currentPhase();
+        String currentPhase = currentE1PhaseId(rhythm, platformMonth, phases);
         Map<String, Object> h1Rhythm = new LinkedHashMap<>(rhythm.summary());
-        h1Rhythm.put("currentPhase", currentPhase);
         List<String> phaseOrder = phases.stream().map(DevicePhaseView::p).toList();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "E1");
         response.put("skuReviewContractVersion", 1);
         response.put("taskClassPolicySupported", true);
         response.put("phaseOrder", phaseOrder);
-        response.put("phases", phases);
+        response.put("phases", phases.stream()
+                .map(phase -> new DevicePhaseView(
+                        phase.p(), phase.label(),
+                        phase.meta() == null ? "" : phase.meta(),
+                        phase.skus() == null ? "" : phase.skus(),
+                        phase.sortOrder(), phase.status(), phase.createdAt(), phase.updatedAt()))
+                .toList());
         response.put("platformMonth", platformMonth);
         response.put("phaseCurrent", currentPhase);
         response.put("h1Rhythm", h1Rhythm);
         response.put("h1PhaseSource", rhythm.summary());
+        Map<String, Object> phaseComparison = new LinkedHashMap<>();
+        phaseComparison.put("e1CurrentPhase", currentPhase);
+        phaseComparison.put("h1CurrentPhase", h1CurrentPhase);
+        // E1 目录项与 H1 原阶段分别返回：e1CurrentPhase 是实际写入/读取共用的目录项，
+        // h1CurrentPhase 保留 H1 运营阶段原值；H1 缺目录项时 e1CurrentPhase 为月份回退结果。
+        String e1PhaseToken = normalizeE1PhaseToken(currentPhase);
+        String h1PhaseToken = normalizeE1PhaseToken(h1CurrentPhase);
+        phaseComparison.put("same", java.util.Objects.equals(e1PhaseToken, h1PhaseToken));
+        phaseComparison.put("gateSource", "E1_CONFIGURED_RELEASE_PHASE");
+        phaseComparison.put("h1PhaseCatalog", GrowthRhythmSnapshot.phaseNames());
+        boolean mapped = rhythm.reliable() && h1PhaseToken != null
+                && phaseOrder.stream().map(OpsDeviceService::normalizeE1PhaseToken).anyMatch(h1PhaseToken::equals);
+        phaseComparison.put("mappingStatus", mapped ? "EXACT_ID_PRESENT" : "UNMAPPED");
+        phaseComparison.put("mappedH1Phase", mapped ? h1CurrentPhase : null);
+        // E1-BE-07: 写入校验实际使用的阶段与权威口径,PC 可直接对目录显示。
+        phaseComparison.put("writePhaseSource", mapped ? "H1_GROWTH_RHYTHM" : "MONTH_PROPORTIONAL_FALLBACK");
+        phaseComparison.put("phaseGateAuthority", "phaseCurrent");
+        phaseComparison.put("archiveGuardAuthority", "phaseCurrent");
+        phaseComparison.put("phaseReachedAuthority", "phaseCurrent");
+        response.put("phaseComparison", phaseComparison);
         response.put("releases", e1GenerationReleases(gates));
         response.put("configValues", configValues);
         response.put("allowedFields", List.of("releaseMonth", "phase", "eligibility", "phaseOffset", "forceUnlock"));
@@ -1869,21 +2118,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
-        if (request == null || request.expectedVersion() == null || request.expectedVersion() < 1
-                || request.twoItemsPct() == null || request.threeItemsPct() == null
-                || request.fourPlusItemsPct() == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
-                    "BUNDLE_DISCOUNT_REQUEST_INVALID");
-        }
         BundleDiscountPolicy proposed;
         try {
-            proposed = new BundleDiscountPolicy(
-                    request.twoItemsPct().movePointLeft(2),
-                    request.threeItemsPct().movePointLeft(2),
-                    request.fourPlusItemsPct().movePointLeft(2));
-        } catch (IllegalArgumentException ex) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
-                    "BUNDLE_DISCOUNT_POLICY_INVALID");
+            proposed = validateBundleDiscount(request);
+        } catch (BizException invalid) {
+            return ApiResult.fail(invalid.getCode(), invalid.getMessage());
         }
         String trustedOperator = operator(request.operator());
         DeviceBundleDiscountUpdateRequest trusted = new DeviceBundleDiscountUpdateRequest(
@@ -1924,6 +2163,42 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                             "idempotencyKey", idempotencyKey.trim()));
             return e1BundleDiscount();
         });
+    }
+
+    public static ApiResult<Void> validateBundleDiscountProposal(Map<String, Object> params) {
+        try {
+            validateBundleDiscount(bundleDiscountRequest(params, null, null));
+            return ApiResult.ok();
+        } catch (BizException invalid) {
+            return ApiResult.fail(invalid.getCode(), invalid.getMessage());
+        }
+    }
+
+    private static BundleDiscountPolicy validateBundleDiscount(DeviceBundleDiscountUpdateRequest request) {
+        if (request == null || request.expectedVersion() == null || request.expectedVersion() < 1
+                || request.twoItemsPct() == null || request.threeItemsPct() == null
+                || request.fourPlusItemsPct() == null) {
+            throw new BizException(422, "BUNDLE_DISCOUNT_REQUEST_INVALID");
+        }
+        if (request.twoItemsPct().compareTo(new BigDecimal("0.01")) < 0
+                || request.fourPlusItemsPct().compareTo(BigDecimal.valueOf(30)) > 0) {
+            throw new BizException(422, "BUNDLE_DISCOUNT_POLICY_INVALID");
+        }
+        try {
+            return new BundleDiscountPolicy(
+                    request.twoItemsPct().movePointLeft(2),
+                    request.threeItemsPct().movePointLeft(2),
+                    request.fourPlusItemsPct().movePointLeft(2));
+        } catch (IllegalArgumentException invalid) {
+            throw new BizException(422, "BUNDLE_DISCOUNT_POLICY_INVALID");
+        }
+    }
+
+    private static DeviceBundleDiscountUpdateRequest bundleDiscountRequest(
+            Map<String, Object> params, String reason, String operator) {
+        return new DeviceBundleDiscountUpdateRequest(
+                decimal(params, "twoItemsPct"), decimal(params, "threeItemsPct"),
+                decimal(params, "fourPlusItemsPct"), longVal(params, "expectedVersion"), reason, operator);
     }
 
     private long bundleDiscountVersion(java.util.Optional<String> raw) {
@@ -1976,10 +2251,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     public ApiResult<Map<String, Object>> e2TaskPricing() {
-        BigDecimal queueSaturation = configFacade.activeValue(E2_QUEUE_SATURATION_KEY)
-                .map(this::parseDecimalOrNull)
-                .filter(value -> value.compareTo(BigDecimal.ZERO) >= 0 && value.compareTo(BigDecimal.ONE) <= 0)
-                .orElse(new BigDecimal("0.35"));
+        return e2TaskPricing(false);
+    }
+
+    public ApiResult<Map<String, Object>> e2TaskPricingForAdmin() {
+        return e2TaskPricing(true);
+    }
+
+    private ApiResult<Map<String, Object>> e2TaskPricing(boolean includeRevisions) {
+        String queueConfig = configFacade.activeValue(E2_QUEUE_SATURATION_KEY).orElse(null);
+        BigDecimal queueSaturation = e2QueueSaturation(queueConfig);
         List<Map<String, Object>> rows = new ArrayList<>();
         for (String taskClass : E2_TASK_CLASS_ORDER) {
             DeviceTaskView task = findE2TaskByClass(taskClass);
@@ -1994,7 +2275,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     .multiply(queueSaturation)
                     .multiply(averageReward)
                     .setScale(4, RoundingMode.HALF_UP);
-            rows.add(detail(
+            Map<String, Object> row = detail(
                     "taskId", task.taskId(),
                     "taskClass", task.taskClass(),
                     "taskName", task.name(),
@@ -2002,15 +2283,22 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     "minReward", task.minReward(),
                     "maxReward", task.maxReward(),
                     "minVRAM", parseVram(task.minVram()),
-                    "enabled", "active".equals(task.status()) && !"已 kill".equals(task.killInit()),
+                    "enabled", e2TaskEnabled(task),
                     "activeAssignments", 0,
                     "avgSec", avgSec,
                     "dailyPotential", dailyPotential,
-                    "effectiveAt", task.updatedAt()));
+                    "effectiveAt", task.updatedAt());
+            if (includeRevisions) {
+                row.put("pricingRevision", e2TaskPricingRevision(task));
+            }
+            rows.add(row);
         }
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("taskClasses", rows);
         response.put("queueSaturation", queueSaturation);
+        if (includeRevisions) {
+            response.put("queueSaturationRevision", e2QueueSaturationRevision(queueConfig));
+        }
         response.put("teaser", e2Teaser(rows));
         response.put("effectiveAt", rows.stream()
                 .map(row -> row.get("effectiveAt"))
@@ -2057,7 +2345,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return ApiResult.ok(response);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> updateE2TaskPricing(
             String idempotencyKey, E2TaskPricingUpdateRequest request) {
         ApiResult<Map<String, Object>> guard = requireE1Command(
@@ -2065,120 +2353,262 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (guard != null) {
             return guard;
         }
-        String trustedOperator = operator(request.operator());
-        E2TaskPricingUpdateRequest trusted = new E2TaskPricingUpdateRequest(
-                normalizeUpper(request.taskClass()), request.minReward(), request.maxReward(), request.minVram(),
-                request.enabled(), request.queueSaturation(), request.reason().trim(), trustedOperator);
+        E2TaskPricingUpdateRequest trusted = trustedE2TaskPricingRequest(request);
         return deviceIdempotent("E2_TASK_PRICING_UPDATE", idempotencyKey, trusted.taskClass(), trusted, () -> {
-            if (trusted.queueSaturation() != null) {
-                if (StringUtils.hasText(trusted.taskClass()) || trusted.minReward() != null || trusted.maxReward() != null
-                        || trusted.minVram() != null || trusted.enabled() != null) {
-                    return ApiResult.fail(400, "E2_SINGLE_ACTION_REQUIRED");
-                }
-                if (trusted.queueSaturation().compareTo(BigDecimal.ZERO) < 0
-                        || trusted.queueSaturation().compareTo(BigDecimal.ONE) > 0) {
-                    return ApiResult.fail(400, "QUEUE_SATURATION_INVALID");
-                }
-                BigDecimal before = configFacade.activeValueForUpdate(E2_QUEUE_SATURATION_KEY)
-                        .map(this::parseDecimalOrNull).orElse(new BigDecimal("0.35"));
-                if (before.compareTo(trusted.queueSaturation()) == 0) {
-                    return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
-                }
-                if (trusted.queueSaturation().compareTo(before) > 0 && coverageBelowRedline()) {
-                    return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                            OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-                }
-                LocalDateTime effectiveAt = LocalDateTime.now(clock);
-                configFacade.upsertAdminValue(E2_QUEUE_SATURATION_KEY,
-                        trusted.queueSaturation().stripTrailingZeros().toPlainString(), "DECIMAL", "E2",
-                        "E2 locked teaser global saturation");
-                recordE2TaskPricingChange("GLOBAL", "QUEUE_SATURATION", before, trusted.queueSaturation(),
-                        effectiveAt, trustedOperator, trusted.reason(), idempotencyKey);
-                return ApiResult.ok(detail("effectiveAt", effectiveAt, "taskPricing", e2TaskPricing().getData()));
+            var prepared = prepareE2TaskPricing(trusted, null);
+            if (prepared.getCode() != 0) {
+                return ApiResult.fail(prepared.getCode(), prepared.getMessage());
             }
-            if (!TASK_CLASSES.contains(trusted.taskClass())) {
-                return ApiResult.fail(400, "TASK_CLASS_INVALID");
+            E2TaskPricingChange change = prepared.getData();
+            if (change.requiresApproval()) {
+                return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
             }
-            int changedFields = (trusted.minReward() == null ? 0 : 1)
-                    + (trusted.maxReward() == null ? 0 : 1)
-                    + (trusted.minVram() == null ? 0 : 1)
-                    + (trusted.enabled() == null ? 0 : 1);
-            if (changedFields == 0 || (trusted.enabled() != null && changedFields > 1)) {
-                return ApiResult.fail(400, "E2_SINGLE_ACTION_REQUIRED");
-            }
-            DeviceTaskView candidate = findE2TaskByClass(trusted.taskClass());
-            if (candidate == null) {
-                boolean simulatedClass = catalogRepository.pageTasks(new DeviceTaskQueryRequest(null, null, trusted.taskClass(), 1L, 500L))
-                        .getRecords().stream().anyMatch(task -> task.simulation() != null);
-                return ApiResult.fail(simulatedClass ? 422 : 404,
-                        simulatedClass ? "SIMULATED_TASK_FIXED_REWARD_REQUIRES_EDIT" : "TASK_CLASS_NOT_FOUND");
-            }
-            DeviceTaskView before = catalogRepository.findTaskForUpdate(candidate.taskId()).orElse(null);
-            if (before == null || !trusted.taskClass().equals(before.taskClass())) {
-                return ApiResult.fail(409, "TASK_CLASS_CHANGED");
-            }
-            if (before.simulation() != null) {
-                return ApiResult.fail(422, "SIMULATED_TASK_FIXED_REWARD_REQUIRES_EDIT");
-            }
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_task", before.taskId()) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            BigDecimal nextMin = trusted.minReward() == null ? before.minReward() : trusted.minReward();
-            BigDecimal nextMax = trusted.maxReward() == null ? before.maxReward() : trusted.maxReward();
-            int nextVram = trusted.minVram() == null ? parseVram(before.minVram()) : trusted.minVram();
-            boolean nextEnabled = trusted.enabled() == null
-                    ? "active".equals(before.status()) && !"已 kill".equals(before.killInit())
-                    : trusted.enabled();
-            if (nextMin == null || nextMax == null || nextMin.compareTo(BigDecimal.ZERO) < 0
-                    || nextMax.compareTo(BigDecimal.ZERO) < 0 || nextMin.compareTo(nextMax) > 0) {
-                return ApiResult.fail(400, "TASK_REWARD_RANGE_INVALID");
-            }
-            if (!taskRewardPrecisionValid(nextMin) || !taskRewardPrecisionValid(nextMax)) {
-                return ApiResult.fail(422, "TASK_REWARD_PRECISION_INVALID");
-            }
-            if (nextVram < 0) {
-                return ApiResult.fail(400, "TASK_MIN_VRAM_INVALID");
-            }
-            String field = trusted.minReward() != null ? "minReward"
-                    : trusted.maxReward() != null ? "maxReward"
-                    : trusted.minVram() != null ? "minVRAM" : "enabled";
-            Object beforeValue = switch (field) {
-                case "minReward" -> before.minReward();
-                case "maxReward" -> before.maxReward();
-                case "minVRAM" -> parseVram(before.minVram());
-                default -> "active".equals(before.status()) && !"已 kill".equals(before.killInit());
-            };
-            Object afterValue = switch (field) {
-                case "minReward" -> nextMin;
-                case "maxReward" -> nextMax;
-                case "minVRAM" -> nextVram;
-                default -> nextEnabled;
-            };
-            if (String.valueOf(beforeValue).equals(String.valueOf(afterValue))) {
-                return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
-            }
-            if (e2TaskPricingAmplifiesFinancialOutflow(
-                    before.minReward(), before.maxReward(), parseVram(before.minVram()),
-                    "active".equals(before.status()) && !"已 kill".equals(before.killInit()),
-                    nextMin, nextMax, nextVram, nextEnabled)
-                    && coverageBelowRedline()) {
+            if (change.resumesDispatch() && e2TaskPricingCoverageBelowRedline()) {
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
-            DeviceTaskUpsertRequest write = new DeviceTaskUpsertRequest(
-                    before.name(), before.price(), before.unit(), before.requirement(), before.saturation(),
-                    nextEnabled ? "active" : "paused", before.taskClass(), before.model(), nextMin, nextMax,
-                    nextVram + "GB", nextEnabled ? "派发中" : "已 kill", trusted.reason(), trustedOperator);
-            LocalDateTime effectiveAt = LocalDateTime.now(clock);
-            catalogRepository.updateTask(before.taskId(), write, effectiveAt);
-            recordE2TaskPricingChange(trusted.taskClass(), field, beforeValue, afterValue,
-                    effectiveAt, trustedOperator, trusted.reason(), idempotencyKey);
-            return ApiResult.ok(detail("effectiveAt", effectiveAt, "taskPricing", e2TaskPricing().getData()));
+            return applyE2TaskPricing(change, trusted, idempotencyKey);
         });
     }
 
+    public record E2TaskPricingReview(AuditLockTarget target, String before, String after) {}
+
+    private record E2TaskPricingChange(
+            AuditLockTarget target, String taskClass, Map<String, Object> before, Map<String, Object> after,
+            DeviceTaskUpsertRequest taskWrite, boolean requiresApproval, boolean resumesDispatch,
+            boolean queueWasUnconfigured) {}
+
+    public ApiResult<E2TaskPricingReview> previewTaskPricingApproval(E2TaskPricingUpdateRequest request) {
+        var prepared = prepareE2TaskPricingApproval(request, null);
+        if (prepared.getCode() != 0) {
+            return ApiResult.fail(prepared.getCode(), prepared.getMessage());
+        }
+        E2TaskPricingChange change = prepared.getData();
+        String before = change.before().toString();
+        String after = change.after().toString();
+        if (before.length() > 128 || after.length() > 128) {
+            return ApiResult.fail(422, "E2_TASK_PRICING_PROPOSAL_INVALID");
+        }
+        return ApiResult.ok(new E2TaskPricingReview(change.target(), before, after));
+    }
+
+    public ApiResult<Map<String, Object>> executeApprovedTaskPricing(
+            String idempotencyKey, E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget) {
+        if (!holdsE2ApprovalLock(expectedTarget)) {
+            return ApiResult.fail(403, "E2_TASK_PRICING_APPROVAL_FORBIDDEN");
+        }
+        var prepared = prepareE2TaskPricingApproval(request, expectedTarget);
+        if (prepared.getCode() != 0) {
+            return ApiResult.fail(prepared.getCode(), prepared.getMessage());
+        }
+        return applyE2TaskPricing(prepared.getData(), trustedE2TaskPricingRequest(request), idempotencyKey);
+    }
+
+    private boolean holdsE2ApprovalLock(AuditLockTarget expectedTarget) {
+        String operationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId) || expectedTarget == null) return false;
+        var locks = lockMapper.selectActiveByTicketId(operationId);
+        return locks.size() == 1 && expectedTarget.equals(new AuditLockTarget(
+                locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId()));
+    }
+
+    private ApiResult<E2TaskPricingChange> prepareE2TaskPricingApproval(
+            E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget) {
+        if (request == null || !StringUtils.hasText(request.expectedRevision())) {
+            return ApiResult.fail(422, "E2_TASK_PRICING_REVISION_REQUIRED");
+        }
+        var prepared = prepareE2TaskPricing(trustedE2TaskPricingRequest(request), expectedTarget);
+        if (prepared.getCode() != 0) {
+            return prepared;
+        }
+        if (!prepared.getData().requiresApproval()) {
+            return ApiResult.fail(422, "E2_TASK_PRICING_APPROVAL_NOT_REQUIRED");
+        }
+        if (e2TaskPricingCoverageBelowRedline()) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        }
+        return prepared;
+    }
+
+    private E2TaskPricingUpdateRequest trustedE2TaskPricingRequest(E2TaskPricingUpdateRequest request) {
+        return new E2TaskPricingUpdateRequest(
+                normalizeUpper(request.taskClass()), request.minReward(), request.maxReward(), request.minVram(),
+                request.enabled(), request.queueSaturation(), normalizeText(request.reason()), operator(request.operator()),
+                request.expectedRevision());
+    }
+
+    private ApiResult<E2TaskPricingChange> prepareE2TaskPricing(
+            E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget) {
+        if (request.queueSaturation() != null) {
+            if (StringUtils.hasText(request.taskClass()) || request.minReward() != null || request.maxReward() != null
+                    || request.minVram() != null || request.enabled() != null) {
+                return ApiResult.fail(400, "E2_SINGLE_ACTION_REQUIRED");
+            }
+            BigDecimal next = request.queueSaturation().stripTrailingZeros();
+            if (next.signum() < 0 || next.compareTo(BigDecimal.ONE) > 0) {
+                return ApiResult.fail(400, "QUEUE_SATURATION_INVALID");
+            }
+            String queueConfig = configFacade.activeValueForUpdate(E2_QUEUE_SATURATION_KEY).orElse(null);
+            if (e2TaskPricingStale(request, expectedTarget, E2_QUEUE_PRICING_TARGET, e2QueueSaturationRevision(queueConfig))) {
+                return ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+            }
+            BigDecimal before = e2QueueSaturation(queueConfig);
+            int direction = next.compareTo(before);
+            if (direction == 0) {
+                return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
+            }
+            return ApiResult.ok(new E2TaskPricingChange(E2_QUEUE_PRICING_TARGET, "GLOBAL",
+                    Map.of("QUEUE_SATURATION", before.stripTrailingZeros()), Map.of("QUEUE_SATURATION", next), null,
+                    direction > 0, false, queueConfig == null));
+        }
+
+        if (!TASK_CLASSES.contains(request.taskClass())) {
+            return ApiResult.fail(400, "TASK_CLASS_INVALID");
+        }
+        int pricingFields = (request.minReward() == null ? 0 : 1)
+                + (request.maxReward() == null ? 0 : 1) + (request.minVram() == null ? 0 : 1);
+        if ((request.enabled() == null && pricingFields == 0) || (request.enabled() != null && pricingFields > 0)) {
+            return ApiResult.fail(400, "E2_SINGLE_ACTION_REQUIRED");
+        }
+        DeviceTaskView candidate = findE2TaskByClass(request.taskClass());
+        if (candidate == null) {
+            if (expectedTarget != null) {
+                return ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+            }
+            boolean simulatedClass = catalogRepository.pageTasks(new DeviceTaskQueryRequest(null, null, request.taskClass(), 1L, 500L))
+                    .getRecords().stream().anyMatch(task -> task.simulation() != null);
+            return ApiResult.fail(simulatedClass ? 422 : 404,
+                    simulatedClass ? "SIMULATED_TASK_FIXED_REWARD_REQUIRES_EDIT" : "TASK_CLASS_NOT_FOUND");
+        }
+        DeviceTaskView before = catalogRepository.findTaskForUpdate(candidate.taskId()).orElse(null);
+        if (before == null || !request.taskClass().equals(before.taskClass())) {
+            return ApiResult.fail(409, expectedTarget == null ? "TASK_CLASS_CHANGED" : "E2_TASK_PRICING_STALE");
+        }
+        if (before.simulation() != null) {
+            return expectedTarget == null ? ApiResult.fail(422, "SIMULATED_TASK_FIXED_REWARD_REQUIRES_EDIT")
+                    : ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+        }
+        AuditLockTarget target = new AuditLockTarget("E", E2_PRICING_LOCK_TYPE, before.taskId());
+        if (e2TaskPricingStale(request, expectedTarget, target, e2TaskPricingRevision(before))) {
+            return ApiResult.fail(409, "E2_TASK_PRICING_STALE");
+        }
+        if (lockMapper.countActiveByTarget("E", "device_task", before.taskId()) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+
+        int beforeVram = parseVram(before.minVram());
+        boolean beforeEnabled = e2TaskEnabled(before);
+        BigDecimal nextMin = request.minReward() == null ? before.minReward() : request.minReward();
+        BigDecimal nextMax = request.maxReward() == null ? before.maxReward() : request.maxReward();
+        int nextVram = request.minVram() == null ? beforeVram : request.minVram();
+        boolean nextEnabled = request.enabled() == null ? beforeEnabled : request.enabled();
+        if (nextMin == null || nextMax == null || nextMin.signum() < 0 || nextMax.signum() < 0 || nextMin.compareTo(nextMax) > 0) {
+            return ApiResult.fail(400, "TASK_REWARD_RANGE_INVALID");
+        }
+        if (!taskRewardPrecisionValid(nextMin) || !taskRewardPrecisionValid(nextMax)) {
+            return ApiResult.fail(422, "TASK_REWARD_PRECISION_INVALID");
+        }
+        if (nextVram < 0 || nextVram > 9999) {
+            return ApiResult.fail(400, "TASK_MIN_VRAM_INVALID");
+        }
+        Map<String, Object> beforeValues = e2TaskPricingValues(before);
+        Map<String, Object> afterValues = detail("minReward", nextMin.stripTrailingZeros(), "maxReward",
+                nextMax.stripTrailingZeros(), "minVRAM", nextVram, "enabled", nextEnabled);
+        beforeValues.entrySet().removeIf(entry -> e2PricingValueEquals(entry.getValue(), afterValues.get(entry.getKey())));
+        afterValues.keySet().retainAll(beforeValues.keySet());
+        if (afterValues.isEmpty()) {
+            return ApiResult.fail(409, "E2_VALUE_UNCHANGED");
+        }
+        boolean resumesDispatch = !beforeEnabled && nextEnabled;
+        boolean requiresApproval = !resumesDispatch && e2TaskPricingAmplifiesFinancialOutflow(
+                before.minReward(), before.maxReward(), beforeVram, beforeEnabled, nextMin, nextMax, nextVram, nextEnabled);
+        String nextStatus = request.enabled() == null ? before.status() : (nextEnabled ? "active" : "paused");
+        String nextKillInit = request.enabled() == null ? before.killInit() : (nextEnabled ? "派发中" : "已 kill");
+        DeviceTaskUpsertRequest write = new DeviceTaskUpsertRequest(
+                before.name(), before.price(), before.unit(), before.requirement(), before.saturation(), nextStatus,
+                before.taskClass(), before.model(), nextMin, nextMax, request.minVram() == null ? before.minVram() : nextVram + "GB",
+                nextKillInit, request.reason(), request.operator(),null,null,null,null,null,null,null,null,null);
+        return ApiResult.ok(new E2TaskPricingChange(target, request.taskClass(), beforeValues, afterValues,
+                write, requiresApproval, resumesDispatch, false));
+    }
+
+    private ApiResult<Map<String, Object>> applyE2TaskPricing(
+            E2TaskPricingChange change, E2TaskPricingUpdateRequest request, String idempotencyKey) {
+        LocalDateTime effectiveAt = LocalDateTime.now(clock);
+        if (change.taskWrite() == null) {
+            BigDecimal next = request.queueSaturation();
+            String value = next.stripTrailingZeros().toString();
+            String remark = "E2 locked teaser global saturation";
+            if (change.queueWasUnconfigured()) {
+                // A missing active row cannot be fenced by SELECT FOR UPDATE at READ_COMMITTED.
+                if (!configFacade.upsertAdminValueIfUnconfigured(E2_QUEUE_SATURATION_KEY, value, "DECIMAL", "E2", remark)) {
+                    throw new BizException(409, "E2_TASK_PRICING_STALE");
+                }
+            } else {
+                configFacade.upsertAdminValue(E2_QUEUE_SATURATION_KEY, value, "DECIMAL", "E2", remark);
+            }
+            BigDecimal saved = configFacade.activeValueForUpdate(E2_QUEUE_SATURATION_KEY).map(this::parseDecimalOrNull).orElse(null);
+            if (!e2PricingValueEquals(next, saved)) {
+                throw new BizException(409, "E2_TASK_PRICING_WRITE_CONFLICT");
+            }
+        } else {
+            DeviceTaskView saved = catalogRepository.updateTask(change.target().id(), change.taskWrite(), effectiveAt)
+                    .orElseThrow(() -> new BizException(409, "E2_TASK_PRICING_WRITE_CONFLICT"));
+            Map<String, Object> savedValues = e2TaskPricingValues(saved);
+            if (change.after().entrySet().stream().anyMatch(entry -> !e2PricingValueEquals(entry.getValue(), savedValues.get(entry.getKey())))) {
+                throw new BizException(409, "E2_TASK_PRICING_WRITE_CONFLICT");
+            }
+        }
+        recordE2TaskPricingChange(change, effectiveAt, request, idempotencyKey);
+        return ApiResult.ok(detail("effectiveAt", effectiveAt, "taskPricing", e2TaskPricingForAdmin().getData()));
+    }
+
+    private Map<String, Object> e2TaskPricingValues(DeviceTaskView task) {
+        return detail("minReward", task.minReward(), "maxReward", task.maxReward(),
+                "minVRAM", parseVram(task.minVram()), "enabled", e2TaskEnabled(task));
+    }
+
+    static boolean e2TaskEnabled(DeviceTaskView task) {
+        return "active".equals(task.status()) && !"已 kill".equals(task.killInit());
+    }
+
+    private boolean e2PricingValueEquals(Object left, Object right) {
+        return left instanceof BigDecimal a && right instanceof BigDecimal b ? a.compareTo(b) == 0 : Objects.equals(left, right);
+    }
+
+    private BigDecimal e2QueueSaturation(String raw) {
+        BigDecimal value = parseDecimalOrNull(raw);
+        return value != null && value.signum() >= 0 && value.compareTo(BigDecimal.ONE) <= 0 ? value : new BigDecimal("0.35");
+    }
+
+    private boolean e2TaskPricingStale(E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget,
+            AuditLockTarget currentTarget, String currentRevision) {
+        return (expectedTarget != null && !expectedTarget.equals(currentTarget))
+                || (request.expectedRevision() != null && !request.expectedRevision().equals(currentRevision));
+    }
+
+    private String e2TaskPricingRevision(DeviceTaskView task) {
+        return e1RequestHash("E2_TASK_PRICING_REVISION", task.taskId(), detail(
+                "taskClass", task.taskClass(), "minReward", task.minReward(), "maxReward", task.maxReward(),
+                "minVram", task.minVram(), "status", task.status(), "killInit", task.killInit(), "updatedAt", task.updatedAt()));
+    }
+
+    private String e2QueueSaturationRevision(String raw) {
+        return e1RequestHash("E2_TASK_PRICING_REVISION", E2_QUEUE_PRICING_TARGET.id(), detail("configuredValue", raw));
+    }
+
+    private boolean e2TaskPricingCoverageBelowRedline() {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        return coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
+                || coverage.redlinePct() == null || coverage.redlineBreached();
+    }
+
     public ApiResult<Map<String, Object>> e2PhoneTiers() {
+        return e2PhoneTiers(true);
+    }
+
+    public ApiResult<Map<String, Object>> e2PhoneTiers(boolean includeBindingDetails) {
         List<DevicePhoneTierRewardView> phoneTiers = catalogRepository.listPhoneTierRewards();
         List<OnboardingYieldComparisonView> yieldComparisons = catalogRepository.listOnboardingYieldComparisons();
         List<Map<String, Object>> rows = phoneTiers.stream()
@@ -2187,11 +2617,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         "revision", tier.revision(), "effectiveAt", tier.updatedAt()))
                 .toList();
         List<Map<String, Object>> comparisons = yieldComparisons.stream()
-                .map(row -> detail("configKey", row.configKey(), "label", row.label(),
-                        "dailyUsdt", row.dailyUsdt(), "dailyNex", row.dailyNex(),
-                        "sortOrder", row.sortOrder(), "revision", row.revision(),
-                        "updatedAt", row.updatedAt()))
-                .toList();
+                .filter(row -> includeBindingDetails || row.dailyUsdt() != null)
+                .map(row -> {
+                    var fields = detail("configKey", row.configKey(), "label", row.label(),
+                            "dailyUsdt", row.dailyUsdt(), "dailyNex", row.dailyNex(),
+                            "sortOrder", row.sortOrder(), "revision", row.revision(), "updatedAt", row.updatedAt());
+                    if (includeBindingDetails) {
+                        fields.put("productNo", row.productNo());
+                        fields.put("boundProductName", row.boundProductName());
+                        fields.put("bindingRevision", row.bindingRevision());
+                    }
+                    return fields;
+                }).toList();
         long configRevision = yieldComparisons.stream()
                 .map(OnboardingYieldComparisonView::revision)
                 .filter(java.util.Objects::nonNull)
@@ -2224,6 +2661,62 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         // Comparison values now come from E1 products and the phone T3 configuration.
         // Keep the legacy route explicit for older clients rather than accepting no-op writes.
         return ApiResult.fail(409, "ONBOARDING_COMPARISON_DERIVED_FROM_SOURCE");
+    }
+
+    public record YieldSkuReview(String key, long revision, String previousSku, DeviceSkuView product,
+                                 String beforeValue, String afterValue) {}
+
+    public YieldSkuReview reviewOnboardingYieldSku(Map<String, Object> params) {
+        String key = str(params,"configKey");
+        Long revision = longVal(params,"expectedRevision");
+        String sku = str(params,"productNo");
+        if (key == null || !Set.of("s1","pro","rack").contains(key) || revision == null || revision < 1
+                || sku == null || !sku.matches("[A-Za-z0-9._-]{2,64}"))
+            throw new BizException(422,"ONBOARDING_COMPARISON_SKU_INVALID");
+        var existing = catalogRepository.findOnboardingYieldComparison(key)
+                .orElseThrow(() -> new BizException(404,"ONBOARDING_COMPARISON_NOT_FOUND"));
+        if (!Objects.equals(revision, existing.bindingRevision()))
+            throw new BizException(409,"ONBOARDING_COMPARISON_VERSION_CONFLICT");
+        if (sku.equals(existing.productNo()))
+            throw new BizException(422,"ONBOARDING_COMPARISON_SKU_UNCHANGED");
+        DeviceSkuView product = catalogRepository.findSku(sku)
+                .orElseThrow(() -> new BizException(422,"ONBOARDING_COMPARISON_SKU_UNAVAILABLE"));
+        if (!catalogRepository.onboardingYieldSkuAvailable(sku))
+            throw new BizException(422,"ONBOARDING_COMPARISON_SKU_UNAVAILABLE");
+        String previousSku = existing.productNo() == null || existing.productNo().isBlank()
+                ? null : existing.productNo().trim();
+        DeviceSkuView previousProduct = previousSku == null ? null
+                : catalogRepository.findSku(previousSku).orElse(null);
+        boolean previousAvailable = previousProduct != null
+                && catalogRepository.onboardingYieldSkuAvailable(previousSku);
+        String beforeValue = previousSku == null ? "未绑定"
+                : previousProduct == null ? "原绑定记录缺失 · " + previousSku
+                : onboardingYieldSnapshot(previousProduct) + (previousAvailable ? "" : " · 已不可用");
+        return new YieldSkuReview(key,revision,previousSku,product,
+                beforeValue,onboardingYieldSnapshot(product));
+    }
+
+    private String onboardingYieldSnapshot(DeviceSkuView product) {
+        String name = product.name() == null || product.name().isBlank() ? "未提供" : product.name().trim();
+        String sku = product.skuId() == null || product.skuId().isBlank() ? "未提供" : product.skuId().trim();
+        String usdt = product.dailyEarn() == null ? "未提供" : product.dailyEarn().toPlainString();
+        String nex = product.dailyEarnNex() == null ? "未提供" : product.dailyEarnNex().toPlainString();
+        return name + " · " + sku + " · " + usdt + " USDT/天 · " + nex + " UVT/天";
+    }
+
+    private ApiResult<Map<String, Object>> bindOnboardingYieldSku(Map<String, Object> params,
+            String idem, String reason, String operator) {
+        if (!A2ReplayContext.isReplaying()) return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
+        return e1Idempotent("E6_ONBOARDING_YIELD_SKU",idem,str(params,"configKey"),params,() -> {
+            var review = reviewOnboardingYieldSku(params);
+            if (!catalogRepository.bindOnboardingYieldSku(review.key(),review.product().skuId(),review.revision(),LocalDateTime.now(clock)))
+                return ApiResult.fail(409,"ONBOARDING_COMPARISON_VERSION_CONFLICT");
+            auditRequired("E6_ONBOARDING_YIELD_SKU_CHANGED","ONBOARDING_YIELD_COMPARISON",review.key(),operator,
+                    detail("before",review.previousSku(),"after",review.product().skuId(),
+                            "beforeSnapshot",review.beforeValue(),"afterSnapshot",review.afterValue(),
+                            "reason",reason,"idempotencyKey",idem));
+            return ApiResult.ok(detail("configKey",review.key(),"productNo",review.product().skuId(),"bindingRevision",review.revision()+1));
+        });
     }
 
     @Transactional
@@ -2554,11 +3047,53 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     public ApiResult<Map<String, Object>> e3Overview() {
         Map<String, Object> response = new LinkedHashMap<>();
+        Map<String, String> visibleConfig = new LinkedHashMap<>(deviceRepository.e3Config());
+        visibleConfig.keySet().removeAll(E3_RETIRED_CONFIG_KEYS);
+        // BUG-522: 存储是稳定代码，后台沿用既有六档中文名（PC 下拉与展示不变）。
+        visibleConfig.computeIfPresent("eligibility",
+                (key, value) -> ffdd.opsconsole.device.domain.TradeinEligibility.labelOf(value));
         response.put("domain", "E3");
-        response.put("config", deviceRepository.e3Config());
+        response.put("config", visibleConfig);
         response.put("restoreEndpoint", "POST /api/admin/devices/{id}/restore");
         response.put("sources", List.of("nx_compute_e3_config", "nx_tradein_application", "nx_trade_in_order", "nx_user_device"));
         return ApiResult.ok(response);
+    }
+
+    /** Classifies the complete normalized batch, including dependent fields, without writing it. */
+    public boolean e3ConfigBatchAmplifies(Map<String, Object> rawValues) {
+        try {
+            Map<String, String> before = new LinkedHashMap<>(deviceRepository.e3Config());
+            Map<String, String> candidate = new LinkedHashMap<>(before);
+            Map<String, String> normalized = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : rawValues.entrySet()) {
+                String key = normalizeE3Key(entry.getKey());
+                String value = normalizeE3Value(key, entry.getValue() == null ? null : String.valueOf(entry.getValue())).value();
+                normalized.put(key, value);
+                candidate.put(key, value);
+            }
+            validateE3Candidate(candidate);
+            Set<String> changedKeys = new java.util.LinkedHashSet<>();
+            normalized.forEach((key, value) -> {
+                if (!value.equals(before.get(key))) changedKeys.add(key);
+            });
+            return e3AmplifiesFinancialOutflow(before, candidate, changedKeys);
+        } catch (IllegalArgumentException invalid) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, invalid.getMessage());
+        }
+    }
+
+    /** A2 classifies the same normalized candidate that the E3 writer checks at execution. */
+    public boolean e3ConfigAmplifies(String rawKey, String rawValue) {
+        try {
+            String key = normalizeE3Key(rawKey);
+            Map<String, String> before = deviceRepository.e3Config();
+            Map<String, String> candidate = new LinkedHashMap<>(before);
+            candidate.put(key, normalizeE3Value(key, rawValue).value());
+            validateE3Candidate(candidate);
+            return e3AmplifiesFinancialOutflow(before, candidate, Set.of(key));
+        } catch (IllegalArgumentException invalid) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, invalid.getMessage());
+        }
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -2569,7 +3104,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         String key;
         try {
-            key = normalizeE3Key(request.key());
+            key = normalizeE3KeyForIdentity(request.key());
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
@@ -2577,6 +3112,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         E3ConfigUpdateRequest trusted = new E3ConfigUpdateRequest(
                 key, request.value(), request.reason().trim(), trustedOperator);
         return deviceIdempotent("E3_CONFIG_UPDATE", idempotencyKey, key, trusted, () -> {
+            if (E3_RETIRED_CONFIG_KEYS.contains(key)) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E3_CONFIG_KEY_RETIRED");
+            }
             if (!A2ReplayContext.isReplaying()
                     && lockMapper.countActiveByTarget("E", "device_e3_config", key) > 0) {
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -2599,6 +3137,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
+            simulationPolicies.validateTargetRewards(before,candidate);
             deviceRepository.upsertE3Config(key, value.value(), value.valueType(), trustedOperator);
             simulationPolicies.recordE3(LocalDateTime.now(clock));
             Map<String, String> oldValues = new LinkedHashMap<>();
@@ -2657,6 +3196,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
+        simulationPolicies.validateTargetRewards(before,candidate);
         String actor = operator(operator);
         changed.forEach((key, value) -> deviceRepository.upsertE3Config(key, value.value(), value.valueType(), actor));
         simulationPolicies.recordE3(LocalDateTime.now(clock));
@@ -2673,12 +3213,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     public ApiResult<DeviceTradeinOverviewView> e3TradeinOverview() {
         Map<String, String> config = deviceRepository.e3Config();
-        int cliffMonth = parsePositiveInt(config.get("stageMidEnd"), 0) + 1;
+        int earlyEnd = parsePositiveInt(config.get("stageEarlyEnd"), 0);
+        int midEnd = parsePositiveInt(config.get("stageMidEnd"), 0);
         LocalDateTime now = LocalDateTime.now(clock);
         return ApiResult.ok(deviceRepository.e3TradeinOverview(
                 now.minusHours(24),
                 ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now).withDayOfMonth(1)),
-                cliffMonth));
+                earlyEnd,
+                midEnd));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -2686,6 +3228,23 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             String operation,
             String idempotencyKey,
             DeviceTradeinActionRequest request) {
+        return executeTradeinAction(operation, idempotencyKey, request, null);
+    }
+
+    /** Direct E3 controller entry: bind the receipt to the E3 reader without changing the writer scope. */
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<DeviceOpsView> executeTradeinActionBound(
+            String operation,
+            String idempotencyKey,
+            DeviceTradeinActionRequest request) {
+        return executeTradeinAction(operation, idempotencyKey, request, "device_e3_read");
+    }
+
+    private ApiResult<DeviceOpsView> executeTradeinAction(
+            String operation,
+            String idempotencyKey,
+            DeviceTradeinActionRequest request,
+            String readAuthority) {
         ApiResult<DeviceOpsView> guard = requireTradeinCommand(operation, idempotencyKey, request);
         if (guard != null) {
             return guard;
@@ -2694,19 +3253,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         String trustedOperator = operator(request.operator());
         DeviceTradeinActionRequest trusted = new DeviceTradeinActionRequest(
                 request.deviceId(), request.reason().trim(), trustedOperator);
-        return deviceIdempotent(
-                "E3_TRADEIN_" + normalizedOperation.toUpperCase(Locale.ROOT),
-                idempotencyKey,
-                String.valueOf(request.deviceId()),
-                trusted,
-                () -> {
+        String scope = "E3_TRADEIN_" + normalizedOperation.toUpperCase(Locale.ROOT);
+        java.util.function.Supplier<TradeinActionResult> action = () -> {
                     if (!A2ReplayContext.isReplaying()
                             && lockMapper.countActiveByTarget("E", "device", String.valueOf(trusted.deviceId())) > 0) {
-                        return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+                        return new TradeinActionResult(409, "OBJECT_LOCKED_BY_A2", null);
                     }
                     DeviceOpsView before = deviceRepository.findDevice(trusted.deviceId()).orElse(null);
                     if (before == null) {
-                        return ApiResult.fail(404, "DEVICE_NOT_FOUND");
+                        return new TradeinActionResult(404, "DEVICE_NOT_FOUND", null);
                     }
                     LocalDateTime now = LocalDateTime.now(clock);
                     String tradeInNo = "TI-" + now.format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
@@ -2715,8 +3270,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                             .executeTradeinAction(normalizedOperation, trusted.deviceId(), tradeInNo, now)
                             .orElse(null);
                     if (updated == null) {
-                        return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
-                                OpsErrorCode.INVALID_STATE_TRANSITION.name());
+                        return new TradeinActionResult(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
+                                OpsErrorCode.INVALID_STATE_TRANSITION.name(), null);
                     }
                     Map<String, Object> event = detail(
                             "operation", normalizedOperation,
@@ -2740,8 +3295,34 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                                     "tradeInNo", "replace".equals(normalizedOperation) ? tradeInNo : null,
                                     "reason", trusted.reason(),
                                     "idempotencyKey", idempotencyKey.trim()));
-                    return ApiResult.ok(updated);
-                });
+                    return new TradeinActionResult(0, "success", updated);
+                };
+        if (readAuthority == null) {
+            return idempotencyService.execute(
+                    scope,
+                    idempotencyKey.trim(),
+                    e1RequestHash(scope, String.valueOf(request.deviceId()), trusted),
+                    TradeinActionResult.class,
+                    action);
+        }
+        return idempotencyService.executeBound(
+                scope,
+                idempotencyKey.trim(),
+                e1RequestHash(scope, String.valueOf(request.deviceId()), trusted),
+                TradeinActionResult.class,
+                readAuthority,
+                String.valueOf(request.deviceId()),
+                action);
+    }
+
+    /** Keeps the existing receipt JSON while giving Jackson the data type needed by the C2 ownership check. */
+    private static final class TradeinActionResult extends ApiResult<DeviceOpsView> {
+        private TradeinActionResult() {
+        }
+
+        private TradeinActionResult(int code, String message, DeviceOpsView data) {
+            super(code, message, data);
+        }
     }
 
     /** C2 user-detail alias. The user path is an authorization boundary, not a display hint. */
@@ -2761,7 +3342,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!userId.equals(owned.userId())) {
             return ApiResult.fail(403, "C2_DEVICE_USER_MISMATCH");
         }
-        ApiResult<DeviceOpsView> result = executeTradeinAction(operation, idempotencyKey, request);
+        ApiResult<DeviceOpsView> result = executeTradeinAction(operation, idempotencyKey, request, "user_c2_read");
         if (result.getCode() == 0 && result.getData() != null && !userId.equals(result.getData().userId())) {
             throw new IllegalStateException("C2_DEVICE_OWNERSHIP_CHANGED");
         }
@@ -2783,6 +3364,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (device == null) {
             return ApiResult.fail(404, "DEVICE_NOT_FOUND");
         }
+        // Restore accepts a RECYCLED row, but only while it is still this user's device: a trade-in
+        // leaves ownership RECYCLED on the same row, and restoring it would make it operable again.
+        if (!"OWNED".equals(deviceRepository.ownershipStatus(deviceId).orElse(""))) {
+            return ApiResult.fail(409, "DEVICE_OWNERSHIP_NOT_OWNED");
+        }
         if (!canRestore(device)) {
             return ApiResult.fail(
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
@@ -2799,185 +3385,17 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return ApiResult.ok(restored);
     }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<DeviceDatacenterView> createDatacenter(String idempotencyKey, DeviceDatacenterUpsertRequest request) {
-        ApiResult<DeviceDatacenterView> guard = requireDatacenterCommand(idempotencyKey, request, true);
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(request.dcLocation());
-        String trustedOperator = operator(request.operator());
-        DeviceDatacenterUpsertRequest source = normalizeDatacenterRequest(dc, request);
-        DeviceDatacenterUpsertRequest trusted = new DeviceDatacenterUpsertRequest(
-                source.dcLocation(), source.regionLabel(), source.status(), source.sortOrder(),
-                request.reason().trim(), trustedOperator, source.location(), source.displayName());
-        return deviceIdempotent("E5_DATACENTER_CREATE", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            if (deviceRepository.findDatacenter(dc).isPresent()) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_ALREADY_EXISTS");
-            }
-            DeviceDatacenterView created = deviceRepository.createDatacenter(
-                    trusted, trustedOperator, LocalDateTime.now(clock));
-            recordE5DatacenterEvent("admin.datacenter_created", created, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail("operation", "create"));
-            return ApiResult.ok(created);
-        });
-    }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<DeviceDatacenterView> updateDatacenter(String dcLocation, String idempotencyKey, DeviceDatacenterUpsertRequest request) {
-        ApiResult<DeviceDatacenterView> guard = requireDatacenterCommand(idempotencyKey, request, false);
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(dcLocation);
-        String nextDc = StringUtils.hasText(request.dcLocation()) ? normalizeDc(request.dcLocation()) : dc;
-        String trustedOperator = operator(request.operator());
-        DeviceDatacenterUpsertRequest source = normalizeDatacenterRequest(nextDc, request);
-        DeviceDatacenterUpsertRequest trusted = new DeviceDatacenterUpsertRequest(
-                source.dcLocation(), source.regionLabel(), source.status(), source.sortOrder(),
-                request.reason().trim(), trustedOperator, source.location(), source.displayName());
-        return deviceIdempotent("E5_DATACENTER_UPDATE", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
-            if (before == null) {
-                return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
-            }
-            if (!dc.equals(nextDc) && deviceRepository.findDatacenter(nextDc).isPresent()) {
-                return ApiResult.fail(409, "DATACENTER_ID_ALREADY_EXISTS");
-            }
-            DeviceDatacenterView updated = deviceRepository
-                    .updateDatacenter(dc, trusted, trustedOperator, LocalDateTime.now(clock)).orElse(before);
-            recordE5DatacenterEvent("admin.datacenter_updated", updated, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail(
-                            "beforeDcLocation", dc,
-                            "beforeDisplayName", before.displayName(),
-                            "beforeLocation", before.location(),
-                            "beforeStatus", before.status(),
-                            "afterStatus", updated.status(),
-                            "operation", "update"));
-            return ApiResult.ok(updated);
-        });
-    }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> deleteDatacenter(String dcLocation, String idempotencyKey, DatacenterOpsRequest request) {
-        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        ApiResult<Map<String, Object>> reasonGuard = requireE5Command(idempotencyKey, request.reason());
-        if (reasonGuard != null) {
-            return reasonGuard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(dcLocation);
-        String trustedOperator = operator(request.operator());
-        DatacenterOpsRequest trusted = new DatacenterOpsRequest(request.reason().trim(), trustedOperator);
-        return deviceIdempotent("E5_DATACENTER_DELETE", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
-            if (before == null) {
-                return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
-            }
-            // 跨域硬保护:仍有设备/待履约订单/SKU 引用时拒绝删除,并回具体计数。
-            DatacenterReferenceCount refs = deviceRepository.countDatacenterReferences(dc);
-            if (refs.hasAny()) {
-                return ApiResult.fail(409, "DATACENTER_HAS_REFERENCES", detail(
-                        "dcLocation", dc,
-                        "deviceCount", refs.devices(),
-                        "pendingOrderCount", refs.pendingOrders(),
-                        "skuCount", refs.skus()));
-            }
-            if (!deviceRepository.softDeleteDatacenter(dc, trustedOperator, LocalDateTime.now(clock))) {
-                return ApiResult.fail(409, "DATACENTER_DELETE_CONFLICT");
-            }
-            // 同步设备表 dc_location(置空防悬挂/笛儿)与运营状态行(软删)。
-            deviceRepository.syncDatacenterReferencesOnDelete(dc, trustedOperator, LocalDateTime.now(clock));
-            recordE5DatacenterEvent("admin.datacenter_deleted", before, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail("operation", "delete"));
-            return ApiResult.ok(detail("dcLocation", dc, "deleted", true));
-        });
-    }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> pauseDatacenter(String dcLocation, String idempotencyKey, DatacenterOpsRequest request) {
-        ApiResult<Map<String, Object>> guard = requireE5Command(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(dcLocation);
-        String trustedOperator = operator(request.operator());
-        DatacenterOpsRequest trusted = new DatacenterOpsRequest(request.reason().trim(), trustedOperator);
-        return deviceIdempotent("E5_DATACENTER_PAUSE", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
-            if (before == null) {
-                return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
-            }
-            deviceRepository.pauseDatacenter(dc, trusted.reason(), trustedOperator, LocalDateTime.now(clock));
-            recordE5DatacenterEvent("admin.datacenter_updated", before, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail("operation", "pause"));
-            return overview();
-        });
-    }
 
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> resumeDatacenter(String dcLocation, String idempotencyKey, DatacenterOpsRequest request) {
-        ApiResult<Map<String, Object>> guard = requireE5Command(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
-        }
-        if (!A2ReplayContext.isReplaying()) {
-            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
-        }
-        String dc = normalizeDc(dcLocation);
-        String trustedOperator = operator(request.operator());
-        DatacenterOpsRequest trusted = new DatacenterOpsRequest(request.reason().trim(), trustedOperator);
-        return deviceIdempotent("E5_DATACENTER_RESUME", idempotencyKey, dc, trusted, () -> {
-            if (!A2ReplayContext.isReplaying()
-                    && lockMapper.countActiveByTarget("E", "device_datacenter", dc) > 0) {
-                return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-            }
-            DeviceDatacenterView before = deviceRepository.findDatacenter(dc).orElse(null);
-            if (before == null) {
-                return ApiResult.fail(404, "DATACENTER_NOT_FOUND");
-            }
-            deviceRepository.resumeDatacenter(dc, trustedOperator, LocalDateTime.now(clock));
-            recordE5DatacenterEvent("admin.datacenter_updated", before, trustedOperator,
-                    trusted.reason(), idempotencyKey, detail("operation", "resume"));
-            return overview();
-        });
-    }
 
     private boolean canRestore(DeviceOpsView device) {
         String status = device.status() == null ? "" : device.status().trim().toUpperCase(Locale.ROOT);
+        // findDevice projects ownership_status=UNBOUND into simState; recycling an already
+        // unbound device leaves raw status RECYCLED while ownership remains UNBOUND.
         return RESTORABLE_STATUSES.contains(status)
-                || Integer.valueOf(1).equals(device.pendingDeactivate())
-                || device.deactivatedAt() != null;
+                && !"UNBOUND".equalsIgnoreCase(device.simState());
     }
 
     private ApiResult<Map<String, Object>> requireCommand(String idempotencyKey, String reason) {
@@ -2989,6 +3407,31 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         return null;
     }
+
+    /** Server-read snapshot for E5 proposal display; no client-supplied before value is trusted. */
+    public E5ProposalSnapshot e5ProposalSnapshot(String operation, Long deviceId) {
+        if (deviceId == null || deviceId <= 0) {
+            throw new BizException(422, "DEVICE_ID_REQUIRED");
+        }
+        DeviceOpsView device = deviceRepository.findDevice(deviceId).orElse(null);
+        if (device == null) {
+            throw new BizException(404, "DEVICE_NOT_FOUND");
+        }
+        String after;
+        if ("e5_device_unbind".equals(operation)) {
+            after = "UNBOUND";
+        } else if ("e5_device_force_activate".equals(operation)) {
+            after = deviceRepository.e5ActivationTargetStatus(deviceId);
+        } else {
+            throw new BizException(422, "E5_PROPOSAL_OPERATION_INVALID");
+        }
+        if (after == null) {
+            throw new BizException(404, "DEVICE_NOT_FOUND");
+        }
+        return new E5ProposalSnapshot(device.status(), after);
+    }
+
+    public record E5ProposalSnapshot(String beforeStatus, String afterStatus) { }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<DeviceOpsView> activateE5Device(
@@ -3013,9 +3456,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (before == null) {
                 return ApiResult.fail(404, "DEVICE_NOT_FOUND");
             }
+            // A trade-in/recycle writes ownership RECYCLED and an unbind writes UNBOUND; such a device
+            // is no longer this user's, so putting it back into service would hand back what was given up.
+            if (!"OWNED".equals(deviceRepository.ownershipStatus(deviceId).orElse(""))) {
+                return ApiResult.fail(409, "DEVICE_OWNERSHIP_NOT_OWNED");
+            }
             String status = normalizeExact(before.status()).toUpperCase(Locale.ROOT);
             Set<String> allowed = force
-                    ? Set.of("INVENTORY", "DEACTIVATED", "RECYCLED", "INACTIVE", "RETIRED", "UNBOUND")
+                    ? Set.of("INVENTORY", "DEACTIVATED", "INACTIVE", "UNBOUND")
                     : Set.of("INVENTORY");
             if (!allowed.contains(status)) {
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
@@ -3102,11 +3550,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             int affectedRows = pause
                     ? deviceRepository.pauseDevicesByUser(trusted.userId(), trusted.reason(), LocalDateTime.now(clock))
-                    : deviceRepository.resumeDevicesByUser(trusted.userId(), LocalDateTime.now(clock));
+                    : deviceRepository.resumeDevicesByUser(trusted.userId(), deviceIds, LocalDateTime.now(clock));
+            if(pause)simulationWakes.pause(trusted.userId(),null,LocalDateTime.now(clock));
+            else simulationWakes.resume(trusted.userId(),null,LocalDateTime.now(clock));
             if (affectedRows <= 0) {
                 throw new BizException(409, "E5_BATCH_STATE_CHANGED");
             }
-            int changed = deviceIds.size();
+            deviceRepository.syncSimulatedPause(trusted.userId(), deviceIds, pause, LocalDateTime.now(clock));
+            // The resume candidate list excludes system pauses, so affected rows are exactly the
+            // operator pauses this command cleared; pause keeps its existing candidate count.
+            int changed = pause ? deviceIds.size() : affectedRows;
             String eventType = pause ? "admin.device_paused" : "admin.device_resumed";
             Map<String, Object> payload = detail(
                     "user_id", trusted.userId(), "device_ids", deviceIds, "scope", "batch",
@@ -3135,22 +3588,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         "reason", reason, "idempotencyKey", idempotencyKey.trim()));
     }
 
-    private void recordE5DatacenterEvent(
-            String eventType, DeviceDatacenterView datacenter, String trustedOperator,
-            String reason, String idempotencyKey, Map<String, Object> extraDetail) {
-        Map<String, Object> payload = detail(
-                "id", datacenter.dcLocation(), "display_name", datacenter.displayName(),
-                "operator", trustedOperator, "reason", reason, "ts", clock.millis());
-        outboxService.publish("E5_DATACENTER", datacenter.dcLocation(), eventType, payload);
-        Map<String, Object> auditDetail = detail(
-                "dcLocation", datacenter.dcLocation(), "location", datacenter.location(),
-                "displayName", datacenter.displayName(), "reason", reason,
-                "idempotencyKey", idempotencyKey.trim());
-        if (extraDetail != null) {
-            auditDetail.putAll(extraDetail);
-        }
-        auditRequired(eventType, "DEVICE_DATACENTER", datacenter.dcLocation(), trustedOperator, auditDetail);
-    }
 
     private ApiResult<DeviceOpsView> requireE5DeviceCommand(
             Long deviceId, String idempotencyKey, DeviceE5ActionRequest request) {
@@ -3203,31 +3640,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return null;
     }
 
-    private ApiResult<DeviceDatacenterView> requireDatacenterCommand(String idempotencyKey, DeviceDatacenterUpsertRequest request, boolean create) {
-        ApiResult<Map<String, Object>> command = requireE5Command(idempotencyKey, request == null ? null : request.reason());
-        if (command != null) {
-            return ApiResult.fail(command.getCode(), command.getMessage());
-        }
-        if (request == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_REQUEST_REQUIRED");
-        }
-        if (create && !StringUtils.hasText(request.dcLocation())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_LOCATION_REQUIRED");
-        }
-        if (!StringUtils.hasText(request.regionLabel())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_REGION_LABEL_REQUIRED");
-        }
-        if (!StringUtils.hasText(request.location())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_LOCATION_NAME_REQUIRED");
-        }
-        if (!StringUtils.hasText(request.displayName())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_DISPLAY_NAME_REQUIRED");
-        }
-        if (normalizeDatacenterStatus(request.status()) == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "DATACENTER_STATUS_INVALID");
-        }
-        return null;
-    }
 
     private SkuRevision parseSkuRevision(String raw) {
         if (!StringUtils.hasText(raw)) {
@@ -3243,6 +3655,67 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private record SkuRevision(LocalDateTime value, String error) { }
+
+    private static void requireStoreSkuSeries(String seriesCode, String productType) {
+        if (!StringUtils.hasText(seriesCode)) throw new BizException(422, "SKU_SERIES_REQUIRED");
+        if (!ProductSeries.valid(seriesCode)) throw new BizException(422, "SKU_SERIES_INVALID");
+        boolean share = "SHARE".equals(productType) || "CLOUD_SHARE".equals(productType);
+        if (share != "CLOUD_SHARE".equals(seriesCode)) throw new BizException(422, "SKU_SERIES_TYPE_MISMATCH");
+    }
+
+    private static boolean sameAmount(BigDecimal a,BigDecimal b) { return a==null?b==null:b!=null && a.compareTo(b)==0; }
+    private DeviceSkuUpsertRequest monthlyTargetRequest(DeviceSkuUpsertRequest request,DeviceSkuView before,boolean approval) {
+        if(request==null)return null;
+        String key=before==null?normalizeSkuId(request.skuId(),request.name()):before.skuId();
+        // Existing product_type is retained by catalog updates; new products derive it from tier.
+        String productType=before==null ? ("Share".equals(normalizeExact(request.tier())) ? "SHARE" : "DEVICE") : before.productType();
+        boolean listing="on".equals(normalizeSkuStatus(request.status())) && (before==null || !"on".equals(before.status()));
+        String series = request.seriesCode() == null && before != null ? before.seriesCode() : request.seriesCode();
+        requireStoreSkuSeries(series, productType);
+        if (before != null && before.seriesLocked() && !Objects.equals(before.seriesCode(), series))
+            throw new BizException(409, "SKU_SERIES_LOCKED");
+        boolean clear=Boolean.TRUE.equals(request.clearMonthlyTarget());
+        BigDecimal target=clear?null:request.monthlyTargetUsdt()!=null?request.monthlyTargetUsdt():before==null?null:before.monthlyTargetUsdt();
+        BigDecimal band=clear?null:request.monthlyTargetBandPct()!=null?request.monthlyTargetBandPct():before==null?null:before.monthlyTargetBandPct();
+        // Legacy models can round-trip their stored target during ordinary maintenance.
+        boolean targetChanged=before==null || !sameAmount(before.monthlyTargetUsdt(),target)
+                || !sameAmount(before.monthlyTargetBandPct(),band);
+        MonthlyTargetProjection.validate(series,request.monthlyTargetUsdt(),request.monthlyTargetBandPct(),request.clearMonthlyTarget(),listing || targetChanged);
+        if((target==null)!=(band==null))throw new BizException(422,"MONTHLY_TARGET_PAIR_REQUIRED");
+        var pools=simulationPolicies.writePools(key,request.allowedPoolCodes(),before==null?List.of():before.allowedPoolCodes());
+        boolean scopeChanged=before==null || !new java.util.HashSet<>(pools).equals(new java.util.HashSet<>(before.allowedPoolCodes()));
+        boolean legacyOnSaleMaintenance=before!=null && "on".equals(before.status())
+                && !listing && !targetChanged && !scopeChanged
+                && !ProductSeries.valid(series);
+        boolean publishing="on".equals(request.status()) && !legacyOnSaleMaintenance;
+        simulationPolicies.validateProductScope(key,series,pools,!scopeChanged && !listing,target,band,publishing,clear);
+        if (request.datacenter() != null && request.datacenter().length() > 128) {
+            throw new BizException(422, "SKU_DATACENTER_INVALID");
+        }
+        if(clear && ("Share".equals(request.tier())
+                ?request.shareYieldMin()==null || request.shareYieldMax()==null || request.shareYieldMin().signum()<0 || request.shareYieldMax().compareTo(request.shareYieldMin())<0
+                :request.dailyEarn()==null || request.dailyEarn().signum()<0 || request.dailyEarn().stripTrailingZeros().scale()>6))
+            throw new BizException(422,"MONTHLY_TARGET_MANUAL_EARNING_REQUIRED");
+        // R8 runs before command validation/backfill/idempotency or any catalog write.
+        if(approval && A2ReplayContext.isReplaying() && MonthlyTargetProjection.amplifies(before==null?null:before.monthlyTargetUsdt(),
+                before==null?null:before.monthlyTargetBandPct(),target,band) && coverageBelowRedline())
+            throw new BizException(409,"COVERAGE_BELOW_REDLINE");
+        if(target!=null && (request.price()==null || request.price().signum()<=0))throw new BizException(422,"SKU_PRICE_REQUIRED");
+        return request.withMonthlyTarget(target,band,series);
+    }
+
+    private static void requireSkuDisplayText(DeviceSkuUpsertRequest request) {
+        if (request == null) return;
+        AppDisplayText.requireNoHan("name", request.name());
+        AppDisplayText.requireNoHan("badge", request.badge());
+        AppDisplayText.requireNoHan("tagline", request.tagline());
+        AppDisplayText.requireNoHan("gpu", request.gpu());
+        AppDisplayText.requireNoHan("power", request.power());
+        AppDisplayText.requireNoHan("datacenter", request.datacenter());
+        AppDisplayText.requireNoHan("uptime", request.uptime());
+        AppDisplayText.requireNoHan("warranty", request.warranty());
+        AppDisplayText.requireNoHan("specDocumentTitle", request.specDocumentTitle());
+    }
 
     private ApiResult<DeviceSkuView> requireSkuCommand(String idempotencyKey, DeviceSkuUpsertRequest request) {
         ApiResult<Map<String, Object>> command = requireE1Command(idempotencyKey, request == null ? null : request.reason());
@@ -3276,35 +3749,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!SKU_TIERS.contains(tier)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_TIER_INVALID");
         }
-        if (!StringUtils.hasText(request.datacenter())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_DATACENTER_REQUIRED");
-        }
-        ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
-        if (inventoryMode == null) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_INVENTORY_MODE_INVALID");
-        }
-        if (inventoryMode == ProductInventoryMode.UNLIMITED && !"Share".equals(tier)) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLIMITED_INVENTORY_NOT_ALLOWED");
-        }
-        long stockValue = 0;
-        if (inventoryMode == ProductInventoryMode.FINITE) {
-            if (!StringUtils.hasText(request.stock())) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
-            }
-            String stock = request.stock().trim();
-            if (!stock.matches("^[0-9]+$") || stock.length() > 10) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
-            }
-            try {
-                stockValue = Long.parseLong(stock);
-                if (stockValue > Integer.MAX_VALUE) {
-                    return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
-                }
-            } catch (NumberFormatException ex) {
-                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_STOCK_INVALID");
-            }
-        } else if (StringUtils.hasText(request.stock())) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLIMITED_STOCK_MUST_BE_EMPTY");
+        String inventoryError = skuInventoryError(request);
+        if (inventoryError != null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), inventoryError);
         }
         ApiResult<DeviceSkuView> gateValidation = validatePurchaseGate(request.purchaseGate());
         if (gateValidation != null) return gateValidation;
@@ -3314,7 +3761,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!allows(request.lifecycle(), SKU_LIFECYCLES)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_LIFECYCLE_INVALID");
         }
-        catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         if (!"Share".equals(tier) && !isConfiguredE1PhaseId(request.unlockPhase())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SKU_UNLOCK_PHASE_INVALID");
         }
@@ -3324,6 +3770,36 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         ApiResult<DeviceSkuView> mediaGuard = requireSkuMediaFields(request);
         if (mediaGuard != null) {
             return mediaGuard;
+        }
+        return null;
+    }
+
+    private String skuInventoryError(DeviceSkuUpsertRequest request) {
+        ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
+        if (inventoryMode == null) {
+            return "SKU_INVENTORY_MODE_INVALID";
+        }
+        if (inventoryMode == ProductInventoryMode.UNLIMITED && !"Share".equals(normalizeExact(request.tier()))) {
+            return "SKU_UNLIMITED_INVENTORY_NOT_ALLOWED";
+        }
+        if (inventoryMode == ProductInventoryMode.FINITE) {
+            if (!StringUtils.hasText(request.stock())) {
+                return "SKU_STOCK_INVALID";
+            }
+            String stock = request.stock().trim();
+            if (!stock.matches("^[0-9]+$") || stock.length() > 10) {
+                return "SKU_STOCK_INVALID";
+            }
+            try {
+                long stockValue = Long.parseLong(stock);
+                if (stockValue > Integer.MAX_VALUE) {
+                    return "SKU_STOCK_INVALID";
+                }
+            } catch (NumberFormatException ex) {
+                return "SKU_STOCK_INVALID";
+            }
+        } else if (StringUtils.hasText(request.stock())) {
+            return "SKU_UNLIMITED_STOCK_MUST_BE_EMPTY";
         }
         return null;
     }
@@ -3380,6 +3856,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private DeviceSkuUpsertRequest normalizeSkuPhaseRequest(DeviceSkuUpsertRequest request, Long runtimeSold) {
         String tier = normalizeExact(request.tier());
         String unlockPhase = "Share".equals(tier) ? "" : normalizeE1Phase(request.unlockPhase());
+        return skuRequestWithPhaseId(request, runtimeSold, unlockPhase);
+    }
+
+    private DeviceSkuUpsertRequest skuRequestWithPhaseId(
+            DeviceSkuUpsertRequest request, Long runtimeSold, String unlockPhase) {
         ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
         return new DeviceSkuUpsertRequest(
                 request.skuId(),
@@ -3426,7 +3907,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.reason(),
                 operator(request.operator()),
                 inventoryMode.name(),
-                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedTaskTypeIds(), request.allowedTaskClasses());
+                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode());
     }
 
     private DeviceSkuUpsertRequest withTrialEligible(DeviceSkuUpsertRequest request, boolean trialEligible) {
@@ -3441,7 +3922,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.lifecycle(), request.supersededBy(), request.tradeinDiscount(), request.unlockPhase(),
                 request.purchaseGate(), request.imageAssetId(), request.imageObjectKey(), request.imagePreviewUrl(),
                 request.tag(), request.status(), request.reason(), request.operator(), request.inventoryMode(),
-                trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedTaskTypeIds(), request.allowedTaskClasses());
+                trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode());
     }
 
     private ProductInventoryMode inventoryMode(String raw) {
@@ -3476,6 +3957,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private ApiResult<DeviceTaskView> requireTaskCommand(String idempotencyKey, DeviceTaskUpsertRequest request) {
+        return requireTaskCommand(idempotencyKey, request, false);
+    }
+
+    private ApiResult<DeviceTaskView> requireTaskCommand(String idempotencyKey, DeviceTaskUpsertRequest request, boolean review) {
+        if(request==null || !"PHONE".equals(request.poolCode()) || request.simulation()==null)
+            throw new BizException(422,"TASK_POOL_FORMAT_RETIRED");
         ApiResult<Map<String, Object>> command = requireE1Command(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
             return ApiResult.fail(command.getCode(), command.getMessage());
@@ -3483,8 +3970,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (request == null || !StringUtils.hasText(request.name())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TASK_NAME_REQUIRED");
         }
+        AppDisplayText.requireNoHan("name", request.name());
         if(request.simulation()!=null) {
-            if(!A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
+            if (!review && !A2ReplayContext.isReplaying()) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
             simulationPolicies.validateType(request.simulation());
             if(StringUtils.hasText(request.taskClass())&&!allows(request.taskClass(),TASK_CLASSES))
                 return ApiResult.fail(422,"TASK_CLASS_INVALID");
@@ -3555,6 +4043,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before == null || facts == null) {
             return ApiResult.fail(404, "ORDER_NOT_FOUND");
         }
+        BigDecimal refundAmount = "refunded".equals(toState)
+                ? refundAmount(facts, request.refundAmountUsdt(), request.reason()) : null;
         String fromState = normalizeOrderState(before.state());
         if (toState.equals(fromState)) {
             return ApiResult.ok(before);
@@ -3566,7 +4056,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         if ("refunded".equals(toState)) {
             TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-            if (refundCoverageBlocked(coverage, facts.amountUsdt())) {
+            if (refundCoverageBlocked(coverage, refundAmount)) {
                 return ApiResult.fail(
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
@@ -3593,17 +4083,19 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             // concurrent pay/refund transactions cannot deadlock by taking the two
             // resource families in opposite order. Any later failure rolls both
             // changes back with this service transaction.
-            if (!catalogRepository.rollbackOrderAssets(normalizedOrderNo, now)) {
+            if (!catalogRepository.rollbackRefundedOrderAssets(normalizedOrderNo, now)) {
                 throw new BizException(409, "SKU_STOCK_RESTORE_CONFLICT");
             }
+            catalogRepository.recordOrderRefundAmount(normalizedOrderNo, refundAmount);
             settlement = refundSettlementFacade.settle(
                     normalizedOrderNo,
                     facts.userId(),
-                    facts.amountUsdt(),
+                    refundAmount,
                     StringUtils.hasText(request.refundChannel()) ? request.refundChannel() : "WALLET",
                     request.reason().trim(),
                     request.operator(),
                     idempotencyKey.trim(), prepared);
+            updated = catalogRepository.findOrder(normalizedOrderNo).orElseThrow(() -> new BizException(409, "ORDER_STATE_CONFLICT"));
             if (StringUtils.hasText(request.refundReasonCode())) {
                 catalogRepository.recordOrderRefundReason(normalizedOrderNo, request.refundReasonCode());
             }
@@ -3622,6 +4114,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "fromState", fromState,
                 "toState", toState,
                 "amount", before.amount(),
+                "originalAmountUsdt", settlement == null ? null : facts.amountUsdt(),
+                "refundAmountUsdt", refundAmount,
                 "refundChannel", settlement == null ? null : settlement.channel(),
                 "walletBefore", settlement == null ? null : settlement.walletBefore(),
                 "walletAfter", settlement == null ? null : settlement.walletAfter(),
@@ -3681,7 +4175,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Object> payload = detail(
                 "orderId", orderNo,
                 "userId", facts.userId(),
-                "amount", facts.amountUsdt(),
+                "amount", after.refundAmountUsdt(),
                 "refundChannel", settlement.channel(),
                 "cumulativeDepositAdjusted", cumulativeAdjusted,
                 "operator", request.operator(),
@@ -3859,7 +4353,28 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private String currentE1PhaseId(int platformMonth, List<DevicePhaseView> phases) {
+        return currentE1PhaseId(GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy), platformMonth, phases);
+    }
+
+    private String currentE1PhaseId(GrowthRhythmSnapshot rhythm, int platformMonth, List<DevicePhaseView> phases) {
+        // E1-BE-07: 商品门/归档保护/已达阶段等写入校验与读取回包统一使用 H1 运营阶段;
+        // H1 不可靠或未映射到目录时才回退到月份等分。
+        String h1Token = normalizeE1PhaseToken(rhythm.currentPhase());
+        if (rhythm.reliable() && h1Token != null && !h1Token.isEmpty()
+                && phases.stream().map(p -> normalizeE1PhaseToken(p.p())).anyMatch(h1Token::equals)) {
+            return phases.stream()
+                    .filter(p -> normalizeE1PhaseToken(p.p()).equals(h1Token))
+                    .findFirst().orElseThrow().p();
+        }
         return phaseForMonth(platformMonth, phases);
+    }
+
+    private static String normalizeE1PhaseToken(String raw) {
+        if (raw == null) return null;
+        String token = raw.trim().toUpperCase(java.util.Locale.ROOT);
+        if (token.isEmpty()) return token;
+        if (token.matches("[1-9]")) return "P" + token;
+        return token;
     }
 
     private ApiResult<Map<String, Object>> requireE1PhaseArchivable(String phaseId) {
@@ -3877,13 +4392,17 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private DeviceTaskUpsertRequest trustedTaskRequest(DeviceTaskUpsertRequest request) {
+        return trustedTaskRequest(request, "active");
+    }
+
+    private DeviceTaskUpsertRequest trustedTaskRequest(DeviceTaskUpsertRequest request, String defaultStatus) {
         if(request.simulation()!=null) {
             var simulation=request.simulation();int seconds=simulation.durationMinutes()*60;
             return new DeviceTaskUpsertRequest(request.name().trim(),simulation.baseReward(),"/job","手机+",BigDecimal.ZERO,
-                    StringUtils.hasText(request.status())?normalizeTaskStatus(request.status()):"active",
+                    StringUtils.hasText(request.status())?normalizeTaskStatus(request.status()):defaultStatus,
                     StringUtils.hasText(request.taskClass())?normalizeUpper(request.taskClass()):"EM","",
                     simulation.baseReward(),simulation.baseReward(),"0GB",simulation.enabled()?"派发中":"已 kill",
-                    request.reason().trim(),operator(request.operator()),1,seconds,seconds,Math.max(300,seconds),"","","{}",simulation);
+                    request.reason().trim(),operator(request.operator()),1,seconds,seconds,Math.max(300,seconds),"","","{}",simulation,request.poolCode());
         }
         return new DeviceTaskUpsertRequest(
                 request.name().trim(), request.price(), request.unit().trim(), request.requirement().trim(),
@@ -3891,7 +4410,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.model().trim(), request.minReward(), request.maxReward(), parseVram(request.minVram()) + "GB",
                 request.killInit().trim(), request.reason().trim(), operator(request.operator()),
                 request.selectionWeight(), request.expectedDurationMinSec(), request.expectedDurationMaxSec(),
-                request.executionTimeoutSec(), request.runtimeKey(), request.validatorKey(), request.workloadConfigJson(), request.simulation());
+                request.executionTimeoutSec(), request.runtimeKey(), request.validatorKey(), request.workloadConfigJson(), request.simulation(),request.poolCode());
     }
 
     private void publishTaskSimulation(DeviceTaskView task,ffdd.opsconsole.device.dto.TaskSimulationSettings value,LocalDateTime at) {
@@ -3908,12 +4427,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (forceUnlock && !isE1PhaseReached(phaseId)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_FORCE_UNLOCK_PHASE_NOT_REACHED");
         }
-        if (!beforeForceUnlock && forceUnlock && !hasAuthority("device_e1_generation_gate_force_unlock")) {
+        return requireE1ForceUnlockPermission(beforeForceUnlock, forceUnlock);
+    }
+
+    private ApiResult<Map<String, Object>> requireE1ForceUnlockPermission(boolean beforeForceUnlock, boolean forceUnlock) {
+        if (!beforeForceUnlock && forceUnlock && !hasAuthority("device_e1_generation_gate_force_unlock"))
             return ApiResult.fail(403, "E1_FORCE_UNLOCK_FORBIDDEN");
-        }
-        if (beforeForceUnlock && !forceUnlock && !hasAuthority("device_e1_generation_gate_force_lock")) {
+        if (beforeForceUnlock && !forceUnlock && !hasAuthority("device_e1_generation_gate_force_lock"))
             return ApiResult.fail(403, "E1_FORCE_LOCK_FORBIDDEN");
-        }
         return null;
     }
 
@@ -4385,6 +4906,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private String normalizeE3Key(String key) {
+        return normalizeE3Key(key, false);
+    }
+
+    /** Identity-only normalization for the three retired hint keys; never used by a new write. */
+    private String normalizeE3KeyForIdentity(String key) {
+        return normalizeE3Key(key, true);
+    }
+
+    private String normalizeE3Key(String key, boolean allowRetiredHintKey) {
         String normalized = key == null ? "" : key.trim();
         if (normalized.startsWith("E.device.")) {
             normalized = normalized.substring("E.device.".length());
@@ -4432,9 +4962,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             default -> normalized;
         };
         if (E3_RETIRED_CONFIG_KEYS.contains(normalized)) {
-            throw new IllegalArgumentException("E3_CONFIG_KEY_RETIRED");
+            if (!allowRetiredHintKey || !E3_RETIRED_HINT_KEYS.contains(normalized)) {
+                throw new IllegalArgumentException("E3_CONFIG_KEY_RETIRED");
+            }
         }
-        if (!E3_CONFIG_KEYS.contains(normalized)) {
+        if (!E3_CONFIG_KEYS.contains(normalized)
+                && !(allowRetiredHintKey && E3_RETIRED_HINT_KEYS.contains(normalized))) {
             throw new IllegalArgumentException("Unsupported E3 config key");
         }
         return normalized;
@@ -4442,11 +4975,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private E3ConfigValue normalizeE3Value(String key, String raw) {
         if ("eligibility".equals(key)) {
-            String value = normalizeText(raw);
-            if (!Set.of("全部用户", "L2+ 持有者", "L3+ 持有者", "L4+ 持有者", "L5+ 持有者", "L6+ 持有者").contains(value)) {
+            // BUG-522: 统一存稳定代码；PC 既有的六档中文值照旧接受，映射到同一代码。
+            String code = ffdd.opsconsole.device.domain.TradeinEligibility.codeOf(normalizeText(raw));
+            if (code == null) {
                 throw new IllegalArgumentException("eligibility config is invalid");
             }
-            return new E3ConfigValue(value, "STRING");
+            return new E3ConfigValue(code, "STRING");
         }
         if ("promoRoutes".equals(key)) {
             String value = normalizeText(raw);
@@ -4467,6 +5001,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             throw new IllegalArgumentException("boolean config is invalid");
         }
         BigDecimal value = parseDecimal(raw);
+        if ("tradeinMaxDevicesPerOrder".equals(key) && value.compareTo(BigDecimal.ONE) != 0) {
+            throw new IllegalArgumentException("E3_TRADEIN_SINGLE_DEVICE_ONLY");
+        }
         if (key.startsWith("capacityBand") && key.endsWith("DeltaPct")) {
             if (value.compareTo(BigDecimal.valueOf(-100)) < 0 || value.compareTo(BigDecimal.valueOf(100)) > 0) {
                 throw new IllegalArgumentException("capacity delta config must be -100-100");
@@ -4555,36 +5092,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
     }
 
-    private String normalizeDc(String dcLocation) {
-        if (!StringUtils.hasText(dcLocation)) {
-            throw new IllegalArgumentException("dcLocation is required");
-        }
-        return dcLocation.trim();
-    }
 
-    private DeviceDatacenterUpsertRequest normalizeDatacenterRequest(String dcLocation, DeviceDatacenterUpsertRequest request) {
-        return new DeviceDatacenterUpsertRequest(
-                dcLocation,
-                request.regionLabel().trim(),
-                normalizeDatacenterStatus(request.status()),
-                normalizeDatacenterSortOrder(request.sortOrder()),
-                request.reason(),
-                request.operator(),
-                request.location().trim(),
-                request.displayName().trim());
-    }
 
-    private String normalizeDatacenterStatus(String status) {
-        String normalized = StringUtils.hasText(status) ? status.trim().toLowerCase(Locale.ROOT) : "active";
-        return DATACENTER_STATUSES.contains(normalized) ? normalized : null;
-    }
 
-    private int normalizeDatacenterSortOrder(Integer sortOrder) {
-        if (sortOrder == null) {
-            return 100;
-        }
-        return Math.max(0, Math.min(9999, sortOrder));
-    }
 
     private String normalizeSkuId(String skuId, String name) {
         String candidate = StringUtils.hasText(skuId) ? skuId : name;
@@ -4739,13 +5249,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private DeviceTaskView findE2TaskByClass(String taskClass) {
         DeviceTaskView canonical = catalogRepository.findTask(E2_CANONICAL_TASK_ID.get(taskClass)).orElse(null);
-        if (canonical != null && canonical.simulation() == null && taskClass.equals(canonical.taskClass())) {
+        if (isFormalTaskOfClass(canonical, taskClass)) {
             return canonical;
         }
-        return catalogRepository.pageTasks(new DeviceTaskQueryRequest(null, null, taskClass, 1L, 500L))
+        return catalogRepository.pageTasks(new DeviceTaskQueryRequest(
+                        null, null, taskClass, 1L, E2TaskLifecycleImpact.PRICING_FALLBACK_LIMIT))
                 .getRecords().stream()
-                .filter(task -> task.simulation() == null && taskClass.equals(task.taskClass()))
+                .filter(task -> isFormalTaskOfClass(task, taskClass))
                 .findFirst().orElse(null);
+    }
+
+    static boolean isFormalTaskOfClass(DeviceTaskView task, String taskClass) {
+        return task != null && task.simulation() == null && taskClass.equals(task.taskClass());
     }
 
     private BigDecimal e2AverageSeconds(String taskClass) {
@@ -4790,7 +5305,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return teaser;
     }
 
-    private int parseVram(String raw) {
+    static int parseVram(String raw) {
         if (!StringUtils.hasText(raw)) {
             return -1;
         }
@@ -4859,7 +5374,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
     }
 
-    private boolean e2TaskPricingAmplifiesFinancialOutflow(
+    static boolean e2TaskPricingAmplifiesFinancialOutflow(
             BigDecimal beforeMin,
             BigDecimal beforeMax,
             int beforeVram,
@@ -4974,16 +5489,20 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return e3Decimal(config, "tradeinLadderCredit5", "15");
     }
 
+    /** BUG-522: 资格档位排序；稳定代码与历史中文值同一口径，全部用户=0（任何用户都够资格）。 */
     private int e3EligibilityRank(String value) {
-        if (!StringUtils.hasText(value) || "全部用户".equals(value)) {
-            return 0;
-        }
-        for (int level = 2; level <= 6; level++) {
-            if (value.startsWith("L" + level + "+")) {
-                return level;
-            }
-        }
-        return 0;
+        String code = ffdd.opsconsole.device.domain.TradeinEligibility.codeOf(value);
+        if (code == null) return 0;
+        if (ffdd.opsconsole.device.domain.TradeinEligibility.ALL.equals(code)) return 0;
+        return ffdd.opsconsole.device.domain.TradeinEligibility.minLevelOf(code);
+    }
+
+    /** BUG-522: 资格档位在审计/事件里回显既有中文名；其它键原样。 */
+    private static Map<String, String> displayE3Values(Map<String, String> values) {
+        Map<String, String> display = new LinkedHashMap<>(values);
+        display.computeIfPresent("eligibility",
+                (key, value) -> ffdd.opsconsole.device.domain.TradeinEligibility.labelOf(value));
+        return display;
     }
 
     private void recordE3ConfigChange(
@@ -4995,10 +5514,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             String idempotencyKey,
             String source) {
         LocalDateTime effectiveAt = LocalDateTime.now(clock);
+        // BUG-522: 审计与事件里沿用既有中文档位名，运营核对不受存储代码影响。
+        Map<String, String> beforeDisplay = displayE3Values(before);
+        Map<String, String> afterDisplay = displayE3Values(after);
         Map<String, Object> payload = detail(
                 "keys", List.copyOf(after.keySet()),
-                "before", new LinkedHashMap<>(before),
-                "after", new LinkedHashMap<>(after),
+                "before", beforeDisplay,
+                "after", afterDisplay,
                 "effective_at", effectiveAt.toString(),
                 "operator", trustedOperator,
                 "reason", reason,
@@ -5006,38 +5528,44 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "ts", clock.millis());
         outboxService.publish("E3_CONFIG", aggregateId, "admin.tradein_config_changed", payload);
         auditRequired("admin.tradein_config_changed", "DEVICE_E3_CONFIG", aggregateId, trustedOperator,
-                detail("keys", List.copyOf(after.keySet()), "before", new LinkedHashMap<>(before),
-                        "after", new LinkedHashMap<>(after), "effectiveAt", effectiveAt,
+                detail("keys", List.copyOf(after.keySet()), "before", beforeDisplay,
+                        "after", afterDisplay, "effectiveAt", effectiveAt,
                         "reason", reason, "source", source, "idempotencyKey", idempotencyKey.trim()));
     }
 
-    private void recordE2TaskPricingChange(
-            String taskClass,
-            String field,
-            Object before,
-            Object after,
-            LocalDateTime effectiveAt,
-            String trustedOperator,
-            String reason,
-            String idempotencyKey) {
-        Map<String, Object> payload = detail(
-                "taskClass", taskClass,
-                "field", field,
-                "before", before,
-                "after", after,
-                "effective_at", effectiveAt.toString(),
-                "operator", trustedOperator,
-                "reason", reason,
-                "ts", clock.millis());
-        outboxService.publish("E2_TASK_PRICING", taskClass, "admin.task_pricing_changed", payload);
-        auditRequired("admin.task_pricing_changed", "E2_TASK_PRICING", taskClass, trustedOperator,
-                detail("taskClass", taskClass, "field", field, "before", before, "after", after,
-                        "effectiveAt", effectiveAt, "reason", reason, "idempotencyKey", idempotencyKey.trim()));
+    private void recordE2TaskPricingChange(E2TaskPricingChange change, LocalDateTime effectiveAt,
+            E2TaskPricingUpdateRequest request, String idempotencyKey) {
+        long timestamp = clock.millis();
+        change.after().forEach((field, value) -> outboxService.publish(
+                "E2_TASK_PRICING", change.taskClass(), "admin.task_pricing_changed", detail(
+                        "taskClass", change.taskClass(), "field", field, "before", change.before().get(field), "after", value,
+                        "effective_at", effectiveAt.toString(), "operator", request.operator(),
+                        "reason", request.reason(), "ts", timestamp)));
+        String field = change.after().size() == 1 ? change.after().keySet().iterator().next() : null;
+        auditRequired("admin.task_pricing_changed", "E2_TASK_PRICING", change.taskClass(), request.operator(),
+                detail("taskClass", change.taskClass(), "field", field,
+                        "before", field == null ? change.before() : change.before().get(field),
+                        "after", field == null ? change.after() : change.after().get(field),
+                        "effectiveAt", effectiveAt, "reason", request.reason(), "idempotencyKey", idempotencyKey.trim(),
+                        "operationId", A2ReplayContext.operationId()));
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> deviceIdempotent(
             String scope, String idempotencyKey, String resourceId, Object request, Supplier<ApiResult<T>> action) {
+        if (scope.startsWith("E4_")) {
+            var original = catalogRepository.findOrder(resourceId).orElse(null);
+            return (ApiResult<T>) (ApiResult) idempotencyService.executeBoundTargets(
+                    scope, idempotencyKey.trim(), e1RequestHash(scope, resourceId, request), ApiResult.class, "device_e4_read",
+                    List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                            scope, "E4", "device_order", original == null ? resourceId : original.orderNo())), (Supplier) action);
+        }
+        if (scope.startsWith("E5_DEVICE_BATCH_")) {
+            return (ApiResult<T>) (ApiResult) idempotencyService.executeBoundTargets(
+                    scope, idempotencyKey.trim(), e1RequestHash(scope, resourceId, request), ApiResult.class, "device_e5_read",
+                    List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                            scope, "E5", "user_device_batch", resourceId)), (Supplier) action);
+        }
         return (ApiResult<T>) (ApiResult) idempotencyService.execute(
                 scope,
                 idempotencyKey.trim(),
@@ -5046,26 +5574,110 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 (Supplier) action);
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> e1Idempotent(
             String scope, String idempotencyKey, String resourceId, Object request, Supplier<ApiResult<T>> action) {
+        return e1IdempotentHashed(scope, idempotencyKey,
+                e1RequestHashCompatible(scope, idempotencyKey, resourceId, request), action);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private <T> ApiResult<T> e1IdempotentHashed(
+            String scope, String idempotencyKey, String requestHash, Supplier<ApiResult<T>> action) {
         return (ApiResult<T>) (ApiResult) idempotencyService.execute(
-                scope,
-                idempotencyKey.trim(),
-                e1RequestHash(scope, resourceId, request),
-                ApiResult.class,
-                (Supplier) action);
+                scope, idempotencyKey.trim(), requestHash, ApiResult.class, (Supplier) action);
+    }
+
+    private record SkuWriteReplay(String requestHash, ApiResult<DeviceSkuView> response) {}
+
+    @SuppressWarnings("unchecked")
+    private SkuWriteReplay skuWriteReplay(String scope, String key, String skuId,
+            DeviceSkuUpsertRequest request, String revision) {
+        // The wrapper distinguishes raw hashes from old normalized hashes and preserves actor binding.
+        String requestHash = e1RequestHashStructured(scope, skuId,
+                detail("rawRequest", request, "operator", operator(request == null ? null : request.operator()),
+                        "expectedUpdatedAt", revision));
+        var active = idempotencyService.activeRequest(scope, key);
+        if (active == null) {
+            return new SkuWriteReplay(requestHash, null);
+        }
+        String storedHash = active.requestHash();
+        if (!storedHash.equals(requestHash) && !matchesLegacySkuHash(scope, skuId, request, revision, active)) {
+            throw new BizException(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        }
+        if (!active.hasReceipt()) {
+            return new SkuWriteReplay(storedHash, null);
+        }
+        var recovery = idempotencyService.recoveryResult(scope, key, storedHash, ApiResult.class);
+        if (recovery.response() == null) {
+            throw new BizException(500, "IDEMPOTENCY_RESPONSE_DESERIALIZE_FAILED");
+        }
+        return new SkuWriteReplay(storedHash, recovery.response());
+    }
+
+    private boolean matchesLegacySkuHash(String scope, String skuId, DeviceSkuUpsertRequest request,
+            String revision, AdminIdempotencyService.ActiveRequest active) {
+        if (request == null || inventoryMode(request.inventoryMode()) == null) return false;
+        boolean share = "Share".equals(normalizeExact(request.tier()));
+        String phase = share ? "" : normalizeText(request.unlockPhase());
+        if (matchesLegacySkuHash(scope, skuId, request, revision, phase, active.requestHash())) return true;
+        if (!StringUtils.hasText(phase)) return false;
+        for (String historicalId : auditLogService.findE1PhaseIdsByHistoricalLabel(phase, active.updatedAt())) {
+            if (matchesLegacySkuHash(scope, skuId, request, revision, historicalId, active.requestHash())) return true;
+        }
+        return false;
+    }
+
+    private boolean matchesLegacySkuHash(String scope, String skuId, DeviceSkuUpsertRequest request,
+            String revision, String phaseId, String storedHash) {
+        DeviceSkuUpsertRequest normalized = skuRequestWithPhaseId(request, 0L, phaseId);
+        if (revision == null) {
+            return storedHash.equals(e1RequestHashStructured(scope, skuId, normalized))
+                    || storedHash.equals(e1RequestHash(scope, skuId, normalized));
+        }
+        var fingerprint = detail("expectedUpdatedAt", revision, "request", normalized);
+        // Earlier edit hashes used Map.of, which could emit either order.
+        var reverse = detail("request", normalized, "expectedUpdatedAt", revision);
+        return storedHash.equals(e1RequestHashStructured(scope, skuId, fingerprint))
+                || storedHash.equals(e1RequestHash(scope, skuId, fingerprint))
+                || storedHash.equals(e1RequestHashStructured(scope, skuId, reverse))
+                || storedHash.equals(e1RequestHash(scope, skuId, reverse));
+    }
+
+    /** Chooses the legacy hash when a receipt for that key already exists, otherwise uses a structured JSON hash. */
+    private String e1RequestHashCompatible(String scope, String idempotencyKey, String resourceId, Object request) {
+        String legacyHash = e1RequestHash(scope, resourceId, request);
+        var legacyStatus = idempotencyService.recoveryStatus(scope, idempotencyKey, legacyHash);
+        if (legacyStatus != AdminIdempotencyService.RecoveryStatus.NOT_FOUND
+                && legacyStatus != AdminIdempotencyService.RecoveryStatus.MISMATCH) {
+            return legacyHash;
+        }
+        return e1RequestHashStructured(scope, resourceId, request);
+    }
+
+    private String e1RequestHashStructured(String scope, String resourceId, Object request) {
+        String payload;
+        try {
+            payload = E1_AUDIT_JSON.writeValueAsString(request);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            payload = String.valueOf(request);
+        }
+        return e1Hash(scope, resourceId, payload);
     }
 
     private String e1RequestHash(String scope, String resourceId, Object request) {
         String payload=String.valueOf(request);
-        Object dto=request instanceof Map<?,?> wrapper?wrapper.get("request"):request;
-        if(dto instanceof DeviceSkuUpsertRequest sku && sku.allowedTaskClasses()==null ||
-                dto instanceof ffdd.opsconsole.device.dto.PhoneTaskPolicyUpdateRequest phone && phone.allowedTaskClasses()==null) {
-            // A retry of an already recorded ID-based request must hash exactly as before the new field existed.
-            String record=dto.toString();
-            payload=payload.replace(record,record.substring(0,record.length()-", allowedTaskClasses=null]".length())+"]");
+        if (request instanceof DeviceOrderActionRequest order && order.refundAmountUsdt() == null) {
+            // Tickets/receipts created before B37 must retain their original hash when amount is omitted.
+            payload = payload.substring(0, payload.length() - ", refundAmountUsdt=null]".length()) + "]";
         }
+        if (request instanceof E2TaskPricingUpdateRequest pricing && pricing.expectedRevision() == null) {
+            // The existing PUT receipt must remain recoverable when older clients omit the new revision.
+            payload = payload.substring(0, payload.length() - ", expectedRevision=null]".length()) + "]";
+        }
+        return e1Hash(scope, resourceId, payload);
+    }
+
+    private String e1Hash(String scope, String resourceId, String payload) {
         String canonical = scope + "\n" + normalizeText(resourceId) + "\n" + payload;
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
@@ -5125,6 +5737,46 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {
+        Map<String, Object> params = cmd.params() == null ? Map.of() : cmd.params();
+        if ("e6_compute_config".equals(cmd.op())) {
+            String key = str(params, "paramKey");
+            if (!key.startsWith(PhoneReplacementPolicyPublicationService.PREFIX) && !ComputeConfigRegistry.isComputeParamKey(key))
+                return ApiResult.fail(422, "COMPUTE_PARAM_KEY_INVALID");
+        }
+        if ("e6_compute_config_batch".equals(cmd.op()) && params.get("values") instanceof Map<?, ?> values
+                && values.keySet().stream().anyMatch(key -> key instanceof String name && ComputeConfigRegistry.isCoefficientParamKey(name)))
+            return ApiResult.fail(422, "COMPUTE_PARAM_KEY_INVALID");
+        boolean beforeForceUnlock;
+        boolean forceUnlock;
+        if ("e1_gate_create".equals(cmd.op())) {
+            beforeForceUnlock = false;
+            forceUnlock = Boolean.TRUE.equals(boolVal(params, "forceUnlock"));
+        } else if ("e1_gate_patch".equals(cmd.op())) {
+            var gate = catalogRepository.findGenerationGate(normalizeId(str(params, "skuId"))).orElse(null);
+            if (gate == null) return ApiResult.fail(404, "E1_GATE_NOT_FOUND");
+            beforeForceUnlock = Boolean.TRUE.equals(gate.forceUnlock());
+            Boolean requested = boolVal(params, "forceUnlock");
+            forceUnlock = requested == null ? beforeForceUnlock : requested;
+        } else if ("e1_gate_field".equals(cmd.op())) {
+            String[] key;
+            String value;
+            try {
+                key = normalizeE1GateKey(str(params, "key"));
+                value = normalizeE1GateValue(key[1], str(params, "value"));
+            } catch (IllegalArgumentException invalid) {
+                return ApiResult.fail(422, invalid.getMessage());
+            }
+            var gate = catalogRepository.findGenerationGate(key[0]).orElse(null);
+            if (gate == null) return ApiResult.fail(404, "E1_GATE_NOT_FOUND");
+            beforeForceUnlock = Boolean.TRUE.equals(gate.forceUnlock());
+            forceUnlock = "forceUnlock".equals(key[1]) ? Boolean.parseBoolean(value) : beforeForceUnlock;
+        } else return ApiResult.ok();
+        var permission = requireE1ForceUnlockPermission(beforeForceUnlock, forceUnlock);
+        return permission == null ? ApiResult.ok() : ApiResult.fail(permission.getCode(), permission.getMessage());
+    }
+
+    @Override
     public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
         // replay 本身不带 @Transactional（与 G 域 replay 一致）：A2 命令经
         // AdminIdempotencyService.execute() 的 @Transactional(REQUIRED) 包裹，回放、票据、锁与审计同事务。
@@ -5138,14 +5790,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.ok(legacyUnknownZeroCredit.approve(LegacyUnknownZeroCreditService.command(p)));
             }
             case "e1_bundle_discount" -> {
-                DeviceBundleDiscountUpdateRequest req = new DeviceBundleDiscountUpdateRequest(
-                        decimal(p, "twoItemsPct"), decimal(p, "threeItemsPct"),
-                        decimal(p, "fourPlusItemsPct"), longVal(p, "expectedVersion"), reason, operator);
-                return updateE1BundleDiscount(idem, req);
+                return updateE1BundleDiscount(idem, bundleDiscountRequest(p, reason, operator));
             }
             case "e1_phone_task_policy" -> {
                 return updatePhoneTaskPolicy(idem,new ffdd.opsconsole.device.dto.PhoneTaskPolicyUpdateRequest(
-                        p.containsKey("allowedTaskTypeIds")?strList(p,"allowedTaskTypeIds"):null,strictPolicyVersion(p.get("expectedVersion")),reason,operator,taskClassesParam(p)));
+                        poolCodesParam(p),strictPolicyVersion(p.get("expectedVersion")),reason,operator));
             }
             case "e6_phone_calibration" -> {
                 if (!A2ReplayContext.isReplaying()) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
@@ -5161,8 +5810,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return deviceIdempotent("E6_PHONE_CALIBRATION", idem, "phone-calibration", proposal, () -> {
                     var config = new ffdd.opsconsole.onboarding.application.PhoneCalibrationConfigService(configFacade, clock);
                     var before = config.read();
-                    config.candidate(proposal, before);
-                    if (coverageBelowRedline()) return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    var candidate = config.candidate(proposal, before);
+                    if (config.amplifies(before, candidate, calibrationMapper.activeTiers()) && coverageBelowRedline())
+                        return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                             OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
                     var after = config.publish(proposal);
                     auditRequired("phone.calibration_policy_published", "PHONE_CALIBRATION_POLICY", "phone-calibration",
@@ -5245,10 +5895,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 E3ConfigUpdateRequest req = new E3ConfigUpdateRequest(str(p, "key"), str(p, "value"), reason, operator);
                 return updateE1GenerationGate(idem, req);
             }
+            case HostingCenterService.OPERATION -> {
+                return ApiResult.ok(hostingCenters.apply(p, operator, reason));
+            }
             case "e1_early_access_update" -> {
                 DeviceEarlyAccessUpdateRequest req = new DeviceEarlyAccessUpdateRequest(
                         boolVal(p, "enabled"), intVal(p, "leadDays"), reason, operator);
                 return updateE1EarlyAccess(idem, req);
+            }
+            case "e6_onboarding_yield_sku" -> {
+                return bindOnboardingYieldSku(p,idem,reason,operator);
             }
             case "e2_phone_tier" -> {
                 if (StringUtils.hasText(str(p, "configKey"))) {
@@ -5275,7 +5931,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return updateTaskPrice(str(p, "taskId"), idem, req);
             }
             case "e2_task_status" -> {
-                DeviceTaskStatusRequest req = new DeviceTaskStatusRequest(str(p, "status"), reason, operator);
+                DeviceTaskStatusRequest req = new DeviceTaskStatusRequest(str(p, "status"), reason, operator,str(p,"poolCode"));
                 return updateTaskStatus(str(p, "taskId"),idem,req,longVal(p,"reviewedRuleVersion"));
             }
             case "e2_task_delete" -> {
@@ -5336,7 +5992,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             case "e4_order_refund" -> {
                 DeviceOrderActionRequest req = new DeviceOrderActionRequest(
-                        str(p, "terminalState"), str(p, "refundChannel"), reason, operator, str(p, "refundReasonCode"));
+                        str(p, "terminalState"), str(p, "refundChannel"), reason, operator, str(p, "refundReasonCode"), null,
+                        refundAmountParam(p));
                 return refundOrder(str(p, "orderNo"), idem, req);
             }
             case "e4_order_cancel" -> {
@@ -5353,28 +6010,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             case "e4_order_state" -> {
                 DeviceOrderStateRequest req = new DeviceOrderStateRequest(str(p, "state"), reason, operator);
                 return updateOrderState(str(p, "orderNo"), idem, req);
-            }
-            case "e5_datacenter_create" -> {
-                DeviceDatacenterUpsertRequest req = buildDatacenterUpsertRequest(p, reason, operator);
-                return createDatacenter(idem, req);
-            }
-            case "e5_datacenter_update" -> {
-                DeviceDatacenterUpsertRequest req = buildDatacenterUpsertRequest(p, reason, operator);
-                String oldDcLocation = StringUtils.hasText(str(p, "oldDcLocation"))
-                        ? str(p, "oldDcLocation") : str(p, "dcLocation");
-                return updateDatacenter(oldDcLocation, idem, req);
-            }
-            case "e5_datacenter_delete" -> {
-                DatacenterOpsRequest req = new DatacenterOpsRequest(reason, operator);
-                return deleteDatacenter(str(p, "dcLocation"), idem, req);
-            }
-            case "e5_datacenter_pause" -> {
-                DatacenterOpsRequest req = new DatacenterOpsRequest(reason, operator);
-                return pauseDatacenter(str(p, "dcLocation"), idem, req);
-            }
-            case "e5_datacenter_resume" -> {
-                DatacenterOpsRequest req = new DatacenterOpsRequest(reason, operator);
-                return resumeDatacenter(str(p, "dcLocation"), idem, req);
             }
             case "e6_compute_config" -> {
                 ComputeConfigParamUpdateRequest req = new ComputeConfigParamUpdateRequest(str(p, "value"), reason, operator, phonePolicyVersion(p));
@@ -5395,6 +6030,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Object> params = command.params();
         boolean create = "e1_sku_create".equals(command.op());
         DeviceSkuUpsertRequest input = buildSkuUpsertRequest(params, null, null);
+        requireSkuDisplayText(input);
         String skuId = create ? normalizeSkuId(input.skuId(), input.name()) : hardwarePolicyTarget(input.skuId());
         DeviceSkuView before = catalogRepository.findSku(skuId).orElse(null);
         if (create && before != null) throw new BizException(422, "SKU_ALREADY_EXISTS");
@@ -5405,59 +6041,85 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (!Objects.equals(before.updatedAt(), revision.value()))
                 throw new BizException(409, "SKU_VERSION_CONFLICT");
         }
+        input=monthlyTargetRequest(input,before,false);
+        String inventoryError = skuInventoryError(input);
+        if (inventoryError != null) throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), inventoryError);
         DeviceSkuUpsertRequest after = normalizeSkuPhaseRequest(input,
                 before == null || before.sold() == null ? 0L : before.sold());
         if (after.trialEligible() == null)
             after = withTrialEligible(after, before != null && Boolean.TRUE.equals(before.trialEligible()));
-        var classes=simulationPolicies.writeClasses(after.allowedTaskClasses(),after.allowedTaskTypeIds(),
-                before==null?List.of():before.allowedTaskClasses(),before==null?List.of():before.allowedTaskTypeIds());
+        var classes=simulationPolicies.writePools(skuId,after.allowedPoolCodes(),before==null?List.of():before.allowedPoolCodes());
         return new SkuProposalReview(skuId,before,after,classes);
     }
 
-    public record SkuProposalReview(String skuId,DeviceSkuView before,DeviceSkuUpsertRequest after,List<String> classes) { }
+    public void skuStatusReview(Map<String,Object> params) {
+        poolCodesParam(params); // refuse retired class/ID scope params
+        var before=catalogRepository.findSku(hardwarePolicyTarget(str(params,"skuId"))).orElseThrow(()->new BizException(404,"SKU_NOT_FOUND"));
+        boolean listing="on".equals(normalizeSkuStatus(str(params,"status")));
+        if (listing && !"on".equals(before.status())) requireStoreSkuSeries(before.seriesCode(),before.productType());
+        simulationPolicies.validateProductScope(before.skuId(),before.seriesCode(),before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),listing,false);
+    }
+
+    public record SkuProposalReview(String skuId,DeviceSkuView before,DeviceSkuUpsertRequest after,List<String> classes) {
+        public boolean amplifies() { return MonthlyTargetProjection.amplifies(before==null?null:before.monthlyTargetUsdt(),
+                before==null?null:before.monthlyTargetBandPct(),after.monthlyTargetUsdt(),after.monthlyTargetBandPct()); }
+    }
 
     public record PhoneClassReview(String before,String after) { }
-    public record RuleTaskReview(String target,String name,String before,String after,Long statusVersion) { }
+    /** 规则任务审批单动作:仅由原始回放命令推出(新增/编辑/启用/停用),不按实时库或前后值推断;null 表示非规则任务或旧单无 simulation。 */
+    public record RuleTaskReview(String target,String name,String before,String after,Long statusVersion, boolean amplifies,String action) { }
+
     public RuleTaskReview ruleTaskReview(AuditReplayCommand command) {
         boolean create="e2_task_create".equals(command.op()),statusOnly="e2_task_status".equals(command.op());
         var params=command.params();
-        if(!statusOnly && params.get("simulation")==null)return null;
+        if(!"PHONE".equals(params.get("poolCode")) || !statusOnly && params.get("simulation")==null)
+            throw new BizException(422,"TASK_POOL_FORMAT_RETIRED");
+        if(!create)simulationPolicies.requirePhoneType(str(params,"taskId"));
         String id=str(params,"taskId");
         var old=create?null:catalogRepository.findTask(normalizeId(id)).orElseThrow(()->new BizException(404,"TASK_NOT_FOUND"));
         var current=old==null?null:old.simulation();
-        if(statusOnly && current==null)return null;
         String before=current==null?"未配置":ruleDescription(old.name(),old.taskClass(),current.enabled(),current.durationMinutes(),current.baseReward(),current.asset());
         if(statusOnly) {
             String status=normalizeTaskStatus(str(params,"status"));
             if(status==null)throw new BizException(422,"TASK_STATUS_INVALID");
-            boolean enabled="active".equals(status) && !"已 kill".equals(old.killInit());
-            return new RuleTaskReview(old.taskId(),old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationMinutes(),current.baseReward(),current.asset()),current.version());
+            // 旧任务未配置模拟设置:沿用 legacy 语义(不产出审批单),不在审批单动作上扩展旧提议行为。
+            if(current==null)return null;
+            boolean enabled="active".equals(status);
+            return new RuleTaskReview(old.taskId(),old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationMinutes(),current.baseReward(),current.asset()),current.version(), enabled && !current.enabled(), enabled?"ENABLE":"DISABLE");
         }
         var raw=buildTaskUpsertRequest(params,"规则任务审批","A2");
         var settings=raw.simulation();
         simulationPolicies.validateType(settings);
         if(!StringUtils.hasText(raw.name()))throw new BizException(422,"TASK_NAME_REQUIRED");
+        AppDisplayText.requireNoHan("name", raw.name());
         if(StringUtils.hasText(raw.status()) && normalizeTaskStatus(raw.status())==null)throw new BizException(422,"TASK_STATUS_INVALID");
         if(settings.expectedVersion()!=(current==null?0:current.version()))throw new BizException(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
-        var next=trustedTaskRequest(raw);
+        var next=trustedTaskRequest(raw,create?"active":old.status());
+        if(!create && !old.status().equals(next.status()))
+            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),"TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
         if(!TASK_CLASSES.contains(next.taskClass()))throw new BizException(422,"TASK_CLASS_INVALID");
         String lock=create?"new-"+java.util.UUID.nameUUIDFromBytes(next.name().getBytes(java.nio.charset.StandardCharsets.UTF_8)):old.taskId();
+        boolean nextEnabled=settings.enabled() && "active".equals(next.status());
+        boolean amplifies=create?nextEnabled && settings.baseReward().signum()>0
+                :settings.baseReward().compareTo(current.baseReward())>0 || nextEnabled && (!current.enabled() || settings.durationMinutes()<current.durationMinutes());
+        // 只看原始命令:新增一律 CREATE,编辑一律 UPDATE(即使 enabled=false 或前后值相同),不看实时库状态。
+        String action=create?"CREATE":"UPDATE";
         return new RuleTaskReview(lock,next.name(),before,ruleDescription(next.name(),next.taskClass(),
-                settings.enabled() && "active".equals(next.status()),settings.durationMinutes(),settings.baseReward(),settings.asset()),null);
+                nextEnabled,settings.durationMinutes(),settings.baseReward(),settings.asset()),null, amplifies, action);
     }
     private String ruleDescription(String name,String taskClass,boolean enabled,int minutes,BigDecimal reward,String asset) {
         return name+" · "+classSummary(List.of(taskClass))+" · "+(enabled?"启用":"停用")+" · "+minutes+" 分钟 · "+reward.stripTrailingZeros().toPlainString()+" "+asset;
     }
+
     public PhoneClassReview phoneClassReview(AuditReplayCommand command) {
         var policy=simulationPolicies.productView("phone");
         var params=command.params();
+        if(params.containsKey("monthlyTargetUsdt") || params.containsKey("monthlyTargetBandPct") || params.containsKey("clearMonthlyTarget"))
+            throw new BizException(422,"MONTHLY_TARGET_DEVICE_INELIGIBLE");
         if(!Objects.equals(strictPolicyVersion(params.get("expectedVersion")),policy.productTaskPolicyVersion()))
             throw new BizException(409,"SIMULATED_PRODUCT_POLICY_VERSION_CONFLICT");
-        var classes=simulationPolicies.writeClasses(taskClassesParam(params),
-                params.containsKey("allowedTaskTypeIds")?strList(params,"allowedTaskTypeIds"):null,
-                policy.allowedTaskClasses(),policy.allowedTaskTypeIds());
-        if(classes.isEmpty())throw new BizException(422,"SIMULATED_TASK_CLASSES_REQUIRED");
-        return new PhoneClassReview(classSummary(policy.allowedTaskClasses()),classSummary(classes));
+        var pools=simulationPolicies.writePools("phone",poolCodesParam(params),policy.allowedPoolCodes());
+        return new PhoneClassReview(String.join(",",policy.allowedPoolCodes()),String.join(",",pools));
     }
     private String classSummary(List<String> classes) {
         var names=Map.of("EM","向量计算","SP","语音处理","IG","图像生成","LL","大模型推理","FT","模型微调","VG","视频生成");
@@ -5480,13 +6142,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 str(p, "unlockPhase"), buildPurchaseGate(p), str(p, "imageAssetId"),
                 str(p, "imageObjectKey"), str(p, "imagePreviewUrl"), str(p, "tag"),
                 str(p, "status"), reason, operator, str(p, "inventoryMode"),
-                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"), p.containsKey("allowedTaskTypeIds")?strList(p, "allowedTaskTypeIds"):null,taskClassesParam(p));
+                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"), poolCodesParam(p),decimal(p,"monthlyTargetUsdt"),decimal(p,"monthlyTargetBandPct"),boolVal(p,"clearMonthlyTarget"),str(p,"seriesCode"));
     }
 
-    private static List<String> taskClassesParam(Map<String,Object> params) {
-        if(!params.containsKey("allowedTaskClasses"))return null;
-        if(!(params.get("allowedTaskClasses") instanceof List<?> values) || values.stream().anyMatch(value->!(value instanceof String)))
-            throw new BizException(422,"SIMULATED_TASK_CLASS_INVALID");
+    private static List<String> poolCodesParam(Map<String,Object> params) {
+        if(params.containsKey("allowedTaskClasses") || params.containsKey("allowedTaskTypeIds"))
+            throw new BizException(422,"TASK_POOL_FORMAT_RETIRED");
+        if(!params.containsKey("allowedPoolCodes"))return null;
+        if(!(params.get("allowedPoolCodes") instanceof List<?> values) || values.stream().anyMatch(v->!(v instanceof String)))
+            throw new BizException(422,"SKU_POOL_KIND_INVALID");
         return values.stream().map(String.class::cast).toList();
     }
 
@@ -5519,7 +6183,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 decimal(p, "minReward"), decimal(p, "maxReward"), str(p, "minVram"), str(p, "killInit"),
                 reason, operator, schedulingInt(p, "selectionWeight"), schedulingInt(p, "expectedDurationMinSec"),
                 schedulingInt(p, "expectedDurationMaxSec"), schedulingInt(p, "executionTimeoutSec"),
-                str(p, "runtimeKey"), str(p, "validatorKey"), str(p, "workloadConfigJson"),simulationSettings(p));
+                str(p, "runtimeKey"), str(p, "validatorKey"), str(p, "workloadConfigJson"),simulationSettings(p),str(p,"poolCode"));
     }
 
     private static ffdd.opsconsole.device.dto.TaskSimulationSettings simulationSettings(Map<String,Object> params) {
@@ -5547,13 +6211,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
     }
 
-    /** 从 replay params 重建 DeviceDatacenterUpsertRequest(e5_datacenter_create/update 复用)。 */
-    private static DeviceDatacenterUpsertRequest buildDatacenterUpsertRequest(Map<String, Object> p, String reason, String operator) {
-        return new DeviceDatacenterUpsertRequest(
-                str(p, "dcLocation"), str(p, "regionLabel"), str(p, "status"),
-                intVal(p, "sortOrder"), reason, operator,
-                str(p, "location"), str(p, "displayName"));
-    }
 
     /** 从 replay params 取字符串,null 安全。 */
     private static String str(Map<String, Object> params, String key) {

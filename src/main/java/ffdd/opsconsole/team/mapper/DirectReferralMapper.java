@@ -34,6 +34,10 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
     @Select("SELECT COALESCE(MAX(policy_version),0) FROM nx_direct_referral_policy FOR UPDATE") long latestVersionForUpdate();
     @Select("SELECT usdt_rate*100 usdtPct,nex_per_usd nexReward FROM nx_commission_rule WHERE commission_type='UNILEVEL' AND layer_no=1 AND status=1 AND is_deleted=0 ORDER BY id LIMIT 1 FOR UPDATE")
     List<Map<String,Object>> sevenLayerReferenceForUpdate();
+    @Select(TeamCommissionMapper.UNILEVEL_RATES_SQL)
+    List<Map<String,Object>> sevenLayerRates();
+    @Select(TeamCommissionMapper.UNILEVEL_RATES_SQL + " FOR UPDATE")
+    List<Map<String,Object>> sevenLayerRatesForUpdate();
     @Insert("INSERT INTO nx_direct_referral_policy(policy_version,effective_at,purchase_json,device_earning_json,operation_id,reason) VALUES(#{policyVersion},#{effectiveAt},#{purchaseJson},#{deviceEarningJson},#{operationId},#{reason})")
     int insertPolicy(@Param("policyVersion") long version,@Param("effectiveAt") LocalDateTime at,@Param("purchaseJson") String purchase,
                      @Param("deviceEarningJson") String earning,@Param("operationId") String operationId,@Param("reason") String reason);
@@ -94,7 +98,14 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
       ON DUPLICATE KEY UPDATE recovered_amount=#{recovered},pending_amount=#{pending},updated_at=NOW()
       """) int saveEventRecovery(@Param("id") Long id,@Param("ref") String ref,@Param("env") String env,@Param("run") String run,@Param("user") Long user,@Param("asset") String asset,
         @Param("target") BigDecimal target,@Param("recovered") BigDecimal recovered,@Param("pending") BigDecimal pending);
-    @Update("UPDATE nx_commission_event SET status=#{status},version=version+1,updated_at=NOW() WHERE id=#{id}") int recoveredEventStatus(@Param("id") Long id,@Param("status") String status);
+    @Update("""
+      UPDATE nx_commission_event
+         SET unlock_at=CASE WHEN status='FROZEN' AND #{status}='COOLING' AND unlock_at IS NOT NULL
+                   THEN DATE_ADD(NOW(), INTERVAL GREATEST(0,TIMESTAMPDIFF(SECOND,updated_at,unlock_at)) SECOND)
+                   ELSE unlock_at END,
+             status=#{status},version=version+1,updated_at=NOW()
+       WHERE id=#{id}
+      """) int recoveredEventStatus(@Param("id") Long id,@Param("status") String status);
     @Select("SELECT id FROM nx_user WHERE id=#{id} AND sandbox=#{sandbox} AND status='ACTIVE' AND is_deleted=0")
     Long activeUser(@Param("id") Long id,@Param("sandbox") int sandbox);
     @Select("SELECT id FROM nx_user WHERE id=#{id} AND sandbox=#{sandbox} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
@@ -189,7 +200,7 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
     @Select("SELECT * FROM nx_direct_referral_settlement WHERE settlement_no=#{no}") Map<String,Object> group(String no);
     @Select("SELECT biz_no FROM nx_wallet_ledger WHERE user_id=#{userId} AND biz_type='TEAM_COMMISSION' AND direction='OUT' AND biz_no LIKE CONCAT(#{no},'-RECOVER-%') ORDER BY id")
     List<String> recoveryLedgerRefs(@Param("no") String no,@Param("userId") Long userId);
-    @Select("SELECT id,status,version,currency FROM nx_commission_event WHERE id IN (#{usdt},#{nex}) ORDER BY id FOR UPDATE")
+    @Select("SELECT id,status,version,currency,unlock_at AS unlockAt FROM nx_commission_event WHERE id IN (#{usdt},#{nex}) ORDER BY id FOR UPDATE")
     List<Map<String,Object>> lockEvents(@Param("usdt") Long usdt,@Param("nex") Long nex);
     @Select("SELECT id,status,version,currency FROM nx_commission_event WHERE id=#{id}") Map<String,Object> eventView(Long id);
     @Select("SELECT COUNT(*) FROM nx_commission_user_suspension WHERE user_id=#{userId} AND kind=#{kind} AND status='SUSPENDED'")

@@ -46,7 +46,7 @@ import org.springframework.util.StringUtils;
 @ApplicationService
 @RequiredArgsConstructor
 public class F5CommissionService {
-    private static final Set<String> KINDS =
+    public static final Set<String> KINDS =
             Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning");
     private static final Set<String> STATUSES =
             Set.of("cooling", "unlocked", "withdrawn", "reversed", "frozen", "rejected", "recovery_pending");
@@ -72,7 +72,7 @@ public class F5CommissionService {
         NormalizedQuery normalized = normalizeQuery(query);
         List<Map<String, Object>> rows = mapper.queryEvents(
                 normalized.kind(), normalized.currency(), normalized.userId(), normalized.status(),
-                normalized.cohort(), normalized.cursor(), normalized.limit() + 1);
+                normalized.cohort(), normalized.cursor(), normalized.limit() + 1, null);
         boolean hasNext = rows.size() > normalized.limit();
         List<Map<String, Object>> items = rows.stream().limit(normalized.limit()).map(this::eventView).toList();
         Long nextCursor = hasNext && !items.isEmpty()
@@ -80,8 +80,9 @@ public class F5CommissionService {
                 : null;
         long total = mapper.countEvents(
                 normalized.kind(), normalized.currency(), normalized.userId(), normalized.status(), normalized.cohort());
-        List<Map<String, Object>> sample = mapper.queryEvents(null, null, null, null, null, null, 200);
-        List<Map<String, Object>> anomalies = anomalyViews(sample);
+        List<Map<String, Object>> sample = mapper.queryExportEvents(null, null, null, null, null, null, 200);
+        AnomalySnapshot anomalySnapshot = anomalyViews(sample);
+        List<Map<String, Object>> anomalies = anomalySnapshot.anomalies();
         List<Map<String, Object>> kindAggregates = mapper.aggregateCommissionKinds();
         List<Map<String, Object>> statusAggregates = mapper.aggregateCommissionStatuses();
         if (kindAggregates == null || statusAggregates == null) {
@@ -132,6 +133,7 @@ public class F5CommissionService {
                 "nextCursor", nextCursor == null ? "" : String.valueOf(nextCursor),
                 "total", total));
         response.put("anomalies", anomalies);
+        response.put("layerRatioComparisons", anomalySnapshot.layerRatioComparisons());
         response.put("coolingPolicy", coolingPolicy());
         response.put("operationHistory", mapper.recentOperations(50));
         response.put("activeSuspensions", mapper.activeSuspensions(100));
@@ -165,6 +167,16 @@ public class F5CommissionService {
                 "nx_wallet_ledger",
                 "nx_event_outbox"));
         return ApiResult.ok(response);
+    }
+
+    public ApiResult<Map<String, Object>> commission(String commissionId) {
+        Long eventId = eventId(commissionId);
+        List<Map<String, Object>> rows = mapper.queryEvents(
+                null, null, null, null, null, null, 1, eventId);
+        if (rows == null || rows.isEmpty()) {
+            return ApiResult.fail(404, "COMMISSION_EVENT_NOT_FOUND");
+        }
+        return ApiResult.ok(eventView(rows.get(0)));
     }
 
     /**
@@ -343,15 +355,17 @@ public class F5CommissionService {
     }
 
     public ApiResult<Map<String, Object>> anomalies(String type, Long cursor) {
-        List<Map<String, Object>> anomalies = anomalyViews(
-                mapper.queryEvents(null, null, null, null, null, cursor, 200));
+        AnomalySnapshot snapshot = anomalyViews(
+                mapper.queryExportEvents(null, null, null, null, null, cursor, 200));
+        List<Map<String, Object>> anomalies = snapshot.anomalies();
         if (StringUtils.hasText(type)) {
             String expected = type.trim().toLowerCase(Locale.ROOT);
             anomalies = anomalies.stream()
                     .filter(row -> expected.equals(String.valueOf(row.get("type")).toLowerCase(Locale.ROOT)))
                     .toList();
         }
-        return ApiResult.ok(linked("items", anomalies, "nextCursor", ""));
+        return ApiResult.ok(linked("items", anomalies, "nextCursor", "",
+                "layerRatioComparisons", snapshot.layerRatioComparisons()));
     }
 
     public ApiResult<Map<String, Object>> reverse(
@@ -671,15 +685,19 @@ public class F5CommissionService {
                 "frozenOpenEvents", frozen));
     }
 
-    private List<Map<String, Object>> anomalyViews(List<Map<String, Object>> source) {
+    private record AnomalySnapshot(
+            List<Map<String, Object>> anomalies, List<Map<String, Object>> layerRatioComparisons) { }
+
+    private AnomalySnapshot anomalyViews(List<Map<String, Object>> source) {
         List<Map<String, Object>> rows = source.stream().map(this::eventView).toList();
-        Map<String, List<Map<String, Object>>> byKind = new LinkedHashMap<>();
+        Map<List<String>, List<Map<String, Object>>> byKindAndCurrency = new LinkedHashMap<>();
         for (Map<String, Object> row : rows) {
-            byKind.computeIfAbsent(text(row.get("kind")), ignored -> new ArrayList<>()).add(row);
+            List<String> key = List.of(text(row.get("kind")), text(row.get("currency")));
+            byKindAndCurrency.computeIfAbsent(key, ignored -> new ArrayList<>()).add(row);
         }
         List<Map<String, Object>> anomalies = new ArrayList<>();
         double sigmaThreshold = anomalySigma().doubleValue();
-        for (Map.Entry<String, List<Map<String, Object>>> entry : byKind.entrySet()) {
+        for (Map.Entry<List<String>, List<Map<String, Object>>> entry : byKindAndCurrency.entrySet()) {
             double mean = entry.getValue().stream().mapToDouble(row -> decimal(row.get("amount")).doubleValue()).average().orElse(0);
             double variance = entry.getValue().stream()
                     .mapToDouble(row -> {
@@ -692,12 +710,14 @@ public class F5CommissionService {
                 for (Map<String, Object> row : entry.getValue()) {
                     double z = Math.abs(decimal(row.get("amount")).doubleValue() - mean) / standardDeviation;
                     if (z > sigmaThreshold) {
-                        anomalies.add(anomaly(
+                        Map<String, Object> anomaly = anomaly(
                                 "amount",
                                 row,
-                                "单笔金额偏离 " + entry.getKey() + " 均值 "
+                                "单笔金额偏离 " + entry.getKey().get(0) + " 均值 "
                                         + BigDecimal.valueOf(z).setScale(2, RoundingMode.HALF_UP) + "σ",
-                                "K4 金额异常维度"));
+                                "K4 金额异常维度");
+                        anomaly.put("currency", entry.getKey().get(1));
+                        anomalies.add(anomaly);
                     }
                 }
             }
@@ -721,63 +741,82 @@ public class F5CommissionService {
                         "K1/K2 高频簇复核"));
             }
         }
-        anomalies.addAll(layerRatioAnomalies(rows));
-        return anomalies;
+        AnomalySnapshot layerRatios = layerRatioAnomalies(rows);
+        anomalies.addAll(layerRatios.anomalies());
+        return new AnomalySnapshot(List.copyOf(anomalies), layerRatios.layerRatioComparisons());
     }
 
-    private List<Map<String, Object>> layerRatioAnomalies(List<Map<String, Object>> rows) {
+    private AnomalySnapshot layerRatioAnomalies(List<Map<String, Object>> rows) {
         Map<Integer, BigDecimal> theory = new LinkedHashMap<>();
         for (Map<String, Object> row : mapper.theoreticalLayerRates()) {
             Long layer = longValue(row.get("layer"));
-            if (layer != null) {
+            if (layer != null && row.get("theoreticalPct") != null) {
                 theory.put(layer.intValue(), decimal(row.get("theoreticalPct")));
             }
         }
-        BigDecimal networkTotal = rows.stream()
-                .filter(row -> "network".equals(text(row.get("kind"))))
-                .map(row -> decimal(row.get("amount")))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (networkTotal.signum() <= 0 || theory.isEmpty()) {
-            return List.of();
+        Map<String, List<Map<String, Object>>> byCurrency = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            if ("network".equals(text(row.get("kind")))) {
+                byCurrency.computeIfAbsent(text(row.get("currency")), ignored -> new ArrayList<>()).add(row);
+            }
         }
         BigDecimal theoryTotal = theory.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (theoryTotal.signum() <= 0) {
-            return List.of();
-        }
-        Map<Integer, BigDecimal> actual = new LinkedHashMap<>();
-        for (Map<String, Object> row : rows) {
-            if (!"network".equals(text(row.get("kind")))) continue;
-            Long layer = longValue(row.get("layer"));
-            if (layer != null) {
-                actual.merge(layer.intValue(), decimal(row.get("amount")), BigDecimal::add);
-            }
-        }
         BigDecimal threshold = layerRatioThreshold();
         List<Map<String, Object>> anomalies = new ArrayList<>();
-        for (Map.Entry<Integer, BigDecimal> entry : actual.entrySet()) {
-            BigDecimal expected = theory.get(entry.getKey());
-            if (expected == null) continue;
-            BigDecimal actualPct = entry.getValue()
-                    .multiply(new BigDecimal("100"))
-                    .divide(networkTotal, 6, RoundingMode.HALF_UP);
-            BigDecimal theoreticalPct = expected
-                    .multiply(new BigDecimal("100"))
-                    .divide(theoryTotal, 6, RoundingMode.HALF_UP);
-            BigDecimal deviation = actualPct.subtract(theoreticalPct).abs();
-            if (deviation.compareTo(threshold) > 0) {
-                anomalies.add(linked(
-                        "id", "LAYER-L" + entry.getKey(),
-                        "type", "layer-ratio",
-                        "userId", "",
-                        "cluster", "K4",
-                        "evidence", "L" + entry.getKey() + " 实际占比 "
-                                + actualPct.setScale(2, RoundingMode.HALF_UP) + "% / 理论占比 "
-                                + theoreticalPct.setScale(2, RoundingMode.HALF_UP) + "%",
-                        "relatedKCluster", "K4 层比例套利维度",
-                        "status", "open"));
+        List<Map<String, Object>> comparisons = new ArrayList<>();
+        for (Map.Entry<String, List<Map<String, Object>>> currency : byCurrency.entrySet()) {
+            if (!"USDT".equals(currency.getKey())) {
+                comparisons.add(linked("currency", currency.getKey(), "available", false,
+                        "reason", "F5_LAYER_RATIO_THEORY_UNAVAILABLE", "layers", null,
+                        "theoreticalPct", null, "deviation", null));
+                continue;
             }
+            Map<Integer, BigDecimal> actual = new LinkedHashMap<>();
+            boolean missingLayer = false;
+            for (Map<String, Object> row : currency.getValue()) {
+                Long layer = longValue(row.get("layer"));
+                if (layer == null || !theory.containsKey(layer.intValue())) {
+                    missingLayer = true;
+                } else {
+                    actual.merge(layer.intValue(), decimal(row.get("amount")), BigDecimal::add);
+                }
+            }
+            BigDecimal networkTotal = actual.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+            String unavailable = theory.isEmpty() || theoryTotal.signum() <= 0
+                    ? "F5_LAYER_RATIO_THEORY_UNAVAILABLE"
+                    : missingLayer ? "F5_LAYER_RATIO_LAYER_UNAVAILABLE"
+                    : networkTotal.signum() <= 0 ? "F5_LAYER_RATIO_SAMPLE_UNAVAILABLE" : null;
+            if (unavailable != null) {
+                comparisons.add(linked("currency", currency.getKey(), "available", false,
+                        "reason", unavailable, "layers", null, "theoreticalPct", null, "deviation", null));
+                continue;
+            }
+            List<Map<String, Object>> layers = new ArrayList<>();
+            for (Map.Entry<Integer, BigDecimal> entry : actual.entrySet()) {
+                BigDecimal actualPct = entry.getValue().multiply(new BigDecimal("100"))
+                        .divide(networkTotal, 6, RoundingMode.HALF_UP);
+                BigDecimal theoreticalPct = theory.get(entry.getKey()).multiply(new BigDecimal("100"))
+                        .divide(theoryTotal, 6, RoundingMode.HALF_UP);
+                BigDecimal deviation = actualPct.subtract(theoreticalPct).abs();
+                layers.add(linked("layer", entry.getKey(), "actualPct", actualPct,
+                        "theoreticalPct", theoreticalPct, "deviation", deviation));
+                if (deviation.compareTo(threshold) > 0) {
+                    anomalies.add(linked(
+                            "id", "LAYER-L" + entry.getKey(),
+                            "type", "layer-ratio", "currency", currency.getKey(),
+                            "userId", "",
+                            "cluster", "K4",
+                            "evidence", "L" + entry.getKey() + " 实际占比 "
+                                    + actualPct.setScale(2, RoundingMode.HALF_UP) + "% / 理论占比 "
+                                    + theoreticalPct.setScale(2, RoundingMode.HALF_UP) + "%",
+                            "relatedKCluster", "K4 层比例套利维度",
+                            "status", "open"));
+                }
+            }
+            comparisons.add(linked("currency", currency.getKey(), "available", true, "reason", null,
+                    "basis", "CURRENT_ACTIVE_UNILEVEL_USDT_RATE", "layers", List.copyOf(layers)));
         }
-        return anomalies;
+        return new AnomalySnapshot(List.copyOf(anomalies), List.copyOf(comparisons));
     }
 
     private Map<String, Object> anomaly(
@@ -796,7 +835,9 @@ public class F5CommissionService {
     private Map<String, Object> eventView(Map<String, Object> raw) {
         Map<String, Object> row = new LinkedHashMap<>(raw);
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
-        if (direct != null && direct.groupForEvent(longValue(raw.get("eventId"))) != null) row.putAll(direct.eventSnapshot(longValue(raw.get("eventId"))));
+        Long eventId = longValue(raw.get("eventId"));
+        boolean grouped = direct != null && eventId != null && direct.groupForEvent(eventId) != null;
+        if (grouped) row.putAll(direct.eventSnapshot(eventId));
         String commissionId = text(raw.get("commissionId"));
         Long userId = longValue(raw.get("userId"));
         String status = text(row.get("status"));
@@ -820,7 +861,65 @@ public class F5CommissionService {
             default -> status;
         });
         row.put("auditKey", "F.commission." + commissionId + ".status");
+        row.putAll(actionAvailability(grouped, text(row.get("rawStatus")), text(row.get("groupStatus")),
+                text(row.get("kind")), longValue(row.get("unlockAt")), flagValue(row.get("reversalRecorded"))));
         return row;
+    }
+
+    /**
+     * 当前读取快照下两操作是否可提交。与 F5 写入口保持同一状态、冷却、结算组口径；
+     * 只做投影，不调用 release/reverse，也不替代写入前的原复核。
+     */
+    private Map<String, Object> actionAvailability(boolean grouped, String status, String groupStatus,
+            String sourceType, Long unlockAt, boolean reversalRecorded) {
+        if (status.isBlank() || (grouped && groupStatus.isBlank())) {
+            return linked(
+                    "canUnlock", false,
+                    "unlockBlockedReason", "F5_COMMISSION_STATE_UNAVAILABLE",
+                    "canReverse", false,
+                    "reverseBlockedReason", "F5_COMMISSION_STATE_UNAVAILABLE");
+        }
+        String eventState = OpsTeamService.canonicalCommissionState(status);
+        String groupState = OpsTeamService.canonicalCommissionState(groupStatus);
+        boolean coolingActive = unlockAt != null && unlockAt > Instant.now().toEpochMilli();
+        boolean canUnlock;
+        String unlockBlockedReason = null;
+        boolean canReverse;
+        String reverseBlockedReason = null;
+        if (grouped) {
+            boolean groupOpen = "network".equals(sourceType)
+                    ? Set.of("COOLING", "FROZEN", "UNLOCKED").contains(groupState)
+                    : Set.of("COOLING", "UNLOCKED").contains(groupState);
+            boolean unlockState = "COOLING".equals(eventState);
+            canUnlock = unlockState && groupOpen && !reversalRecorded && !coolingActive;
+            if (!canUnlock) {
+                if (!unlockState) unlockBlockedReason = "INVALID_STATE_TRANSITION";
+                else if (!groupOpen || reversalRecorded) unlockBlockedReason = "DIRECT_REFERRAL_RELEASE_STATE_CONFLICT";
+                else unlockBlockedReason = "DIRECT_REFERRAL_COOLING_ACTIVE";
+            }
+            // reverseEvent 的组状态统一允许 COOLING/FROZEN/UNLOCKED；非网络组直接走整组 reverse，不读单事件状态。
+            boolean reverseGroupOpen = Set.of("COOLING", "FROZEN", "UNLOCKED").contains(groupState);
+            boolean reverseState = !"network".equals(sourceType)
+                    || Set.of("COOLING", "FROZEN", "UNLOCKED", "AVAILABLE").contains(eventState);
+            canReverse = reverseGroupOpen && !reversalRecorded && reverseState;
+            if (!canReverse) reverseBlockedReason = "COMMISSION_REVERSE_STATE_CONFLICT";
+        } else {
+            // 无分组 legacy 的 A2 解锁只受状态机约束，冷却期内仍可手工解锁。
+            canUnlock = "COOLING".equals(eventState);
+            if (!canUnlock) unlockBlockedReason = "INVALID_STATE_TRANSITION";
+            // 无分组冲正允许 PENDING/COOLING/UNLOCKED/AVAILABLE，FROZEN 不在现执行范围。
+            canReverse = Set.of("COOLING", "UNLOCKED", "AVAILABLE").contains(eventState);
+            if (!canReverse) reverseBlockedReason = "COMMISSION_REVERSE_STATE_CONFLICT";
+        }
+        return linked(
+                "canUnlock", canUnlock,
+                "unlockBlockedReason", unlockBlockedReason,
+                "canReverse", canReverse,
+                "reverseBlockedReason", reverseBlockedReason);
+    }
+
+    private boolean flagValue(Object value) {
+        return Boolean.TRUE.equals(value) || (value instanceof Number number && number.intValue() != 0);
     }
 
     private Map<String, Object> summary(
@@ -929,9 +1028,10 @@ public class F5CommissionService {
             totals.merge(currency, amount, BigDecimal::add);
             count = Math.addExact(count, rowCount);
         }
+        // The stored amounts are DECIMAL(18,6); the summary reports their own precision, never a re-rounded one.
         return linked(
-                "usdt", totals.getOrDefault("USDT", BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP),
-                "nex", totals.getOrDefault("UVT", BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP),
+                "usdt", totals.getOrDefault("USDT", BigDecimal.ZERO),
+                "nex", totals.getOrDefault("UVT", BigDecimal.ZERO),
                 "count", count);
     }
 

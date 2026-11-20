@@ -1,6 +1,7 @@
 package ffdd.opsconsole.auth.application;
 
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.auth.captcha.CaptchaOtpGate;
 import ffdd.opsconsole.auth.captcha.CaptchaScene;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -22,6 +23,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
+import ffdd.opsconsole.user.application.UserNicknames;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import jakarta.annotation.PostConstruct;
@@ -67,7 +69,7 @@ public class AppUserRegistrationService {
             DayOneInstanceFacade dayOneInstanceFacade,
             ffdd.opsconsole.content.facade.SupportRegistrationFacade supportBindingService,
             AuthNewAccountCreator accountCreator) {
-        this(null,mapper,userMapper,passwordEncoder,otpDeliveryService,authService,outboxService,transactionExecutor,environment,referralRewardService,configFacade,loginGuardMapper,captchaGate,dayOneInstanceFacade,supportBindingService,accountCreator);
+        this(null,mapper,userMapper,passwordEncoder,otpDeliveryService,authService,outboxService,transactionExecutor,environment,referralRewardService,configFacade,loginGuardMapper,captchaGate,dayOneInstanceFacade,supportBindingService,accountCreator,null);
     }
     private static final String K1_MAX_SIGNUP_PER_IP_24H = "maxSignupPerIp24h";
     private static final Set<String> WEAK_PASSWORDS = Set.of(
@@ -89,6 +91,7 @@ public class AppUserRegistrationService {
     private final DayOneInstanceFacade dayOneInstanceFacade;
     private final ffdd.opsconsole.content.facade.SupportRegistrationFacade supportBindingService;
     private final AuthNewAccountCreator accountCreator;
+    private final PlatformExperienceConfigService experienceConfigService;
 
     @Transactional(propagation = Propagation.MANDATORY)
     public ApiResult<UserLoginResponse> registerProvider(String provider, String subject, String displayName,
@@ -106,18 +109,19 @@ public class AppUserRegistrationService {
         if ("unknown".equalsIgnoreCase(ip)) throw new BizException(503, "USER_REGISTRATION_CLIENT_IP_UNAVAILABLE");
         checkRegistrationLimits(ip,0,context);
         if (context.group()==AppSessionSurface.H5 && context.installationId().isEmpty()) {
-            var decision=captchaGate.checkAndConsume(CaptchaScene.REGISTER,captchaTicket,ip,0,true);
+            CaptchaScene scene = OAuthProviderClient.publicTest(environment)
+                    && ("GOOGLE".equals(provider) || "TELEGRAM".equals(provider) || "APPLE".equals(provider))
+                    ? CaptchaScene.LOGIN : CaptchaScene.REGISTER;
+            var decision=captchaGate.checkAndConsume(scene,captchaTicket,ip,0,true);
             if (!decision.allowed()) throw new BizException(decision.status(),decision.code());
         }
         String code = suppliedCode(sponsorCode);
         UserEntity sponsor = resolveSponsor(code,0);
-        String name = StringUtils.hasText(displayName) ? displayName.trim() : "UVEL User";
-        name = name.substring(0, Math.min(name.length(), 64));
         String referralCode = nextReferralCode();
         AuthNewAccountCreator.BirthHandle birth = accountCreator.insertNew(
                 new ffdd.opsconsole.user.facade.UserRegistrationWriteFacade.NewAccountCommand(
                         null, null, ip, passwordEncoder.encode(UUID.randomUUID().toString()),
-                        name, referralCode, sponsor == null ? null : sponsor.getId(),
+                        UserNicknames.next(userMapper::nicknameTaken), referralCode, sponsor == null ? null : sponsor.getId(),
                         sponsor == null ? null : sponsor.getReferralCode(), "L1", "V0", "ACTIVE", 0, "en-US"));
         long userId = birth.customerId();
         var identity = new UserOAuthIdentityEntity();
@@ -134,8 +138,7 @@ public class AppUserRegistrationService {
         if (advisorCode(code)==null) createTeamGraphProjection(userId, 0);
         userMapper.resetLoginFailures(userId);
         accountCreator.ensureWallet(birth);
-        String eventId = outboxService.publish("USER_REGISTRATION", String.valueOf(userId),
-                "auth.register_completed", Map.of("userId", userId, "locale", "en"));
+        String eventId = publishRegistrationEvent(userId, "en");
         accountCreator.complete(birth, eventId);
         if (sponsor != null) outboxService.publish("USER_REFERRAL", String.valueOf(userId),
                 "referral.bound", Map.of("userId", userId, "sponsorUserId", sponsor.getId(),
@@ -344,6 +347,10 @@ public class AppUserRegistrationService {
                 || !validPassword(request.password(), request.phone())) {
             return ApiResult.fail(422, "USER_REGISTRATION_REQUEST_INVALID");
         }
+        String requestedLanguage = StringUtils.hasText(request.language())
+                ? request.language().trim().toLowerCase(Locale.ROOT) : "en-US";
+        String effectiveLanguage = experienceConfigService.interfaceLanguages()
+                .contains(InterfaceLanguages.baseCode(requestedLanguage)) ? requestedLanguage : "en";
         String countryCode = normalizeCountryCode(request.countryCode());
         String phone = request.phone().trim();
         String challengeNo = request.challengeNo().trim();
@@ -385,7 +392,7 @@ public class AppUserRegistrationService {
         user.setPhone(phone);
         user.setClientIp(registrationIp.trim());
         user.setPasswordHash(passwordEncoder.encode(request.password()));
-        user.setNickname("UVEL " + phone.substring(Math.max(0, phone.length() - 4)));
+        user.setNickname(UserNicknames.next(userMapper::nicknameTaken));
         user.setReferralCode(nextReferralCode());
         user.setSponsorUserId(sponsor == null ? null : sponsor.getId());
         user.setSponsorCode(sponsor == null ? null : sponsor.getReferralCode());
@@ -393,8 +400,7 @@ public class AppUserRegistrationService {
         user.setVRank("V0");
         user.setStatus("ACTIVE");
         user.setSandbox(sandbox);
-        user.setLanguage(StringUtils.hasText(request.language())
-                ? request.language().trim().toLowerCase(java.util.Locale.ROOT) : "en-US");
+        user.setLanguage(effectiveLanguage);
         user.setIsDeleted(0);
         AuthNewAccountCreator.BirthHandle birth;
         try {
@@ -413,11 +419,7 @@ public class AppUserRegistrationService {
         if (advisorCode(invitationCode)==null) createTeamGraphProjection(user.getId(), sandbox);
         userMapper.resetLoginFailures(user.getId());
         accountCreator.ensureWallet(birth);
-        String registrationEventId = outboxService.publish(
-                "USER_REGISTRATION",
-                String.valueOf(user.getId()),
-                "auth.register_completed",
-                Map.of("userId", user.getId(), "locale", InterfaceLanguages.baseCode(user.getLanguage())));
+        String registrationEventId = publishRegistrationEvent(user.getId(), InterfaceLanguages.baseCode(user.getLanguage()));
         accountCreator.complete(birth, registrationEventId);
         if (sponsor != null) {
             outboxService.publish(
@@ -432,6 +434,12 @@ public class AppUserRegistrationService {
         ApiResult<UserLoginResponse> session = authService.issueRegisteredSession(user, clientAddress, context);
         if (session.getData()==null || session.getCode()!=0) throw new BizException(session.getCode(),session.getMessage());
         return ApiResult.ok(session.getData().withRegistrationReceipt(receipt));
+    }
+
+    private String publishRegistrationEvent(long userId, String locale) {
+        String phase = configFacade.activeValue("growth.phase.current").orElse("P1");
+        return outboxService.publish("USER_REGISTRATION", String.valueOf(userId), "auth.register_completed",
+                Map.of("userId", userId, "locale", locale, "registration_phase", phase));
     }
 
     private String suppliedCode(String raw) {

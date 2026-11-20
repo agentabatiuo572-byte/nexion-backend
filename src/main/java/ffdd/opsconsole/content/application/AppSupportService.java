@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.ContentConversationDetail;
+import ffdd.opsconsole.content.domain.ContentConversationDetail.AppWriteState;
 import ffdd.opsconsole.content.domain.ContentConversationMessageView;
 import ffdd.opsconsole.content.domain.ContentConversationView;
 import ffdd.opsconsole.content.domain.ConversationRepository;
@@ -18,6 +19,7 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
@@ -29,9 +31,11 @@ import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -51,6 +55,9 @@ public class AppSupportService {
     private static final Set<String> FAQ_SURFACES = Set.of("Help Center");
     private static final DateTimeFormatter NUMBER_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS");
     private static final int APP_MESSAGE_WINDOW = 100;
+    private static final String REPLY_SCOPE_PREFIX = "APP_CONVERSATION_REPLY:";
+    public static final String REPLY_REJECTION_RECEIPT = "APP_SUPPORT_REPLY_PREFLIGHT_REJECTED_V1";
+    private static final String REPLY_OPERATION = "APP_CONVERSATION_REPLY";
 
     private final ConversationRepository conversationRepository;
     private final SupportKnowledgeRepository knowledgeRepository;
@@ -195,22 +202,49 @@ public class AppSupportService {
         if (request == null || !SupportHumanMessageService.validContent(request.kind(),request.body()) || !validExpectation(request.expectedStatus(), request.expectedVersion())) {
             return validation("CONVERSATION_REPLY_INVALID");
         }
-        ApiResult<ContentConversationDetail> retained = idempotent("APP_CONVERSATION_REPLY:" + userId, idempotencyKey, hash(conversationNo, request), () -> {
+        String requestHash = hash(conversationNo, request);
+        ApiResult<ContentConversationDetail> retained = idempotent(REPLY_SCOPE_PREFIX + userId, idempotencyKey, requestHash, () -> {
             ownership.lockCustomer(userId);
             ContentConversationView conversation = ownedConversation(userId, conversationNo);
-            if (conversation == null) return hiddenNotFound("CONVERSATION_NOT_FOUND");
+            if (conversation == null) return replyRejection(404, "CONVERSATION_NOT_FOUND", userId, conversationNo,
+                    idempotencyKey, requestHash, request);
             var prepared=humanMessages.prepare(userId,"USER",userId,idempotencyKey,"REPLY:"+conversationNo,request,
                     request.clientMessageId(),request.kind(),"SERVICE",request.attachmentId(),request.expectedAssignmentId());
             if(prepared.previousMessageId()!=null) return replayConversation(userId,conversationNo);
             var advisor = supportAgentRepository.findActiveDedicatedAdvisor(userId).orElse(null);
-            if (!matches(conversation.status(), conversation.version(), request.expectedStatus(), request.expectedVersion())) return conversationConflict();
-            if (!Set.of("OPEN", "RESOLVED", "CLOSED").contains(normalizeUpper(conversation.status()))) return invalidConversationState();
+            if (!matches(conversation.status(), conversation.version(), request.expectedStatus(), request.expectedVersion())) {
+                return replyRejection(409, "CONVERSATION_CONFLICT", userId, conversationNo, idempotencyKey, requestHash, request);
+            }
+            if (!Set.of("OPEN", "RESOLVED", "CLOSED").contains(normalizeUpper(conversation.status()))) {
+                return replyRejection(409, "CONVERSATION_INVALID_STATE", userId, conversationNo, idempotencyKey, requestHash, request);
+            }
             String peer = advisor == null ? null : String.valueOf(advisor.adminId());
             boolean claimed = conversationRepository.claimUnassignedPeerForWrite(conversation.conversationNo(), peer);
-            conversationRepository.requirePeerForWrite(conversation.conversationNo(), peer);
+            try {
+                conversationRepository.requirePeerForWrite(conversation.conversationNo(), peer);
+            } catch (BizException failure) {
+                // The peer changed before any message write: retain the exact business rejection for the
+                // original sender, while still rolling back any peer claim made above.
+                if (failure.getCode() >= 400 && failure.getCode() < 500
+                        && replyReceiptEligible(idempotencyKey, request.clientMessageId(), conversationNo)) {
+                    throw new AdminCommandBusinessRejection(failure.getCode(), failure.getMessage(),
+                            replyRejectionResponse(failure.getCode(), failure.getMessage(), userId, conversationNo,
+                                    idempotencyKey, requestHash, request.clientMessageId()));
+                }
+                throw failure;
+            }
             if (!conversationRepository.replyAsUser(conversation, userId, SupportHumanMessageService.text(request.body()), LocalDateTime.now(clock))) {
-                if (claimed) throw new BizException(409, "CONVERSATION_CONFLICT");
-                return conversationConflict();
+                // The CAS returned 0 before the message insert. When this request claimed the peer, keep
+                // the rejection receipt while throwing to roll that claim back.
+                if (claimed) {
+                    if (replyReceiptEligible(idempotencyKey, request.clientMessageId(), conversationNo)) {
+                        throw new AdminCommandBusinessRejection(409, "CONVERSATION_CONFLICT",
+                                replyRejectionResponse(409, "CONVERSATION_CONFLICT", userId, conversationNo,
+                                        idempotencyKey, requestHash, request.clientMessageId()));
+                    }
+                    throw new BizException(409, "CONVERSATION_CONFLICT");
+                }
+                return replyRejection(409, "CONVERSATION_CONFLICT", userId, conversationNo, idempotencyKey, requestHash, request);
             }
             humanMessages.committed(prepared,humanMessages.latest(conversationNo),idempotencyKey);
             unboundReceipt.sendIfUnbound(userId, conversation.conversationNo());
@@ -228,10 +262,7 @@ public class AppSupportService {
         var conversation=conversationRepository.findByConversationNoForUpdate(no).orElse(null);
         if(conversation==null || !userId.equals(conversation.userId())) return hiddenNotFound("CONVERSATION_NOT_FOUND");
         var fetched=conversationRepository.currentRecentUserVisibleMessages(no,APP_MESSAGE_WINDOW+1);
-        boolean truncated=fetched.size()>APP_MESSAGE_WINDOW;
-        var page=fetched.stream().skip(truncated?1:0).toList();
-        return ApiResult.ok(new ContentConversationDetail(appConversation(conversation,true),page,null,truncated,
-                truncated && !page.isEmpty()?page.get(0).id():null));
+        return ApiResult.ok(conversationDetail(conversation, fetched, true));
     }
 
     private ContentConversationDetail conversationDetail(ContentConversationView conversation, Long beforeMessageId) {
@@ -239,10 +270,29 @@ public class AppSupportService {
                 ? conversationRepository.recentUserVisibleMessages(conversation.conversationNo(), APP_MESSAGE_WINDOW + 1)
                 : conversationRepository.recentUserVisibleMessagesBefore(
                         conversation.conversationNo(), beforeMessageId, APP_MESSAGE_WINDOW + 1);
+        return conversationDetail(conversation, fetched, false);
+    }
+
+    private ContentConversationDetail conversationDetail(ContentConversationView conversation,
+            List<ContentConversationMessageView> fetched, boolean currentRead) {
         boolean truncated = fetched.size() > APP_MESSAGE_WINDOW;
         List<ContentConversationMessageView> page = fetched.stream().skip(truncated ? 1 : 0).toList();
         Long nextCursor = truncated && !page.isEmpty() ? page.get(0).id() : null;
-        return new ContentConversationDetail(appConversation(conversation), page, null, truncated, nextCursor);
+        // App projection carries the stored peer. The original row carries the active assignment.
+        ContentConversationView projected = visibility.project(conversation, currentRead);
+        return new ContentConversationDetail(projected, page, null, truncated, nextCursor,
+                appWriteState(projected, conversation.ownerAgentId()));
+    }
+
+    private AppWriteState appWriteState(ContentConversationView conversation, String currentAdvisorId) {
+        if (!CONVERSATION_TYPES.contains(normalizeUpper(conversation.conversationType()))) return null;
+        String storedAdvisorId = conversation.ownerAgentId();
+        boolean canReply = Objects.equals(storedAdvisorId, currentAdvisorId)
+                || (storedAdvisorId == null && conversationRepository.canClaimUnassignedPeerForRead(
+                        conversation.conversationNo(), currentAdvisorId));
+        String writableConversationNo = canReply ? conversation.conversationNo()
+                : conversationRepository.currentCustomerConversationForRead(conversation.userId(), currentAdvisorId);
+        return new AppWriteState(canReply, writableConversationNo);
     }
 
     public ApiResult<List<SupportFaqView>> faqs(Long userId, String language, String category) {
@@ -255,7 +305,7 @@ public class AppSupportService {
         return ApiResult.ok(List.of(
                 new ConversationCategoryAvailability("advisor", conversationCategoryEnabled("advisor")),
                 new ConversationCategoryAvailability("support", false),
-                new ConversationCategoryAvailability("ai", conversationCategoryEnabled("ai"))));
+                new ConversationCategoryAvailability("ai", false)));
     }
 
     private boolean conversationCategoryEnabled(String type) {
@@ -285,10 +335,12 @@ public class AppSupportService {
         long safeSize = Math.max(1L, Math.min(50L, pageSize == null ? 20L : pageSize));
         long requestedCount = knowledgeRepository.countPublishedFaqs(
                 normalizedLanguage, normalizedSurface, normalizedCategory);
-        String effectiveLanguage = requestedCount > 0L || InterfaceLanguages.isAdditional(normalizedLanguage)
-                ? normalizedLanguage : "zh-CN";
-        long total = effectiveLanguage.equalsIgnoreCase(normalizedLanguage) ? requestedCount
-                : knowledgeRepository.countPublishedFaqs(effectiveLanguage, normalizedSurface, normalizedCategory);
+        String effectiveLanguage = normalizedLanguage;
+        long total = requestedCount;
+        if (requestedCount == 0L && "vi-VN".equals(normalizedLanguage)) {
+            effectiveLanguage = "en-US";
+            total = knowledgeRepository.countPublishedFaqs(effectiveLanguage, normalizedSurface, normalizedCategory);
+        }
         long offset;
         try {
             offset = Math.multiplyExact(safePage - 1L, safeSize);
@@ -307,6 +359,8 @@ public class AppSupportService {
      * the authenticated user by the only command scopes the production API writes.
      * A missing command is the only case returned as 404; in-flight, failed and
      * unknown rows remain explicit so the client never treats them as safe to replay.
+     * A retained pre-write reply rejection returns REJECTED/sent=false with its
+     * original business code and never returns the message body.
      */
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> commandResult(Long userId, String idempotencyKey) {
@@ -325,7 +379,7 @@ public class AppSupportService {
         return switch (normalizeUpper(record.getStatus())) {
             case "SUCCEEDED" -> recoverSucceededCommand(userId, record);
             case "PROCESSING" -> conflict("SUPPORT_COMMAND_IN_PROGRESS");
-            case "FAILED" -> conflict("SUPPORT_COMMAND_FAILED_RETRYABLE");
+            case "FAILED" -> recoverFailedCommand(userId, record);
             case "UNKNOWN" -> conflict("SUPPORT_COMMAND_RESULT_UNKNOWN");
             default -> conflict("SUPPORT_COMMAND_STATE_INVALID");
         };
@@ -343,6 +397,10 @@ public class AppSupportService {
                 if ("CONVERSATION_USER_CLEAR_CONFLICT".equals(reason)
                         || "CONVERSATION_USER_CLEAR_MEMBERS_CHANGED".equals(reason)) return conflict(reason);
             }
+            if (envelope != null && isReplyScope(record.getScope())) {
+                ApiResult<Map<String, Object>> rejection = recoverReplyRejection(userId, record, envelope);
+                if (rejection != null) return rejection;
+            }
             if (envelope == null || envelope.path("code").asInt(Integer.MIN_VALUE) != 0 || !envelope.hasNonNull("data")) {
                 return conflict("SUPPORT_COMMAND_NOT_COMMITTED");
             }
@@ -359,6 +417,64 @@ public class AppSupportService {
         }
     }
 
+    private ApiResult<Map<String, Object>> recoverFailedCommand(Long userId, AdminIdempotencyRecordEntity record) {
+        if (StringUtils.hasText(record.getResponseJson())) {
+            try {
+                JsonNode envelope = objectMapper.readTree(record.getResponseJson());
+                ApiResult<Map<String, Object>> rejection = recoverReplyRejection(userId, record, envelope);
+                if (rejection != null) return rejection;
+            } catch (JsonProcessingException | IllegalArgumentException ignored) {
+                // A FAILED row without a trusted receipt stays retryable; never infer that nothing was sent.
+            }
+        }
+        return conflict("SUPPORT_COMMAND_FAILED_RETRYABLE");
+    }
+
+    /**
+     * Validates the retained pre-write reply rejection. It is scoped to the original sender and the
+     * exact command key/hash; it never returns message content, attachments or customer profile.
+     */
+    private ApiResult<Map<String, Object>> recoverReplyRejection(Long userId, AdminIdempotencyRecordEntity record,
+                                                                  JsonNode envelope) {
+        if (!isReplyScope(record.getScope()) || !(REPLY_SCOPE_PREFIX + userId).equals(record.getScope())) return null;
+        JsonNode detail = envelope == null ? null : envelope.path("data");
+        if (detail == null || !REPLY_REJECTION_RECEIPT.equals(detail.path("receiptType").asText())) return null;
+        JsonNode code = envelope.path("code");
+        JsonNode message = envelope.path("message");
+        JsonNode detailUserId = detail.path("userId");
+        JsonNode conversationNo = detail.path("conversationNo");
+        JsonNode operation = detail.path("operation");
+        JsonNode idempotencyKey = detail.path("idempotencyKey");
+        JsonNode clientMessageId = detail.path("clientMessageId");
+        JsonNode requestHash = detail.path("requestHash");
+        JsonNode sent = detail.path("sent");
+        if (!code.isIntegralNumber() || !code.canConvertToInt() || code.intValue() < 400 || code.intValue() >= 500
+                || !message.isTextual()
+                || !detailUserId.isIntegralNumber() || detailUserId.asLong() != userId
+                || !REPLY_OPERATION.equals(operation.asText())
+                || !conversationNo.isTextual() || conversationNo.asText().isBlank()
+                || !StringUtils.hasText(record.getIdempotencyKey())
+                || !record.getIdempotencyKey().equals(idempotencyKey.asText())
+                || !StringUtils.hasText(record.getRequestHash())
+                || !record.getRequestHash().equals(requestHash.asText())
+                || !clientMessageId.isTextual() || !clientMessageId.asText().matches("[A-Za-z0-9_-]{8,128}")
+                || !sent.isBoolean() || sent.booleanValue()) return null;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", "REJECTED");
+        result.put("sent", false);
+        result.put("conversationNo", conversationNo.asText());
+        result.put("operation", REPLY_OPERATION);
+        result.put("idempotencyKey", record.getIdempotencyKey());
+        result.put("clientMessageId", clientMessageId.asText());
+        result.put("businessCode", code.intValue());
+        result.put("businessReason", message.asText());
+        return ApiResult.ok(result);
+    }
+
+    private boolean isReplyScope(String scope) {
+        return scope != null && scope.startsWith(REPLY_SCOPE_PREFIX);
+    }
+
     // Retired ticket scopes stay listed so their historical receipts resolve to 410 instead of 404.
     private List<String> commandScopes(Long userId) {
         return List.of(
@@ -366,7 +482,7 @@ public class AppSupportService {
                 "APP_SUPPORT_TICKET_REPLY:" + userId,
                 "APP_SUPPORT_TICKET_CLOSE:" + userId,
                 "APP_CONVERSATION_CREATE:" + userId,
-                "APP_CONVERSATION_REPLY:" + userId,
+                REPLY_SCOPE_PREFIX + userId,
                 "APP_CONVERSATION_USER_CLEAR:" + userId,
                 "APP_CONVERSATION_TO_TICKET:" + userId);
     }
@@ -378,6 +494,43 @@ public class AppSupportService {
         return null;
     }
 
+    private static boolean replyReceiptEligible(String idempotencyKey, String clientMessageId, String conversationNo) {
+        return StringUtils.hasText(idempotencyKey) && idempotencyKey.trim().length() >= 8
+                && idempotencyKey.trim().length() <= 128 && StringUtils.hasText(conversationNo)
+                && clientMessageId != null && clientMessageId.matches("[A-Za-z0-9_-]{8,128}");
+    }
+
+    private ApiResult<ContentConversationDetail> replyRejection(int code, String message, Long userId, String conversationNo,
+                                                                 String idempotencyKey, String requestHash, ReplyRequest request) {
+        if (!replyReceiptEligible(idempotencyKey, request == null ? null : request.clientMessageId(), conversationNo)) {
+            return ApiResult.fail(code, message);
+        }
+        return replyRejectionResponse(code, message, userId, conversationNo, idempotencyKey, requestHash,
+                request.clientMessageId());
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private ApiResult<ContentConversationDetail> replyRejectionResponse(int code, String message, Long userId,
+                                                                         String conversationNo, String idempotencyKey,
+                                                                         String requestHash, String clientMessageId) {
+        Map<String, Object> detail = replyRejectionDetails(userId, conversationNo, idempotencyKey, requestHash, clientMessageId);
+        return (ApiResult<ContentConversationDetail>) (ApiResult) ApiResult.fail(code, message, detail);
+    }
+
+    public static Map<String, Object> replyRejectionDetails(Long userId, String conversationNo, String idempotencyKey,
+                                                             String requestHash, String clientMessageId) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("receiptType", REPLY_REJECTION_RECEIPT);
+        detail.put("userId", userId);
+        detail.put("conversationNo", conversationNo);
+        detail.put("operation", REPLY_OPERATION);
+        detail.put("idempotencyKey", idempotencyKey == null ? null : idempotencyKey.trim());
+        detail.put("clientMessageId", clientMessageId);
+        detail.put("requestHash", requestHash);
+        detail.put("sent", false);
+        return detail;
+    }
+
     @SuppressWarnings({"rawtypes", "unchecked"})
     private <T> ApiResult<T> idempotent(String scope, String key, String requestHash, Supplier<ApiResult<T>> action) {
         return (ApiResult<T>) idempotencyService.executeRetained(scope, key.trim(), requestHash, ApiResult.class, (Supplier) action);
@@ -387,14 +540,6 @@ public class AppSupportService {
         if (!StringUtils.hasText(conversationNo)) return null;
         return conversationRepository.findByConversationNo(conversationNo.trim())
                 .filter(row -> userId.equals(row.userId())).orElse(null);
-    }
-
-    private ContentConversationView appConversation(ContentConversationView row) {
-        return appConversation(row,false);
-    }
-
-    private ContentConversationView appConversation(ContentConversationView row,boolean currentRead) {
-        return visibility.project(row, currentRead);
     }
 
     private ApiResult<ContentConversationDetail> currentConversationResult(Long userId, ApiResult<?> retained) {

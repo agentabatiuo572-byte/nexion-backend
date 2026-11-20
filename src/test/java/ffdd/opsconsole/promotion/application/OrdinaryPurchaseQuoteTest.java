@@ -147,7 +147,7 @@ class OrdinaryPurchaseQuoteTest {
         when(db.requiredRow(startsWith("SELECT * FROM nx_promotion_quote"),eq(result.get("quoteId")))).thenReturn(row);
         when(db.user(29L,true)).thenReturn(values("status","ACTIVE"));
         when(db.product("cloud-share",true)).thenReturn(values("status","ACTIVE","store_visible",1,"price_usdt",new BigDecimal("19.90"),"product_type","SHARE"));
-        var orders=new PromotionOrderService(db,quotes,evaluator,resolver,null,null);
+        var orders=new PromotionOrderService(db,null,null,quotes,evaluator,resolver,null,null);
         var selected=List.of(new PromotionOrderService.Selection("cloud-share",2));
         String quoteId=text(result.get("quoteId"));
         assertEquals(new BigDecimal("39.800000"),orders.prepareCreate(29L,quoteId,selected,null,new BigDecimal("39.80")).price("amountUsdt"));

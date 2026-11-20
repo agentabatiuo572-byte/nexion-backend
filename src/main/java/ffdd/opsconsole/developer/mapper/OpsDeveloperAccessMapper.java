@@ -22,6 +22,16 @@ public interface OpsDeveloperAccessMapper extends BaseMapper<Object> {
             + " AND source_environment=#{sourceEnvironment}</if></script>")
     long count(@Param("status") String status, @Param("keyword") String keyword, @Param("sourceEnvironment") String sourceEnvironment);
 
+    @Select("<script>SELECT status, COUNT(*) AS count FROM nx_developer_access_request WHERE is_deleted=0"
+            + "<if test=\"keyword != null and keyword != ''\">"
+            + " AND (request_no LIKE CONCAT('%',#{keyword},'%') OR company LIKE CONCAT('%',#{keyword},'%')"
+            + " OR email LIKE CONCAT('%',#{keyword},'%') OR use_case LIKE CONCAT('%',#{keyword},'%'))"
+            + "</if><if test=\"sourceEnvironment != null and sourceEnvironment != ''\">"
+            + " AND source_environment=#{sourceEnvironment}</if>"
+            + " GROUP BY status</script>")
+    List<StatusCount> countByStatus(@Param("keyword") String keyword,
+                                    @Param("sourceEnvironment") String sourceEnvironment);
+
     @Select("<script>SELECT request_no requestNo,user_id userId,company,email,use_case useCase,status,"
             + "source_environment sourceEnvironment,run_id runId,reviewer,review_reason reviewReason,"
             + "reviewed_at reviewedAt,created_at createdAt,updated_at updatedAt"
@@ -32,9 +42,12 @@ public interface OpsDeveloperAccessMapper extends BaseMapper<Object> {
             + " OR email LIKE CONCAT('%',#{keyword},'%') OR use_case LIKE CONCAT('%',#{keyword},'%'))"
             + "</if><if test=\"sourceEnvironment != null and sourceEnvironment != ''\">"
             + " AND source_environment=#{sourceEnvironment}</if>"
-            + " ORDER BY created_at DESC,id DESC LIMIT #{offset},#{limit}</script>")
+            + "<choose><when test=\"ascending\"> ORDER BY created_at ASC,id ASC</when>"
+            + "<otherwise> ORDER BY created_at DESC,id DESC</otherwise></choose>"
+            + " LIMIT #{offset},#{limit}</script>")
     List<AccessRow> page(@Param("status") String status, @Param("keyword") String keyword,
                          @Param("sourceEnvironment") String sourceEnvironment,
+                         @Param("ascending") boolean ascending,
                          @Param("offset") int offset, @Param("limit") int limit);
 
     @Select("SELECT request_no requestNo,user_id userId,company,email,use_case useCase,status,"
@@ -48,6 +61,13 @@ public interface OpsDeveloperAccessMapper extends BaseMapper<Object> {
             + "reviewed_at reviewedAt,created_at createdAt,updated_at updatedAt"
             + " FROM nx_developer_access_request WHERE request_no=#{requestNo} AND is_deleted=0 FOR UPDATE")
     AccessRow findForUpdate(@Param("requestNo") String requestNo);
+
+    @Select("<script>SELECT id AS userId,"
+            + " CONCAT('U', LPAD(id, GREATEST(8, LENGTH(CAST(id AS CHAR))), '0')) AS userNo"
+            + " FROM nx_user WHERE is_deleted=0 AND id IN"
+            + " <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>"
+            + "</script>")
+    List<UserNoRow> userNos(@Param("ids") List<Long> ids);
 
     @Select("SELECT request_no requestNo,action,idempotency_key idempotencyKey,request_hash requestHash,status,"
             + "result_status resultStatus,result_reviewer resultReviewer,result_reason resultReason,"
@@ -92,6 +112,10 @@ public interface OpsDeveloperAccessMapper extends BaseMapper<Object> {
                     String status, String sourceEnvironment, String runId, String reviewer,
                     String reviewReason, LocalDateTime reviewedAt, LocalDateTime createdAt,
                     LocalDateTime updatedAt) { }
+
+    record UserNoRow(Long userId, String userNo) { }
+
+    record StatusCount(String status, long count) { }
 
     record IdempotencyRow(String requestNo, String action, String idempotencyKey,
                           String requestHash, String status, String resultStatus,

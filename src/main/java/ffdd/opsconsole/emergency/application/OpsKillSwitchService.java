@@ -42,6 +42,9 @@ import java.util.Set;
 import java.util.HexFormat;
 import java.util.UUID;
 import java.util.function.Supplier;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import org.springframework.util.StringUtils;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.annotation.Propagation;
@@ -49,6 +52,8 @@ import org.springframework.transaction.annotation.Propagation;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsKillSwitchService {
+    public static final String RESTORE_OPERATION = "j1_gate_resume";
+    public static final String RESTORE_AUTHORITY = "emergency_j1_gate_resume";
     private static final ObjectMapper AUDIT_JSON_READER = new ObjectMapper();
     private static final List<String> ACTIVE_GATES = List.of("withdraw", "staking", "genesis", "exchange", "trial");
     private static final Set<String> RETIRED_GATES = Set.of("premium", "nexv2", "nex-v2", "points");
@@ -69,21 +74,21 @@ public class OpsKillSwitchService {
 
     private static final List<EmergencySlaSeed> EMERGENCY_SLA_SEEDS = List.of(
             new EmergencySlaSeed("autoConfirmMins", "自动关停补录时限", "R1/R2 自动关停后，值班人员要在这个时间内补填处理原因", "30", "分钟", "number", true),
-            new EmergencySlaSeed("recoverGate", "恢复业务的备付金门槛", "备付金覆盖率达到这条线,才允许恢复会往外付钱的业务", "", "%", "number", false));
+            new EmergencySlaSeed("recoverGate", "恢复业务的备付金门槛", "备付金覆盖率达到这条线，才允许恢复会往外付钱的业务", "", "%", "number", false));
 
     private static final List<AutoRuleSeed> AUTO_RULE_SEEDS = List.of(
             new AutoRuleSeed("withdrawSurge", "提现激增 / 挤兑", "资金安全 · R1", "surge",
                     List.of("24 小时提现申请额 ÷ 真实储备 ≥ ", "40%", "（挤兑红线）→ 自动暂停 ", "提现", ""),
                     "触发阈值", "40", "number", "%", "automatic", false, "与「风险提醒」的挤兑红线相同", "这个阈值在「风险提醒」设置（默认 40%），这里只引用"),
             new AutoRuleSeed("maturityGap", "对账缺口", "资金安全 · R2", "gap",
-                    List.of("钱包余额与最新账本余额相差 > ", "50,000 USDT", " → 自动暂停 ", "兑换", "（对账恢复正常后再开放）"),
+                    List.of("钱包余额与最新账本余额相差 > ", "50,000 USDT", " → 自动暂停 ", "兑换", "（不会自动恢复，需人工操作）"),
                     "触发阈值", "50000", "number", "USDT", "automatic", true, "", ""),
             new AutoRuleSeed("tamperCluster", "篡改告警激增", "风控 · R3", "shield",
-                    List.of("单账户超过 ", "告警阈值", " 或全平台环比突增 → ", "只自动告警，人工判断后再手动暂停", "（「篡改防御监控」只告警，不自动处理）"),
+                    List.of("单账户拦截次数达到 ", "告警阈值", " → ", "纳入告警监控，由人工判断是否停用", "（不以全平台环比触发）"),
                     "触发阈值", "10", "number", "次 / 24 小时", "advisory", false, "与「篡改防御监控」的告警阈值相同", "这个阈值在「篡改防御监控」页面顶部调整"),
             new AutoRuleSeed("regulatoryDirective", "监管指令", "合规 · R4", "clock",
-                    List.of("监管点名或法务事件（必须填写原因）→ ", "由人工通过应急快速通道发起", "（系统不自动判断）", "", ""),
-                    "触发方式", "人工 · 应急快速通道", "text", "", "manual", false, "", ""));
+                    List.of("监管点名或法务事件（必须填写原因）→ ", "由有权限的管理员手动紧急停用", "（系统不自动判断）", "", ""),
+                    "触发方式", "人工 · 紧急停用", "text", "", "manual", false, "", ""));
 
     private final EmergencyControlRepository emergencyRepository;
     private final TreasuryCoverageFacade coverageFacade;
@@ -129,11 +134,15 @@ public class OpsKillSwitchService {
         response.put("activeGateCount", gates.size());
         response.put("activeGates", gates);
         response.put("retiredGates", retiredGates());
-        response.put("coverage", Map.of(
-                "coverageRatio", coverage.coverageRatio(),
-                "redlinePct", coverage.redlinePct(),
-                "yellowLinePct", coverage.redlinePct().add(BigDecimal.valueOf(25)),
-                "recoveryAllowed", coverage.coverageRatio().compareTo(coverage.redlinePct()) >= 0));
+        Map<String, Object> coverageView = new LinkedHashMap<>();
+        coverageView.put("coverageRatio", coverage.coverageRatio());
+        coverageView.put("redlinePct", coverage.redlinePct());
+        coverageView.put("yellowLinePct", coverage.healthyPct());
+        coverageView.put("valuationReliable", coverage.reliable());
+        // The existing PC parser requires the display comparison to match this legacy field.
+        coverageView.put("recoveryAllowed", coverage.coverageRatio().compareTo(coverage.redlinePct()) >= 0);
+        coverageView.put("recoveryAllowedByServer", coverageAllowsRecovery(coverage));
+        response.put("coverage", coverageView);
         response.put("stats", Map.of(
                 "liveGateCount", live,
                 "killedGateCount", gates.size() - live,
@@ -143,13 +152,62 @@ public class OpsKillSwitchService {
         response.put("emergencySla", emergencySlaRows(coverage));
         response.put("autoRules", autoRuleRows());
         response.put("autoConfirmations", autoConfirmationRows());
-        response.put("executionModel", "single confirm-with-reason plus broadcast and A2 audit");
+        response.put("executionModel", "immediate kill; restore only after A2 approval");
         response.put("sources", List.of("nx_emergency_control_setting:killswitch.*", "nx_emergency_control_setting:ops.J.emergency.*", "nx_emergency_control_setting:emergency.autorule.*", "B1 treasury coverage facade"));
         return ApiResult.ok(response);
     }
 
     @Transactional
     public ApiResult<Map<String, Object>> toggle(String key, String idempotencyKey, KillSwitchToggleRequest request) {
+        return toggle(key, idempotencyKey, request, null);
+    }
+
+    public static boolean isRestoreCommand(AuditReplayCommand command) {
+        return command != null && "J".equals(command.domain()) && RESTORE_OPERATION.equals(command.op());
+    }
+
+    public static AuditLockTarget restoreTarget(AuditReplayCommand command) {
+        if (!isRestoreCommand(command) || command.params() == null
+                || !(command.params().get("gateKey") instanceof String key) || !ACTIVE_GATES.contains(key)) return null;
+        return new AuditLockTarget("J", "kill_switch", key);
+    }
+
+    public static boolean requiresRestoreCoverage(AuditLockTarget target) {
+        return GATE_SEEDS.stream().anyMatch(seed -> seed.key().equals(target.id()) && seed.coveragePrecheckRequired());
+    }
+
+    public ApiResult<AuditReplayCommand> prepareRestoreProposal(AuditReplayCommand command) {
+        AuditLockTarget target = restoreTarget(command);
+        if (target == null || !command.params().keySet().equals(Set.of("gateKey"))) {
+            return ApiResult.fail(422, "J1_RESTORE_TARGET_INVALID");
+        }
+        String key = target.id();
+        if (gateEnabled(key)) return ApiResult.fail(409, "KILL_SWITCH_STATE_UNCHANGED");
+        if (autoConfirmationPending(key)) return ApiResult.fail(409, "AUTO_CONFIRMATION_REQUIRED");
+        if (requiresRestoreCoverage(target) && !coverageAllowsRecovery(coverageFacade.snapshot())) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), "COVERAGE_BELOW_REDLINE");
+        }
+        // The current change marker already carries the unique J4 ownership token when J4 killed this gate.
+        return ApiResult.ok(new AuditReplayCommand("J", RESTORE_OPERATION,
+                Map.of("gateKey", key, "expectedLastChange", activeValue(lastChangeConfigKey(key)).orElse(""))));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> restoreApproved(AuditReplayCommand command, String idempotencyKey,
+                                                          String reason, String operator) {
+        AuditLockTarget target = restoreTarget(command);
+        if (target == null || !(command.params().get("expectedLastChange") instanceof String expectedLastChange)) {
+            return ApiResult.fail(409, "J1_RESTORE_TARGET_INVALID");
+        }
+        return toggle(target.id(), idempotencyKey, new KillSwitchToggleRequest("enabled", reason, operator), expectedLastChange);
+    }
+
+    private ApiResult<Map<String, Object>> toggle(String key, String idempotencyKey, KillSwitchToggleRequest request,
+                                                   String expectedLastChange) {
+        boolean enable = request != null && parseEnabled(request.enabled());
+        if (enable && (expectedLastChange == null || !A2ReplayContext.isReplaying() || A2ReplayContext.operationId() == null)) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
@@ -158,7 +216,6 @@ public class OpsKillSwitchService {
         if (isRetired(normalizedKey)) {
             return retiredFeature();
         }
-        boolean enable = parseEnabled(request.enabled());
         if (!enable && !StringUtils.hasText(request.triggerBasis())) {
             return validationFailed("TRIGGER_BASIS_REQUIRED");
         }
@@ -169,12 +226,18 @@ public class OpsKillSwitchService {
             return validationFailed("DISPOSITION_PLAN_REQUIRED");
         }
         String operator = authenticatedOperator(request.operator());
-        return idempotent(
-                "J1_TOGGLE:" + normalizedKey,
+        return idempotentTargets(
+                enable ? "J1_RESTORE:" + A2ReplayContext.operationId() : "J1_TOGGLE:" + normalizedKey,
                 idempotencyKey,
                 requestHash(normalizedKey, String.valueOf(enable), request.reason(), operator,
                         request.triggerBasis(), request.dispositionPlan()),
-                () -> toggleOnce(normalizedKey, enable, idempotencyKey, request, operator));
+                List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target("TOGGLE", "J1", "kill_switch", normalizedKey)),
+                () -> {
+                    if (enable && !expectedLastChange.equals(activeValue(lastChangeConfigKey(normalizedKey)).orElse(""))) {
+                        return ApiResult.fail(409, "J1_RESTORE_STALE");
+                    }
+                    return toggleOnce(normalizedKey, enable, idempotencyKey, request, operator);
+                });
     }
 
     private ApiResult<Map<String, Object>> toggleOnce(
@@ -206,7 +269,7 @@ public class OpsKillSwitchService {
         TreasuryCoverageSnapshot restoreCoverage = null;
         if (enable && !before && seed.coveragePrecheckRequired()) {
             restoreCoverage = coverageFacade.snapshot();
-            if (restoreCoverage.coverageRatio().compareTo(restoreCoverage.redlinePct()) < 0) {
+            if (!coverageAllowsRecovery(restoreCoverage)) {
                 auditCoverageBlocked(normalizedKey, request, operator, idempotencyKey, restoreCoverage);
                 return coverageRedline();
             }
@@ -288,11 +351,13 @@ public class OpsKillSwitchService {
             }
         }
         String operator = authenticatedOperator(request.operator());
-        return idempotent(
+        return idempotentTargets(
                 "J1_BATCH_DISABLE",
                 idempotencyKey,
                 requestHash(String.join(",", keys), request.reason(), operator, request.triggerBasis(),
                         request.regulatoryContext(), request.dispositionPlan()),
+                keys.stream().map(key -> new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                        "TOGGLE", "J1", "kill_switch", key)).toList(),
                 () -> emergencyDisableOnce(keys, idempotencyKey, request, operator));
     }
 
@@ -376,12 +441,13 @@ public class OpsKillSwitchService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "KILL_SWITCH_STATE_UNCHANGED");
         }
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (seed.coveragePrecheckRequired()
-                && coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+        if (seed.coveragePrecheckRequired() && !coverageAllowsRecovery(coverage)) {
             auditRejected("J1_COVERAGE_RESTORE_BLOCKED", normalizedKey, authenticatedOperator(operator), Map.of(
                     "switchKey", normalizedKey,
                     "coverageRatio", coverage.coverageRatio(),
                     "redlinePct", coverage.redlinePct(),
+                    "valuationReliable", coverage.reliable(),
+                    "redlineBreached", coverage.redlineBreached(),
                     "reason", reason == null ? "" : reason.trim(),
                     "sourceDomain", sourceDomain == null ? "" : sourceDomain,
                     "trigger", "linked-domain"));
@@ -727,7 +793,7 @@ public class OpsKillSwitchService {
         try {
             value = normalizeAutoRuleValue(seed, request.value());
             expectedValue = requireExpectedValue(request.expectedValue(), "AUTO_RULE_EXPECTED_VALUE_REQUIRED");
-            normalizeAutoRuleValue(seed, expectedValue);
+            validateAutoRuleExpected(seed, expectedValue);
         } catch (IllegalArgumentException ex) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), ex.getMessage());
         }
@@ -744,26 +810,23 @@ public class OpsKillSwitchService {
             EmergencyConfigUpdateRequest request, String operator) {
         String configKey = autoRuleConfigKey(seed.id());
         Optional<String> current = activeValue(configKey);
-        if (current.isEmpty()) {
-            auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
-                    "ruleId", seed.id(), "expectedValue", expectedValue,
-                    "reason", request.reason().trim(), "result", "STATE_UNAVAILABLE"));
-            return ApiResult.fail(409, "J1_CONFIG_STATE_UNAVAILABLE");
-        }
-        String before = current.get().trim();
+        String before = current.orElse(seed.threshold()).trim();
         if (!before.equals(expectedValue)) {
             auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
                     "ruleId", seed.id(), "expectedValue", expectedValue, "actualValue", before,
                     "reason", request.reason().trim(), "result", "STALE_VERSION"));
             return ApiResult.fail(409, "J1_CONFIG_STALE_VERSION");
         }
-        if (normalizeAutoRuleValue(seed, before).equals(value)) {
+        if (autoRuleValuesEqual(seed, before, value)) {
             auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
                     "ruleId", seed.id(), "expectedValue", expectedValue, "actualValue", before,
                     "reason", request.reason().trim(), "result", "NO_CHANGES"));
             return ApiResult.fail(409, "J1_CONFIG_NO_CHANGES");
         }
-        if (!emergencyRepository.compareAndSetSetting(configKey, before, value, operator)) {
+        boolean written = current.isPresent()
+                ? emergencyRepository.compareAndSetSetting(configKey, before, value, operator)
+                : emergencyRepository.insertSettingIfAbsent(configKey, value, GROUP_AUTORULE, operator);
+        if (!written) {
             String actual = activeValue(configKey).orElse("<missing>");
             auditRejected("J1_AUTO_RULE_CHANGE_BLOCKED", seed.id(), operator, Map.of(
                     "ruleId", seed.id(), "expectedValue", expectedValue, "actualValue", actual,
@@ -841,6 +904,14 @@ public class OpsKillSwitchService {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
+    private ApiResult<Map<String, Object>> idempotentTargets(String scope, String key, String requestHash,
+            List<ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target> targets,
+            Supplier<ApiResult<Map<String, Object>>> action) {
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBoundTargets(
+                scope, key, requestHash, ApiResult.class, "emergency_j1_read", targets, (Supplier) action);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
     private ApiResult<Map<String, Object>> idempotent(
             String scope,
             String idempotencyKey,
@@ -895,6 +966,10 @@ public class OpsKillSwitchService {
         return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
     }
 
+    private static boolean coverageAllowsRecovery(TreasuryCoverageSnapshot coverage) {
+        return coverage.reliable() && !coverage.redlineBreached();
+    }
+
     private boolean parseEnabled(String enabled) {
         String normalized = enabled == null ? "" : enabled.trim().toLowerCase(Locale.ROOT);
         return switch (normalized) {
@@ -906,6 +981,23 @@ public class OpsKillSwitchService {
 
     private boolean gateEnabled(String key) {
         return KillSwitchState.enabled(activeValue(configKey(key)), activeValue(legacyConfigKey(key)));
+    }
+
+    /**
+     * Existing J1 full-stop state for notification producers. The platform maintenance
+     * stop wins; otherwise all five active gates must be explicitly disabled. Missing
+     * gate rows are unknown, not a full stop.
+     */
+    public boolean notificationEmergencyStop() {
+        if (KillSwitchState.enabled(activeValue(configKey("maintenance")),
+                activeValue(legacyConfigKey("maintenance")))) return true;
+        return ACTIVE_GATES.stream().allMatch(this::gateExplicitlyDisabled);
+    }
+
+    private boolean gateExplicitlyDisabled(String key) {
+        Optional<String> primary = activeValue(configKey(key));
+        Optional<String> legacy = activeValue(legacyConfigKey(key));
+        return (primary.isPresent() || legacy.isPresent()) && !KillSwitchState.enabled(primary, legacy);
     }
 
     private void writeGate(String key, boolean enabled, String operator) {
@@ -995,15 +1087,15 @@ public class OpsKillSwitchService {
         // 四条自动触发规则是固定目录,不应因 DB 未配阈值而消失;DB 有值则覆盖,否则落回 seed 自带阈值。
         return AUTO_RULE_SEEDS.stream()
                 .map(seed -> {
+            Optional<String> configuredThreshold = seed.adjustable()
+                    ? activeValue(autoRuleConfigKey(seed.id())) : Optional.empty();
             String threshold = switch (seed.id()) {
                 case "withdrawSurge" -> emergencySignalFacade.bankRunRedlinePct()
                         .stripTrailingZeros().toPlainString();
                 case "tamperCluster" -> activeValue(TAMPER_ALERT_THRESHOLD_CONFIG_KEY)
                         .filter(StringUtils::hasText)
                         .orElse(seed.threshold());
-                default -> activeValue(autoRuleConfigKey(seed.id()))
-                        .filter(StringUtils::hasText)
-                        .orElse(seed.threshold());
+                default -> configuredThreshold.orElse(seed.threshold());
             };
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("id", seed.id());
@@ -1019,8 +1111,37 @@ public class OpsKillSwitchService {
             row.put("unit", seed.unit());
             row.put("mode", seed.mode());
             row.put("adjustable", seed.adjustable());
+            if (seed.adjustable()) row.put("thresholdSource", configuredThreshold.isPresent() ? "CONFIGURED" : "DEFAULT");
             row.put("refNote", seed.refNote());
             row.put("refTitle", seed.refTitle());
+            if ("withdrawSurge".equals(seed.id())) {
+                row.put("metric", "bankRunRatioPct");
+                row.put("comparator", ">=");
+                row.put("actualThreshold", new BigDecimal(threshold).stripTrailingZeros());
+                row.put("target", "withdraw");
+                row.put("action", "autoDisable");
+            } else if ("maturityGap".equals(seed.id())) {
+                row.put("metric", "reconciliationGapUsdt");
+                row.put("comparator", ">");
+                BigDecimal actualThreshold = maturityGapThresholdUsdt(threshold).stripTrailingZeros();
+                row.put("actualThreshold", actualThreshold);
+                List<String> condition = new ArrayList<>(seed.condition());
+                condition.set(1, actualThreshold.toPlainString() + " USDT");
+                row.put("cond", condition);
+                row.put("target", "exchange");
+                row.put("action", "autoDisable");
+            } else if ("tamperCluster".equals(seed.id())) {
+                putTamperAdvisoryState(row, threshold);
+            } else if ("regulatoryDirective".equals(seed.id())) {
+                // R4 has no automatic judgement: it only exists through the existing manual batch route.
+                row.put("manualDisable", true);
+                row.put("autoDisable", false);
+                row.put("manualDisableCommand", "/api/admin/emergency/kill-switches/emergency-disable");
+                row.put("manualDisablePermission", "emergency_j1_batch_kill");
+                row.put("manualDisableRequiredInputs", List.of("keys", "reason", "triggerBasis", "regulatoryContext"));
+                row.put("manualDisableRequiredHeaders", List.of(ffdd.opsconsole.common.api.OpsAdminApi.IDEMPOTENCY_KEY_HEADER));
+                row.put("manualDisableConditionalInputs", List.of("dispositionPlan"));
+            }
             row.put("configKey", switch (seed.id()) {
                 case "withdrawSurge" -> TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY;
                 case "tamperCluster" -> TAMPER_ALERT_THRESHOLD_CONFIG_KEY;
@@ -1028,6 +1149,32 @@ public class OpsKillSwitchService {
             });
             return row;
         }).toList();
+    }
+
+    /**
+     * J3 counts SUM(event_count) per account over the selected window and flags accounts at or above
+     * the threshold. The J1 row exposes the same 24h baseline as advisory metadata only: it does not
+     * send an alert, send a report, or change a kill switch. A non-empty value that J3 cannot parse is
+     * reported as unknown rather than silently replaced by the default 10.
+     */
+    private void putTamperAdvisoryState(Map<String, Object> row, String threshold) {
+        row.put("metric", "tamperAccountEventCount");
+        row.put("comparator", ">=");
+        row.put("window", "24h");
+        row.put("scope", "PER_ACCOUNT");
+        row.put("target", "account");
+        row.put("action", "advisory");
+        row.put("classification", "TAMPER_ACCOUNT_MONITOR");
+        row.put("autoDisable", false);
+        try {
+            row.put("actualThreshold", BigDecimal.valueOf(Integer.parseInt(threshold)).stripTrailingZeros());
+            row.put("available", true);
+            row.put("unknownReason", null);
+        } catch (NumberFormatException invalid) {
+            row.put("actualThreshold", null);
+            row.put("available", false);
+            row.put("unknownReason", "TAMPER_ALERT_THRESHOLD_INVALID");
+        }
     }
 
     private GateSeed gateSeed(String key) {
@@ -1104,8 +1251,67 @@ public class OpsKillSwitchService {
         }
     }
 
+    /**
+     * The stored value may be an older positive form the runtime already accepts (for example {@code 50K});
+     * only the maturity-gap threshold allows it, and only as the expected/current value — new values keep the
+     * strict format above.
+     */
+    private void validateAutoRuleExpected(AutoRuleSeed seed, String expectedValue) {
+        try {
+            normalizeAutoRuleValue(seed, expectedValue);
+            return;
+        } catch (IllegalArgumentException strict) {
+            if (!"maturityGap".equals(seed.id())) {
+                throw strict;
+            }
+        }
+        maturityGapLegacyAmount(expectedValue);
+    }
+
+    /** Same-value check between the stored raw and the normalized new value, read with one numeric meaning. */
+    private boolean autoRuleValuesEqual(AutoRuleSeed seed, String before, String value) {
+        try {
+            return normalizeAutoRuleValue(seed, before).equals(value);
+        } catch (IllegalArgumentException legacyRaw) {
+            if (!"maturityGap".equals(seed.id())) {
+                throw legacyRaw;
+            }
+        }
+        return maturityGapLegacyAmount(before).compareTo(new BigDecimal(value)) == 0;
+    }
+
+    /**
+     * Strict reading of the legacy threshold formats (K/M, thousands separators, {@code $}). Unlike
+     * {@link #maturityGapThresholdUsdt(String)} it never falls back to 50000, so an unusable string is
+     * rejected instead of being treated as a real stored threshold.
+     */
+    private BigDecimal maturityGapLegacyAmount(String raw) {
+        String normalized = raw == null ? "" : raw.trim().replace(",", "").replace("$", "").toUpperCase(Locale.ROOT);
+        BigDecimal multiplier = BigDecimal.ONE;
+        if (normalized.endsWith("K")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+            multiplier = new BigDecimal("1000");
+        } else if (normalized.endsWith("M")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+            multiplier = new BigDecimal("1000000");
+        }
+        BigDecimal amount;
+        try {
+            amount = new BigDecimal(normalized).multiply(multiplier);
+        } catch (RuntimeException ex) {
+            throw new IllegalArgumentException("AUTO_RULE_THRESHOLD_MUST_BE_POSITIVE_USDT");
+        }
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("AUTO_RULE_THRESHOLD_MUST_BE_POSITIVE_USDT");
+        }
+        return amount;
+    }
+
     BigDecimal maturityGapThresholdUsdt() {
-        String configured = activeValue(autoRuleConfigKey("maturityGap")).orElse("50000");
+        return maturityGapThresholdUsdt(activeValue(autoRuleConfigKey("maturityGap")).orElse("50000"));
+    }
+
+    private BigDecimal maturityGapThresholdUsdt(String configured) {
         try {
             String normalized = configured.trim().replace(",", "").replace("$", "").toUpperCase(Locale.ROOT);
             BigDecimal multiplier = BigDecimal.ONE;
@@ -1492,6 +1698,8 @@ public class OpsKillSwitchService {
                         "switchKey", switchKey,
                         "coverageRatio", coverage.coverageRatio(),
                         "redlinePct", coverage.redlinePct(),
+                        "valuationReliable", coverage.reliable(),
+                        "redlineBreached", coverage.redlineBreached(),
                         "reason", request.reason().trim(),
                         "trigger", "manual",
                         "idempotencyKey", idempotencyKey.trim()))

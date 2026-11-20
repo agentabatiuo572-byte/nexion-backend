@@ -568,6 +568,12 @@ class VRankPromotionEngineTest {
      * (引擎测试用独立 fake,避免与 OpsTeamServiceTest 共享状态。)
      */
     static final class FakeTeamCommissionRepository implements TeamCommissionRepository {
+
+        @Override public Map<String, Object> commissionEventById(long eventId) { return Map.of(); }
+
+        @Override public List<Map<String, Object>> vRankRewardsForUpdate(String rank) { return List.of(); }
+
+        @Override public Map<String, Object> lockVRankPolicy(String rank) { return Map.of(); }
         final List<VRankConfigRow> vRankConfigRows = new java.util.ArrayList<>();
         final Map<Long, String> memberVRanks = new LinkedHashMap<>();
         final List<Map<String, Object>> userLevelLogs = new java.util.ArrayList<>();

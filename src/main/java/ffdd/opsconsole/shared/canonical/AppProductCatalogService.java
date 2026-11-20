@@ -44,6 +44,7 @@ public class AppProductCatalogService {
     private final StorefrontProductReleasePolicy productReleasePolicy;
     private final ObjectStorageService storageService;
     private final StorefrontSkuImageService skuImageService;
+    private final ffdd.opsconsole.device.application.SimulatedTaskPolicyService taskPolicies;
 
     public ApiResult<Map<String, Object>> catalog() {
         return catalog(null);
@@ -71,10 +72,13 @@ public class AppProductCatalogService {
                 releaseCandidates.put(target.productNo(), target.unlockPhase());
             }
             Map<String, StorefrontProductReleasePolicy.Decision> releases = productReleasePolicy.evaluateBatch(releaseCandidates);
+            var taskLevels=taskPolicies.taskLevels(targets.stream().map(AppTradeinMapper.CatalogTargetProduct::productNo).toList());
             List<Map<String, Object>> products = new ArrayList<>();
             LocalDateTime revision = null;
             for (AppTradeinMapper.CatalogTargetProduct target : targets) {
-                products.add(product(target, releases.get(target.productNo())));
+                var item=product(target, releases.get(target.productNo()));
+                item.put("taskLevels",taskLevels.get(target.productNo()));
+                products.add(item);
                 if (target.updatedAt() != null && (revision == null || target.updatedAt().isAfter(revision))) {
                     revision = target.updatedAt();
                 }
@@ -138,11 +142,14 @@ public class AppProductCatalogService {
                     seed.generation(), seed.gpuModel(), seed.vramTotalGb(), seed.hashrate(), seed.dailyUsdt(), seed.dailyNex(), seed.tagline(), seed.badge(), seed.unlockPhase(),
                     seed.power(), seed.datacenter(), seed.uptime(), seed.warranty(), seed.phoneDailyEarn(), seed.phoneDailyEarnNex(),
                     seed.featuresJson(), seed.aiImageGenPerMin(), seed.aiLlmTokensPerSec(), seed.aiVideoMinPerHour(),
-                    seed.aiFineTuneMins(), seed.aiUnlocks(), seed.purchaseGateJson(), seed.inventoryMode(), runId));
+                    seed.aiFineTuneMins(), seed.aiUnlocks(), seed.purchaseGateJson(), seed.inventoryMode(), runId,seed.monthlyTargetUsdt(),seed.monthlyTargetBandPct()));
             commerceAcceptanceSandboxMapper.pruneCatalog(runId);
             List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> targets = commerceAcceptanceSandboxMapper.listSandboxCatalog(runId);
             if (targets == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
-            List<Map<String, Object>> products = targets.stream().map(this::sandboxProduct).toList();
+            var taskLevels=taskPolicies.taskLevels(targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::productNo).toList());
+            List<Map<String, Object>> products = targets.stream().map(target->{
+                var item=sandboxProduct(target);item.put("taskLevels",taskLevels.get(target.productNo()));return item;
+            }).toList();
             LocalDateTime revision = targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::updatedAt)
                     .filter(java.util.Objects::nonNull).max(LocalDateTime::compareTo).orElse(null);
             return ApiResult.ok(Map.of("source", "mock", "catalogSource", "nx_commerce_sandbox_catalog",
@@ -162,7 +169,7 @@ public class AppProductCatalogService {
                 target.unlockPhase(), target.updatedAt(), target.power(), target.datacenter(), target.uptime(), target.warranty(),
                 target.phoneDailyEarn(), target.phoneDailyEarnNex(), target.featuresJson(),
                 target.aiImageGenPerMin(), target.aiLlmTokensPerSec(), target.aiVideoMinPerHour(), target.aiFineTuneMins(), target.aiUnlocks(),
-                target.purchaseGateJson(), null, null, target.inventoryMode(), null, null, target.computePoints()),
+                target.purchaseGateJson(), null, null, target.inventoryMode(), null, null, target.computePoints(),target.monthlyTargetUsdt(),target.monthlyTargetBandPct()),
                 productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()));
     }
 
@@ -203,16 +210,15 @@ public class AppProductCatalogService {
                 && shareYield.minPct() != null && shareYield.minPct().signum() > 0
                 && shareYield.maxPct() != null
                 && shareYield.maxPct().compareTo(shareYield.minPct()) >= 0;
-        boolean specsComplete = share || (StringUtils.hasText(target.gpuModel())
-                && target.vramTotalGb() != null && target.vramTotalGb() > 0
-                && StringUtils.hasText(target.power())
-                && StringUtils.hasText(target.datacenter()));
+        boolean specsComplete = share || DeviceSkuSpecifications.hasPurchaseSpecifications(
+                target.gpuModel(), target.vramTotalGb(), target.power());
         item.put("gpu", display(target.gpuModel()));
         item.put("vram", target.vramTotalGb() == null || target.vramTotalGb() <= 0
-                ? "unavailable" : target.vramTotalGb() + "GB");
+                ? ("SHARE".equals(productType) ? "not_applicable" : "unavailable") : target.vramTotalGb() + "GB");
         item.put("hashRate", decimalText(target.hashrate()));
-        item.put("power", display(target.power()));
-        item.put("datacenter", display(target.datacenter()));
+        item.put("power", "SHARE".equals(productType) && !StringUtils.hasText(target.power())
+                ? "not_applicable" : display(target.power()));
+        item.put("datacenter", "");
         item.put("uptime", DeviceSkuSpecifications.display(target.uptime()));
         boolean validDocument = DeviceSkuSpecifications.validateDocument(target.specDocumentTitle(), target.specDocumentUrl()) == null;
         item.put("specDocumentTitle", validDocument ? nullableText(target.specDocumentTitle()) : null);
@@ -220,9 +226,14 @@ public class AppProductCatalogService {
         item.put("warranty", DeviceSkuSpecifications.display(target.warranty()));
         item.put("phoneDailyEarn", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarn(), "USDT/day"));
         item.put("phoneDailyEarnNEX", DeviceSkuSpecifications.dailyDisplay(target.phoneDailyEarnNex(), "UVT/day"));
-        // Share has an E1 annual range, not a guaranteed USD/day amount.
-        // Keep the legacy numeric field protocol-compatible without leaking it to clients.
-        item.put("dailyEarn", share ? BigDecimal.ZERO : target.dailyUsdt());
+        // Untargeted Share keeps its legacy annual-reference branch; targeted hardware shares the T/30 estimate.
+        item.put("dailyEarn", target.monthlyTargetUsdt()!=null ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(target.monthlyTargetUsdt())
+                : share ? BigDecimal.ZERO : target.dailyUsdt());
+        item.put("monthlyEstimateUsdt",target.monthlyTargetUsdt());
+        item.put("dailyEstimateLowUsdt",target.monthlyTargetUsdt()==null || !share ? null : target.monthlyTargetUsdt()
+                .multiply(BigDecimal.ONE.subtract(target.monthlyTargetBandPct().movePointLeft(2))).divide(BigDecimal.valueOf(30),6,java.math.RoundingMode.HALF_UP));
+        item.put("dailyEstimateHighUsdt",target.monthlyTargetUsdt()==null || !share ? null : target.monthlyTargetUsdt()
+                .multiply(BigDecimal.ONE.add(target.monthlyTargetBandPct().movePointLeft(2))).divide(BigDecimal.valueOf(30),6,java.math.RoundingMode.HALF_UP));
         item.put("dailyEarnNEX", target.dailyNex());
         item.put("shareYieldMin", shareYieldAvailable ? shareYield.minPct() : null);
         item.put("shareYieldMax", shareYieldAvailable ? shareYield.maxPct() : null);

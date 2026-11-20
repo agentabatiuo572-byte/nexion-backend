@@ -62,6 +62,8 @@ import ffdd.opsconsole.risk.dto.RiskScoringEscalateRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.facade.UserAccountControlFacade;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
@@ -71,6 +73,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -131,6 +134,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Pattern K2_TRIAL_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*次\\s*/\\s*(\\d+)\\s*天$");
     private static final Pattern K2_WELCOME_GIFT_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*笔\\s*/\\s*(实体|账户簇|手机号|设备)$");
     private static final Pattern K2_LEADERBOARD_THRESHOLD = Pattern.compile("^(>=|>)\\s*(\\d+)\\s*x\\s*(基线|上周期|7日均值|同层级均值)$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern K2_LEADERBOARD_DISPLAY_CELL = Pattern.compile("^(\\d+(?:\\.\\d+)?)x 基线$");
     private static final Pattern K3_AMOUNT_RULE = Pattern.compile("^单笔\\s*(>=|>)\\s*\\$?([\\d,]+)$");
     private static final Pattern K3_VELOCITY_RULE = Pattern.compile("^24h\\s*(>=|>)\\s*(\\d+)\\s*笔\\s*或\\s*(>=|>)\\s*\\$?([\\d,]+)$", Pattern.CASE_INSENSITIVE);
     private static final Pattern K3_NEW_ACCOUNT_RULE = Pattern.compile("^注册\\s*(<|<=)\\s*(\\d+)\\s*天$");
@@ -148,19 +152,6 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             "block-gift", new K2ActionSpec("blockgift", "gift_blocked", "K2_WELCOME_GIFT_BLOCKED", "risk_k2_row_blockgift"),
             "board-flag", new K2ActionSpec("boardflag", "leaderboard_flagged", "K2_LEADERBOARD_FLAGGED", "risk_k2_row_boardflag"),
             "freeze-cluster", new K2ActionSpec("freeze", "cluster_frozen", "K2_CLUSTER_FREEZE_LINKED", "risk_k2_row_freeze"));
-    private static final List<K2ViewSpec> K2_VIEWS = List.of(
-            new K2ViewSpec("trial", "试用循环", "· 试用循环养号 · 服务器端复活计数,不信客户端状态",
-                    List.of("实体 / 簇", "30 天循环次数", "关联账户", "累计套取试用收益"),
-                    "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑邀请人 / 试用循环。"),
-            new K2ViewSpec("tradein", "换新套利", "· 高频下架置换 · 礼金/返佣叠加行为证据后再判定闭环",
-                    List.of("账户 / 实体", "设备链", "观察窗口", "高频下架置换", "礼金/返佣叠加"),
-                    "置换抵扣阶梯归 E3；K2 只根据高频下架置换与礼金/返佣叠加证据判定异常，不使用持有月或旧残值闸门。"),
-            new K2ViewSpec("gift", "新人礼刷取", "· 新人礼刷取 · 看领完礼就走的闭环行为",
-                    List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征"),
-                    "K1 看同一实体重复领；K2 加看行为闭环。拦截只停发后续,不动已入账资产。"),
-            new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/奖励增速异常的冲榜账户",
-                    List.of("账户", "本期累计奖励", "增速(对基线)", "直接邀请增长", "关联簇"),
-                    "这里只标记并发信号给 F8 和风险雷达；取消参榜资格、从奖池剔除由 F8 执行。"));
     private static final Map<String, DimensionMeta> K3_DIMENSION_META = Map.ofEntries(
             Map.entry("largeAmountUsdt", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0)),
             Map.entry("amount", new DimensionMeta("largeAmountUsdt", "金额", "由 nx_admin_risk_withdraw_rule 配置", "card", 0)),
@@ -176,6 +167,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             Map.entry("地址信誉", new DimensionMeta("addressReputationSource", "地址信誉", "由 nx_admin_risk_withdraw_rule 配置", "shield", 3)));
 
     private final RiskOpsRepository riskRepository;
+    private final ffdd.opsconsole.risk.mapper.RiskOpsMapper riskMapper;
     private final PlatformConfigFacade configFacade;
     private final AuditLogService auditLogService;
     private final ffdd.opsconsole.platform.mapper.AuditObjectLockMapper lockMapper;
@@ -183,7 +175,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final SuperAdminAuthorization superAdminAuthorization;
     private final UserAccountControlFacade userAccountControlFacade;
     private final EventOutboxService eventOutboxService;
+    private final TreasuryCoverageFacade coverageFacade;
     private final ChainAddressReputationGateway chainAddressReputationGateway;
+    private final RiskReleaseParamsService riskReleaseParamsService;
     private final K4RiskScorer k4RiskScorer = new K4RiskScorer();
     private final K3WithdrawalRuleEvaluator k3WithdrawalRuleEvaluator = new K3WithdrawalRuleEvaluator();
 
@@ -331,6 +325,13 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 requestHash(normalizedKey, normalizedValue, request.reason()), () -> {
                     String beforeValue = riskRepository.multiAccountParamValue(normalizedKey)
                             .orElseThrow(() -> new IllegalStateException("K1_PARAM_NOT_FOUND"));
+                    if (K1_INTEGER_PARAMS.containsKey(normalizedKey)) {
+                        String beforeLimit = normalizeK1Param(normalizedKey, beforeValue);
+                        if (beforeLimit == null || !beforeValue.equals(beforeValue.trim())
+                                || Integer.parseInt(normalizedValue) > Integer.parseInt(beforeLimit)) {
+                            riskReleaseParamsService.requireCoverageForAmplifyingRelease();
+                        }
+                    }
                     Map<String, Object> updated = riskRepository.updateMultiAccountParam(normalizedKey, normalizedValue);
                     String afterValue = riskRepository.multiAccountParamValue(normalizedKey)
                             .orElseThrow(() -> new IllegalStateException("K1_PARAM_WRITE_NOT_VISIBLE"));
@@ -385,6 +386,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     if (!K1_CLUSTER_TRANSITIONS.getOrDefault(before.status(), Set.of()).contains(status)) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
                     }
+                    if ("released".equals(status) || "cleared".equals(status)) {
+                        riskReleaseParamsService.requireCoverageForAmplifyingRelease();
+                    }
                     if ("frozen".equals(status) || "released".equals(status)) {
                         userAccountControlFacade.lockUsersByUserNos(before.affectedUserIds());
                     }
@@ -428,6 +432,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return idempotentK1("K1_WHITELIST_UPSERT:" + cidr, idempotencyKey,
                 requestHash(cidr, note, expireText, request.reason()), () -> {
                     RiskOpsRepository.IpWhitelistState before = riskRepository.ipWhitelistState(cidr).orElse(null);
+                    if (before == null || !before.active() || !futureDate(before.expireText())
+                            || LocalDate.parse(expireText).isAfter(LocalDate.parse(before.expireText()))) {
+                        riskReleaseParamsService.requireCoverageForAmplifyingRelease();
+                    }
                     riskRepository.upsertIpWhitelist(cidr, note, actor, expireText);
                     RiskOpsRepository.IpWhitelistState after = riskRepository.ipWhitelistState(cidr)
                             .orElseThrow(() -> new IllegalStateException("K1_WHITELIST_WRITE_NOT_VISIBLE"));
@@ -457,6 +465,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         String actor = authenticatedOperator();
         return idempotentK1("K1_CLUSTER_REVIEW:" + normalizedCluster, idempotencyKey,
                 requestHash(normalizedCluster, String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    if (lockMapper.countActiveByTarget("K", "cluster", normalizedCluster) > 0) {
+                        return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+                    }
                     RiskOpsRepository.MultiAccountClusterState before = riskRepository.multiAccountClusterState(normalizedCluster).orElse(null);
                     if (before == null) return ApiResult.fail(404, "K1_CLUSTER_NOT_FOUND");
                     if (before.version() != request.expectedVersion()) {
@@ -528,6 +539,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         response.put("hits", riskRepository.pageWithdrawRuleHits(hitAction, hitPageNum, hitPageSize));
         response.put("stateMachine", List.of("draft", "active", "paused", "archived"));
         response.put("redlines", List.of("archived rules are terminal", "rule changes require reason and A2 audit", "rule relaxation triggers B1 coverage precheck"));
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        boolean coverageReliable = coverage != null && coverage.reliable()
+                && coverage.coverageRatio() != null && coverage.redlinePct() != null
+                && coverage.coverageRatio().signum() >= 0 && coverage.redlinePct().signum() > 0;
+        Map<String, Object> coverageView = new LinkedHashMap<>();
+        coverageView.put("coverageRatio", coverageReliable ? coverage.coverageRatio() : null);
+        coverageView.put("redlinePct", coverageReliable ? coverage.redlinePct() : null);
+        coverageView.put("reliable", coverageReliable);
+        coverageView.put("redlineBreached", coverageReliable ? coverage.redlineBreached() : null);
+        response.put("coverage", coverageView);
         return ApiResult.ok(response);
     }
 
@@ -642,10 +663,17 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         return rejectK3Write("STATE_CHANGE", normalized, actor, 409, "K3_RULE_CONCURRENT_UPDATE",
                                 request.reason(), idempotencyKey);
                     }
+                    if ("active".equals(state) && "pass".equalsIgnoreCase(trimmed(before.action()))) {
+                        return rejectK3Write("STATE_CHANGE", normalized, actor, 422, "K3_LEGACY_PASS_ENABLE_FORBIDDEN",
+                                request.reason(), idempotencyKey);
+                    }
                     if (!K3_RULE_TRANSITIONS.getOrDefault(trimmed(before.state()).toLowerCase(Locale.ROOT), Set.of()).contains(state)) {
                         return rejectK3Write("STATE_CHANGE", normalized, actor,
                                 OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K3_RULE_TRANSITION_INVALID",
                                 request.reason(), idempotencyKey);
+                    }
+                    if (k3RuleStateChangeRelaxes(before, state)) {
+                        requireK3CoveragePrecheck("STATE_CHANGE", normalized, actor, request.reason(), idempotencyKey);
                     }
                     RiskRuleView updated = riskRepository.updateWithdrawRuleState(
                             normalized, request.expectedVersion(), state).orElse(null);
@@ -737,6 +765,9 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                                 OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K3_RULE_PRIORITY_CONFLICT",
                                 request.reason(), idempotencyKey);
                     }
+                    if (k3RuleUpdateRelaxes(before, normalizedCondition, action)) {
+                        requireK3CoveragePrecheck("CONFIG_CHANGE", normalized, actor, request.reason(), idempotencyKey);
+                    }
                     RiskRuleView updated = riskRepository.updateWithdrawRuleConfiguration(
                             normalized, request.expectedVersion(), normalizedCondition, action, priority).orElse(null);
                     if (updated == null) {
@@ -826,7 +857,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             k3DryRunRoute("delay", "延迟", routeCountMap, "#f59e0b"),
                             k3DryRunRoute("manual", "人工审核", routeCountMap, "#3b82f6"),
                             k3DryRunRoute("freeze", "冻结", routeCountMap, "#ef4444"));
-                    LocalDateTime completedAt = LocalDateTime.now();
+                    ZonedDateTime completedAtWithZone = ZonedDateTime.now();
+                    LocalDateTime completedAt = completedAtWithZone.toLocalDateTime();
                     Map<String, Object> response = new LinkedHashMap<>();
                     response.put("batchNo", batchNo);
                     response.put("status", "COMPLETED");
@@ -838,6 +870,8 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     response.put("routeCounts", routeCounts);
                     response.put("primaryRuleIdsByWithdrawal", primaryRuleIds);
                     response.put("completedAt", completedAt);
+                    response.put("completedAtZone", completedAtWithZone.getZone().getId());
+                    response.put("completedAtOffset", completedAtWithZone.getOffset().getId());
                     auditRequired("K3_WITHDRAW_RULE_DRY_RUN_COMPLETED", "WITHDRAW_RULE_DRY_RUN", batchNo, actor, Map.of(
                             "batchNo", batchNo,
                             "evaluatedWithdrawals", candidates.size(),
@@ -921,12 +955,38 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> arbitrageOverview() {
-        refreshK2AuthoritativeProjection();
         List<RiskArbitrageParamView> currentParams = riskRepository.arbitrageParams();
-        List<RiskArbitrageRowView> rows = riskRepository.arbitrageRows();
+        int[] trialBoundary = trialCycleBoundary(currentParams);
+        refreshK2AuthoritativeProjection(currentParams, trialBoundary);
+        List<RiskArbitrageRowView> rows = withK2StructuredFacts(riskRepository.arbitrageRows());
         Map<String, List<RiskArbitrageRowView>> byView = rows.stream()
+                .map(row -> {
+                    if ("gift".equals(row.viewKey()) && row.cells().size() >= 3) {
+                        List<String> cells = new ArrayList<>(row.cells());
+                        String legacy = cells.get(2);
+                        if (legacy != null && legacy.endsWith(" / 0 已拦")) {
+                            Object blocked = row.structured().get("blockedCount");
+                            String blockedText = blocked instanceof Number
+                                    ? ((Number) blocked).intValue() + " 已拦"
+                                    : "已拦无可核数据";
+                            cells.set(2, legacy.substring(0, legacy.length() - " / 0 已拦".length()) + " / " + blockedText);
+                            return new RiskArbitrageRowView(row.rowId(), row.viewKey(), row.clusterId(), cells,
+                                    row.level(), row.actions(), row.disposition(), row.version(), row.clusterStatus(),
+                                    row.clusterVersion(), row.structured());
+                        }
+                    }
+                    if (!"board".equals(row.viewKey()) || row.cells().size() < 3) return row;
+                    Matcher multiplier = K2_LEADERBOARD_DISPLAY_CELL.matcher(row.cells().get(2));
+                    if (!multiplier.matches()) return row;
+                    List<String> cells = new ArrayList<>(row.cells());
+                    cells.set(2, multiplier.group(1) + " 倍");
+                    return new RiskArbitrageRowView(
+                            row.rowId(), row.viewKey(), row.clusterId(), cells, row.level(), row.actions(),
+                            row.disposition(), row.version(), row.clusterStatus(), row.clusterVersion(),
+                            row.structured());
+                })
                 .collect(Collectors.groupingBy(RiskArbitrageRowView::viewKey, LinkedHashMap::new, Collectors.toList()));
-        List<RiskArbitrageViewGroup> views = K2_VIEWS.stream()
+        List<RiskArbitrageViewGroup> views = k2Views(trialBoundary[1]).stream()
                 .map(spec -> new RiskArbitrageViewGroup(
                         spec.key(),
                         spec.label(),
@@ -940,11 +1000,41 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .filter(param -> !"minHoldingMonths".equals(param.key()))
                 .filter(param -> !RETIRED_K2_PARAM_KEYS.contains(param.key()))
                 .map(this::withCanonicalOtpValue)
+                .map(param -> "leaderboardVelocityMultiplier".equals(param.key())
+                        ? new RiskArbitrageParamView(param.key(), param.name(), param.value(),
+                                "奖励增长超过比较样本中位数的设定倍数时，产生刷榜风险信号。", param.note(), param.version())
+                        : param)
                 .toList();
         response.put("serverCanonical", true);
         response.put("domain", "K2");
         response.put("stats", canonicalK2Stats(rows));
+        response.put("riskLevelScale", Map.of("min", 0, "max", 5,
+                "trial", "按试用循环次数计，最低 2，最高 5",
+                "gift", "已结算新人礼不超过 2 笔为 3 级、3 笔为 4 级、4 笔及以上为 5 级（以实际入桶为前提）",
+                "board", "超过比较基线 10 倍为 4 级，其他入桶记录为 3 级",
+                "meaning", "不同监测场景独立计级，等级不是处置动作"));
         response.put("params", params);
+        response.put("welcomeGiftScopeSupported", Map.of(
+                "实体", true, "账户簇", true, "手机号", false, "设备", false));
+        Map<String, Object> paramScopeStatus = new LinkedHashMap<>();
+        params.stream().filter(param -> retiredWelcomeGiftScope(param.key(), param.value())).forEach(param ->
+                paramScopeStatus.put(param.key(), Map.of(
+                        "retired", true, "requiresScopeChange", true,
+                        "reason", "K2_WELCOME_GIFT_SCOPE_RETIRED")));
+        response.put("paramScopeStatus", paramScopeStatus);
+        Map<String, Boolean> otpInitializationRequired = new LinkedHashMap<>();
+        OTP_CANONICAL_CONFIG_KEYS.forEach((key, canonicalKey) -> otpInitializationRequired.put(key,
+                !activeOtpSource(riskMapper.otpCanonicalSource(canonicalKey, false))));
+        response.put("otpInitializationRequired", otpInitializationRequired);
+        Set<String> activeGiftRowIds = rows.stream()
+                .filter(row -> "gift".equals(row.viewKey()))
+                .map(RiskArbitrageRowView::rowId)
+                .collect(Collectors.toSet());
+        List<Map<String, Object>> giftDenialFacts = riskMapper.retiredGiftDenialFacts().stream()
+                .map(this::k2GiftDenialFact)
+                .filter(fact -> !activeGiftRowIds.contains(String.valueOf(fact.get("rowId"))))
+                .toList();
+        response.put("giftDenialFacts", giftDenialFacts);
         response.put("views", views);
         response.put("sources", List.of(
                 "nx_tradein_application:E3",
@@ -957,6 +1047,116 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "nx_admin_risk_arbitrage_row"));
         response.put("redlines", List.of("K2 only marks and emits signals", "account freezing is linked to K1 action chain", "welcome gift blocking never touches settled assets"));
         return ApiResult.ok(response);
+    }
+
+    private List<RiskArbitrageRowView> withK2StructuredFacts(List<RiskArbitrageRowView> rows) {
+        Map<String, Map<String, Object>> facts = k2StructuredFacts();
+        return rows.stream().map(row -> {
+            Map<String, Object> structured = new LinkedHashMap<>(row.structured());
+            Map<String, Object> rowFacts = facts.get(row.rowId());
+            if (rowFacts != null) structured.putAll(rowFacts);
+            if ("trial".equals(row.viewKey())) {
+                Integer eventCount = k2TrialEventCount(row);
+                if (eventCount != null) structured.put("trialStartEventCount", eventCount);
+                structured.put("trialCellMeaning", "TRIAL_STARTED_EVENT_COUNT_NOT_REWARD");
+                structured.put("trialEventBasis", "H2 trial.started event count materialized in cell2");
+            }
+            if (structured.isEmpty()) return row;
+            return new RiskArbitrageRowView(
+                    row.rowId(), row.viewKey(), row.clusterId(), row.cells(), row.level(), row.actions(),
+                    row.disposition(), row.version(), row.clusterStatus(), row.clusterVersion(), structured);
+        }).toList();
+    }
+
+    private Map<String, Object> k2GiftDenialFact(Map<String, Object> raw) {
+        String rowId = String.valueOf(raw.get("rowId") == null ? "" : raw.get("rowId"));
+        String clusterId = String.valueOf(raw.get("clusterId") == null ? "" : raw.get("clusterId"));
+        Integer blockedCount = k2Integer(raw.get("blockedCount"));
+        Map<String, Object> fact = new LinkedHashMap<>();
+        fact.put("rowId", rowId);
+        fact.put("clusterId", clusterId);
+        fact.put("viewKey", "gift");
+        fact.put("retired", true);
+        fact.put("blockedCount", blockedCount);
+        fact.put("blockedCountAvailable", blockedCount != null);
+        fact.put("blockedCountBasis", "nx_audit_log hot+cold REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED; UNIQUE_CLUSTER detail.rewardIdentity");
+        return fact;
+    }
+
+    private Map<String, Map<String, Object>> k2StructuredFacts() {
+        Map<String, Map<String, Object>> facts = new LinkedHashMap<>();
+        for (Map<String, Object> raw : riskMapper.arbitrageGiftAmounts()) {
+            String rowId = String.valueOf(raw.get("rowId") == null ? "" : raw.get("rowId"));
+            if (!StringUtils.hasText(rowId)) continue;
+            Map<String, Object> fact = new LinkedHashMap<>();
+            List<Map<String, Object>> amounts = new ArrayList<>();
+            amounts.add(k2Amount("USDT", k2Decimal(raw.get("usdtRaw"))));
+            amounts.add(k2Amount("UVT", k2Decimal(raw.get("nexRaw"))));
+            fact.put("amounts", amounts);
+            fact.put("settledCount", k2Integer(raw.get("settledCount")));
+            Integer blockedCount = k2Integer(raw.get("blockedCount"));
+            fact.put("blockedCount", blockedCount);
+            fact.put("blockedCountAvailable", blockedCount != null);
+            fact.put("blockedCountBasis", blockedCount == null
+                    ? "NO_PERSISTED_DENIED_GIFT_FACT"
+                    : "nx_audit_log hot+cold REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED; UNIQUE_CLUSTER detail.rewardIdentity");
+            fact.put("amountBasis", "nx_referral_reward_settlement.newcomer_usdt/newcomer_nex; SETTLED rows; same cluster membership as gift projection");
+            fact.put("cellMeaning", "SETTLED_GIFTS_WITH_DENIED_GIFT_EVIDENCE");
+            facts.put(rowId, fact);
+        }
+        for (Map<String, Object> raw : riskMapper.arbitrageBoardAmounts()) {
+            String rowId = String.valueOf(raw.get("rowId") == null ? "" : raw.get("rowId"));
+            if (!StringUtils.hasText(rowId)) continue;
+            Map<String, Object> fact = new LinkedHashMap<>();
+            fact.put("amounts", List.of(k2Amount("USDT", k2Decimal(raw.get("usdtRaw")))));
+            fact.put("amountBasis", "nx_risk_k2_leaderboard_snapshot.cumulative_usdt; current business week; latest bucket");
+            fact.put("cellMeaning", "CURRENT_WEEK_CUMULATIVE_USDT");
+            facts.put(rowId, fact);
+        }
+        return facts;
+    }
+
+    private Map<String, Object> k2Amount(String currency, BigDecimal amountRaw) {
+        Map<String, Object> amount = new LinkedHashMap<>();
+        amount.put("currency", currency);
+        amount.put("amountRaw", amountRaw);
+        return amount;
+    }
+
+    private Integer k2TrialEventCount(RiskArbitrageRowView row) {
+        if (row.cells().size() < 2) return null;
+        Matcher matcher = Pattern.compile("^(\\d+)").matcher(row.cells().get(1).trim());
+        if (!matcher.find()) return null;
+        try { return Integer.parseInt(matcher.group(1)); }
+        catch (NumberFormatException invalid) { return null; }
+    }
+
+    private static BigDecimal k2Decimal(Object value) {
+        if (value == null) return null;
+        try { return new BigDecimal(String.valueOf(value)); }
+        catch (NumberFormatException invalid) { return null; }
+    }
+
+    private static Integer k2Integer(Object value) {
+        BigDecimal decimal = k2Decimal(value);
+        return decimal == null ? null : decimal.intValue();
+    }
+
+    private static List<K2ViewSpec> k2Views(int trialDays) {
+        return List.of(
+                new K2ViewSpec("trial", "试用循环", "· 试用循环养号 · 服务器端复活计数,不信客户端状态",
+                        List.of("实体 / 簇", trialDays + " 天循环次数", "关联账户", "累计套取试用收益"),
+                        "循环次数是服务器记的开试用、取消、再开的轮数。层数命中 = 多账户 / 绑邀请人 / 试用循环。"),
+                new K2ViewSpec("tradein", "换新套利", "· 高频下架置换 · 礼金/返佣叠加行为证据后再判定闭环",
+                        List.of("账户 / 实体", "设备链", "观察窗口", "高频下架置换", "礼金/返佣叠加"),
+                        "置换抵扣阶梯归 E3；K2 只根据高频下架置换与礼金/返佣叠加证据判定异常，不使用持有月或旧残值闸门。"),
+                new K2ViewSpec("gift", "新人礼刷取", "· 新人礼刷取 · 看领完礼就走的闭环行为",
+                        List.of("簇", "实体", "已发 / 已拦", "涉及金额", "闭环特征"),
+                        "K1 看同一实体重复领；K2 加看行为闭环。拦截只停发后续,不动已入账资产。"),
+                new K2ViewSpec("board", "排行榜刷榜", "· 排行榜刷榜 · 邀请/奖励增速异常的冲榜账户",
+                        List.of("账户", "本期累计奖励", "奖励增长倍数", "直接邀请增长", "关联簇"),
+                        "这里只标记并发信号给「奖励池、名额与排行榜」和风险雷达。取消参榜资格和从奖池剔除在「奖励池、名额与排行榜」执行。"
+                                + "奖励增长倍数＝该账户奖励增加额÷比较样本奖励增加额的中位数。比较样本取本周最近两次快照的正向增长记录，并排除已标记刷榜风险的账户。"));
     }
 
     private List<RiskArbitrageStatView> canonicalK2Stats(List<RiskArbitrageRowView> rows) {
@@ -972,13 +1172,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 new RiskArbitrageStatView("giftBlockedCnt", "新人礼拦截",
                         String.valueOf(giftBlocked), "已确认停发的后续奖励", "ok"),
                 new RiskArbitrageStatView("boardSignals", "刷榜信号",
-                        String.valueOf(boardSignals), "当前榜单异常投影 · 处置归 F8", "danger"));
+                        String.valueOf(boardSignals), "当前榜单异常投影 · 到「奖励池、名额与排行榜」处置", "danger"));
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public void refreshK2AuthoritativeProjection() {
         List<RiskArbitrageParamView> params = riskRepository.arbitrageParams();
-        int[] trialBoundary = trialCycleBoundary(params);
+        refreshK2AuthoritativeProjection(params, trialCycleBoundary(params));
+    }
+
+    private void refreshK2AuthoritativeProjection(List<RiskArbitrageParamView> params, int[] trialBoundary) {
         int giftMinimum = thresholdMinimum(
                 params, "welcomeGiftAnomalyThreshold", K2_WELCOME_GIFT_THRESHOLD, 2);
         int boardMultiplier = thresholdValue(
@@ -1031,8 +1234,18 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     // Otherwise OTP-backed parameters would re-read the newly written config
                     // and make the audit before/after snapshots identical.
                     RiskArbitrageParamView beforeCanonical = withCanonicalOtpValue(before);
+                    if (OTP_CANONICAL_CONFIG_KEYS.containsKey(normalizedKey)) {
+                        var canonical = riskMapper.otpCanonicalSource(OTP_CANONICAL_CONFIG_KEYS.get(normalizedKey), true);
+                        if (!activeOtpSource(canonical)) {
+                            return ApiResult.fail(409, "K2_OTP_INITIAL_APPROVAL_REQUIRED");
+                        }
+                        canonicalOtpValue(normalizedKey, canonical.value());
+                    }
                     if (before.version() != request.expectedVersion()) {
                         return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K2_PARAM_CONCURRENT_UPDATE");
+                    }
+                    if (retiredWelcomeGiftScope(normalizedKey, normalizedValue)) {
+                        return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "K2_WELCOME_GIFT_SCOPE_RETIRED");
                     }
                     RiskArbitrageParamView updated = riskRepository.updateArbitrageParam(
                             normalizedKey, request.expectedVersion(), normalizedValue).orElse(null);
@@ -1050,6 +1263,84 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             "idempotencyKey", idempotencyKey.trim()));
                     return ApiResult.ok(after);
                 });
+    }
+
+    public record K2OtpReview(ffdd.opsconsole.platform.domain.AuditLockTarget target, String action,
+                              String before, String after, Map<String, Object> sources) {}
+
+    @Transactional
+    public K2OtpReview previewOtpInitialization(String key, RiskArbitrageParamUpdateRequest request) {
+        if (!OTP_CANONICAL_CONFIG_KEYS.containsKey(key) || request == null || request.expectedVersion() == null
+                || request.expectedVersion() < 0 || request.value() == null || request.value().length() > 128) {
+            throw new BizException(422, "K2_OTP_PROPOSAL_INVALID");
+        }
+        String value = normalizeArbitrageParam(key, request.value());
+        if (!StringUtils.hasText(value)) throw new BizException(422, "K2_PARAM_VALUE_INVALID");
+        var risk = riskMapper.otpRiskSource(key, true);
+        var canonical = riskMapper.otpCanonicalSource(OTP_CANONICAL_CONFIG_KEYS.get(key), true);
+        if (activeOtpSource(canonical)) {
+            canonicalOtpValue(key, canonical.value());
+            throw new BizException(409, "K2_OTP_ALREADY_CONFIGURED");
+        }
+        long visibleVersion = risk == null || risk.deleted() != 0 ? 0L : risk.version();
+        if (visibleVersion != request.expectedVersion()) throw new BizException(409, "K2_PARAM_CONCURRENT_UPDATE");
+        return new K2OtpReview(K2OtpInitialApproval.target(key), "首次配置验证码设置 · " + key,
+                "auth 未配置；risk " + (risk == null ? "不存在" : risk.value() + " v" + risk.version()),
+                value, otpSourceSnapshot(risk, canonical));
+    }
+
+    @Transactional
+    public ApiResult<RiskArbitrageParamView> executeApprovedOtpInitialization(
+            String key, String idempotencyKey, RiskArbitrageParamUpdateRequest request,
+            Map<?, ?> expectedSources, long makerAdminId) {
+        ApiResult<RiskArbitrageParamView> guard = requireK2Command(idempotencyKey, request.reason());
+        if (guard != null) return guard;
+        return idempotentCommand("K2_PARAM:" + key, idempotencyKey,
+                requestHash(key, request.value(), String.valueOf(request.expectedVersion()), request.reason()), () -> {
+                    var risk = riskMapper.otpRiskSource(key, true);
+                    var canonical = riskMapper.otpCanonicalSource(OTP_CANONICAL_CONFIG_KEYS.get(key), true);
+                    Map<String, Object> before = otpSourceSnapshot(risk, canonical);
+                    if (!before.equals(expectedSources)) throw new BizException(409, "K2_OTP_SOURCE_CHANGED");
+                    previewOtpInitialization(key, request);
+                    String value = normalizeArbitrageParam(key, request.value());
+                    RiskArbitrageParamView definition = riskRepository.arbitrageParams().stream()
+                            .filter(param -> key.equals(param.key())).findFirst().orElseThrow();
+                    int changed = risk == null ? riskMapper.insertArbitrageParam(key, definition.name(), value,
+                            definition.sub(), definition.note(), 1L) : riskMapper.initializeOtpRiskSource(risk, value);
+                    if (changed != 1) throw new BizException(409, "K2_OTP_SOURCE_CHANGED");
+                    String canonicalValue = "otpGate.otpTtlSeconds".equals(key)
+                            ? String.valueOf(Integer.parseInt(value) / 60) : value;
+                    String valueType = "captchaGate.alwaysScenes".equals(key) ? "STRING" : "NUMBER";
+                    boolean saved = canonical == null ? configFacade.insertAdminValueIfMissing(
+                            OTP_CANONICAL_CONFIG_KEYS.get(key), canonicalValue, valueType, "auth-risk",
+                            "K2 OTP gate canonical configuration")
+                            : riskMapper.initializeOtpCanonicalSource(canonical, canonicalValue, valueType) == 1;
+                    if (!saved) throw new BizException(409, "K2_OTP_SOURCE_CHANGED");
+                    RiskArbitrageParamView after = riskMapper.findArbitrageParam(key);
+                    auditRequired("K2_PARAM_CHANGED", "RISK_ARBITRAGE_PARAM", key, authenticatedOperator(), Map.of(
+                            "key", key, "before", before,
+                            "after", otpSourceSnapshot(riskMapper.otpRiskSource(key, false),
+                                    riskMapper.otpCanonicalSource(OTP_CANONICAL_CONFIG_KEYS.get(key), false)),
+                            "reason", request.reason().trim(), "idempotencyKey", idempotencyKey.trim(),
+                            "initialConfiguration", true, "makerAdminId", makerAdminId,
+                            "operationId", A2ReplayContext.operationId()));
+                    return ApiResult.ok(after);
+                });
+    }
+
+    private static boolean activeOtpSource(ffdd.opsconsole.risk.mapper.RiskOpsMapper.K2OtpCanonicalSource source) {
+        return source != null && source.status() == 1 && source.deleted() == 0;
+    }
+
+    private static Map<String, Object> otpSourceSnapshot(
+            ffdd.opsconsole.risk.mapper.RiskOpsMapper.K2OtpRiskSource risk,
+            ffdd.opsconsole.risk.mapper.RiskOpsMapper.K2OtpCanonicalSource canonical) {
+        return Map.of("risk", risk == null ? Map.of("exists", false) : Map.of("exists", true,
+                        "id", risk.id().toString(), "value", risk.value(),
+                        "version", Long.toString(risk.version()), "deleted", Integer.toString(risk.deleted())),
+                "canonical", canonical == null ? Map.of("exists", false) : Map.of("exists", true,
+                        "id", canonical.id().toString(), "value", canonical.value(),
+                        "status", Integer.toString(canonical.status()), "deleted", Integer.toString(canonical.deleted())));
     }
 
     @Transactional
@@ -1466,22 +1757,22 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "K4_MODEL_VERSION_REQUIRED", request.reason(), idempotencyKey);
         }
         List<String> requested = canonicalK4ScoreUserOrder(request.userNos());
-        if (requested.size() > 1000) {
-            return rejectK4Write("batchRecompute", "batch", actor, 422,
-                    "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
-        }
-        // Every multi-user K4 writer acquires the per-user score roots in the same order.
-        // This prevents inverse client order from creating U1->U2 / U2->U1 deadlocks.
-        List<String> targets = requested.isEmpty()
-                ? canonicalK4ScoreUserOrder(riskRepository.scoreUserNos())
-                : requested;
-        if (targets.size() > 1000) {
-            return rejectK4Write("batchRecompute", "batch", actor, 422,
-                    "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
-        }
+        ApiResult<Map<String, Object>> legacy = legacyK4BatchReceipt(
+                idempotencyKey, requested, request, actor);
+        if (legacy != null) return legacy;
+        String batchHash = requestHash(String.join(",", requested),
+                String.valueOf(request.expectedModelVersion()), request.reason());
         return executeK4Write("batchRecompute", "batch", actor, request.reason(), idempotencyKey, () ->
-                idempotentCommand("K4_SCORE_BATCH_RECOMPUTE", idempotencyKey,
-                requestHash(String.join(",", targets), String.valueOf(request.expectedModelVersion()), request.reason()), () -> {
+                idempotentCommand("K4_SCORE_BATCH_RECOMPUTE", idempotencyKey, batchHash, () -> {
+                    // The empty-list marker is the original empty intent; only a genuinely new
+                    // execution expands the current score-user set and enforces the cap.
+                    List<String> targets = requested.isEmpty()
+                            ? canonicalK4ScoreUserOrder(riskRepository.scoreUserNos())
+                            : requested;
+                    if (targets.size() > 1000) {
+                        return rejectK4Write("batchRecompute", "batch", actor, 422,
+                                "K4_SCORE_BATCH_TOO_LARGE", request.reason(), idempotencyKey);
+                    }
                     RiskScoreModelView model = riskRepository.activeScoringModel().orElse(null);
                     if (model == null) {
                         return rejectK4Write("batchRecompute", "batch", actor, 409,
@@ -1513,6 +1804,46 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             "idempotencyKey", idempotencyKey.trim()));
                     return ApiResult.ok(Map.of("count", results.size(), "users", results));
                 }));
+    }
+
+    @SuppressWarnings("unchecked")
+    private ApiResult<Map<String, Object>> legacyK4BatchReceipt(
+            String idempotencyKey, List<String> requested, RiskScoreBatchCommandRequest request, String actor) {
+        var active = idempotencyService.activeReceipt("K4_SCORE_BATCH_RECOMPUTE", idempotencyKey);
+        if (active == null) return null;
+        Long adminId = authenticatedK4AdminId();
+        if (adminId == null) throw new BizException(409, "K4_SCORE_BATCH_RECEIPT_OWNER_UNPROVEN");
+        if (!auditLogService.isK4BatchRecomputeOwner(active.recordId(), "K4_SCORE_BATCH_RECOMPUTE",
+                idempotencyKey.trim(), active.requestHash(), adminId)) {
+            throw new BizException(409, "K4_SCORE_BATCH_RECEIPT_OWNER_UNPROVEN");
+        }
+        var recovered = idempotencyService.recoveryResult("K4_SCORE_BATCH_RECOMPUTE",
+                idempotencyKey, active.requestHash(), ApiResult.class);
+        if (recovered.status() != AdminIdempotencyService.RecoveryStatus.SUCCEEDED
+                || recovered.response() == null) {
+            throw new BizException(409, "K4_SCORE_BATCH_RECEIPT_UNREADABLE");
+        }
+        ApiResult<?> receipt = recovered.response();
+        List<String> oldTargets = k4ReceiptTargets(receipt);
+        if (oldTargets == null) throw new BizException(409, "K4_SCORE_BATCH_RECEIPT_UNREADABLE");
+        if (!requested.isEmpty() && !requested.equals(oldTargets)) return null;
+        String oldHash = requestHash(String.join(",", oldTargets),
+                String.valueOf(request.expectedModelVersion()), request.reason());
+        if (!oldHash.equals(active.requestHash())) return null;
+        return (ApiResult<Map<String, Object>>) receipt;
+    }
+
+    private List<String> k4ReceiptTargets(ApiResult<?> receipt) {
+        if (receipt == null || receipt.getCode() != 0
+                || !(receipt.getData() instanceof Map<?, ?> data)
+                || !(data.get("users") instanceof List<?> users)) return null;
+        List<String> targets = new ArrayList<>(users.size());
+        for (Object item : users) {
+            if (!(item instanceof Map<?, ?> row) || !(row.get("userNo") instanceof String userNo)
+                    || !StringUtils.hasText(userNo)) return null;
+            targets.add(userNo);
+        }
+        return canonicalK4ScoreUserOrder(targets);
     }
 
     public ApiResult<RiskScoreUserView> overrideScore(String userNo, String idempotencyKey, RiskScoreOverrideRequest request) {
@@ -1753,6 +2084,19 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return authenticatedK3Operator();
     }
 
+    private Long authenticatedK4AdminId() {
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !"ADMIN".equals(details.get("subjectType"))) return null;
+        try {
+            long id = Long.parseLong(authentication.getName());
+            return id > 0 ? id : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
     private RiskScoreUserView withK4ScoreHistory(RiskScoreUserView user) {
         return new RiskScoreUserView(
                 user.userNo(), user.modelScore(), user.effectiveScore(), user.overridden(),
@@ -1871,6 +2215,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private ApiResult<Map<String, Object>> idempotentK1(
             String scope, String idempotencyKey, String requestHash,
             java.util.function.Supplier<ApiResult<Map<String, Object>>> action) {
+        if (scope.startsWith("K1_CLUSTER_STATUS:") || scope.startsWith("K1_CLUSTER_REVIEW:")) {
+            int separator = scope.indexOf(':');
+            String suppliedId = scope.substring(separator + 1);
+            String actualId = riskRepository.multiAccountClusterState(suppliedId)
+                    .map(RiskOpsRepository.MultiAccountClusterState::clusterId).orElse(suppliedId);
+            return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBoundTargets(
+                    scope, idempotencyKey.trim(), requestHash, ApiResult.class, "risk_k1_read",
+                    java.util.List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                            scope.substring(0, separator), "K1", "cluster", actualId)), (java.util.function.Supplier) action);
+        }
         return idempotentCommand(scope, idempotencyKey, requestHash, action);
     }
 
@@ -2131,19 +2485,23 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (configKey == null) {
             return param;
         }
-        Optional<String> configured = configFacade.activeValue(configKey).filter(StringUtils::hasText);
+        Optional<String> configured = configFacade.activeValue(configKey);
         if (configured.isEmpty()) {
             return param;
         }
-        String value = configured.get();
-        if ("otpGate.otpTtlSeconds".equals(param.key())) {
-            try {
-                value = normalizeBoundedInteger(String.valueOf(Integer.parseInt(value) * 60), 60, 900);
-            } catch (NumberFormatException ex) {
-                return param;
-            }
-        }
+        String value = canonicalOtpValue(param.key(), configured.get());
         return new RiskArbitrageParamView(param.key(), param.name(), value, param.sub(), param.note(), param.version());
+    }
+
+    private String canonicalOtpValue(String key, String value) {
+        if ("otpGate.otpTtlSeconds".equals(key)) {
+            String minutes = normalizeBoundedInteger(value, 1, 15);
+            if (!StringUtils.hasText(minutes)) throw new BizException(503, "K2_OTP_CANONICAL_INVALID");
+            value = String.valueOf(Integer.parseInt(minutes) * 60);
+        }
+        String normalized = normalizeArbitrageParam(key, value);
+        if (!StringUtils.hasText(normalized)) throw new BizException(503, "K2_OTP_CANONICAL_INVALID");
+        return normalized;
     }
 
     private void persistCanonicalOtpValue(String key, String value) {
@@ -2231,6 +2589,12 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
             return "";
         }
         return matcher.group(1) + " " + count + " 次 / " + days + " 天";
+    }
+
+    private boolean retiredWelcomeGiftScope(String key, String value) {
+        if (!"welcomeGiftAnomalyThreshold".equals(key)) return false;
+        Matcher matcher = K2_WELCOME_GIFT_THRESHOLD.matcher(value.trim());
+        return matcher.matches() && Set.of("手机号", "设备").contains(matcher.group(3));
     }
 
     private String normalizeWelcomeGiftThreshold(String value) {
@@ -2427,6 +2791,266 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .build());
         return ApiResult.fail(status, reasonCode);
     }
+
+    /**
+     * T11 K3 relaxation gate: only a direction that can amplify fund outflow is checked,
+     * against the current exact B1 ratio and redline. No future volume is forecast and no
+     * Δ is added, so the check is the current coverage ratio versus the redline. A blocked
+     * write keeps every rule, version and business fact unchanged; the rejection audit
+     * commits independently and the exception fails the idempotency claim, so the same key
+     * can be retried once coverage recovers (same contract as the K1 release-parameter gate).
+     */
+    private void requireK3CoveragePrecheck(
+            String operation, String resourceId, String actor, String requestReason, String idempotencyKey) {
+        TreasuryCoverageSnapshot coverage;
+        try {
+            coverage = coverageFacade.snapshot();
+        } catch (RuntimeException unavailable) {
+            rejectK3Coverage(operation, resourceId, actor, OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(),
+                    "K3_COVERAGE_UNAVAILABLE", requestReason, idempotencyKey, null);
+            return;
+        }
+        if (coverage == null || !coverage.reliable()
+                || coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.coverageRatio().signum() < 0 || coverage.redlinePct().signum() <= 0) {
+            rejectK3Coverage(operation, resourceId, actor, OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(),
+                    "K3_COVERAGE_UNAVAILABLE", requestReason, idempotencyKey, coverage);
+            return;
+        }
+        if (coverage.redlineBreached()) {
+            rejectK3Coverage(operation, resourceId, actor,
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name(), requestReason, idempotencyKey, coverage);
+        }
+    }
+
+    private void rejectK3Coverage(
+            String operation, String resourceId, String actor, int status, String reasonCode,
+            String requestReason, String idempotencyKey, TreasuryCoverageSnapshot coverage) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("operation", operation);
+        detail.put("reasonCode", reasonCode);
+        detail.put("requestReason", trimmed(requestReason));
+        detail.put("idempotencyKey", trimmed(idempotencyKey));
+        detail.put("businessDataChanged", false);
+        if (coverage != null) {
+            detail.put("coverageRatio", coverage.coverageRatio());
+            detail.put("coverageRedlinePct", coverage.redlinePct());
+            detail.put("coverageReliable", coverage.reliable());
+            detail.put("coverageRedlineBreached", coverage.redlineBreached());
+        }
+        auditLogService.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
+                .action("K3_WITHDRAW_RULE_WRITE_REJECTED")
+                .resourceType("WITHDRAW_RULE")
+                .resourceId(resourceId)
+                .bizNo(resourceId)
+                .actorType("ADMIN")
+                .actorUsername(actor)
+                .result("REJECTED")
+                .riskLevel("HIGH")
+                .detail(detail)
+                .build());
+        throw new BizException(status, reasonCode);
+    }
+
+    /**
+     * A 'pass' rule never participates in the evaluator, so disabling it changes nothing.
+     * The only transition that removes an effective restriction is active → paused.
+     */
+    private boolean k3RuleStateChangeRelaxes(RiskRuleView before, String afterState) {
+        if (before == null || !"paused".equals(afterState)) {
+            return false;
+        }
+        if (!"active".equalsIgnoreCase(trimmed(before.state()))) {
+            return false;
+        }
+        return k3ActionSeverity(before.action()) != 0;
+    }
+
+    /**
+     * Active rules drive D2 immediately. Paused rules were active before, so relaxing their
+     * stored configuration while paused is the same relaxation when they are re-enabled;
+     * gating it here closes the pause → edit → enable path. Drafts have no current effect
+     * and activation only adds a restriction, so they are not gated.
+     */
+    private boolean k3RuleUpdateRelaxes(RiskRuleView before, String afterCondition, String afterAction) {
+        String state = trimmed(before.state()).toLowerCase(Locale.ROOT);
+        if (!"active".equals(state) && !"paused".equals(state)) {
+            return false;
+        }
+        int beforeSeverity = k3ActionSeverity(before.action());
+        int afterSeverity = k3ActionSeverity(afterAction);
+        // A pass rule never participates in the evaluator. Changing or keeping 'pass' cannot
+        // remove a restriction; turning it into delay/manual/freeze only adds one.
+        if (beforeSeverity == 0) {
+            return false;
+        }
+        if (beforeSeverity < 0 || afterSeverity < 0) {
+            return true;
+        }
+        K3TriggerRelation relation = k3TriggerRelation(before.dimension(), before.conditionText(), afterCondition);
+        // Only "not fewer triggers with no weaker action" is provably not a relaxation.
+        // Mixed or unparsable changes are treated as relaxation (gate) rather than guessed.
+        return afterSeverity < beforeSeverity
+                || relation == K3TriggerRelation.AFTER_SUBSET
+                || relation == K3TriggerRelation.INCOMPARABLE;
+    }
+
+    private int k3ActionSeverity(String action) {
+        return K3_ACTION_SEVERITY.getOrDefault(trimmed(action).toLowerCase(Locale.ROOT), -1);
+    }
+
+    /**
+     * Compares the withdrawal set that triggers the rule. AFTER_SUBSET means the new
+     * configuration triggers on fewer withdrawals (relaxation); AFTER_SUPERSET means more
+     * (tightening). Operator strictness is part of the set: >= covers >, <= covers <.
+     */
+    private K3TriggerRelation k3TriggerRelation(String dimension, String beforeCondition, String afterCondition) {
+        String before = k3ConditionCore(beforeCondition);
+        String after = k3ConditionCore(afterCondition);
+        return switch (k3RuleDimension(dimension)) {
+            case AMOUNT -> {
+                Matcher beforeMatch = K3_AMOUNT_RULE.matcher(before);
+                Matcher afterMatch = K3_AMOUNT_RULE.matcher(after);
+                yield beforeMatch.matches() && afterMatch.matches()
+                        ? k3LowerBoundRelation(
+                                parseMoney(beforeMatch.group(2), -1), ">=".equals(beforeMatch.group(1)),
+                                parseMoney(afterMatch.group(2), -1), ">=".equals(afterMatch.group(1)))
+                        : K3TriggerRelation.INCOMPARABLE;
+            }
+            case VELOCITY -> {
+                Matcher beforeMatch = K3_VELOCITY_RULE.matcher(before);
+                Matcher afterMatch = K3_VELOCITY_RULE.matcher(after);
+                yield beforeMatch.matches() && afterMatch.matches()
+                        ? k3UnionRelation(
+                                k3LowerBoundRelation(
+                                        parseInt(beforeMatch.group(2), -1), ">=".equals(beforeMatch.group(1)),
+                                        parseInt(afterMatch.group(2), -1), ">=".equals(afterMatch.group(1))),
+                                k3LowerBoundRelation(
+                                        parseMoney(beforeMatch.group(4), -1), ">=".equals(beforeMatch.group(3)),
+                                        parseMoney(afterMatch.group(4), -1), ">=".equals(afterMatch.group(3))))
+                        : K3TriggerRelation.INCOMPARABLE;
+            }
+            case NEW_ACCOUNT -> {
+                Matcher beforeMatch = K3_NEW_ACCOUNT_RULE.matcher(before);
+                Matcher afterMatch = K3_NEW_ACCOUNT_RULE.matcher(after);
+                yield beforeMatch.matches() && afterMatch.matches()
+                        ? k3UpperBoundRelation(
+                                parseInt(beforeMatch.group(2), -1), "<=".equals(beforeMatch.group(1)),
+                                parseInt(afterMatch.group(2), -1), "<=".equals(afterMatch.group(1)))
+                        : K3TriggerRelation.INCOMPARABLE;
+            }
+            case ADDRESS -> {
+                Optional<K3AddressReputationRuleConfig> beforeConfig = K3AddressReputationRuleConfig.parse(before);
+                Optional<K3AddressReputationRuleConfig> afterConfig = K3AddressReputationRuleConfig.parse(after);
+                yield beforeConfig.isPresent() && afterConfig.isPresent()
+                        ? k3AddressRelation(beforeConfig.get(), afterConfig.get())
+                        : K3TriggerRelation.INCOMPARABLE;
+            }
+            case UNKNOWN -> K3TriggerRelation.INCOMPARABLE;
+        };
+    }
+
+    private K3TriggerRelation k3LowerBoundRelation(
+            int beforeThreshold, boolean beforeInclusive, int afterThreshold, boolean afterInclusive) {
+        if (beforeThreshold < 0 || afterThreshold < 0) {
+            return K3TriggerRelation.INCOMPARABLE;
+        }
+        if (afterThreshold < beforeThreshold) return K3TriggerRelation.AFTER_SUPERSET;
+        if (afterThreshold > beforeThreshold) return K3TriggerRelation.AFTER_SUBSET;
+        if (afterInclusive && !beforeInclusive) return K3TriggerRelation.AFTER_SUPERSET;
+        if (!afterInclusive && beforeInclusive) return K3TriggerRelation.AFTER_SUBSET;
+        return K3TriggerRelation.EQUAL;
+    }
+
+    private K3TriggerRelation k3UpperBoundRelation(
+            int beforeThreshold, boolean beforeInclusive, int afterThreshold, boolean afterInclusive) {
+        if (beforeThreshold < 0 || afterThreshold < 0) {
+            return K3TriggerRelation.INCOMPARABLE;
+        }
+        if (afterThreshold > beforeThreshold) return K3TriggerRelation.AFTER_SUPERSET;
+        if (afterThreshold < beforeThreshold) return K3TriggerRelation.AFTER_SUBSET;
+        if (afterInclusive && !beforeInclusive) return K3TriggerRelation.AFTER_SUPERSET;
+        if (!afterInclusive && beforeInclusive) return K3TriggerRelation.AFTER_SUBSET;
+        return K3TriggerRelation.EQUAL;
+    }
+
+    /** The velocity rule matches on count OR sum, so the union moves only when both arms do. */
+    private K3TriggerRelation k3UnionRelation(K3TriggerRelation count, K3TriggerRelation sum) {
+        if (count == K3TriggerRelation.INCOMPARABLE || sum == K3TriggerRelation.INCOMPARABLE) {
+            return K3TriggerRelation.INCOMPARABLE;
+        }
+        if (count == sum) return count;
+        if (count == K3TriggerRelation.EQUAL) return sum;
+        if (sum == K3TriggerRelation.EQUAL) return count;
+        return K3TriggerRelation.INCOMPARABLE;
+    }
+
+    private K3TriggerRelation k3AddressRelation(
+            K3AddressReputationRuleConfig before, K3AddressReputationRuleConfig after) {
+        if (before.source() == after.source()) {
+            return before.source() == K3AddressReputationRuleConfig.Source.INTERNAL
+                    ? K3TriggerRelation.EQUAL
+                    : k3AddressThresholdRelation(before.lowThreshold(), after.lowThreshold());
+        }
+        if (before.source() == K3AddressReputationRuleConfig.Source.INTERNAL
+                && after.source() == K3AddressReputationRuleConfig.Source.COMBINED) {
+            return K3TriggerRelation.AFTER_SUPERSET;
+        }
+        if (before.source() == K3AddressReputationRuleConfig.Source.COMBINED
+                && after.source() == K3AddressReputationRuleConfig.Source.INTERNAL) {
+            return K3TriggerRelation.AFTER_SUBSET;
+        }
+        if (before.source() == K3AddressReputationRuleConfig.Source.THIRD_PARTY
+                && after.source() == K3AddressReputationRuleConfig.Source.COMBINED) {
+            // after = internal ∪ (score < afterThreshold), before = (score < beforeThreshold).
+            // It is a superset only when the third-party arm does not shrink: the added
+            // internal arm cannot be assumed to cover the lost third-party range.
+            return after.lowThreshold().compareTo(before.lowThreshold()) >= 0
+                    ? K3TriggerRelation.AFTER_SUPERSET
+                    : K3TriggerRelation.INCOMPARABLE;
+        }
+        // internal <-> third-party and combined -> third-party are data-dependent.
+        return K3TriggerRelation.INCOMPARABLE;
+    }
+
+    private K3TriggerRelation k3AddressThresholdRelation(BigDecimal before, BigDecimal after) {
+        int comparison = after.compareTo(before);
+        if (comparison < 0) return K3TriggerRelation.AFTER_SUBSET;
+        if (comparison > 0) return K3TriggerRelation.AFTER_SUPERSET;
+        return K3TriggerRelation.EQUAL;
+    }
+
+    private K3RuleDimension k3RuleDimension(String dimension) {
+        String actual = trimmed(dimension).toLowerCase(Locale.ROOT);
+        if (k3Dimension(actual, "金额", "amount", "largeamountusdt")) return K3RuleDimension.AMOUNT;
+        if (k3Dimension(actual, "速度", "velocity", "velocity24h")) return K3RuleDimension.VELOCITY;
+        if (k3Dimension(actual, "新账户", "accountage", "newaccount", "newaccountprotectdays")) {
+            return K3RuleDimension.NEW_ACCOUNT;
+        }
+        if (k3Dimension(actual, "地址信誉", "address", "addressreputation", "addressreputationsource")) {
+            return K3RuleDimension.ADDRESS;
+        }
+        return K3RuleDimension.UNKNOWN;
+    }
+
+    private boolean k3Dimension(String actual, String... candidates) {
+        for (String candidate : candidates) {
+            if (actual.equals(candidate) || actual.contains(candidate)) return true;
+        }
+        return false;
+    }
+
+    private String k3ConditionCore(String value) {
+        String text = trimmed(value).replace('，', ',');
+        int arrow = text.indexOf("->");
+        if (arrow < 0) arrow = text.indexOf('→');
+        return arrow < 0 ? text : text.substring(0, arrow).trim();
+    }
+
+    private enum K3RuleDimension { AMOUNT, VELOCITY, NEW_ACCOUNT, ADDRESS, UNKNOWN }
+
+    private enum K3TriggerRelation { AFTER_SUBSET, EQUAL, AFTER_SUPERSET, INCOMPARABLE }
 
     private <T> ApiResult<T> rejectK4Write(
             String operation,

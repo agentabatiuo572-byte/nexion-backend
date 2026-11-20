@@ -33,6 +33,14 @@ public class AdminPermissionCache {
         return loadFromDb(adminId);
     }
 
+    public Set<String> getPermissionGrantRoles(Long adminId, String permissionCode) {
+        return adminId == null ? Set.of() : Set.copyOf(permissionMapper.selectActivePermissionGrantRoles(adminId, permissionCode));
+    }
+
+    public boolean hasGrantOutsideRole(Long adminId, String permissionCode, String excludedRole) {
+        return getPermissionGrantRoles(adminId, permissionCode).stream().anyMatch(role -> !excludedRole.equals(role));
+    }
+
     /** 清理单个账号的遗留权限缓存键（兼容既有角色变更调用）。 */
     public void evict(Long adminId) {
         if (adminId == null) {

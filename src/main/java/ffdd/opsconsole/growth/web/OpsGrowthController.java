@@ -4,12 +4,16 @@ package ffdd.opsconsole.growth.web;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.growth.application.OpsGrowthCommandBoundary;
 import ffdd.opsconsole.growth.application.GrowthPublicStatsService;
+import ffdd.opsconsole.growth.application.H5GrowthApproval;
+import ffdd.opsconsole.growth.application.WheelDailyUsageService;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneCreateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
@@ -18,11 +22,14 @@ import ffdd.opsconsole.growth.dto.GrowthMonthlyMissionRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionEditRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionPresentationRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionStatusRequest;
+import ffdd.opsconsole.growth.dto.GrowthWheelTierRetireRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelTierRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelGuardRequest;
 import ffdd.opsconsole.growth.dto.GrowthWheelProbabilityBatchRequest;
 import ffdd.opsconsole.growth.dto.GrowthVoucherRequest;
 import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
+import ffdd.opsconsole.platform.application.OpsAuditCenterService;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationTicket;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -43,6 +50,9 @@ public class OpsGrowthController {
     private final OpsGrowthService growthService;
     private final OpsGrowthCommandBoundary commandBoundary;
     private final GrowthPublicStatsService publicStatsService;
+    private final WheelDailyUsageService wheelDailyUsageService;
+    private final OpsAuditCenterService auditCenterService;
+    private final AdminOperatorRoleResolver operatorRoleResolver;
 
     @GetMapping("/quest-events/weekly-region-policy")
     @PreAuthorize("hasAuthority('growth_h3_read')")
@@ -54,6 +64,12 @@ public class OpsGrowthController {
     @PreAuthorize("hasAuthority('growth_h9_read')")
     public ApiResult<Map<String, Object>> publicStats() {
         return publicStatsService.overview();
+    }
+
+    @GetMapping("/public-stats/app-display")
+    @PreAuthorize("hasAuthority('growth_h9_read')")
+    public ApiResult<Map<String, Object>> publicStatsAppDisplay() {
+        return publicStatsService.appDisplay();
     }
 
     @PatchMapping("/public-stats")
@@ -92,7 +108,11 @@ public class OpsGrowthController {
     public ApiResult<Map<String, Object>> trials(
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "20") int pageSize) {
-        return growthService.trials(pageNum, pageSize);
+        ApiResult<Map<String, Object>> result = growthService.trials(pageNum, pageSize);
+        if (result.getCode() == 0 && result.getData().get("stats") instanceof Map<?, ?> stats && stats.isEmpty()) {
+            return ApiResult.fail(503, "TRIAL_STATS_UNAVAILABLE");
+        }
+        return result;
     }
 
     @PatchMapping("/trials/params/{paramKey}")
@@ -127,15 +147,6 @@ public class OpsGrowthController {
                 () -> growthService.chargeTrialSession(idempotencyKey, sessionId, request));
     }
 
-    @PostMapping("/trials/auto-push/kill")
-    @PreAuthorize("hasAuthority('growth_h2_write')")
-    public ApiResult<Map<String, Object>> killTrialAutoPush(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody GrowthConfigUpdateRequest request) {
-        return commandBoundary.execute("H2", "AUTO_PUSH_KILL", "AUTO_PUSH", idempotencyKey, request,
-                () -> growthService.killTrialAutoPush(idempotencyKey, request));
-    }
-
     @GetMapping("/quest-events")
     @PreAuthorize("hasAuthority('growth_h3_read') and hasAuthority('growth_h4_read')")
     public ApiResult<Map<String, Object>> questEvents() {
@@ -145,7 +156,7 @@ public class OpsGrowthController {
     @GetMapping("/quest-events/tasks")
     @PreAuthorize("hasAuthority('growth_h3_read')")
     public ApiResult<Map<String, Object>> questTasks() {
-        return growthService.questTasks();
+        return growthService.questTasksForRead();
     }
     @PostMapping("/quest-events/bindings/{bindingCode}") @PreAuthorize("hasAuthority('growth_h3_write')")
     public ApiResult<Map<String,Object>> createQuestBinding(@RequestHeader(value=OpsAdminApi.IDEMPOTENCY_KEY_HEADER,required=false) String key,@PathVariable String bindingCode,@RequestBody GrowthQuestEventBindingRequest request){return commandBoundary.execute("H3","QUEST_EVENT_BINDING_CREATE",bindingCode,key,request,()->growthService.createQuestEventBinding(key,bindingCode,request));}
@@ -158,6 +169,18 @@ public class OpsGrowthController {
     @PreAuthorize("hasAuthority('growth_h4_read')")
     public ApiResult<Map<String, Object>> questEventOverview() {
         return growthService.questEventOverview();
+    }
+
+    @GetMapping("/quest-events/events/create-candidates")
+    @PreAuthorize("hasAuthority('growth_h4_read')")
+    public ApiResult<Map<String, Object>> questEventCreateCandidates() {
+        return growthService.questEventCreateCandidates();
+    }
+
+    @GetMapping("/quest-events/wheel-daily-usage")
+    @PreAuthorize("hasAuthority('growth_h4_read')")
+    public ApiResult<Map<String, Object>> wheelDailyUsage() {
+        return wheelDailyUsageService.current();
     }
 
     @PatchMapping("/quest-events/config/{configKey}")
@@ -326,6 +349,16 @@ public class OpsGrowthController {
                 () -> growthService.updateWheelProbabilities(idempotencyKey, request));
     }
 
+    @PostMapping("/quest-events/wheel-tiers/{tierName}/retire")
+    @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
+    public ApiResult<Map<String, Object>> retireWheelTier(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @PathVariable String tierName,
+            @RequestBody GrowthWheelTierRetireRequest request) {
+        return commandBoundary.execute("H4", "WHEEL_TIER_RETIRE", tierName, idempotencyKey, request,
+                () -> growthService.retireWheelTier(idempotencyKey, tierName, request));
+    }
+
     @PatchMapping("/quest-events/wheel-tiers/{tierName}")
     @PreAuthorize("hasAuthority('growth_h4_wheel_pool_write')")
     public ApiResult<Map<String, Object>> updateWheelTier(
@@ -354,6 +387,13 @@ public class OpsGrowthController {
             @RequestBody ffdd.opsconsole.growth.dto.GrowthEventDeleteRequest request) {
         return commandBoundary.execute("H4","EVENT_DELETE",eventId,key,request,
                 ()->growthService.deleteQuestEvent(key,eventId,request));
+    }
+
+    @PostMapping("/quest-events/events/{eventId}/{field}/preview")
+    @PreAuthorize("hasAuthority('growth_h4_write')")
+    public ApiResult<Map<String, Object>> previewQuestEventChange(
+            @PathVariable String eventId, @PathVariable String field, @RequestBody GrowthConfigUpdateRequest request) {
+        return growthService.previewQuestEventChange(eventId, field, request);
     }
 
     @PatchMapping("/quest-events/events/{eventId}/reward")
@@ -487,8 +527,7 @@ public class OpsGrowthController {
     }
 
     @PatchMapping("/earn-milestones/tick-interval")
-    // earn 里程碑属 H5 签到&UVT（收益/间隔），按业务内容归 H5
-    @PreAuthorize("hasAuthority('growth_h5_write')")
+    @PreAuthorize("hasAuthority('growth_h5_tick_write') and @superAdminAuthorization.isSuperAdmin(authentication)")
     public ApiResult<Map<String, Object>> updateEarnMilestoneTickInterval(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody GrowthConfigUpdateRequest request) {
@@ -505,6 +544,15 @@ public class OpsGrowthController {
             @RequestBody GrowthEarnMilestoneUpdateRequest request) {
         return commandBoundary.execute("H5", "EARN_MILESTONE_UPDATE", milestoneKey, idempotencyKey, request,
                 () -> growthService.updateEarnMilestone(idempotencyKey, milestoneKey, request));
+    }
+
+    @PostMapping("/earn-milestones")
+    @PreAuthorize("hasAuthority('growth_h5_write')")
+    public ApiResult<AuditOperationTicket> createEarnMilestone(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody GrowthEarnMilestoneCreateRequest request) {
+        return auditCenterService.createProposal(idempotencyKey,
+                H5GrowthApproval.earnMilestoneCreateProposal(request, operatorRoleResolver.resolve()));
     }
 
     @GetMapping("/withdraw-gate")
@@ -527,7 +575,7 @@ public class OpsGrowthController {
     @GetMapping("/vouchers")
     @PreAuthorize("hasAuthority('growth_h7_read')")
     public ApiResult<Map<String, Object>> vouchers() {
-        return growthService.vouchers();
+        return growthService.vouchersForRead();
     }
 
     @PostMapping("/vouchers")
@@ -561,21 +609,13 @@ public class OpsGrowthController {
 
     @DeleteMapping("/vouchers/{voucherId}")
     @PreAuthorize("hasAuthority('growth_h7_write')")
-    public ApiResult<Map<String, Object>> deleteVoucher(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @PathVariable String voucherId,
-            @RequestBody GrowthConfigUpdateRequest request) {
-        return commandBoundary.execute("H7", "VOUCHER_DELETE", voucherId, idempotencyKey, request,
-                () -> growthService.deleteVoucher(idempotencyKey, voucherId, request));
+    public ApiResult<Map<String, Object>> deleteVoucher() {
+        return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
     }
 
     @PatchMapping("/vouchers/{voucherId}/grants/revoke-available")
     @PreAuthorize("hasAuthority('growth_h7_write')")
-    public ApiResult<Map<String, Object>> revokeAvailableVoucherGrants(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @PathVariable String voucherId,
-            @RequestBody GrowthConfigUpdateRequest request) {
-        return commandBoundary.execute("H7", "VOUCHER_AVAILABLE_GRANTS_REVOKE", voucherId, idempotencyKey, request,
-                () -> growthService.revokeAvailableVoucherGrants(idempotencyKey, voucherId, request));
+    public ApiResult<Map<String, Object>> revokeAvailableVoucherGrants() {
+        return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
     }
 }

@@ -31,6 +31,9 @@ public class GenesisRaffleController {
     @GetMapping("/api/admin/growth/genesis-raffle")
     @PreAuthorize("hasAuthority('growth_h4_read')")
     public ApiResult<Map<String,Object>> admin(){return service.admin();}
+    @GetMapping("/api/admin/growth/genesis-raffle/{id}")
+    @PreAuthorize("hasAuthority('growth_h4_read')")
+    public ApiResult<Map<String,Object>> adminDetail(@PathVariable String id){return service.adminDetail(id);}
     @PostMapping("/api/admin/growth/genesis-raffle")
     @PreAuthorize("hasAuthority('growth_h4_write')")
     public ApiResult<Map<String,Object>> create(@RequestBody GenesisRaffleRequest request,

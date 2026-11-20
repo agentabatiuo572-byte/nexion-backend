@@ -22,19 +22,30 @@ public class TreasuryEmergencySignalFacadeAdapter implements TreasuryEmergencySi
     public TreasuryEmergencySignalSnapshot snapshot() {
         BigDecimal reserve = decimal(treasuryService.reserve().getData().get("reserveTotalUsdt"));
         BigDecimal withdrawalRequests24h = safe(ledgerRepository.sumWithdrawalRequested24hUsdt());
-        BigDecimal bankRunRatio = reserve.compareTo(BigDecimal.ZERO) > 0
-                ? withdrawalRequests24h.multiply(new BigDecimal("100"))
-                .divide(reserve, 4, RoundingMode.HALF_UP).stripTrailingZeros()
-                : withdrawalRequests24h.compareTo(BigDecimal.ZERO) > 0 ? new BigDecimal("100") : BigDecimal.ZERO;
         return new TreasuryEmergencySignalSnapshot(
-                bankRunRatio,
+                bankRunRatio(reserve, withdrawalRequests24h),
                 safe(ledgerRepository.walletLedgerReconciliationGapUsdt()).stripTrailingZeros(),
                 bankRunRedlinePct());
     }
 
     @Override
+    public BankRunRead bankRunRead() {
+        BigDecimal reserve = treasuryService.currentReserveTotalUsdt();
+        BigDecimal withdrawalRequests24h = safe(ledgerRepository.sumWithdrawalRequested24hUsdt());
+        return new BankRunRead(bankRunRatio(reserve, withdrawalRequests24h), reserve,
+                withdrawalRequests24h, bankRunRedlinePct());
+    }
+
+    @Override
     public BigDecimal bankRunRedlinePct() {
         return BankRunThresholdPolicy.resolve(configFacade).redlinePct();
+    }
+
+    private BigDecimal bankRunRatio(BigDecimal reserve, BigDecimal withdrawalRequests24h) {
+        return reserve.compareTo(BigDecimal.ZERO) > 0
+                ? withdrawalRequests24h.multiply(new BigDecimal("100"))
+                .divide(reserve, 4, RoundingMode.HALF_UP).stripTrailingZeros()
+                : withdrawalRequests24h.compareTo(BigDecimal.ZERO) > 0 ? new BigDecimal("100") : BigDecimal.ZERO;
     }
 
     private BigDecimal safe(BigDecimal value) {

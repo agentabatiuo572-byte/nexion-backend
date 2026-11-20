@@ -66,7 +66,9 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                    shadow_accrued_usdt shadowAccruedUsdt,shadow_accrued_nex shadowAccruedNex,
                    remainder_usdt remainderUsdt,discount_usdt discountUsdt,
                    settlement_amount_usdt settlementAmountUsdt,cooldown_until cooldownUntil,
-                   version,cancel_reason cancelReason,closed_at closedAt
+                   version,cancel_reason cancelReason,closed_at closedAt,
+                   COALESCE(grace_days_snapshot,7) graceDaysSnapshot,
+                   COALESCE(extension_days_snapshot,3) extensionDaysSnapshot
               FROM nx_trial_claim
              WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1 FOR UPDATE
             """)
@@ -80,7 +82,9 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                    shadow_accrued_usdt shadowAccruedUsdt,shadow_accrued_nex shadowAccruedNex,
                    remainder_usdt remainderUsdt,discount_usdt discountUsdt,
                    settlement_amount_usdt settlementAmountUsdt,cooldown_until cooldownUntil,
-                   version,cancel_reason cancelReason,closed_at closedAt
+                   version,cancel_reason cancelReason,closed_at closedAt,
+                   COALESCE(grace_days_snapshot,7) graceDaysSnapshot,
+                   COALESCE(extension_days_snapshot,3) extensionDaysSnapshot
               FROM nx_trial_claim
              WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1
             """)
@@ -89,7 +93,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
                    product_type productType,inventory_mode inventoryMode,
-                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex
+                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex,monthly_target_usdt monthlyTargetUsdt
               FROM nx_product
              WHERE product_no=#{productNo} AND is_deleted=0
                AND COALESCE(store_visible,1)=1
@@ -102,7 +106,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
                    product_type productType,inventory_mode inventoryMode,
-                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex
+                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex,monthly_target_usdt monthlyTargetUsdt
               FROM nx_product
              WHERE product_no=#{productNo} AND is_deleted=0
                AND COALESCE(store_visible,1)=1 AND trial_eligible=1
@@ -128,7 +132,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
                    product_type productType,inventory_mode inventoryMode,
-                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex
+                   estimated_daily_usdt estimatedDailyUsdt,daily_nex dailyNex,monthly_target_usdt monthlyTargetUsdt
               FROM nx_product
              WHERE product_no=#{productNo} AND is_deleted=0
                AND COALESCE(store_visible,1)=1
@@ -136,6 +140,9 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
              LIMIT 1
             """)
     ConversionProduct catalogProduct(@Param("productNo") String productNo);
+
+    @Select("SELECT name FROM nx_product WHERE product_no=#{productNo} LIMIT 1")
+    String configuredProductName(@Param("productNo") String productNo);
 
     @Update("""
             UPDATE nx_product
@@ -206,16 +213,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                    claim_no claimNo,
                    CASE
                      WHEN UPPER(status)='EXTENDED' THEN expires_at
-                     ELSE TIMESTAMPADD(
-                       DAY,
-                       COALESCE((
-                         SELECT CAST(current_value AS UNSIGNED)
-                           FROM nx_growth_trial_policy
-                          WHERE policy_key='graceDays' AND is_deleted=0
-                          LIMIT 1
-                       ), 7),
-                       expires_at
-                     )
+                     ELSE TIMESTAMPADD(DAY, COALESCE(grace_days_snapshot,7), expires_at)
                    END dueAt
               FROM nx_trial_claim
              WHERE is_deleted=0
@@ -245,13 +243,15 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Insert("""
             INSERT INTO nx_trial_claim
               (user_id,claim_no,client_request_no,status,user_device_id,payment_method_id,device_name,
-               duration_days,daily_usdt,daily_nex,seats_left_today,offset_cap_usdt,price_usdt,
+               duration_days,grace_days_snapshot,extension_days_snapshot,
+               daily_usdt,daily_nex,seats_left_today,offset_cap_usdt,price_usdt,
                claimed_at,expires_at,quota_snapshot,shadow_accrued_usdt,shadow_accrued_nex,
                remainder_usdt,discount_usdt,settlement_amount_usdt,cancel_reason,extended_at,
                settled_at,closed_at,cooldown_until,settlement_snapshot,version,created_at,updated_at,is_deleted)
             VALUES
               (#{userId},#{claimNo},#{idempotencyKey},'ACTIVE',NULL,#{paymentMethodId},#{deviceName},
-               #{durationDays},#{dailyUsdt},#{dailyNex},0,#{offsetCapUsdt},#{priceUsdt},
+               #{durationDays},#{graceDaysSnapshot},#{extensionDaysSnapshot},
+               #{dailyUsdt},#{dailyNex},0,#{offsetCapUsdt},#{priceUsdt},
                #{now},#{expiresAt},#{quotaSnapshot},0,0,0,0,0,NULL,NULL,NULL,NULL,NULL,NULL,0,NOW(),NOW(),0)
             """)
     int insertTrial(
@@ -261,6 +261,8 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             @Param("paymentMethodId") Long paymentMethodId,
             @Param("deviceName") String deviceName,
             @Param("durationDays") int durationDays,
+            @Param("graceDaysSnapshot") int graceDaysSnapshot,
+            @Param("extensionDaysSnapshot") int extensionDaysSnapshot,
             @Param("dailyUsdt") BigDecimal dailyUsdt,
             @Param("dailyNex") BigDecimal dailyNex,
             @Param("offsetCapUsdt") BigDecimal offsetCapUsdt,
@@ -273,7 +275,8 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             UPDATE nx_trial_claim
                SET claim_no=#{claimNo},client_request_no=#{idempotencyKey},status='ACTIVE',
                    user_device_id=NULL,payment_method_id=#{paymentMethodId},device_name=#{deviceName},
-                   duration_days=#{durationDays},daily_usdt=#{dailyUsdt},daily_nex=#{dailyNex},
+                   duration_days=#{durationDays},grace_days_snapshot=#{graceDaysSnapshot},
+                   extension_days_snapshot=#{extensionDaysSnapshot},daily_usdt=#{dailyUsdt},daily_nex=#{dailyNex},
                    offset_cap_usdt=#{offsetCapUsdt},price_usdt=#{priceUsdt},claimed_at=#{now},
                    expires_at=#{expiresAt},quota_snapshot=#{quotaSnapshot},shadow_accrued_usdt=0,
                    shadow_accrued_nex=0,remainder_usdt=0,settled_trial_nex=NULL,discount_usdt=0,settlement_amount_usdt=0,
@@ -291,6 +294,8 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             @Param("paymentMethodId") Long paymentMethodId,
             @Param("deviceName") String deviceName,
             @Param("durationDays") int durationDays,
+            @Param("graceDaysSnapshot") int graceDaysSnapshot,
+            @Param("extensionDaysSnapshot") int extensionDaysSnapshot,
             @Param("dailyUsdt") BigDecimal dailyUsdt,
             @Param("dailyNex") BigDecimal dailyNex,
             @Param("offsetCapUsdt") BigDecimal offsetCapUsdt,
@@ -386,20 +391,20 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
 
     @Insert("""
             INSERT INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,
+              (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,
                device_type,generation,base_power_w,price_usdt_snapshot,ownership_status,source_channel,
                status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,created_at,updated_at,is_deleted,
                gpu_model,vram_total_gb,dc_location)
-            SELECT #{userId},#{sourceOrderNo},p.id,p.product_no,#{productTier},#{instanceNo},#{deviceName},
+            SELECT #{userId},#{sourceOrderNo},p.id,p.product_no,#{productTier},p.series_code,#{instanceNo},#{deviceName},
                #{deviceType},1,CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
                #{priceUsdt},'OWNED','TRIAL','ACTIVE',0,p.estimated_daily_usdt,p.daily_nex,NOW(),NOW(),NOW(),NOW(),0,
-               p.gpu_model,p.vram_total_gb,s.datacenter
+               p.gpu_model,p.vram_total_gb,#{hostingCenter}
               FROM nx_product p
               JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.id=#{productId} AND p.product_no=#{productCode} AND p.is_deleted=0
                AND p.estimated_daily_usdt>0 AND p.daily_nex>0
-               AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0 AND TRIM(s.datacenter)<>''
-               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)?\\\\z'
+               AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0
+               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6))>0
             """)
     int insertPurchasedDevice(
@@ -411,7 +416,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             @Param("deviceType") String deviceType,
             @Param("instanceNo") String instanceNo,
             @Param("deviceName") String deviceName,
-            @Param("priceUsdt") BigDecimal priceUsdt);
+            @Param("priceUsdt") BigDecimal priceUsdt, @Param("hostingCenter") String hostingCenter);
 
     @Select("SELECT id FROM nx_user_device WHERE instance_no=#{instanceNo} AND is_deleted=0 LIMIT 1")
     Long deviceIdByInstanceNo(@Param("instanceNo") String instanceNo);
@@ -467,7 +472,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             LocalDateTime claimedAt, LocalDateTime expiresAt,
             BigDecimal shadowAccruedUsdt, BigDecimal shadowAccruedNex, BigDecimal remainderUsdt,
             BigDecimal discountUsdt, BigDecimal settlementAmountUsdt, LocalDateTime cooldownUntil, Long version,
-            String cancelReason, LocalDateTime closedAt) {
+            String cancelReason, LocalDateTime closedAt, int graceDaysSnapshot, int extensionDaysSnapshot) {
         @org.apache.ibatis.annotations.AutomapConstructor
         public TrialRow {}
 
@@ -481,13 +486,19 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             this(id, userId, claimNo, status, userDeviceId, paymentMethodId, deviceName, durationDays,
                     dailyUsdt, dailyNex, offsetCapUsdt, priceUsdt, quotaSnapshot, claimedAt, expiresAt,
                     shadowAccruedUsdt, shadowAccruedNex, remainderUsdt, discountUsdt, settlementAmountUsdt,
-                    cooldownUntil, version, null, null);
+                    cooldownUntil, version, null, null, 7, 3);
         }
     }
 
     record ConversionProduct(Long id, String productNo, String name, String tier, BigDecimal priceUsdt,
                              Integer stock, String unlockPhase, String productType, String inventoryMode,
+                             BigDecimal estimatedDailyUsdt, BigDecimal dailyNex, BigDecimal monthlyTargetUsdt) {
+    public ConversionProduct(Long id, String productNo, String name, String tier, BigDecimal priceUsdt,
+                             Integer stock, String unlockPhase, String productType, String inventoryMode,
                              BigDecimal estimatedDailyUsdt, BigDecimal dailyNex) {
+        this(id,productNo,name,tier,priceUsdt,stock,unlockPhase,productType,inventoryMode,estimatedDailyUsdt,dailyNex,null);
+    }
+
         /** 旧 9 参形态:不携带收益的调用点(测试与历史 SQL)仍按此构造,收益视为未配置。 */
         public ConversionProduct(Long id, String productNo, String name, String tier, BigDecimal priceUsdt,
                                  Integer stock, String unlockPhase, String productType, String inventoryMode) {

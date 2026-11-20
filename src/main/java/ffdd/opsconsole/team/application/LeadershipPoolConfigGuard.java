@@ -130,15 +130,31 @@ public class LeadershipPoolConfigGuard {
 
     private int parseUnlockRank(String value) {
         try {
+            return parseConfiguredUnlockRank(value);
+        } catch (IllegalArgumentException ignored) {
+            throw invalid(UNLOCK_KEY, "INVALID_THRESHOLD", value);
+        }
+    }
+
+    static int parseConfiguredUnlockRank(String value) {
+        try {
             int parsed = Integer.parseInt(value.trim().toUpperCase().replaceFirst("^V", ""));
-            if (parsed >= 1 && parsed <= 12) return parsed;
+            if (parsed >= 1 && parsed <= 8) return parsed;
         } catch (NumberFormatException ignored) {
             // converted to a stable domain error below
         }
-        throw invalid(UNLOCK_KEY, "INVALID_THRESHOLD", value);
+        throw new IllegalArgumentException("F4_POOL_UNLOCK_VRANK_INVALID");
     }
 
     private BigDecimal parseMoney(String value, String key) {
+        try {
+            return parseConfiguredMoney(value);
+        } catch (IllegalArgumentException invalidMoney) {
+            throw invalid(key, "INVALID_THRESHOLD", value);
+        }
+    }
+
+    static BigDecimal parseConfiguredMoney(String value) {
         String normalized = value.trim().toUpperCase().replace("$", "").replace(",", "");
         BigDecimal multiplier = BigDecimal.ONE;
         if (normalized.endsWith("M")) {
@@ -154,7 +170,7 @@ public class LeadershipPoolConfigGuard {
         } catch (NumberFormatException ignored) {
             // converted to a stable domain error below
         }
-        throw invalid(key, "INVALID_THRESHOLD", value);
+        throw new IllegalArgumentException("F4_POOL_MONEY_INVALID");
     }
 
     private ConfigUnavailableException invalid(String key, String reason, String rawValue) {

@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.NotificationCampaignOverview;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository;
+import ffdd.opsconsole.content.domain.NotificationCampaignRepository.CampaignDeliveryFacts;
 import ffdd.opsconsole.content.domain.NotificationCampaignRow;
 import ffdd.opsconsole.content.domain.NotificationCampaignStats;
 import ffdd.opsconsole.content.domain.NotificationAudienceCatalog;
@@ -21,6 +22,7 @@ import ffdd.opsconsole.content.dto.NotificationCampaignDraftRequest;
 import ffdd.opsconsole.content.dto.NotificationAudienceEstimateRequest;
 import ffdd.opsconsole.content.dto.NotificationCapUpdateRequest;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -28,6 +30,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -51,6 +54,8 @@ import org.springframework.transaction.annotation.Transactional;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsNotificationCampaignService {
+    private final PlatformExperienceConfigService experienceConfig;
+
     private static final Set<String> TIERS = Set.of("critical", "high", "normal", "low");
     private static final Set<String> ACTIVE_STATUSES = Set.of("draft", "scheduled", "sending", "sent", "failed", "cancelled");
     private static final String CURRENT_PHASE_KEY = "growth.phase.current";
@@ -58,18 +63,20 @@ public class OpsNotificationCampaignService {
     private static final Set<String> KINDS = Set.of("system", "commission", "team", "staking", "market", "genesis");
     private static final List<NotificationAudienceOption> CTA_ROUTES = List.of(
             new NotificationAudienceOption("", "无跳转"),
-            new NotificationAudienceOption("/pages/me/wallet-repurchase", "我的 · 锁定计划"),
+            new NotificationAudienceOption("/pages/me/wallet", "我的 · 钱包"),
             new NotificationAudienceOption("/pages/team/team", "赚取 · 团队"),
-            new NotificationAudienceOption("/pages/staking/staking", "赚取 · 质押"),
             new NotificationAudienceOption("/pages/market/market", "商城 · 市场"),
             new NotificationAudienceOption("/pages/genesis/marketplace", "商城 · Genesis"));
     private static final List<NotificationSwipeRouteView> SWIPE_ROUTES = List.of(
-            new NotificationSwipeRouteView("/reinvest", "commission", "奖励到账 -> 锁定计划"),
-            new NotificationSwipeRouteView("/me/bills", "refund", "退款到账 -> 账单"),
-            new NotificationSwipeRouteView("-", "system", "维护公告 / 监管通告 / 运营公告 - system kind 无转化跳转"));
+            new NotificationSwipeRouteView("", "system", "system 或未配置路由：左滑不跳转"),
+            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("commission"), "commission", "奖励到账 -> 钱包"),
+            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("team"), "team", "团队 -> 赚取 · 团队"),
+            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("market"), "market", "市场 -> 商城 · 市场"),
+            new NotificationSwipeRouteView(AppNotificationService.SWIPE_ROUTE_BY_KIND.get("genesis"), "genesis", "Genesis -> 商城 · Genesis"));
     private static final DateTimeFormatter CAMPAIGN_TIME = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final DateTimeFormatter SCHEDULE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
     private static final Pattern JSON_LIKE_PATTERN = Pattern.compile("^\\s*[\\[{]");
+    private static final Pattern LOCALIZED_WHITESPACE = Pattern.compile("[\\s\\p{Z}\\uFEFF]*");
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[A-Za-z][A-Za-z0-9_]*}");
 
     private final NotificationCampaignRepository campaignRepository;
@@ -81,10 +88,42 @@ public class OpsNotificationCampaignService {
     private final NotificationCampaignDispatchExecutor dispatchExecutor;
     private final AdminIdempotencyService idempotencyService;
 
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<NotificationCampaignOverview> overview() {
-        List<NotificationCampaignRow> campaigns = campaignRepository.listCampaigns();
+        var instant = clock.instant();
+        var calendar = BusinessCalendar.legacy();
+        LocalDateTime asOf = LocalDateTime.ofInstant(instant, BusinessCalendar.STORAGE_ZONE);
+        var date = calendar.dateAt(instant);
+        LocalDateTime monthFrom = calendar.storageStart(date.withDayOfMonth(1));
+        LocalDateTime weekFrom = calendar.storageStart(date.minusDays(date.getDayOfWeek().getValue() - 1L));
+        Map<String, CampaignDeliveryFacts> facts = new LinkedHashMap<>();
+        campaignRepository.campaignDeliveryFacts(asOf, weekFrom).forEach(row -> facts.put(row.campaignNo(), row));
+        List<NotificationCampaignRow> campaigns = campaignRepository.listCampaigns().stream().map(row -> {
+            CampaignDeliveryFacts fact = facts.get(row.id());
+            boolean complete = fact != null && fact.sentCount() > 0
+                    && fact.linkedNotifications() == fact.sentCount()
+                    && Long.toString(fact.sentCount()).equals(row.sent());
+            Map<String, Object> projection = new LinkedHashMap<>();
+            projection.put("source", "NOTIFICATION_DELIVERED_OUTBOX_TO_NOTIFICATION_ID");
+            projection.put("timeZone", BusinessCalendar.STORAGE_ZONE.getId());
+            projection.put("asOf", instant.toString());
+            projection.put("complete", complete);
+            projection.put("reason", complete ? null : "DELIVERY_FACT_COVERAGE_UNCONFIRMED");
+            projection.put("sentCount", fact == null || fact.sentCount() == 0 ? null : fact.sentCount());
+            projection.put("readCount", fact == null || fact.sentCount() == 0 ? null : fact.readCount());
+            projection.put("firstSentAt", fact == null || fact.firstSentAt() == null ? null
+                    : fact.firstSentAt().atZone(BusinessCalendar.STORAGE_ZONE).toOffsetDateTime().toString());
+            projection.put("lastSentAt", fact == null || fact.lastSentAt() == null ? null
+                    : fact.lastSentAt().atZone(BusinessCalendar.STORAGE_ZONE).toOffsetDateTime().toString());
+            projection.put("timeBasis", "RETAINED_LINKED_NOTIFICATION_PUSHED_AT_WINDOW");
+            return new NotificationCampaignRow(row.id(), row.name(), row.kind(), row.tier(), row.audience(),
+                    row.reach(), row.status(), row.schedule(), complete ? Long.toString(fact.sentCount()) : row.sent(),
+                    complete ? Long.toString(fact.readCount()) : null, row.bodyEn(), row.bodyZh(), row.bodyVi(),
+                    row.swipeTo(), row.budget(), row.audienceTarget(), row.ctaLabel(), row.ctaHref(),
+                    row.revision(), row.translations(), projection);
+        }).toList();
         return ApiResult.ok(new NotificationCampaignOverview(
-                stats(campaigns),
+                stats(campaigns, facts, monthFrom, weekFrom, asOf, calendar.zoneAt(instant).getId()),
                 campaigns,
                 campaignRepository.listCapRules(),
                 List.copyOf(TIERS),
@@ -97,13 +136,24 @@ public class OpsNotificationCampaignService {
     }
 
     public ApiResult<NotificationCampaignRow> createCampaign(String idempotencyKey, NotificationCampaignCreateRequest request) {
-        ApiResult<NotificationCampaignRow> guard = requireCreate(idempotencyKey, request);
-        if (guard != null) {
-            return guard;
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (request == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_FIELDS_REQUIRED");
         }
         return executeIdempotent("I3_NOTIFICATION_CAMPAIGN_CREATE", idempotencyKey,
                 requestHash("create", operator(request.operator()), request), () -> {
-                    NotificationCampaignCreateRequest normalized = normalizeCreate(request);
+                    CampaignCopy copy = fillCampaignLocales(request.titleEn(), request.bodyEn(),
+                            request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi());
+                    ApiResult<NotificationCampaignRow> guard = requireCreate(request, copy);
+                    if (guard != null) return guard;
+                    ApiResult<NotificationCampaignRow> budgetGuard = requireBudgetPrecision(request.budget());
+                    if (budgetGuard != null) return budgetGuard;
+                    NotificationCampaignCreateRequest normalized = normalizeCreate(request, copy);
+                    if (dispatchTextTooLong(normalized)) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
+                    }
                     long estimatedAudience = campaignRepository.estimateAudience(normalized.audienceTarget(), currentPhase(), now());
                     String campaignNo = nextCampaignNo(normalized.name());
                     NotificationCampaignRow created = campaignRepository.createCampaign(campaignNo, normalized, estimatedAudience, now());
@@ -116,12 +166,18 @@ public class OpsNotificationCampaignService {
     }
 
     public ApiResult<NotificationCampaignRow> updateDraft(String campaignNo, String idempotencyKey, NotificationCampaignDraftRequest request) {
-        ApiResult<NotificationCampaignRow> guard = requireDraft(idempotencyKey, request);
-        if (guard != null) {
-            return guard;
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+        }
+        if (request == null) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_DRAFT_REQUIRED");
         }
         return executeIdempotent("I3_NOTIFICATION_CAMPAIGN_DRAFT_UPDATE", idempotencyKey,
                 requestHash("draft", campaignNo, operator(request.operator()), request), () -> {
+                    CampaignCopy copy = fillCampaignLocales(request.titleEn(), request.bodyEn(),
+                            request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi());
+                    ApiResult<NotificationCampaignRow> guard = requireDraft(request, copy);
+                    if (guard != null) return guard;
                     NotificationCampaignRow current = findCampaign(campaignNo);
                     if (current == null) {
                         return ApiResult.fail(404, "NOTIFICATION_CAMPAIGN_NOT_FOUND");
@@ -133,7 +189,16 @@ public class OpsNotificationCampaignService {
                     if (expectedRevision != current.revision()) {
                         return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
                     }
-                    NotificationCampaignDraftRequest normalized = normalizeDraft(request);
+                    if (request.translations() == null
+                            && !validTranslations(current.translations(), copy.titleEn(), copy.bodyEn())) {
+                        return ApiResult.fail(422, "NOTIFICATION_TRANSLATIONS_INVALID");
+                    }
+                    ApiResult<NotificationCampaignRow> budgetGuard = requireBudgetPrecision(request.budget());
+                    if (budgetGuard != null) return budgetGuard;
+                    NotificationCampaignDraftRequest normalized = normalizeDraft(request, copy);
+                    if (dispatchTextTooLong(normalized)) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
+                    }
                     long estimatedAudience = campaignRepository.estimateAudience(normalized.audienceTarget(), currentPhase(), now());
                     if (!campaignRepository.updateDraft(current.id(), normalized, estimatedAudience, expectedRevision, now())) {
                         return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
@@ -167,9 +232,15 @@ public class OpsNotificationCampaignService {
                     if (expectedRevision != current.revision()) {
                         return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
                     }
+                    if (dispatchTextTooLong(current)) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
+                    }
                     ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
                     if (criticalGuard != null) {
                         return criticalGuard;
+                    }
+                    if (!validDelivery(current.kind(), current.ctaLabel(), current.ctaHref())) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_DELIVERY_CONFIG_INVALID");
                     }
                     String phase = currentPhase();
                     if (!PHASES.contains(phase)) {
@@ -222,9 +293,15 @@ public class OpsNotificationCampaignService {
                     if (expectedRevision != current.revision()) {
                         return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_STALE_VERSION");
                     }
+                    if (dispatchTextTooLong(current)) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
+                    }
                     ApiResult<NotificationCampaignRow> criticalGuard = requireCriticalExecutionAuthority(current);
                     if (criticalGuard != null) {
                         return criticalGuard;
+                    }
+                    if (!validDelivery(current.kind(), current.ctaLabel(), current.ctaHref())) {
+                        return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_DELIVERY_CONFIG_INVALID");
                     }
                     String phase = currentPhase();
                     if (!PHASES.contains(phase)) {
@@ -358,6 +435,19 @@ public class OpsNotificationCampaignService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<NotificationCapRuleView> updateCapRule(String tier, String idempotencyKey, NotificationCapUpdateRequest request) {
+        return updateCapRuleInternal(tier, idempotencyKey, request, false);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<NotificationCapRuleView> updateApprovedCapRule(String tier, String idempotencyKey, NotificationCapUpdateRequest request) {
+        if (A2ReplayContext.operationId() == null) {
+            return ApiResult.fail(403, "NOTIFICATION_CAP_APPROVAL_REQUIRED");
+        }
+        return updateCapRuleInternal(tier, idempotencyKey, request, true);
+    }
+
+    private ApiResult<NotificationCapRuleView> updateCapRuleInternal(String tier, String idempotencyKey,
+            NotificationCapUpdateRequest request, boolean approved) {
         String normalizedTier = normalizeTier(tier);
         if (!TIERS.contains(normalizedTier)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_TIER_UNSUPPORTED");
@@ -378,6 +468,11 @@ public class OpsNotificationCampaignService {
         }
         return executeIdempotent("I3_NOTIFICATION_CAP_UPDATE", idempotencyKey,
                 requestHash("cap", normalizedTier, operator(request.operator()), request), () -> {
+                    if (!approved) {
+                        // Direct PATCH has no approved A2 command/review context; reject before
+                        // reading the cap row, applying retention, or writing success audit.
+                        return ApiResult.fail(403, "NOTIFICATION_CAP_APPROVAL_REQUIRED");
+                    }
                     if (!A2ReplayContext.isReplaying()
                             && lockMapper.countActiveByTarget("I", "notification_cap", normalizedTier) > 0) {
                         return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -414,28 +509,92 @@ public class OpsNotificationCampaignService {
                 });
     }
 
-    private ApiResult<NotificationCampaignRow> requireCreate(String idempotencyKey, NotificationCampaignCreateRequest request) {
-        if (!StringUtils.hasText(idempotencyKey)) {
-            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
+    /** Delivered notification columns are 128/512 characters; validate the actual (title, body) pair. */
+    private boolean dispatchTextTooLong(NotificationCampaignCreateRequest request) {
+        if (request == null) return false;
+        if (deliveredTooLong(request.titleZh(), request.bodyZh(), request.name())
+                || deliveredTooLong(request.titleVi(), request.bodyVi(), request.name())
+                || deliveredTooLong(request.titleEn(), request.bodyEn(), "UVEL notification")) return true;
+        return translationsTooLong(request.translations());
+    }
+
+    private boolean dispatchTextTooLong(NotificationCampaignDraftRequest request) {
+        if (request == null) return false;
+        if (deliveredTooLong(request.titleZh(), request.bodyZh(), request.name())
+                || deliveredTooLong(request.titleVi(), request.bodyVi(), request.name())
+                || deliveredTooLong(request.titleEn(), request.bodyEn(), "UVEL notification")) return true;
+        return translationsTooLong(request.translations());
+    }
+
+    private boolean dispatchTextTooLong(NotificationCampaignRow row) {
+        if (row == null) return false;
+        if (combinedTooLongFromBody(row.bodyZh(), row.name())
+                || combinedTooLongFromBody(row.bodyVi(), row.name())
+                || combinedTooLongFromBody(row.bodyEn(), "UVEL notification")) return true;
+        return translationsTooLong(row.translations());
+    }
+
+    private boolean deliveredTooLong(String title, String body, String fallbackTitle) {
+        return combinedTooLongFromBody(text(title) + "\n" + text(body), fallbackTitle);
+    }
+
+    /** Mirrors Repository.localizedTitle/localizedContent: split raw before trim, then trim each part. */
+    private boolean combinedTooLongFromBody(String combined, String fallbackTitle) {
+        boolean hasContent = combined != null && !combined.trim().isEmpty();
+        if (!hasContent) return codePointLength(fallbackTitle) > 128;
+        int newline = combined.indexOf('\n');
+        String rawTitle = newline < 0 ? combined : combined.substring(0, newline);
+        String title = rawTitle.trim();
+        if (title.isEmpty()) title = fallbackTitle;
+        String body = newline < 0 ? combined.trim() : combined.substring(newline + 1).trim();
+        return codePointLength(title) > 128 || codePointLength(body) > 512;
+    }
+
+    static boolean translatedCtaTooLong(Map<String, NotificationTranslation> translations) {
+        return translations != null && translations.values().stream()
+                .anyMatch(value -> value != null && codePointLength(value.ctaLabel()) > 64);
+    }
+
+    private boolean translationsTooLong(Map<String, NotificationTranslation> translations) {
+        if (translations == null) return false;
+        if (translatedCtaTooLong(translations)) return true;
+        for (NotificationTranslation translation : translations.values()) {
+            if (translation != null && (codePointLength(translation.title()) > 128
+                    || codePointLength(translation.body()) > 512)) return true;
         }
-        if (request == null || !StringUtils.hasText(request.name()) || !StringUtils.hasText(request.titleZh())
-                || !StringUtils.hasText(request.titleVi()) || !StringUtils.hasText(request.bodyZh()) || !StringUtils.hasText(request.bodyVi())) {
+        return false;
+    }
+
+    private static int codePointLength(String value) {
+        return value == null ? 0 : value.codePointCount(0, value.length());
+    }
+
+    private String text(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    /**
+     * Applies only to a new write intent after idempotency replay. DECIMAL(18,2)
+     * stores two fractional digits; trailing zeros are not a value change, but a
+     * non-zero fraction beyond two digits would be silently rounded by MySQL.
+     */
+    private ApiResult<NotificationCampaignRow> requireBudgetPrecision(BigDecimal budget) {
+        if (budget != null && budget.stripTrailingZeros().scale() > 2) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_BUDGET_INVALID");
+        }
+        return null;
+    }
+
+    private ApiResult<NotificationCampaignRow> requireCreate(NotificationCampaignCreateRequest request, CampaignCopy copy) {
+        if (!StringUtils.hasText(request.name()) || !copy.complete()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_FIELDS_REQUIRED");
         }
-        if (request.name().trim().length() > 160 || request.titleZh().trim().length() > 160 || request.titleVi().trim().length() > 160
-                || trimToEmpty(request.titleEn()).length() > 160 || request.bodyZh().trim().length() > 4000
-                || request.bodyVi().trim().length() > 4000 || trimToEmpty(request.bodyEn()).length() > 4000) {
+        if (request.name().trim().length() > 160 || copy.tooLong()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
         }
-        if (JSON_LIKE_PATTERN.matcher(request.bodyZh()).find() || JSON_LIKE_PATTERN.matcher(request.bodyVi()).find()
-                || JSON_LIKE_PATTERN.matcher(trimToEmpty(request.bodyEn())).find()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_JSON_NOT_ALLOWED");
-        }
-        if (!placeholders(request.bodyZh()).equals(placeholders(request.bodyVi()))
-                || (StringUtils.hasText(request.bodyEn()) && !placeholders(request.bodyZh()).equals(placeholders(request.bodyEn())))) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_PLACEHOLDERS_MISMATCH");
-        }
-        if (!validTranslations(request.translations(), request.titleZh(), request.bodyZh())) {
+        ApiResult<NotificationCampaignRow> guard = requireCampaignBodies(copy);
+        if (guard != null) return guard;
+        if (!validTranslations(request.translations(), copy.titleEn(), copy.bodyEn())) {
             return ApiResult.fail(422, "NOTIFICATION_TRANSLATIONS_INVALID");
         }
         if (!TIERS.contains(normalizeTier(request.tier()))) {
@@ -457,24 +616,17 @@ public class OpsNotificationCampaignService {
         return null;
     }
 
-    private ApiResult<NotificationCampaignRow> requireDraft(String idempotencyKey, NotificationCampaignDraftRequest request) {
-        if (!StringUtils.hasText(idempotencyKey)) {
-            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
-        }
-        if (request == null || !StringUtils.hasText(request.name()) || !StringUtils.hasText(request.titleZh())
-                || !StringUtils.hasText(request.titleVi()) || !StringUtils.hasText(request.bodyZh()) || !StringUtils.hasText(request.bodyVi())) {
+    private ApiResult<NotificationCampaignRow> requireDraft(NotificationCampaignDraftRequest request, CampaignCopy copy) {
+        if (!StringUtils.hasText(request.name()) || !copy.complete()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_DRAFT_REQUIRED");
         }
         if (request.expectedRevision() == null) {
             return ApiResult.fail(409, "NOTIFICATION_CAMPAIGN_REVISION_REQUIRED");
         }
-        if (request.name().trim().length() > 160 || request.titleZh().trim().length() > 160
-                || request.titleVi().trim().length() > 160 || trimToEmpty(request.titleEn()).length() > 160
-                || request.bodyZh().trim().length() > 4000 || request.bodyVi().trim().length() > 4000
-                || trimToEmpty(request.bodyEn()).length() > 4000) {
+        if (request.name().trim().length() > 160 || copy.tooLong()) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_TEXT_TOO_LONG");
         }
-        if (!validTranslations(request.translations(), request.titleZh(), request.bodyZh())) {
+        if (!validTranslations(request.translations(), copy.titleEn(), copy.bodyEn())) {
             return ApiResult.fail(422, "NOTIFICATION_TRANSLATIONS_INVALID");
         }
         if (!TIERS.contains(normalizeTier(request.tier()))) {
@@ -487,19 +639,25 @@ public class OpsNotificationCampaignService {
         if (request.budget() != null && request.budget().compareTo(BigDecimal.ZERO) < 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_BUDGET_INVALID");
         }
-        if (JSON_LIKE_PATTERN.matcher(request.bodyZh()).find() || JSON_LIKE_PATTERN.matcher(request.bodyVi()).find()
-                || JSON_LIKE_PATTERN.matcher(trimToEmpty(request.bodyEn())).find()) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_JSON_NOT_ALLOWED");
-        }
-        if (!placeholders(request.bodyZh()).equals(placeholders(request.bodyVi()))
-                || (StringUtils.hasText(request.bodyEn()) && !placeholders(request.bodyZh()).equals(placeholders(request.bodyEn())))) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_PLACEHOLDERS_MISMATCH");
-        }
+        ApiResult<NotificationCampaignRow> guard = requireCampaignBodies(copy);
+        if (guard != null) return guard;
         if (!validDelivery(request.kind(), request.ctaLabel(), request.ctaHref())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_DELIVERY_CONFIG_INVALID");
         }
         if (!validReason(request.reason())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
+        }
+        return null;
+    }
+
+    private ApiResult<NotificationCampaignRow> requireCampaignBodies(CampaignCopy copy) {
+        if (JSON_LIKE_PATTERN.matcher(copy.bodyEn()).find() || JSON_LIKE_PATTERN.matcher(copy.bodyZh()).find()
+                || JSON_LIKE_PATTERN.matcher(copy.bodyVi()).find()) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_JSON_NOT_ALLOWED");
+        }
+        Set<String> expected = placeholders(copy.bodyEn());
+        if (!expected.equals(placeholders(copy.bodyZh())) || !expected.equals(placeholders(copy.bodyVi()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOTIFICATION_CAMPAIGN_PLACEHOLDERS_MISMATCH");
         }
         return null;
     }
@@ -522,24 +680,51 @@ public class OpsNotificationCampaignService {
         return translations.entrySet().stream().allMatch(entry -> {
             NotificationTranslation value = entry.getValue();
             if ("en".equals(entry.getKey())) return value != null && value.title().isEmpty()
-                    && value.body().isEmpty() && value.ctaLabel().length() <= 80;
+                    && value.body().isEmpty() && codePointLength(value.ctaLabel()) <= 64;
             return InterfaceLanguages.isAdditional(entry.getKey()) && value != null
-                    && value.title().length() <= 160 && value.body().length() <= 4000 && value.ctaLabel().length() <= 80
+                    && value.title().length() <= 160 && value.body().length() <= 4000 && codePointLength(value.ctaLabel()) <= 64
                     && !JSON_LIKE_PATTERN.matcher(value.body()).find()
                     && (value.title().isEmpty() || placeholders(title).equals(placeholders(value.title())))
                     && (value.body().isEmpty() || placeholders(body).equals(placeholders(value.body())));
         });
     }
 
-    private NotificationCampaignCreateRequest normalizeCreate(NotificationCampaignCreateRequest request) {
+    private CampaignCopy fillCampaignLocales(String titleEn, String bodyEn, String titleZh, String bodyZh,
+            String titleVi, String bodyVi) {
+        List<String> required = experienceConfig.operatingLanguages();
+        boolean fillZh = !required.contains("zh") && isLocalizedBlank(titleZh) && isLocalizedBlank(bodyZh);
+        boolean fillVi = !required.contains("vi") && isLocalizedBlank(titleVi) && isLocalizedBlank(bodyVi);
+        return new CampaignCopy(trimToEmpty(titleEn), trimToEmpty(bodyEn),
+                trimToEmpty(fillZh ? titleEn : titleZh), trimToEmpty(fillZh ? bodyEn : bodyZh),
+                trimToEmpty(fillVi ? titleEn : titleVi), trimToEmpty(fillVi ? bodyEn : bodyVi));
+    }
+
+    private static boolean isLocalizedBlank(String value) {
+        return value == null || LOCALIZED_WHITESPACE.matcher(value).matches();
+    }
+
+    private static boolean validLocalizedText(String value) {
+        return !isLocalizedBlank(value) && StringUtils.hasText(value);
+    }
+
+    private record CampaignCopy(String titleEn, String bodyEn, String titleZh, String bodyZh, String titleVi, String bodyVi) {
+        boolean complete() {
+            return validLocalizedText(titleEn) && validLocalizedText(bodyEn)
+                    && validLocalizedText(titleZh) && validLocalizedText(bodyZh)
+                    && validLocalizedText(titleVi) && validLocalizedText(bodyVi);
+        }
+
+        boolean tooLong() {
+            return titleEn.length() > 160 || titleZh.length() > 160 || titleVi.length() > 160
+                    || bodyEn.length() > 4000 || bodyZh.length() > 4000 || bodyVi.length() > 4000;
+        }
+    }
+
+    private NotificationCampaignCreateRequest normalizeCreate(NotificationCampaignCreateRequest request, CampaignCopy copy) {
         return new NotificationCampaignCreateRequest(
                 request.name().trim(),
-                request.titleZh().trim(),
-                request.titleVi().trim(),
-                trimToEmpty(request.titleEn()),
-                request.bodyZh().trim(),
-                request.bodyVi().trim(),
-                trimToEmpty(request.bodyEn()),
+                copy.titleZh(), copy.titleVi(), copy.titleEn(),
+                copy.bodyZh(), copy.bodyVi(), copy.bodyEn(),
                 normalizeTier(request.tier()),
                 normalizeAudience(request.audienceTarget()),
                 request.budget(),
@@ -550,15 +735,11 @@ public class OpsNotificationCampaignService {
                 trimToEmpty(request.ctaHref()), request.translations());
     }
 
-    private NotificationCampaignDraftRequest normalizeDraft(NotificationCampaignDraftRequest request) {
+    private NotificationCampaignDraftRequest normalizeDraft(NotificationCampaignDraftRequest request, CampaignCopy copy) {
         return new NotificationCampaignDraftRequest(
                 request.name().trim(),
-                request.titleZh().trim(),
-                request.titleVi().trim(),
-                trimToEmpty(request.titleEn()),
-                request.bodyZh().trim(),
-                request.bodyVi().trim(),
-                trimToEmpty(request.bodyEn()),
+                copy.titleZh(), copy.titleVi(), copy.titleEn(),
+                copy.bodyZh(), copy.bodyVi(), copy.bodyEn(),
                 normalizeTier(request.tier()),
                 normalizeAudience(request.audienceTarget()),
                 request.budget(),
@@ -591,7 +772,7 @@ public class OpsNotificationCampaignService {
         return authorized ? null : ApiResult.fail(403, "NOTIFICATION_CRITICAL_EXECUTION_FORBIDDEN");
     }
 
-    private String trimToEmpty(String value) {
+    private static String trimToEmpty(String value) {
         return value == null ? "" : value.trim();
     }
 
@@ -604,24 +785,56 @@ public class OpsNotificationCampaignService {
         return values;
     }
 
-    private NotificationCampaignStats stats(List<NotificationCampaignRow> campaigns) {
-        int sent = (int) campaigns.stream().filter(row -> "sent".equals(row.status())).count();
-        int scheduled = (int) campaigns.stream().filter(row -> "scheduled".equals(row.status()) || "sending".equals(row.status())).count();
-        int draft = (int) campaigns.stream().filter(row -> "draft".equals(row.status())).count();
+    private NotificationCampaignStats stats(List<NotificationCampaignRow> campaigns,
+            Map<String, CampaignDeliveryFacts> facts, LocalDateTime monthFrom, LocalDateTime weekFrom,
+            LocalDateTime asOf, String timeZone) {
+        List<NotificationCampaignRow> monthly = campaigns.stream().filter(row -> {
+            CampaignDeliveryFacts fact = facts.get(row.id());
+            return fact != null && fact.campaignCreatedAt() != null
+                    && !fact.campaignCreatedAt().isBefore(monthFrom) && fact.campaignCreatedAt().isBefore(asOf);
+        }).toList();
+        int sent = (int) monthly.stream().filter(row -> "sent".equals(row.status())).count();
+        int scheduled = (int) monthly.stream().filter(row -> "scheduled".equals(row.status()) || "sending".equals(row.status())).count();
+        int draft = (int) monthly.stream().filter(row -> "draft".equals(row.status())).count();
         int criticalInflight = (int) campaigns.stream()
                 .filter(row -> "critical".equals(row.tier()))
                 .filter(row -> "scheduled".equals(row.status()) || "sending".equals(row.status()))
                 .count();
-        double delivered = campaigns.stream().filter(row -> "sent".equals(row.status())).mapToDouble(row -> quantity(row.sent())).sum();
-        double read = campaigns.stream().filter(row -> "sent".equals(row.status())).mapToDouble(row -> quantity(row.read())).sum();
+        List<CampaignDeliveryFacts> sentFacts = campaigns.stream().filter(row -> "sent".equals(row.status()))
+                .map(row -> facts.get(row.id())).filter(java.util.Objects::nonNull).toList();
+        long delivered = sentFacts.stream().mapToLong(CampaignDeliveryFacts::sentCount).sum();
+        long read = sentFacts.stream().mapToLong(CampaignDeliveryFacts::readCount).sum();
+        boolean complete = campaigns.stream().filter(row -> "sent".equals(row.status()))
+                .allMatch(row -> Boolean.TRUE.equals(row.deliveryFacts().get("complete")));
+        long weekRead = sentFacts.stream().mapToLong(CampaignDeliveryFacts::weeklyReadCount).sum();
+        long undatedRead = sentFacts.stream().mapToLong(CampaignDeliveryFacts::undatedReadCount).sum();
+        Map<String, Object> basis = new LinkedHashMap<>();
+        basis.put("asOf", asOf.toString());
+        basis.put("timeZone", timeZone);
+        basis.put("storageTimeZone", BusinessCalendar.STORAGE_ZONE.getId());
+        basis.put("monthFrom", monthFrom.toString());
+        basis.put("weekFrom", weekFrom.toString());
+        basis.put("rangeEndExclusive", asOf.toString());
+        basis.put("monthBasis", "CAMPAIGN_CREATED_AT_COHORT_WITH_CURRENT_STATUS");
+        basis.put("notificationBasis", "RETAINED_LINKED_NOTIFICATIONS_OF_CURRENT_SENT_CAMPAIGNS");
+        basis.put("deliveryFactsComplete", complete);
+        basis.put("knownSentCount", delivered);
+        basis.put("knownReadCount", read);
+        basis.put("weeklyReadCount", complete && undatedRead == 0 ? weekRead : null);
+        basis.put("weeklyReadKnownCount", weekRead);
+        basis.put("undatedReadCount", undatedRead);
+        basis.put("weeklyReadAvailable", complete && undatedRead == 0);
+        basis.put("weeklyReadBasis", "NOTIFICATION_READ_AT_WITH_READ_FLAG");
+        basis.put("weeklySwipeAvailable", false);
+        basis.put("weeklySwipeReason", "LEGACY_ESTIMATED_CONVERSION_REMOVED");
         return new NotificationCampaignStats(
-                campaigns.size(),
+                monthly.size(),
                 sent,
                 scheduled,
                 draft,
                 criticalInflight,
-                delivered <= 0 ? "0%" : String.format(Locale.ROOT, "%.1f%%", read * 100.0 / delivered),
-                compactNumber(read * 0.031));
+                complete && delivered > 0 ? String.format(Locale.ROOT, "%.1f%%", read * 100.0 / delivered) : null,
+                null, basis);
     }
 
     private NotificationAudienceCatalog audienceCatalog() {
@@ -653,10 +866,10 @@ public class OpsNotificationCampaignService {
                 CTA_ROUTES);
     }
 
-    private boolean validDelivery(String kind, String ctaLabel, String ctaHref) {
+    static boolean validDelivery(String kind, String ctaLabel, String ctaHref) {
         String normalizedKind = normalizeKind(kind);
         String normalizedHref = trimToEmpty(ctaHref);
-        if (!KINDS.contains(normalizedKind) || trimToEmpty(ctaLabel).length() > 64) return false;
+        if (!KINDS.contains(normalizedKind) || codePointLength(trimToEmpty(ctaLabel)) > 64) return false;
         if (normalizedHref.length() > 255 || CTA_ROUTES.stream().noneMatch(route -> route.value().equals(normalizedHref))) {
             return false;
         }
@@ -668,7 +881,7 @@ public class OpsNotificationCampaignService {
         return length >= 8 && length <= 200;
     }
 
-    private String normalizeKind(String kind) {
+    private static String normalizeKind(String kind) {
         return StringUtils.hasText(kind) ? kind.trim().toLowerCase(Locale.ROOT) : "system";
     }
 

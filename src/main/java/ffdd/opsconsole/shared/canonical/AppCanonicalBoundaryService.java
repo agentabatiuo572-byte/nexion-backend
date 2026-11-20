@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher.UserAttribution;
@@ -55,6 +56,9 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class AppCanonicalBoundaryService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -373,8 +377,10 @@ public class AppCanonicalBoundaryService {
     private ApiResult<Map<String,Object>> deferComputeV2Deactivation(Long user,CanonicalStateMapper.UserDeviceCommandRow device,Long version) {
         if(computeV2Lifecycle==null || !computeV2Lifecycle.deferDeactivation(user,device.id(),version))return null;
         var current=mapper.lockDeviceForUserCommand(device.id());
-        return ApiResult.ok(linked("deviceId",device.id(),"instanceNo",device.instanceNo(),"status",current.pendingDeactivate()?"PENDING_DEACTIVATE":current.status(),
-                "rowVersion",current.rowVersion(),"pendingDeactivate",current.pendingDeactivate(),"alreadyPending",device.pendingDeactivate()));
+        Map<String, Object> state = linked("deviceId",device.id(),"instanceNo",device.instanceNo(),"status",current.pendingDeactivate()?"PENDING_DEACTIVATE":current.status(),
+                "rowVersion",current.rowVersion(),"pendingDeactivate",current.pendingDeactivate(),"alreadyPending",device.pendingDeactivate());
+        if ("DEACTIVATED".equals(state.get("status"))) state.put("alreadyDeactivated", false);
+        return ApiResult.ok(state);
     }
 
     private boolean isSlotOccupyingActiveState(String status) {
@@ -412,9 +418,6 @@ public class AppCanonicalBoundaryService {
                         CanonicalStateMapper.E3CapacityConfig::configValue,
                         (left, right) -> right,
                         LinkedHashMap::new));
-        if (!validE3CapacityConfig(capacityConfig)) {
-            return ApiResult.fail(409, "E3_CAPACITY_CONFIG_INCOMPLETE");
-        }
         CanonicalStateMapper.UserCanonicalProfile profile = sandboxRuntime
                 ? mapper.sandboxUserCanonicalProfile(userId)
                 : developmentRuntime
@@ -428,13 +431,15 @@ public class AppCanonicalBoundaryService {
                 : developmentRuntime
                         ? mapper.developmentOwnedDevices(userId)
                         : mapper.ownedDevices(userId);
-        if (rawDevices != null) {
-            for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
-                try {
-                    validateDeviceSpec(device);
-                } catch (BizException invalid) {
-                    return ApiResult.fail(invalid.getCode(), invalid.getMessage());
-                }
+        if ((rawDevices == null || !rawDevices.isEmpty()) && !validE3CapacityConfig(capacityConfig)) {
+            return ApiResult.fail(409, "E3_CAPACITY_CONFIG_INCOMPLETE");
+        }
+        if (rawDevices == null) rawDevices = List.of();
+        for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
+            try {
+                validateDeviceSpec(device);
+            } catch (BizException invalid) {
+                return ApiResult.fail(invalid.getCode(), invalid.getMessage());
             }
         }
         LocalDateTime capacityNow = LocalDateTime.now(SERVER_ZONE);
@@ -456,18 +461,19 @@ public class AppCanonicalBoundaryService {
                 return ApiResult.fail(503, "E3_REALIZED_EARNINGS_INVALID");
             }
         }
-        List<Map<String, Object>> devices = (rawDevices == null ? List.<CanonicalStateMapper.OwnedDevice>of() : rawDevices)
-                .stream().map(device -> {
-                    Map<String, Object> projection = projectE3Capacity(device, capacityConfig, capacityNow);
-                    CanonicalStateMapper.DeviceRealizedToday realized = realizedByDevice.get(device.id());
-                    projection.put("todayEarningsUsdt", realized == null
-                            ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
-                            : realized.todayEarningsUsdt().setScale(6, RoundingMode.HALF_UP));
-                    projection.put("todayEarningsNex", realized == null
-                            ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
-                            : realized.todayEarningsNex().setScale(6, RoundingMode.HALF_UP));
-                    return projection;
-                }).toList();
+        List<Map<String, Object>> devices = new ArrayList<>();
+        for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
+            Map<String, Object> projection = projectE3Capacity(device, capacityConfig, capacityNow);
+            if (projection == null) continue;
+            CanonicalStateMapper.DeviceRealizedToday realized = realizedByDevice.get(device.id());
+            projection.put("todayEarningsUsdt", realized == null
+                    ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                    : realized.todayEarningsUsdt().setScale(6, RoundingMode.HALF_UP));
+            projection.put("todayEarningsNex", realized == null
+                    ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                    : realized.todayEarningsNex().setScale(6, RoundingMode.HALF_UP));
+            devices.add(projection);
+        }
         BigDecimal realizedTodayUsdt = devices.stream()
                 .map(device -> (BigDecimal) device.get("todayEarningsUsdt"))
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
@@ -484,8 +490,8 @@ public class AppCanonicalBoundaryService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
         int reservedSlots = sandboxRuntime ? 0 : Math.max(0, mapper.reservedDeviceOrderCount(userId));
         int trialSlots = sandboxRuntime ? 0 : mapper.reservedTrialSlotCount(userId);
-        long activeSlots = sandboxRuntime ? devices.stream()
-                .filter(device -> isSlotOccupyingActiveState(String.valueOf(device.get("status")))).count()
+        long activeSlots = sandboxRuntime ? rawDevices.stream()
+                .filter(device -> isSlotOccupyingActiveState(device.status())).count()
                 : Math.max(0, mapper.activeDeviceCount(userId));
         return ApiResult.ok(linked(
                 "dailyUsdt", usdt,
@@ -556,18 +562,21 @@ public class AppCanonicalBoundaryService {
             CanonicalStateMapper.OwnedDevice device,
             Map<String, String> config,
             LocalDateTime now) {
-        validateDeviceSpec(device);
         E3DeviceCapacityPolicy.Projection capacity;
         try {
             capacity = E3DeviceCapacityPolicy.project(
-                    device.productCode(), device.deviceType(), device.purchasedAt(),
+                    device.seriesCode(), device.deviceType(), device.purchasedAt(),
                     device.activatedAt(), now, config);
         } catch (IllegalArgumentException invalid) {
+            if (!StringUtils.hasText(device.seriesCode())
+                    && "E3_DEVICE_CAPACITY_CLASSIFICATION_MISSING".equals(invalid.getMessage())) return null;
             throw new BizException(409, invalid.getMessage());
         }
-        // Share's E1 annual range is a reference, not an USD/day estimate.
-        BigDecimal dailyUsdt = "SHARE".equalsIgnoreCase(device.deviceType())
+        // Untargeted Share keeps its annual-reference branch; targeted Share uses the same T/30 projection.
+        BigDecimal dailyUsdt = device.monthlyTargetUsdt()==null && "SHARE".equalsIgnoreCase(device.deviceType())
                 ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
+                : device.monthlyTargetUsdt()!=null ? device.monthlyTargetUsdt().multiply(capacity.capacityPct().movePointLeft(2))
+                    .divide(BigDecimal.valueOf(30),6,RoundingMode.HALF_UP)
                 : E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyUsdt()), capacity);
         BigDecimal dailyNex = E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyNex()), capacity);
         boolean calibratedPhone = "MOBILE".equalsIgnoreCase(device.deviceType())
@@ -592,6 +601,7 @@ public class AppCanonicalBoundaryService {
                 "activatedAt", epochMillis(device.activatedAt()), "deactivatedAt", epochMillis(device.deactivatedAt()),
                 "purchasedAt", epochMillis(device.purchasedAt()),
                 "dailyUsdt", dailyUsdt, "dailyNex", dailyNex,
+                "monthlyTargetActive", device.monthlyTargetUsdt()!=null,
                 "capabilityTops", capabilityTops, "capabilityTier", capabilityTier,
                 "gpuModel", device.gpuModel(), "vramTotalGb", device.vramTotalGb(),
                 "basePowerW", device.basePowerW(), "location", device.location(),
@@ -1042,7 +1052,7 @@ public class AppCanonicalBoundaryService {
             needsF4bFacts = needsF4bFacts || quotas.stream().anyMatch(this::hardwareQuotaNeedsFacts);
             PurchaseEligibilityDecision decision = storefrontConfigurationDecision(
                     product.productNo(), product.productType(), product.inventoryMode(),
-                    product.gpuModel(), product.vramTotalGb(), product.power(), product.datacenter());
+                    product.gpuModel(), product.vramTotalGb(), product.power());
             if (decision == null) releaseCandidates.put(product.productNo(), product.unlockPhase());
             else preliminary.put(product.productNo(), decision);
         }
@@ -1100,7 +1110,7 @@ public class AppCanonicalBoundaryService {
             if (product == null) continue;
             PurchaseEligibilityDecision decision = storefrontConfigurationDecision(
                     product.productNo(), product.productType(), product.inventoryMode(),
-                    product.gpuModel(), product.vramTotalGb(), product.power(), product.datacenter());
+                    product.gpuModel(), product.vramTotalGb(), product.power());
             if (decision == null) releaseCandidates.put(product.productNo(), product.unlockPhase());
             else preliminary.put(product.productNo(), decision);
         }
@@ -1133,9 +1143,9 @@ public class AppCanonicalBoundaryService {
 
     private PurchaseEligibilityDecision storefrontConfigurationDecision(
             String productNo, String productType, String inventoryMode,
-            String gpuModel, Integer vramTotalGb, String power, String datacenter) {
+            String gpuModel, Integer vramTotalGb, String power) {
         String configurationBlock = storefrontConfigurationBlock(
-                productType, inventoryMode, gpuModel, vramTotalGb, power, datacenter);
+                productType, inventoryMode, gpuModel, vramTotalGb, power);
         if (configurationBlock != null) {
             return new PurchaseEligibilityDecision(productNo, false, configurationBlock);
         }
@@ -1232,7 +1242,7 @@ public class AppCanonicalBoundaryService {
 
     static String storefrontConfigurationBlock(
             String productType, String inventoryMode, String gpuModel, Integer vramTotalGb,
-            String power, String datacenter) {
+            String power) {
         String type = StringUtils.hasText(productType) ? productType.trim().toUpperCase(Locale.ROOT) : "";
         boolean physical = "DEVICE".equals(type) || "SERVER".equals(type);
         ProductInventoryMode mode = ProductInventoryMode.parse(inventoryMode);
@@ -1242,7 +1252,7 @@ public class AppCanonicalBoundaryService {
         }
         if (physical && (!StringUtils.hasText(gpuModel)
                 || vramTotalGb == null || vramTotalGb <= 0
-                || !StringUtils.hasText(power) || !StringUtils.hasText(datacenter))) {
+                || !StringUtils.hasText(power))) {
             return "PRODUCT_SPECS_UNAVAILABLE";
         }
         return null;
@@ -1359,7 +1369,7 @@ public class AppCanonicalBoundaryService {
         }
         String configurationBlock = storefrontConfigurationBlock(
                 product.productType(), product.inventoryMode(), product.gpuModel(), product.vramTotalGb(),
-                product.power(), product.datacenter());
+                product.power());
         if (configurationBlock != null) return ApiResult.fail(409, configurationBlock);
         ProductInventoryMode inventoryMode = ProductInventoryMode.parse(product.inventoryMode());
         if (inventoryMode == ProductInventoryMode.FINITE
@@ -1417,7 +1427,7 @@ public class AppCanonicalBoundaryService {
         }
         String configurationBlock = storefrontConfigurationBlock(
                 product.productType(), product.inventoryMode(), product.gpuModel(), product.vramTotalGb(),
-                product.power(), product.datacenter());
+                product.power());
         if (configurationBlock != null) return ApiResult.fail(409, configurationBlock);
         ProductInventoryMode inventoryMode = ProductInventoryMode.parse(product.inventoryMode());
         if (StringUtils.hasText(product.purchaseGateJson())
@@ -1453,6 +1463,7 @@ public class AppCanonicalBoundaryService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        hostingCenters.requirePool();
         String orderNo = "ORD-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         BigDecimal subtotal = product.priceUsdt().multiply(BigDecimal.valueOf(qty)).setScale(6, RoundingMode.DOWN);
         VoucherRedemption voucher = growthLifecyclePublisher.prepareVoucher(

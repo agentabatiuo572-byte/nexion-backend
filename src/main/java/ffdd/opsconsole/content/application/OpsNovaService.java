@@ -26,6 +26,7 @@ import ffdd.opsconsole.content.dto.NovaSocialEventStatusRequest;
 import ffdd.opsconsole.content.dto.NovaSocialEventSyncRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateCreateRequest;
 import ffdd.opsconsole.content.dto.NovaTemplateStatusRequest;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -58,6 +59,7 @@ import org.springframework.util.StringUtils;
 public class OpsNovaService {
     private static final Pattern KEY_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{2,64}$");
     private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{[A-Za-z][A-Za-z0-9_]*}");
+    private static final Pattern LOCALIZED_WHITESPACE = Pattern.compile("[\\s\\p{Z}\\uFEFF]*");
     private static final Pattern DURATION_PATTERN = Pattern.compile("^(\\d+)\\s*(s|min|h|d)$", Pattern.CASE_INSENSITIVE);
     private static final Set<String> TEMPLATE_STATUSES = Set.of("DRAFT", "PUBLISHED", "ARCHIVED");
     private static final Set<String> SOCIAL_EVENT_STATUSES = Set.of("ACTIVE", "DISABLED", "EXPIRED");
@@ -73,12 +75,8 @@ public class OpsNovaService {
             new NovaOptionView("EXPIRED", "已过期"));
     private static final List<NovaOptionView> TEMPLATE_CTA_OPTIONS = List.of(
             new NovaOptionView("NONE", "无跳转"),
-            new NovaOptionView("/me/weekly", "每周回顾"),
-            new NovaOptionView("/devices", "设备商城"),
-            new NovaOptionView("/staking", "质押产品"),
             new NovaOptionView("/team", "团队"),
-            new NovaOptionView("/earn", "收益任务"),
-            new NovaOptionView("/support", "客服中心"));
+            new NovaOptionView("/earn", "收益任务"));
     private static final List<NovaEventDrivenView> EVENT_DRIVEN_CHANNELS = List.of(
             new NovaEventDrivenView("risk-alert", "设备掉线或任务失败时立即推送。",
                     "设备运行与风控异常", "warn", "事件触发"),
@@ -102,21 +100,22 @@ public class OpsNovaService {
     private final AuditLogService auditLogService;
     private final CopyAudiencePhaseProvider audiencePhaseProvider;
     private final Clock clock;
+    private final PlatformExperienceConfigService experienceConfig;
 
     public ApiResult<NovaOverview> overview() {
-        novaRepository.ensureTables();
         String currentPhase = normalizePhase(audiencePhaseProvider.currentPhase());
         List<NovaChannelView> channels = novaRepository.channels().stream()
                 .map(channel -> phaseAwareChannel(channel, currentPhase))
                 .toList();
         Map<String, Object> stats = novaRepository.stats();
+        LocalDateTime asOf = LocalDateTime.now(clock);
         return ApiResult.ok(new NovaOverview(
                 novaStats(stats),
                 channels,
                 EVENT_DRIVEN_CHANNELS,
                 novaRepository.templates(),
                 novaRepository.socialDistribution(),
-                publicEvents(novaRepository.socialEvents("", "", 20, 0)),
+                publicEvents(novaRepository.socialEvents("", "", asOf, 20, 0)),
                 SOCIAL_EVENT_TYPE_OPTIONS,
                 SOCIAL_EVENT_STATUS_OPTIONS,
                 List.copyOf(TEMPLATE_STATUSES),
@@ -127,7 +126,54 @@ public class OpsNovaService {
                         "nx_nova_template",
                         "nx_nova_social_distribution",
                         "nx_nova_social_event",
-                        "nx_notification")));
+                        "nx_notification"),
+                channelRuntimeSources(channels),
+                pushDelivery(channels, asOf)));
+    }
+
+    /**
+     * One query for the whole rolling window. Existing configured channels without events are
+     * reported as zero only after the query succeeds; unknown extra event channels stay visible.
+     */
+    private NovaOverview.PushDeliveryView pushDelivery(List<NovaChannelView> channels, LocalDateTime asOf) {
+        LocalDateTime from = asOf.minusDays(7);
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (Map<String, Object> row : novaRepository.channelPushSentCounts(from, asOf)) {
+            Object channel = row.get("channel");
+            Object count = row.get("sentCount");
+            if (channel instanceof String key && !key.isBlank() && count instanceof Number number) {
+                counts.put(key, number.longValue());
+            }
+        }
+        List<NovaOverview.ChannelPushSentStat> result = new ArrayList<>();
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        for (NovaChannelView channel : channels) {
+            if (seen.add(channel.key())) {
+                result.add(new NovaOverview.ChannelPushSentStat(channel.key(), counts.getOrDefault(channel.key(), 0L)));
+            }
+        }
+        for (Map.Entry<String, Long> entry : counts.entrySet()) {
+            if (seen.add(entry.getKey())) {
+                result.add(new NovaOverview.ChannelPushSentStat(entry.getKey(), entry.getValue()));
+            }
+        }
+        return new NovaOverview.PushDeliveryView(from.toString(), asOf.toString(), 7,
+                "nova.push_sent", "NOVA_NOTIFICATION", "NOTIFICATION_RECIPIENT_PER_EVENT", result);
+    }
+
+    /**
+     * Projects only channels this business catalog can resolve. The catalog does not evaluate
+     * social category, retirement or enabled state; absence means only that it did not resolve here.
+     */
+    private List<NovaOverview.ChannelRuntimeSource> channelRuntimeSources(List<NovaChannelView> channels) {
+        return channels.stream()
+                .map(channel -> NovaRuntimeAdapterCatalog.resolve(channel.key(), channel.trigger())
+                        .map(source -> new NovaOverview.ChannelRuntimeSource(
+                                channel.key(), source.eventNames(), source.targeted(),
+                                NovaRuntimeAdapterCatalog.eventDisplayNames(source.eventNames())))
+                        .orElse(null))
+                .filter(source -> source != null)
+                .toList();
     }
 
     public ApiResult<List<NovaSocialEventView>> socialEvents(String eventType, String status) {
@@ -139,8 +185,6 @@ public class OpsNovaService {
     }
 
     public ApiResult<NovaSocialEventPage> socialEventPage(String eventType, String status, int page, int pageSize) {
-        novaRepository.ensureTables();
-        expireDueEvents();
         String normalizedType = trimToEmpty(eventType);
         String normalizedStatus = normalizeStatus(status);
         if (StringUtils.hasText(normalizedType) && !DISTRIBUTION_OPTIONS.containsKey(normalizedType)) {
@@ -153,11 +197,14 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_PAGE_INVALID");
         }
         String effectiveStatus = StringUtils.hasText(status) ? normalizedStatus : "";
+        // One instant for the page, its filter and its count, taken from the service clock that the
+        // expiry job also uses — never the repository's own system time.
+        LocalDateTime asOf = LocalDateTime.now(clock);
         List<NovaSocialEventView> rows = novaRepository
-                .socialEvents(normalizedType, effectiveStatus, pageSize, (page - 1) * pageSize).stream()
+                .socialEvents(normalizedType, effectiveStatus, asOf, pageSize, (page - 1) * pageSize).stream()
                 .map(this::publicEvent)
                 .toList();
-        long total = novaRepository.countSocialEvents(normalizedType, effectiveStatus);
+        long total = novaRepository.countSocialEvents(normalizedType, effectiveStatus, asOf);
         return ApiResult.ok(new NovaSocialEventPage(rows, page, pageSize, total));
     }
 
@@ -263,8 +310,10 @@ public class OpsNovaService {
         if (novaRepository.socialEventSourceExists(source.eventType(), source.sourceSystem(), source.sourceEventId())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_EVENT_SOURCE_ALREADY_INGESTED");
         }
+        // BUG-520: 素材只存语言无关的值 —— 昵称缺失留空、城市缺失留空（聚合事件由来源给 ALL），
+        // 由 NovaSocialMessageRenderer 按收件人语言出「匿名用户/未知地区」等兜底。
         boolean inserted = novaRepository.tryCreateSocialEvent(
-                source, mask(source.actorName(), "匿名用户"), mask(source.city(), "未知地区"),
+                source, mask(source.actorName(), ""), mask(source.city(), ""),
                 "newUsers".equals(source.eventType()) ? peopleBand(source.amount()) : amountBand(source.amount(), source.amountUnit()),
                 expiresAt, authenticatedOperator, reason.trim());
         Optional<NovaSocialEventView> created = novaRepository.socialEventBySource(
@@ -352,8 +401,6 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_SOCIAL_EVENT_LANGUAGE_UNSUPPORTED");
         }
         String normalizedLanguage = base.toUpperCase(Locale.ROOT);
-        novaRepository.ensureTables();
-        expireDueEvents();
         NovaChannelView channel = novaRepository.channel("social").orElse(null);
         if (channel == null || !channel.enabled()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_SOCIAL_CHANNEL_DISABLED");
@@ -394,8 +441,9 @@ public class OpsNovaService {
         List<NovaSocialEventView> selectedCandidates = candidates.get(selectedType);
         NovaSocialEventView selected = selectedCandidates.get(ThreadLocalRandom.current().nextInt(selectedCandidates.size()));
         NovaSocialEventView publicEvent = publicEvent(selected);
+        // BUG-520: 用素材原值渲染（publicEvent 只做运营后台的中文投影），预览与真实下发同一口径。
         NovaSocialMessageRenderer.RenderedMessage message =
-                NovaSocialMessageRenderer.render(template, publicEvent, normalizedLanguage);
+                NovaSocialMessageRenderer.render(template, selected, normalizedLanguage);
         return ApiResult.ok(new NovaSocialRenderedEventView(
                 publicEvent.id(), publicEvent.eventType(), publicEvent.sourceEventId(), normalizedLanguage,
                 message.title(), message.body(), publicEvent.expiresAt()));
@@ -450,7 +498,12 @@ public class OpsNovaService {
         if (current.isEmpty()) {
             return ApiResult.fail(404, "NOVA_CHANNEL_NOT_FOUND");
         }
-        if (!NovaRuntimeAdapterCatalog.fixedSources().containsKey(normalizedKey)
+        String currentKey = current.get().key();
+        if (NovaSocialRuntimeService.SOCIAL_CHANNEL.equals(currentKey)) {
+            if (!isUnchangedSocialRuntimeTrigger(currentKey, current.get().trigger(), request.trigger())) {
+                return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RUNTIME_SOURCE_UNSUPPORTED");
+            }
+        } else if (!NovaRuntimeAdapterCatalog.fixedSources().containsKey(normalizedKey)
                 && !NovaRuntimeAdapterCatalog.isControlledDynamicSource(request.trigger())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RUNTIME_SOURCE_UNSUPPORTED");
         }
@@ -479,6 +532,20 @@ public class OpsNovaService {
                 "toCtr", updated.ctr(),
                 "enabled", updated.enabled()));
         return ApiResult.ok(updated);
+    }
+
+    /**
+     * The canonical social channel is dispatched by NovaSocialRuntimeService from its real pool and is
+     * intentionally absent from NovaRuntimeAdapterCatalog. Only an existing social channel whose saved
+     * trigger is unchanged may bypass the catalog check for name/cadence edits; blank values never match.
+     */
+    private static boolean isUnchangedSocialRuntimeTrigger(String key, String savedTrigger, String requestedTrigger) {
+        if (!NovaSocialRuntimeService.SOCIAL_CHANNEL.equals(key)
+                || !StringUtils.hasText(savedTrigger)
+                || !StringUtils.hasText(requestedTrigger)) {
+            return false;
+        }
+        return savedTrigger.trim().equals(requestedTrigger.trim());
     }
 
     @Transactional
@@ -535,8 +602,13 @@ public class OpsNovaService {
     }
 
     @Transactional
-    public ApiResult<NovaTemplateView> createTemplate(String idempotencyKey, NovaTemplateCreateRequest request) {
-        ApiResult<NovaTemplateView> guard = requireTemplateCreate(idempotencyKey, request);
+    public ApiResult<NovaTemplateView> createTemplate(String idempotencyKey, NovaTemplateCreateRequest input) {
+        ApiResult<NovaTemplateView> guard = requireReason(idempotencyKey, input == null ? null : input.reason());
+        if (guard != null) {
+            return guard;
+        }
+        NovaTemplateCreateRequest request = fillTemplateLocales(input);
+        guard = requireTemplateFields(request);
         if (guard != null) {
             return guard;
         }
@@ -553,12 +625,12 @@ public class OpsNovaService {
                 request.name().trim(),
                 request.cta().trim(),
                 request.version().trim(),
-                request.titleZh().trim(),
-                request.bodyZh().trim(),
-                request.titleVi().trim(),
-                request.bodyVi().trim(),
-                trimToEmpty(request.titleEn()),
-                trimToEmpty(request.bodyEn()),
+                request.titleZh(),
+                request.bodyZh(),
+                request.titleVi(),
+                request.bodyVi(),
+                request.titleEn(),
+                request.bodyEn(),
                 operator(request.operator()),
                 request.reason().trim());
         if (request.translations() != null) novaRepository.setTemplateTranslations(channel, null,
@@ -573,9 +645,14 @@ public class OpsNovaService {
     }
 
     @Transactional
-    public ApiResult<NovaTemplateView> updateTemplate(String channel, String idempotencyKey, NovaTemplateCreateRequest request) {
+    public ApiResult<NovaTemplateView> updateTemplate(String channel, String idempotencyKey, NovaTemplateCreateRequest input) {
         String normalizedChannel = normalizeChannelKey(channel);
-        ApiResult<NovaTemplateView> guard = requireTemplateCreate(idempotencyKey, request);
+        ApiResult<NovaTemplateView> guard = requireReason(idempotencyKey, input == null ? null : input.reason());
+        if (guard != null) {
+            return guard;
+        }
+        NovaTemplateCreateRequest request = fillTemplateLocales(input);
+        guard = requireTemplateFields(request);
         if (guard != null) {
             return guard;
         }
@@ -590,10 +667,28 @@ public class OpsNovaService {
         if (!"DRAFT".equalsIgnoreCase(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_NOT_DRAFT");
         }
+        if (!StringUtils.hasText(input.expectedRevision())) {
+            return ApiResult.fail(409, "NOVA_TEMPLATE_REVISION_REQUIRED");
+        }
+        if (!current.get().revision().equals(input.expectedRevision().trim())) {
+            return ApiResult.fail(409, "NOVA_TEMPLATE_CONCURRENT_MODIFICATION");
+        }
+        if (request.translations() == null
+                && NovaSocialMessageRenderer.hasRetiredSourceNote(current.get().translations())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
+        if (request.translations() == null && businessChannelWithoutVariables(normalizedChannel)
+                && carriesTranslationPlaceholder(current.get())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
+        if (request.translations() == null && !translatedPlaceholdersMatch(
+                current.get().translations(), request.titleEn(), request.bodyEn())) {
+            return ApiResult.fail(422, "NOVA_TEMPLATE_TRANSLATIONS_INVALID");
+        }
         boolean updatedInDatabase = novaRepository.updateTemplateIfCurrent(
                 current.get(), request.name().trim(), request.cta().trim(), request.version().trim(),
-                request.titleZh().trim(), request.bodyZh().trim(), request.titleVi().trim(), request.bodyVi().trim(),
-                trimToEmpty(request.titleEn()), trimToEmpty(request.bodyEn()), operator(request.operator()), request.reason().trim());
+                request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi(),
+                request.titleEn(), request.bodyEn(), operator(request.operator()), request.reason().trim());
         if (!updatedInDatabase) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NOVA_TEMPLATE_CONCURRENT_MODIFICATION");
         }
@@ -653,8 +748,16 @@ public class OpsNovaService {
         if (status.equals(current.get().status())) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        if ("PUBLISHED".equals(status) && NovaSocialMessageRenderer.hasRetiredSourceNote(current.get())) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
         if ("PUBLISHED".equals(status) && !hasCompleteLocalizedContent(current.get())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_LOCALIZED_CONTENT_REQUIRED");
+        }
+        if ("PUBLISHED".equals(status) && carriesPlaceholder(current.get())
+                && businessChannelWithoutVariables(current.get().channel())) {
+            // Drafts saved before the save-time rule existed must not go live with literal placeholders.
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
         // 退役品牌门禁:模板一旦发布就会真实推送给用户,三语正文里的旧品牌必须在这里拦住。
         // 与「三语齐全」是两件事 —— social/welcome/wrapped 三条存量模板三语都在,正文却仍是
@@ -724,6 +827,11 @@ public class OpsNovaService {
         List<NovaSocialDistributionItem> updated = novaRepository.socialDistribution();
         audit("I2_NOVA_SOCIAL_DISTRIBUTION_CHANGED", "social", operator(request.operator()), idempotencyKey, request.reason(), Map.of("total", total));
         return ApiResult.ok(updated);
+    }
+
+    /** Scheduled maintenance entry: expiry is a write and no longer runs inside a GET. */
+    public void expireOverdueSocialEvents() {
+        expireDueEvents();
     }
 
     private void expireDueEvents() {
@@ -806,28 +914,62 @@ public class OpsNovaService {
         return band + (StringUtils.hasText(unit) ? " " + unit.trim().toUpperCase(Locale.ROOT) : "");
     }
 
+    /** BUG-520: 数量区间带语言无关的单位代码(USERS)，渲染时按收件人语言换成「人/users/người dùng」。 */
     private String peopleBand(BigDecimal amount) {
         if (amount == null || amount.compareTo(BigDecimal.TEN) < 0) {
             return "";
         }
         int count = amount.intValue();
-        if (count < 50) return "10–49 人";
-        if (count < 100) return "50–99 人";
-        if (count < 500) return "100–499 人";
-        if (count < 1000) return "500–999 人";
-        return "1000+ 人";
+        String band;
+        if (count < 50) band = "10–49";
+        else if (count < 100) band = "50–99";
+        else if (count < 500) band = "100–499";
+        else if (count < 1000) band = "500–999";
+        else band = "1000+";
+        return band + " USERS";
     }
 
     private List<NovaSocialEventView> publicEvents(List<NovaSocialEventView> events) {
         return events == null ? List.of() : events.stream().map(this::publicEvent).toList();
     }
 
+    /**
+     * 运营后台（I2 页面是中文界面）沿用的展示投影。素材已改存语言无关的值(ALL/USERS/空)，
+     * 这里只做后台投影，绝不参与用户通知渲染（渲染走 NovaSocialMessageRenderer 的本地化取值）。
+     */
     private NovaSocialEventView publicEvent(NovaSocialEventView event) {
         return new NovaSocialEventView(
-                event.id(), event.eventType(), publicReference(event), event.actorDisplay(), event.cityDisplay(),
-                event.amountDisplay(), event.sourceNote(), event.sourceSystem(), event.sourceTable(), event.status(),
+                event.id(), event.eventType(), publicReference(event),
+                adminActorDisplay(event.actorDisplay()), adminCityDisplay(event, event.cityDisplay()),
+                adminAmountDisplay(event.amountDisplay()), adminSourceNote(event, event.sourceNote()),
+                event.sourceSystem(), event.sourceTable(), event.status(),
                 event.occurredAt(), event.expiresAt(), event.verifiedAt(), event.lastDispatchedAt(), event.dispatchCount(),
                 event.createdAt(), event.updatedAt());
+    }
+
+    private String adminActorDisplay(String value) {
+        return StringUtils.hasText(value) ? value : "匿名用户";
+    }
+
+    /** 注册聚合事件没有真实地区（素材里城市留空），后台仍按既有说法显示「全网」。 */
+    private String adminCityDisplay(NovaSocialEventView event, String value) {
+        if (NovaSocialMessageRenderer.registrationAggregate(event)) return "全网";
+        String city = trimToEmpty(value);
+        return StringUtils.hasText(city) ? city : "未知地区";
+    }
+
+    /** 素材里的来源说明已改成代码（如 HOURLY_REGISTRATION_AGGREGATE），后台恢复原备注。 */
+    private String adminSourceNote(NovaSocialEventView event, String value) {
+        String note = trimToEmpty(value);
+        if (NovaSocialMessageRenderer.registrationAggregate(event) && "HOURLY_REGISTRATION_AGGREGATE".equals(note)) {
+            return "完整小时注册用户聚合";
+        }
+        return note;
+    }
+
+    private String adminAmountDisplay(String value) {
+        String amount = trimToEmpty(value);
+        return amount.endsWith(" USERS") ? amount.substring(0, amount.length() - " USERS".length()) + " 人" : amount;
     }
 
     private String publicReference(NovaSocialEventView event) {
@@ -836,13 +978,20 @@ public class OpsNovaService {
 
     private NovaStats novaStats(Map<String, Object> stats) {
         Map<String, Object> row = stats == null ? Map.of() : stats;
+        // One mapping feeds both the legacy labels and the explicit machine fields below.
+        long socialRecordsToday = longValue(row.get("todayDelivered"));
+        String channelCtrAverage = formatPercent(decimalValue(row.get("avgCtr")));
+        long recentSocialCumulativeDispatch = longValue(row.get("weeklySocial"));
         return new NovaStats(
-                formatLong(row.get("todayDelivered")),
-                formatPercent(decimalValue(row.get("avgCtr"))),
+                String.valueOf(socialRecordsToday),
+                channelCtrAverage,
                 intValue(row.get("ctrTarget")),
                 intValue(row.get("onlineChannels")),
                 intValue(row.get("totalChannels")),
-                formatLong(row.get("weeklySocial")));
+                String.valueOf(recentSocialCumulativeDispatch),
+                socialRecordsToday,
+                channelCtrAverage,
+                recentSocialCumulativeDispatch);
     }
 
     private String formatPercent(BigDecimal value) {
@@ -941,30 +1090,53 @@ public class OpsNovaService {
         }
     }
 
-    private ApiResult<NovaTemplateView> requireTemplateCreate(String idempotencyKey, NovaTemplateCreateRequest request) {
-        ApiResult<NovaTemplateView> reasonGuard = requireReason(idempotencyKey, request == null ? null : request.reason());
-        if (reasonGuard != null) {
-            return reasonGuard;
-        }
+    private NovaTemplateCreateRequest fillTemplateLocales(NovaTemplateCreateRequest request) {
+        List<String> required = experienceConfig.operatingLanguages();
+        boolean fillZh = !required.contains("zh") && isLocalizedBlank(request.titleZh()) && isLocalizedBlank(request.bodyZh());
+        boolean fillVi = !required.contains("vi") && isLocalizedBlank(request.titleVi()) && isLocalizedBlank(request.bodyVi());
+        String titleEn = trimToEmpty(request.titleEn());
+        String bodyEn = trimToEmpty(request.bodyEn());
+        return new NovaTemplateCreateRequest(request.channel(), request.name(), request.cta(), request.version(),
+                fillZh ? titleEn : trimToEmpty(request.titleZh()), fillZh ? bodyEn : trimToEmpty(request.bodyZh()),
+                fillVi ? titleEn : trimToEmpty(request.titleVi()), fillVi ? bodyEn : trimToEmpty(request.bodyVi()),
+                titleEn, bodyEn, request.operator(), request.reason(), request.translations());
+    }
+
+    private boolean isLocalizedBlank(String value) {
+        return value == null || LOCALIZED_WHITESPACE.matcher(value).matches();
+    }
+
+    private boolean validLocalizedText(String value) {
+        return !isLocalizedBlank(value) && StringUtils.hasText(value);
+    }
+
+    private ApiResult<NovaTemplateView> requireTemplateFields(NovaTemplateCreateRequest request) {
         if (!StringUtils.hasText(request.channel()) || !StringUtils.hasText(request.name())
                 || !StringUtils.hasText(request.cta()) || !StringUtils.hasText(request.version())
-                || !StringUtils.hasText(request.titleZh()) || !StringUtils.hasText(request.bodyZh())
-                || !StringUtils.hasText(request.titleVi()) || !StringUtils.hasText(request.bodyVi())) {
+                || !validLocalizedText(request.titleEn()) || !validLocalizedText(request.bodyEn())
+                || !validLocalizedText(request.titleZh()) || !validLocalizedText(request.bodyZh())
+                || !validLocalizedText(request.titleVi()) || !validLocalizedText(request.bodyVi())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_FIELDS_REQUIRED");
         }
         if (request.name().trim().length() > 128 || request.cta().trim().length() > 255
-                || request.version().trim().length() > 32 || request.titleZh().trim().length() > 255
-                || request.titleVi().trim().length() > 255 || trimToEmpty(request.titleEn()).length() > 255
-                || request.bodyZh().trim().length() > 4000 || request.bodyVi().trim().length() > 4000
-                || trimToEmpty(request.bodyEn()).length() > 4000) {
+                || request.version().trim().length() > 32 || request.titleEn().length() > 255
+                || request.titleZh().length() > 255 || request.titleVi().length() > 255
+                || request.bodyEn().length() > 4000 || request.bodyZh().length() > 4000 || request.bodyVi().length() > 4000) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_FIELD_TOO_LONG");
         }
         if (TEMPLATE_CTA_OPTIONS.stream().noneMatch(option -> option.value().equals(request.cta().trim()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_CTA_UNSUPPORTED");
         }
-        if ((StringUtils.hasText(request.titleEn()) != StringUtils.hasText(request.bodyEn()))
-                || !placeholders(request.bodyZh()).equals(placeholders(request.bodyVi()))
-                || (StringUtils.hasText(request.bodyEn()) && !placeholders(request.bodyZh()).equals(placeholders(request.bodyEn())))) {
+        // BUG-520: 真实动态频道的中文文案只允许出现在中文模板里；英文、越南语模板夹汉字会原样发给用户。
+        boolean socialChannel = NovaSocialRuntimeService.SOCIAL_CHANNEL.equals(normalizeChannelKey(request.channel()));
+        if (socialChannel && (NovaSocialMessageRenderer.containsHan(request.titleEn())
+                || NovaSocialMessageRenderer.containsHan(request.bodyEn())
+                || NovaSocialMessageRenderer.containsHan(request.titleVi())
+                || NovaSocialMessageRenderer.containsHan(request.bodyVi()))) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_LOCALIZATION_INVALID");
+        }
+        Set<String> bodyPlaceholders = placeholders(request.bodyEn());
+        if (!bodyPlaceholders.equals(placeholders(request.bodyZh())) || !bodyPlaceholders.equals(placeholders(request.bodyVi()))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDERS_MISMATCH");
         }
         if (request.translations() != null) for (var entry : request.translations().entrySet()) {
@@ -973,26 +1145,61 @@ public class OpsNovaService {
                     || translated.title().length() > 255 || translated.body().length() > 4000
                     || !translated.ctaLabel().isEmpty()
                     || ffdd.opsconsole.shared.canonical.RetiredBrandGate.anyCarriesRetiredBrand(translated.title(), translated.body())
-                    || !translated.title().isEmpty() && !placeholders(request.titleZh()).equals(placeholders(translated.title()))
-                    || !translated.body().isEmpty() && !placeholders(request.bodyZh()).equals(placeholders(translated.body()))) {
+                    || (socialChannel && (NovaSocialMessageRenderer.containsHan(translated.title())
+                            || NovaSocialMessageRenderer.containsHan(translated.body())))
+                    || !translatedPlaceholdersMatch(Map.of(entry.getKey(), translated), request.titleEn(), request.bodyEn())) {
                 return ApiResult.fail(422, "NOVA_TEMPLATE_TRANSLATIONS_INVALID");
             }
         }
         Set<String> usedPlaceholders = new LinkedHashSet<>();
-        List.of(request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi(),
-                        trimToEmpty(request.titleEn()), trimToEmpty(request.bodyEn()))
+        List.of(request.titleZh(), request.bodyZh(), request.titleVi(), request.bodyVi(), request.titleEn(), request.bodyEn())
                 .forEach(value -> usedPlaceholders.addAll(placeholders(value)));
         if (!NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(usedPlaceholders)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
+        }
+        // Business/cadence channels dispatch from A4 facts and pass the stored text through unchanged:
+        // no event context exists to fill these names, so a placeholder would reach the user literally.
+        if (!usedPlaceholders.isEmpty() && businessChannelWithoutVariables(request.channel())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_TEMPLATE_PLACEHOLDER_UNSUPPORTED");
         }
         return null;
     }
 
+    private boolean translatedPlaceholdersMatch(Map<String, NotificationTranslation> translations, String title, String body) {
+        if (translations == null || translations.isEmpty()) return true;
+        Set<String> titleVariables = placeholders(title);
+        Set<String> bodyVariables = placeholders(body);
+        return translations.values().stream().allMatch(value -> value != null
+                && (value.title().isEmpty() || titleVariables.equals(placeholders(value.title())))
+                && (value.body().isEmpty() || bodyVariables.equals(placeholders(value.body()))));
+    }
+
+    /** True when this channel runs on a server-side business adapter (non-social, no event variables). */
+    private boolean businessChannelWithoutVariables(String channelKey) {
+        return novaRepository.channel(normalizeChannelKey(channelKey))
+                .filter(channel -> NovaRuntimeAdapterCatalog.resolve(channel.key(), channel.trigger()).isPresent())
+                .isPresent();
+    }
+
+    private boolean carriesPlaceholder(NovaTemplateView template) {
+        return !placeholders(template.titleZh()).isEmpty() || !placeholders(template.bodyZh()).isEmpty()
+                || !placeholders(template.titleVi()).isEmpty() || !placeholders(template.bodyVi()).isEmpty()
+                || !placeholders(template.titleEn()).isEmpty() || !placeholders(template.bodyEn()).isEmpty()
+                || carriesTranslationPlaceholder(template);
+    }
+
+    private boolean carriesTranslationPlaceholder(NovaTemplateView template) {
+        return template.translations().values().stream().anyMatch(value ->
+                !placeholders(value.title()).isEmpty() || !placeholders(value.body()).isEmpty());
+    }
+
     private boolean hasCompleteLocalizedContent(NovaTemplateView template) {
-        return StringUtils.hasText(template.titleZh()) && StringUtils.hasText(template.bodyZh())
+        Set<String> bodyPlaceholders = placeholders(template.bodyEn());
+        return StringUtils.hasText(template.titleEn()) && StringUtils.hasText(template.bodyEn())
+                && StringUtils.hasText(template.titleZh()) && StringUtils.hasText(template.bodyZh())
                 && StringUtils.hasText(template.titleVi()) && StringUtils.hasText(template.bodyVi())
-                && placeholders(template.bodyZh()).equals(placeholders(template.bodyVi()))
-                && (!StringUtils.hasText(template.bodyEn()) || placeholders(template.bodyZh()).equals(placeholders(template.bodyEn())))
+                && bodyPlaceholders.equals(placeholders(template.bodyZh()))
+                && bodyPlaceholders.equals(placeholders(template.bodyVi()))
                 && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.titleZh()))
                 && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.bodyZh()))
                 && NovaSocialMessageRenderer.SUPPORTED_PLACEHOLDERS.containsAll(placeholders(template.titleVi()))

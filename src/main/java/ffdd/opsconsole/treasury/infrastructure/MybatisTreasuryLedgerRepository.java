@@ -122,6 +122,11 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public CommissionCoverageAmounts commissionCoverageAmounts() {
+        return mapper.commissionCoverageAmounts();
+    }
+
+    @Override
     public BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt) {
         return nz(mapper.sumNetUsdtFlowBetween(startAt, endAt));
     }
@@ -224,11 +229,20 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     public void recordWithdrawalReserve(
             String withdrawalNo, BigDecimal amountUsd, String reason, String operator, String idempotencyKey) {
         String safeWithdrawalNo = safeBiz(withdrawalNo);
+        String reserveNo = compactKey("RSV-WD-", safeWithdrawalNo, 64);
+        String voucherNo = compactKey("WD-", safeWithdrawalNo, 96);
+        BigDecimal amount = nz(amountUsd).setScale(6, java.math.RoundingMode.UNNECESSARY);
+        var existing = mapper.lockReserveEntries(reserveNo, voucherNo);
+        if (!existing.isEmpty()) {
+            // Returning an unsent approval to compliance review must retain its original cash reservation.
+            requireReserveEntry(existing, reserveNo, voucherNo, "OUT", amount, null);
+            return;
+        }
         if (mapper.insertTopupReserveEntry(
-                compactKey("RSV-WD-", safeWithdrawalNo, 64),
-                compactKey("WD-", safeWithdrawalNo, 96),
+                reserveNo,
+                voucherNo,
                 "OUT",
-                nz(amountUsd).setScale(6, java.math.RoundingMode.UNNECESSARY),
+                amount,
                 trim(reason),
                 trim(operator),
                 trim(idempotencyKey)) != 1) {
@@ -274,7 +288,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     @Transactional(rollbackFor = Exception.class)
     public void reverseBep20WithdrawalReserve(String withdrawalNo, BigDecimal amountUsd, LocalDateTime now) {
         var order = mapper.lockReserveWithdrawal(withdrawalNo);
-        if (order == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(order.chain()) || !"FAILED".equals(order.status())
+        if (order == null || !java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(order.chain()) || !"FAILED".equals(order.status())
                 || !"provider".equals(order.payoutSource()) || (order.txid() != null && !order.txid().isBlank()))
             throw new IllegalStateException("BEP20_RESERVE_RETURN_STATE_INVALID");
         returnBep20Reserve(withdrawalNo, order, amountUsd, now, false);
@@ -357,7 +371,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         if (order == null || !java.util.Objects.equals(userId, order.userId()) || order.amount() == null
                 || order.amount().compareTo(safeAmount) != 0)
             throw new IllegalStateException("WITHDRAWAL_REFUND_ORDER_MISMATCH");
-        if (java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(order.chain())) {
+        if (java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(order.chain())) {
             WalletLedgerEntity manualRefund = mapper.findLedgerEntry(
                     compactKey("D2-REFUND-", safeBiz(withdrawalNo), 96), "USDT", "IN");
             if (manualRefund != null) {
@@ -365,11 +379,11 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                 throw new BizException(409, "WITHDRAWAL_ALREADY_REFUNDED");
             }
         }
-        if (java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(order.chain())) {
+        if (java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(order.chain())) {
             if (!("REVIEW_REJECTED".equals(order.status()) || "REFUNDED".equals(order.status()))
                     || (order.txid() != null && !order.txid().isBlank())
                     || (order.payoutSource() != null && !order.payoutSource().isBlank()))
-                throw new IllegalStateException("BEP20_RESERVE_RETURN_STATE_INVALID");
+                throw new BizException(409, "BEP20_RESERVE_RETURN_STATE_INVALID");
             returnBep20Reserve(withdrawalNo, order, safeAmount, LocalDateTime.now(),
                     "REVIEW_REJECTED".equals(order.status()));
         }
@@ -482,6 +496,11 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
     }
 
     @Override
+    public List<LedgerBalance> settledBalancesBefore(Long userId, java.time.LocalDateTime before) {
+        return mapper.settledBalancesBefore(userId, before);
+    }
+
+    @Override
     public Optional<BigDecimal> currentUserBalance(Long userId, String asset) {
         return Optional.ofNullable(mapper.currentUserBalance(userId, trim(asset))).map(this::nz);
     }
@@ -580,6 +599,88 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
                 trim(remark));
     }
 
+    /**
+     * F1-BE-18: the caller already credited the real wallet in this transaction (for example
+     * EarningsReleaseService.creditReward), so lock that wallet and post its actual post-credit
+     * balance without adding the amount a second time.
+     */
+    @Override
+    @Transactional
+    public void postLedgerEntryWithActualBalance(String bizNo, Long userId, String bizType, String asset,
+                                                 String direction, BigDecimal amount, String status, String remark) {
+        if (userId == null || userId <= 0) {
+            throw new IllegalArgumentException("D4_LEDGER_USER_REQUIRED");
+        }
+        String normalizedAsset = asset == null ? "" : asset.trim().toUpperCase(Locale.ROOT);
+        if (!java.util.Set.of("USDT", "UVT").contains(normalizedAsset)) {
+            throw new IllegalArgumentException("D4_LEDGER_ASSET_INVALID");
+        }
+        BigDecimal actual = mapper.lockCommissionWallet(userId, normalizedAsset);
+        if (actual == null) {
+            throw new IllegalStateException("D4_LEDGER_WALLET_UNAVAILABLE");
+        }
+        postLedgerEntryWithBalanceAfter(bizNo, userId, bizType, asset, direction, amount, actual, status, remark);
+    }
+
+    /**
+     * F1 已用券扣回:余额后使用调用方在同一事务内锁定并扣减后的真实钱包余额,允许为负数。
+     * 幂等互斥与既有指纹校验保持一致,不做余额推算。
+     */
+    @Override
+    @Transactional
+    public void postLedgerEntryWithBalanceAfter(String bizNo, Long userId, String bizType, String asset, String direction,
+                                                BigDecimal amount, BigDecimal balanceAfter, String status, String remark) {
+        if (userId == null || userId <= 0) {
+            throw new IllegalArgumentException("D4_LEDGER_USER_REQUIRED");
+        }
+        if (balanceAfter == null) {
+            throw new IllegalArgumentException("D4_LEDGER_BALANCE_AFTER_REQUIRED");
+        }
+        String normalizedBizNo = requiredUpperOrOriginal(bizNo, "D4_LEDGER_BIZ_NO_REQUIRED", false);
+        String normalizedBizType = requiredUpperOrOriginal(bizType, "D4_LEDGER_BIZ_TYPE_REQUIRED", true);
+        String normalizedAsset = requiredUpperOrOriginal(asset, "D4_LEDGER_ASSET_REQUIRED", true);
+        String normalizedDirection = requiredUpperOrOriginal(direction, "D4_LEDGER_DIRECTION_REQUIRED", true);
+        String normalizedStatus = requiredUpperOrOriginal(status, "D4_LEDGER_STATUS_REQUIRED", true);
+        if (!java.util.Set.of("USDT", "UVT").contains(normalizedAsset)) {
+            throw new IllegalArgumentException("D4_LEDGER_ASSET_INVALID");
+        }
+        if (!java.util.Set.of("IN", "OUT").contains(normalizedDirection)) {
+            throw new IllegalArgumentException("D4_LEDGER_DIRECTION_INVALID");
+        }
+        if (!java.util.Set.of("PENDING", "SUCCESS", "POSTED", "COMPLETED", "CONFIRMED",
+                "FAILED", "REJECTED", "CANCELLED").contains(normalizedStatus)) {
+            throw new IllegalArgumentException("D4_LEDGER_STATUS_INVALID");
+        }
+        if (amount == null || amount.signum() <= 0) {
+            throw new IllegalArgumentException("D4_LEDGER_AMOUNT_MUST_BE_POSITIVE");
+        }
+        if (amount.stripTrailingZeros().scale() > 6 || amount.precision() - amount.scale() > 12) {
+            throw new IllegalArgumentException("D4_LEDGER_AMOUNT_PRECISION_OR_OVERFLOW");
+        }
+        String uniqueKey = "D4_BIZ_" + UUID.nameUUIDFromBytes(
+                (normalizedBizNo + "|" + normalizedAsset + "|" + normalizedDirection)
+                        .getBytes(StandardCharsets.UTF_8));
+        mapper.ensureLedgerMutex(uniqueKey);
+        if (!uniqueKey.equals(mapper.lockLedgerMutex(uniqueKey))) {
+            throw new IllegalStateException("D4_LEDGER_IDEMPOTENCY_MUTEX_UNAVAILABLE");
+        }
+        String lockKey = "D4_LEDGER_" + userId + "_" + normalizedAsset;
+        mapper.ensureLedgerMutex(lockKey);
+        if (!lockKey.equals(mapper.lockLedgerMutex(lockKey))) {
+            throw new IllegalStateException("D4_LEDGER_MUTEX_UNAVAILABLE");
+        }
+        insertImmutableLedgerEntry(
+                normalizedBizNo,
+                userId,
+                normalizedBizType,
+                normalizedAsset,
+                normalizedDirection,
+                amount.abs(),
+                balanceAfter,
+                normalizedStatus,
+                trim(remark));
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void releaseCommissionFunds(Long eventId) {
@@ -631,7 +732,10 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         if (before == null) throw new IllegalStateException("COMMISSION_WALLET_UNAVAILABLE");
         BigDecimal delta = reverse ? event.amount().negate() : event.amount();
         BigDecimal after = before.add(delta);
-        if (after.signum() < 0) throw new IllegalStateException("COMMISSION_WALLET_INSUFFICIENT_BALANCE");
+        // A USDT commission release is a credit and may only partially repay a
+        // negative wallet balance. Debits and UVT keep the non-negative guard.
+        if (after.signum() < 0 && (reverse || !"USDT".equals(event.asset())))
+            throw new IllegalStateException("COMMISSION_WALLET_INSUFFICIENT_BALANCE");
         var fundBefore=commissionCapture.begin(event.userId(),eventId,reverse?"REVERSE":"RELEASE");
         if (mapper.adjustCommissionWallet(event.userId(), event.asset(), delta) != 1) {
             throw new IllegalStateException("COMMISSION_WALLET_WRITE_CONFLICT");

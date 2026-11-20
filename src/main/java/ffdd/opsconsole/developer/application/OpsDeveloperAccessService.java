@@ -1,14 +1,16 @@
 package ffdd.opsconsole.developer.application;
 
+import ffdd.opsconsole.developer.dto.OpsDeveloperAccessPage;
 import ffdd.opsconsole.developer.mapper.OpsDeveloperAccessMapper;
+import ffdd.opsconsole.content.application.SupportOwnershipService;
 import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
-import java.time.ZoneOffset;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -26,15 +28,17 @@ import org.springframework.util.StringUtils;
 public class OpsDeveloperAccessService {
     private static final int DEFAULT_PAGE_SIZE = 20;
     private static final int MAX_PAGE_SIZE = 200;
-    private static final Set<String> STATUSES = Set.of("PENDING", "APPROVED", "REJECTED", "REVOKED", "EXPIRED");
+    private static final List<String> STATUS_ORDER = List.of("PENDING", "APPROVED", "REJECTED", "REVOKED", "EXPIRED");
+    private static final Set<String> STATUSES = Set.copyOf(STATUS_ORDER);
     private static final Pattern REQUEST_NO_PATTERN = Pattern.compile("DEV-[A-Z0-9]{16}");
 
     private final OpsDeveloperAccessMapper mapper;
     private final AuditLogService auditLogService;
+    private final SupportOwnershipService supportOwnership;
 
-    public ApiResult<PageResult<Map<String, Object>>> page(Integer pageNum, Integer pageSize,
-                                                            String status, String keyword,
-                                                            String sourceEnvironment) {
+    public ApiResult<OpsDeveloperAccessPage> page(Integer pageNum, Integer pageSize,
+                                                  String status, String keyword,
+                                                  String sourceEnvironment, String sortDirection) {
         String normalizedStatus = text(status);
         if (normalizedStatus != null) normalizedStatus = normalizedStatus.toUpperCase(Locale.ROOT);
         if (normalizedStatus != null && !STATUSES.contains(normalizedStatus)) {
@@ -45,6 +49,12 @@ public class OpsDeveloperAccessService {
         if (normalizedEnvironment != null && !Set.of("PRODUCTION", "SANDBOX").contains(normalizedEnvironment)) {
             return ApiResult.fail(422, "DEVELOPER_ACCESS_ENVIRONMENT_INVALID");
         }
+        String normalizedSort = text(sortDirection);
+        if (normalizedSort != null) normalizedSort = normalizedSort.toUpperCase(Locale.ROOT);
+        if (normalizedSort != null && !Set.of("ASC", "DESC").contains(normalizedSort)) {
+            return ApiResult.fail(422, "DEVELOPER_ACCESS_SORT_INVALID");
+        }
+        boolean ascending = "ASC".equals(normalizedSort);
         int normalizedPage = pageNum == null || pageNum < 1 ? 1 : pageNum;
         int normalizedSize = pageSize == null ? DEFAULT_PAGE_SIZE : pageSize;
         if (normalizedSize < 1 || normalizedSize > MAX_PAGE_SIZE) {
@@ -55,9 +65,18 @@ public class OpsDeveloperAccessService {
         String normalizedKeyword = text(keyword);
         long total = mapper.count(normalizedStatus, normalizedKeyword, normalizedEnvironment);
         List<Map<String, Object>> records = mapper.page(normalizedStatus, normalizedKeyword, normalizedEnvironment,
-                        (int) offset, normalizedSize)
+                        ascending, (int) offset, normalizedSize)
                 .stream().map(this::view).toList();
-        return ApiResult.ok(new PageResult<>(total, normalizedPage, normalizedSize, records));
+        attachUserNumbers(records);
+        Map<String, Long> statusCounts = new LinkedHashMap<>();
+        STATUS_ORDER.forEach(value -> statusCounts.put(value, 0L));
+        mapper.countByStatus(normalizedKeyword, normalizedEnvironment).forEach(row -> {
+            if (STATUSES.contains(row.status())) {
+                statusCounts.put(row.status(), row.count());
+            }
+        });
+        return ApiResult.ok(new OpsDeveloperAccessPage(
+                total, normalizedPage, normalizedSize, records, statusCounts));
     }
 
     @Transactional
@@ -201,8 +220,34 @@ public class OpsDeveloperAccessService {
         return result;
     }
 
+    private void attachUserNumbers(List<Map<String, Object>> records) {
+        if (!SupportOwnershipService.hasAuthority("user_c1hub_read")) {
+            records.forEach(record -> record.put("userNo", null));
+            return;
+        }
+        List<Long> userIds = records.stream()
+                .map(record -> record.get("userId"))
+                .filter(Long.class::isInstance)
+                .map(Long.class::cast)
+                .distinct()
+                .toList();
+        if (userIds.isEmpty()) return;
+        Map<Long, String> numbers = new HashMap<>();
+        mapper.userNos(userIds).forEach(row -> numbers.put(row.userId(), row.userNo()));
+        Set<Long> readable = supportOwnership.currentSupportReader()
+                ? supportOwnership.readableCustomerIds(userIds)
+                : null;
+        for (Map<String, Object> record : records) {
+            Object value = record.get("userId");
+            Long userId = value instanceof Long ? (Long) value : null;
+            String userNo = userId == null ? null : numbers.get(userId);
+            record.put("userNo", readable == null || (userId != null && readable.contains(userId)) ? userNo : null);
+        }
+    }
+
     private String instant(java.time.LocalDateTime value) {
-        return value == null ? null : value.atOffset(ZoneOffset.UTC).toInstant().toString();
+        return value == null ? null
+                : value.atZone(BusinessCalendar.STORAGE_ZONE).toInstant().toString();
     }
 
     private String text(String value) {

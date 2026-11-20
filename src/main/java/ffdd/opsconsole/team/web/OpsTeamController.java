@@ -69,6 +69,32 @@ public class OpsTeamController {
         return teamService.leadershipPool();
     }
 
+    @GetMapping("/leadership-pool/vote-projection")
+    @PreAuthorize("hasAuthority('network_f4_read')")
+    public ApiResult<Map<String, Object>> leadershipPoolVoteProjection() {
+        return teamService.leadershipPoolVoteProjection();
+    }
+
+    /**
+     * F4 payout preview: what each rank would be paid, after the head caps, before the proposal.
+     * Read-only — it settles, locks and writes nothing.
+     */
+    @GetMapping("/leadership-pool/payout-preview")
+    @PreAuthorize("hasAuthority('network_f4_read')")
+    public ApiResult<Map<String, Object>> leadershipPoolPayoutPreview(
+            @RequestParam(defaultValue = "week") String period,
+            @RequestParam(required = false) String periodKey) {
+        return leadershipPoolService.previewLeaderboardPayout(period, periodKey);
+    }
+
+    /** F4 leaderboard rows: whether a disqualification would pass the same evidence check, and which. */
+    @GetMapping("/leadership-pool/disqualification-readiness")
+    @PreAuthorize("hasAuthority('network_f4_read')")
+    public ApiResult<Map<String, Object>> leadershipPoolDisqualificationReadiness(
+            @RequestParam(defaultValue = "50") int limit) {
+        return leadershipPoolService.leaderboardDisqualificationReadiness(limit);
+    }
+
     @GetMapping("/ambassador-policy")
     @PreAuthorize("hasAuthority('network_f4_read')")
     public ApiResult<Map<String, Object>> ambassadorPolicy() {
@@ -134,8 +160,9 @@ public class OpsTeamController {
     }
 
     @PatchMapping("/commissions/config/{key}")
-    // key 多态承载多域资金放大 HIGH：F2 版税费率(royaltyPct→f2_royalty_rate)/Partner 杠杆(promo/peer/clamp→f2_policy_amplify)、F3 平衡匹配比例(binary-rate→f3_match_rate)、F4 领导池比例(pool-ratio→f4_pool_fund)/票权权重(F.pool.votes.V{n}→f4_write)/配额门槛(F.quota.*→f4_write)/大使审批(F.ambassador.{label}.status→f4_ambassador_approve)/榜单控制(F.leaderboard.*→f4_leaderboard_control)、F5 佣金事件状态处置(F.commission.{id}.status→f5_commission_freeze/release/reject)；OpsTeamService 需按 key 二次精确校验
-    @PreAuthorize("hasAnyAuthority('network_f1_write','network_f2_royalty_rate','network_f2_policy_amplify','network_f3_match_rate','network_f4_pool_fund','network_f4_write','network_f4_ambassador_approve','network_f4_leaderboard_control','network_f5_commission_freeze','network_f5_commission_release','network_f5_commission_reverse')")
+    // key 多态承载多域资金放大 HIGH：F2 版税费率(royaltyPct→f2_royalty_rate)/Partner 杠杆(promo/peer/clamp→f2_policy_amplify)、F3 平衡匹配比例(binary-rate→f3_match_rate)、F4 领导池比例(pool-ratio→f4_pool_fund)/票权权重(F.pool.votes.V{n}→f4_pool_fund)/配额门槛(F.quota.*→f4_write)/大使审批(F.ambassador.{label}.status→f4_ambassador_approve)/榜单控制(F.leaderboard.*→f4_leaderboard_control)、F5 佣金事件状态处置(F.commission.{id}.status→f5_commission_freeze/release/reject)；OpsTeamService 需按 key 二次精确校验
+    @PreAuthorize("hasAnyAuthority('network_f1_write','network_f2_royalty_rate','network_f2_policy_amplify','network_f3_match_rate','network_f4_pool_fund','network_f4_write','network_f4_ambassador_approve','network_f4_leaderboard_control','network_f5_commission_freeze','network_f5_commission_release','network_f5_commission_reverse')"
+            + " or (#key?.trim() == 'F.binary.autoSettle' and hasAuthority('network_f3_engine_pause'))")
     public ApiResult<Map<String, Object>> updateConfig(
             @PathVariable String key,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
@@ -145,7 +172,8 @@ public class OpsTeamController {
                 request == null ? null : request.value(),
                 request == null ? null : request.reason(),
                 request == null ? null : request.operator(),
-                request == null ? null : request.expectedVersion());
+                request == null ? null : request.expectedVersion(),
+                request == null ? null : request.expectedMaterialRevision());
         return teamService.updateConfig(idempotencyKey, normalized);
     }
 

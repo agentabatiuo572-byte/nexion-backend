@@ -75,6 +75,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
               country_name VARCHAR(128) NULL,
               endpoint_key VARCHAR(64) NULL,
               source VARCHAR(64) NULL,
+              user_no VARCHAR(32) NULL,
               event_count INT NOT NULL DEFAULT 1,
               recorded_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -85,6 +86,21 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
     void createGeoBlockEventTable();
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'nx_emergency_geo_block_event'
+               AND COLUMN_NAME = 'user_no'
+            """)
+    int geoBlockEventUserNoColumnCount();
+
+    @Update("""
+            ALTER TABLE nx_emergency_geo_block_event
+              ADD COLUMN user_no VARCHAR(32) NULL AFTER source
+            """)
+    int addGeoBlockEventUserNoColumn();
 
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_emergency_tamper_event (
@@ -204,6 +220,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
               playbook_name VARCHAR(128) NOT NULL,
               trigger_reason VARCHAR(500) NOT NULL,
               execution_mode VARCHAR(32) NOT NULL,
+              execution_generation BIGINT NOT NULL DEFAULT 0,
               step_status_json JSON NULL,
               operator VARCHAR(64) NULL,
               role_gate VARCHAR(64) NULL,
@@ -470,6 +487,18 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
     List<Map<String, Object>> geoHits();
 
     @Select("""
+            SELECT COALESCE(SUM(event_count), 0) AS totalBlockedEvents,
+                   COUNT(DISTINCT country_code) AS countryCount,
+                   DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 1 DAY), '%Y-%m-%d %H:%i:%s') AS windowStart,
+                   DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:%s') AS capturedAt
+              FROM nx_emergency_geo_block_event
+             WHERE is_deleted = 0
+               AND recorded_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+               AND recorded_at <= NOW()
+            """)
+    Map<String, Object> geoHitSummary();
+
+    @Select("""
             SELECT endpoint_key AS endpointKey,
                    SUM(event_count) AS count
               FROM nx_emergency_geo_block_event
@@ -498,19 +527,51 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> geoEdgeMetrics();
 
+    @Select("""
+            SELECT id,
+                   DATE_FORMAT(recorded_at, '%Y-%m-%d %H:%i:%s') AS recordedAt,
+                   country_code AS countryCode,
+                   COALESCE(country_name, country_code) AS countryName,
+                   endpoint_key AS endpointKey,
+                   source,
+                   user_no AS userNo,
+                   event_count AS eventCount
+              FROM nx_emergency_geo_block_event
+             WHERE is_deleted = 0
+               AND (#{countryCode} IS NULL OR country_code = #{countryCode})
+               AND (#{endpointKey} IS NULL OR endpoint_key = #{endpointKey})
+             ORDER BY recorded_at DESC, id DESC
+             LIMIT #{pageSize} OFFSET #{offset}
+            """)
+    List<Map<String, Object>> geoBlockEventRows(@Param("countryCode") String countryCode,
+                                                @Param("endpointKey") String endpointKey,
+                                                @Param("pageSize") int pageSize,
+                                                @Param("offset") int offset);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_emergency_geo_block_event
+             WHERE is_deleted = 0
+               AND (#{countryCode} IS NULL OR country_code = #{countryCode})
+               AND (#{endpointKey} IS NULL OR endpoint_key = #{endpointKey})
+            """)
+    long countGeoBlockEvents(@Param("countryCode") String countryCode,
+                             @Param("endpointKey") String endpointKey);
+
     @Insert("""
             INSERT INTO nx_emergency_geo_block_event (
-                country_code, country_name, endpoint_key, source, event_count,
+                country_code, country_name, endpoint_key, source, user_no, event_count,
                 recorded_at, created_at, updated_at, is_deleted
             ) VALUES (
-                #{countryCode}, #{countryName}, #{endpointKey}, #{source}, 1,
+                #{countryCode}, #{countryName}, #{endpointKey}, #{source}, #{userNo}, 1,
                 NOW(), NOW(), NOW(), 0
             )
             """)
     int insertGeoBlockEvent(@Param("countryCode") String countryCode,
                             @Param("countryName") String countryName,
                             @Param("endpointKey") String endpointKey,
-                            @Param("source") String source);
+                            @Param("source") String source,
+                            @Param("userNo") String userNo);
 
     @Select("""
             SELECT setting_value
@@ -558,6 +619,14 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                       @Param("groupCode") String groupCode,
                       @Param("remark") String remark,
                       @Param("operator") String operator);
+
+    @Insert("""
+            INSERT IGNORE INTO nx_emergency_control_setting
+              (setting_key, setting_value, value_type, group_code, remark, operator, is_deleted)
+            VALUES (#{settingKey}, #{value}, 'STRING', #{groupCode}, 'J1 auto trigger rule threshold', #{operator}, 0)
+            """)
+    int insertSettingIfAbsent(@Param("settingKey") String settingKey, @Param("value") String value,
+                              @Param("groupCode") String groupCode, @Param("operator") String operator);
 
     @Update("""
             UPDATE nx_emergency_control_setting
@@ -879,6 +948,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    SUM(e.event_count) AS count,
                    CASE WHEN MAX(e.k4_accepted) = 1 THEN CONCAT('+', SUM(e.k4_delta)) ELSE '未喂送' END AS k4,
                    DATE_FORMAT(MAX(e.occurred_at), '%H:%i:%s') AS last,
+                   DATE_FORMAT(MAX(e.occurred_at), '%Y-%m-%d %H:%i:%s') AS lastOccurredAt,
                    GROUP_CONCAT(DISTINCT e.path_key ORDER BY e.path_key SEPARATOR ',') AS pathCsv,
                    COALESCE(NULLIF(MAX(e.cluster_code), ''), MAX(k.cluster_code), '') AS cluster,
                    CASE WHEN MAX(e.k4_accepted) = 1 THEN TRUE ELSE FALSE END AS fedToK4,
@@ -1212,6 +1282,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    playbook_name AS name,
                    trigger_reason AS `trigger`,
                    execution_mode AS mode,
+                   execution_generation AS executionGeneration,
                    step_status_json AS stepsJson,
                    operator,
                    role_gate AS roleGate,
@@ -1237,6 +1308,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    playbook_name AS name,
                    trigger_reason AS `trigger`,
                    execution_mode AS mode,
+                   execution_generation AS executionGeneration,
                    step_status_json AS stepsJson,
                    operator,
                    role_gate AS roleGate,
@@ -1352,24 +1424,35 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                    updated_at = NOW()
              WHERE execution_id = #{executionId}
                AND is_deleted = 0
+               AND execution_generation = #{executionGeneration}
                AND (rollback_status IS NULL OR rollback_status = '')
             """)
     int updateExecutionProgress(@Param("executionId") String executionId,
+                                @Param("executionGeneration") long executionGeneration,
                                 @Param("stepsJson") String stepsJson,
                                 @Param("notificationJson") String notificationJson,
                                 @Param("domainActionsJson") String domainActionsJson);
 
     @Update("""
             UPDATE nx_emergency_sop_execution
-               SET updated_at = NOW()
+               SET execution_generation = execution_generation + 1,
+                   updated_at = NOW()
              WHERE execution_id = #{executionId}
                AND is_deleted = 0
-               AND updated_at < #{staleBefore}
+               AND updated_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE)
                AND (JSON_CONTAINS(step_status_json, JSON_QUOTE('pending'))
                     OR JSON_CONTAINS(step_status_json, JSON_QUOTE('running')))
             """)
-    int claimExecutionRecovery(@Param("executionId") String executionId,
-                               @Param("staleBefore") LocalDateTime staleBefore);
+    int claimExecutionRecovery(@Param("executionId") String executionId);
+
+    @Select("""
+            SELECT execution_generation
+              FROM nx_emergency_sop_execution
+             WHERE execution_id = #{executionId}
+               AND is_deleted = 0
+             LIMIT 1
+            """)
+    Long executionGeneration(@Param("executionId") String executionId);
 
     @Update("""
             UPDATE nx_emergency_sop_execution

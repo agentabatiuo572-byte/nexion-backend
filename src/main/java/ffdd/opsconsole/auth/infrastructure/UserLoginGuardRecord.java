@@ -11,6 +11,7 @@ public class UserLoginGuardRecord {
     @TableId
     private String loginKey;
     private int failedCount;
+    private String lockKind;
     private LocalDateTime windowStartedAt;
     private LocalDateTime lockedUntil;
 }

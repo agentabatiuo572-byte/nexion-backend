@@ -6,7 +6,10 @@ import ffdd.opsconsole.content.domain.SupportGroupFacts.*;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportGroupMapper;
 import ffdd.opsconsole.shared.exception.BizException;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -122,6 +125,24 @@ public class SupportOwnershipService {
         ReadScope scope=currentCustomerScope(actorId(),customer);
         if(scope==null) throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
         return scope;
+    }
+
+    /**
+     * Batch form of the same per-customer scope. Returns only ids readable under
+     * one of the actor's existing modes; callers must not use it as a new grant.
+     */
+    @Transactional
+    public Set<Long> readableCustomerIds(Collection<Long> customerIds) {
+        List<Long> ids = customerIds == null ? List.of() : customerIds.stream()
+                .filter(SupportOwnershipService::validScopeId)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) return Set.of();
+        Set<Long> readable = new HashSet<>();
+        for (ReadMode mode : availableReadModes()) {
+            readable.addAll(mapper.readableCustomers(queryScope(mode, null, null), ids));
+        }
+        return readable;
     }
 
     private boolean canReadCurrent(Long actor, Long customer) {

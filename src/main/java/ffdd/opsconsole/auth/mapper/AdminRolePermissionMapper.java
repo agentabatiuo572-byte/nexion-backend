@@ -94,8 +94,7 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
             """)
     boolean isM5ContentRbacClosureApplied();
 
-    @Select("""
-            SELECT DISTINCT p.permission_code
+    String ACTIVE_ADMIN_API_GRANTS = """
             FROM nx_admin_role_relation rr
             JOIN nx_admin_role r
               ON r.id = rr.role_id
@@ -111,8 +110,14 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
              AND p.resource_type = 'API'
             WHERE rr.admin_id = #{adminId}
               AND rr.is_deleted = 0
-            """)
+            """;
+
+    @Select("SELECT DISTINCT p.permission_code " + ACTIVE_ADMIN_API_GRANTS)
     List<String> selectActivePermissionCodes(Long adminId);
+
+    @Select("SELECT DISTINCT r.role_code " + ACTIVE_ADMIN_API_GRANTS + " AND p.permission_code = #{permissionCode}")
+    List<String> selectActivePermissionGrantRoles(@Param("adminId") Long adminId,
+                                                  @Param("permissionCode") String permissionCode);
 
     @Select("""
             SELECT permission_code AS permissionCode, permission_name AS permissionName
@@ -358,6 +363,31 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
     List<String> selectExistingActivePermissionCodes(
             @Param("permissionCodes") Collection<String> permissionCodes);
 
+    /**
+     * The permission codes that are not explicitly read-only, using the same classification the permission
+     * catalogue already applies (CRITICAL/non-empty unknown -> HIGH, untyped falls back to the _read/_write
+     * suffix, everything else HIGH). Used to keep the built-in AUDITOR role read-only.
+     */
+    @Select("""
+            <script>
+            SELECT p.permission_code
+              FROM nx_admin_permission p
+             WHERE p.is_deleted = 0 AND p.status = 1
+               AND p.permission_code IN
+               <foreach collection="permissionCodes" item="code" open="(" separator="," close=")">#{code}</foreach>
+               AND CASE
+                     WHEN UPPER(TRIM(p.perm_type)) = 'READ' THEN 'READ'
+                     WHEN UPPER(TRIM(p.perm_type)) = 'CRITICAL' THEN 'HIGH'
+                     WHEN UPPER(TRIM(p.perm_type)) IN ('WRITE', 'HIGH') THEN UPPER(TRIM(p.perm_type))
+                     WHEN NULLIF(TRIM(p.perm_type), '') IS NOT NULL THEN 'HIGH'
+                     WHEN RIGHT(LOWER(TRIM(p.permission_code)), 5) = '_read' THEN 'READ'
+                     WHEN RIGHT(LOWER(TRIM(p.permission_code)), 6) = '_write' THEN 'WRITE'
+                     ELSE 'HIGH'
+                   END &lt;&gt; 'READ'
+            </script>
+            """)
+    List<String> selectNonReadPermissionCodes(@Param("permissionCodes") Collection<String> permissionCodes);
+
     @Update("""
             <script>
             UPDATE nx_admin_role_permission rp
@@ -374,7 +404,10 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
     int restoreRolePermissions(@Param("roleCode") String roleCode,
                                @Param("permissionCodes") Collection<String> permissionCodes);
 
-    /** 批量补插缺失的角色-权限绑定（A6 保存权限避免循环单条）。调用方须保证 permissionCodes 非空。 */
+    /**
+     * 批量补插缺失的角色-权限绑定（A6 保存权限避免循环单条）。
+     * 停用角色也保存白名单配置；实际鉴权另由启用角色过滤。调用方须保证 permissionCodes 非空。
+     */
     @Insert("""
             <script>
             INSERT INTO nx_admin_role_permission (role_id, permission_id)
@@ -389,7 +422,6 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
                  #{code}
                </foreach>
              WHERE r.role_code = #{roleCode}
-               AND r.status = 1
                AND r.is_deleted = 0
                AND NOT EXISTS (
                    SELECT 1
@@ -413,4 +445,20 @@ public interface AdminRolePermissionMapper extends BaseMapper<AdminRolePermissio
              WHERE rp.is_deleted = 0
             """)
     int disableAllRolePermissions(@Param("roleCode") String roleCode);
+
+    /** Counts the same distinct active API permission codes returned by the detail read, by role. */
+    @Select("""
+            SELECT rp.role_id AS roleId, COUNT(DISTINCT p.permission_code) AS count
+              FROM nx_admin_role_permission rp
+              JOIN nx_admin_permission p
+                ON p.id = rp.permission_id
+               AND p.status = 1
+               AND p.is_deleted = 0
+               AND p.resource_type = 'API'
+             WHERE rp.is_deleted = 0
+             GROUP BY rp.role_id
+            """)
+    List<RoleCount> countActivePermissionCodesByRole();
+
+    record RoleCount(Long roleId, long count) { }
 }

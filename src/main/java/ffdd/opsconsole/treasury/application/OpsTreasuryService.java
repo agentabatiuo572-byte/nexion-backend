@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
+import ffdd.opsconsole.content.application.SupportOwnershipService;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -17,12 +18,16 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.risk.facade.RiskTamperSignalFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.CommissionCoverageAmounts;
 import ffdd.opsconsole.treasury.dto.TreasuryAlertAckRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryForecastConfigRequest;
+import ffdd.opsconsole.treasury.dto.TreasuryForecastPreviewRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryExportRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryInjectionRequest;
 import ffdd.opsconsole.treasury.dto.TreasuryLedgerQueryRequest;
@@ -51,6 +56,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.dao.DuplicateKeyException;
@@ -86,11 +94,14 @@ public class OpsTreasuryService {
     private static final List<String> D3_LIABILITY_CATEGORIES = List.of(
             "withdrawable_balance", "usdt_staking_principal", "staking_interest", "genesis_daily_emission",
             "nex_v2_future", "withdrawal_queue", "commission_cooling", "lock_other", "unverified_deposit");
+    private static final int B1_COVERAGE_SERIES_INTERVAL_HOURS = 3;
     private static final String B_ALERT_COVERAGE_ID = "coverage-redline";
     private static final String B_ALERT_COVERAGE_ACK_KEY = "wallet.dual-ledger.alert.coverage-redline.ack";
     private static final String B_ALERT_ACK_IDEMPOTENCY_SCOPE = "TREASURY_B_ALERT_ACK";
     private static final String B_SCOPE_IDEMPOTENCY_SCOPE = "TREASURY_B_SCOPE_UPDATE";
     private static final String B_THRESHOLD_IDEMPOTENCY_SCOPE = "TREASURY_B_THRESHOLD_UPDATE";
+    private static final String B1_THRESHOLD_MUTEX = "B1_DUAL_LEDGER_THRESHOLDS";
+    private static final String B1_THRESHOLD_VERSION_KEY = "wallet.dual-ledger.thresholds.version";
     private static final String B_BANK_RUN_THRESHOLD_IDEMPOTENCY_SCOPE = "TREASURY_B_BANKRUN_THRESHOLD";
     private static final BigDecimal B_GROWTH_OUTFLOW_HEALTHY_RATIO = new BigDecimal("1.2");
     private static final List<BudgetSeed> B4_OPERATION_BUDGETS = List.of(
@@ -98,6 +109,7 @@ public class OpsTreasuryService {
             new BudgetSeed("commission", "返佣", "operations.budget.current-month.commission"),
             new BudgetSeed("genesis", "创世", "operations.budget.current-month.genesis"),
             new BudgetSeed("reserve", "储备", "operations.budget.current-month.reserve"));
+    private static final String B4_OPERATION_BUDGET_USAGE_UNDEFINED = "B4_OPERATION_BUDGET_USAGE_UNDEFINED";
     private static final List<GateSeed> B_RISK_GATE_SEEDS = List.of(
             new GateSeed("withdraw", "提现开关"),
             new GateSeed("exchange", "兑换开关"),
@@ -106,6 +118,7 @@ public class OpsTreasuryService {
             new GateSeed("trial", "试用开关"));
     private final TreasuryLedgerRepository ledgerRepository;
     private final PlatformConfigFacade configFacade;
+    private final AuditObjectLockMapper lockMapper;
     private final EmergencyControlRepository emergencyRepository;
     private final RiskTamperSignalFacade riskTamperSignalFacade;
     private final AuditLogService auditLogService;
@@ -116,6 +129,7 @@ public class OpsTreasuryService {
     private final ObjectMapper objectMapper;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
     private final A2RuntimePolicy a2RuntimePolicy;
+    private final SupportOwnershipService supportOwnership;
 
     public ApiResult<Map<String, Object>> overview(int days) {
         ensureD3FallbackSeedData();
@@ -159,11 +173,9 @@ public class OpsTreasuryService {
         return ApiResult.ok(dualLedgerSnapshot());
     }
 
-    /** Current B1 decision inputs without dashboard history, rhythm or maturity projections. */
-    @Transactional(rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> decisionCoverage() {
-        ensureD3FallbackSeedData();
-        return ApiResult.ok(dualLedgerSnapshot(false));
+    @Transactional(readOnly = true)
+    public Map<String, Object> dualLedgerCoverageSnapshot(BigDecimal proposedPrice) {
+        return dualLedgerSnapshot(proposedPrice, false);
     }
 
     /** B1 canonical coverage read reused by L3; no BI-side recomputation. */
@@ -175,43 +187,41 @@ public class OpsTreasuryService {
         Map<String, Object> snapshot = (Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of());
         BigDecimal reserve = money(decimal(snapshot.get("reserveUsd")));
         BigDecimal liabilities = money(decimal(snapshot.get("liabilitiesUsd")));
-        List<BigDecimal> ratios = (List<BigDecimal>) snapshot.getOrDefault("coverageSeries", List.of());
         LocalDateTime asOf = LocalDateTime.now(clock);
-        List<Map<String, Object>> series = new ArrayList<>();
-        for (int index = 0; index < ratios.size(); index++) {
-            int hoursAgo = (ratios.size() - index - 1) * 3;
-            series.add(section(
-                    "period", asOf.minusHours(hoursAgo).toString(),
-                    "coverageRatio", pctScale(ratios.get(index))));
-        }
-        return ApiResult.ok(section(
+        BigDecimal coverageRatio = pctScale(decimal(snapshot.get("coverageRatio")));
+        BigDecimal netExposure = money(reserve.subtract(liabilities));
+        boolean valuationReliable = Boolean.TRUE.equals(snapshot.get("valuationReliable"));
+        Map<String, Object> response = section(
                 "reserveTotalUsdt", reserve,
                 "liabilityTotalUsdt", liabilities,
-                "coverageRatio", pctScale(decimal(snapshot.get("coverageRatio"))),
-                "netExposureUsdt", money(reserve.subtract(liabilities)),
+                "coverageRatio", coverageRatio,
+                "netExposureUsdt", netExposure,
                 "redLine", pctScale(decimal(snapshot.get("redlinePct"))),
                 "yellowLine", pctScale(decimal(snapshot.get("healthyPct"))),
                 "redlineBreached", Boolean.TRUE.equals(snapshot.get("redlineBreached")),
-                "series", series,
-                "breaches", List.of(),
                 "asOf", asOf,
                 // Provenance marker, not display copy: the PC L3 contract requires a B1 source.
-                "source", "B1 双账本"));
+                "source", "B1 双账本");
+        // Same B1 snapshot provenance as the raw fields above; null valued values must stay explicit.
+        response.put("valuationReliable", valuationReliable);
+        response.put("valuationStatus", valuationStatus(valuationReliable));
+        response.put("valuedCoverageRatio", valuationReliable ? coverageRatio : null);
+        response.put("valuedNetExposureUsdt", valuationReliable ? netExposure : null);
+        return ApiResult.ok(response);
     }
 
     /** D3 canonical reserve source. Coverage is intentionally absent: B1 owns that decision. */
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> reserve() {
         LocalDateTime now = LocalDateTime.now(clock);
-        BigDecimal ledgerReserve = currentReserveWithVietQr();
-        BigDecimal lockedPrincipal = safe(ledgerRepository.sumActiveStakingPrincipalUsdt());
+        TreasuryReserveBalance reserve = treasuryReserveBalance();
         BigDecimal injected = safe(ledgerRepository.injectedCumulativeUsd());
-        BigDecimal reserveTotal = ledgerReserve.subtract(lockedPrincipal).max(BigDecimal.ZERO);
+        BigDecimal reserveTotal = reserve.availableUsd();
         Map<String, Object> response = section(
                 "usdtReserveUsdt", money(reserveTotal),
                 "otherLiquidUsdt", money(BigDecimal.ZERO),
                 "injectedCumulativeUsdt", money(injected),
-                "lockedStakingPrincipalDeductedUsdt", money(lockedPrincipal),
+                "lockedStakingPrincipalDeductedUsdt", money(reserve.lockedStakingPrincipal()),
                 "reserveTotalUsdt", money(reserveTotal),
                 "asOf", now,
                 "waterLevel", waterLevel(reserveTotal));
@@ -222,36 +232,76 @@ public class OpsTreasuryService {
         return ApiResult.ok(response);
     }
 
+    /**
+     * Pure reserve aggregate for read-only emergency-signal consumers. Same balance as reserve()
+     * but deliberately does not enter waterLevel or promote a due D3 forecast configuration.
+     */
+    public BigDecimal currentReserveTotalUsdt() {
+        return money(treasuryReserveBalance().availableUsd());
+    }
+
     /** D3 canonical nine-category liability breakdown used as B1/B2 input. */
     public ApiResult<Map<String, Object>> liabilities(boolean breakdown) {
         BigDecimal nexRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
-        List<Map<String, Object>> rows = List.of(
-                liability("withdrawable_balance", "可提余额", ledgerRepository.sumUsdtAvailable(), "nx_user_wallet.usdt_available"),
-                liability("usdt_staking_principal", "USDT staking 本金", ledgerRepository.sumActiveStakingPrincipalUsdt(), "nx_staking_position.amount_usdt"),
-                liability("staking_interest", "staking 应付利息", ledgerRepository.sumActiveStakingInterestUsdt(), "nx_staking_position.estimated_interest_usdt"),
-                liability("genesis_daily_emission", "Genesis 排放承诺", ledgerRepository.genesisDailyLiabilityUsd(), "nx_genesis_holding × nx_genesis_series.daily_dividend_rate_pct"),
-                liability("nex_v2_future", "UVT v2 未来兑付", safe(ledgerRepository.sumActiveNexLocked()).add(safe(ledgerRepository.sumActiveNexReward())).multiply(nexRate), "nx_nex_lock_order active maturity"),
-                liability("withdrawal_queue", "待提现 queue", ledgerRepository.sumActiveWithdrawalQueueUsdt(), "nx_withdrawal_order active queue"),
-                liability("commission_cooling", "佣金冷却未解锁", ledgerRepository.sumPendingCommissionUsdt(), "nx_wallet_ledger pending commission"),
-                liability("lock_other", "锁仓本息其他", ledgerRepository.legacyLockOtherLiabilityUsd(), "nx_treasury_legacy_lock_liability active principal + accrued interest"),
-                liability("unverified_deposit", "待核实入金", ledgerRepository.pendingUnverifiedDepositUsdt(), "nx_vietqr_reconciliation open suspense rows"));
+        BigDecimal nexLiabilityUnits = nexLiabilityUnits();
+        boolean valuationReliable = uvtValuationReliable(nexLiabilityUnits, nexRate);
+        var commissionCoverage = new CommissionCoverageAmounts(
+                ledgerRepository.sumUsdtAvailable(), ledgerRepository.sumPendingCommissionUsdt());
+        List<Map<String, Object>> rows = liabilityRows(nexRate, nexLiabilityUnits, commissionCoverage).stream().map(row -> {
+            Map<String, Object> displayed = new LinkedHashMap<>(row);
+            displayed.put("amountUsdt", money((BigDecimal) row.get("amountUsdt")));
+            return displayed;
+        }).toList();
         BigDecimal total = rows.stream().map(row -> (BigDecimal) row.get("amountUsdt")).reduce(BigDecimal.ZERO, BigDecimal::add);
         List<Map<String, Object>> withShare = rows.stream().map(row -> {
             Map<String, Object> next = new LinkedHashMap<>(row);
-            next.put("share", total.signum() == 0 ? BigDecimal.ZERO.setScale(4) :
-                    ((BigDecimal) row.get("amountUsdt")).divide(total, 6, RoundingMode.HALF_UP).setScale(4, RoundingMode.HALF_UP));
+            BigDecimal amount = (BigDecimal) row.get("amountUsdt");
+            BigDecimal share = total.signum() == 0 ? BigDecimal.ZERO.setScale(4) :
+                    amount.divide(total, 6, RoundingMode.HALF_UP).setScale(4, RoundingMode.HALF_UP);
+            next.put("share", share);
+            next.put("valuedAmountUsdt", valuationReliable || !"nex_v2_future".equals(row.get("category")) ? amount : null);
+            next.put("valuedShare", valuationReliable ? share : null);
             return next;
         }).toList();
         Map<String, Object> response = section(
                 "totalUsdt", money(total),
+                "valuationReliable", valuationReliable,
+                "valuationStatus", valuationStatus(valuationReliable),
                 "hardLiabilityCategoryCount", 9,
                 "trialShadowIncluded", false,
                 "asOf", LocalDateTime.now(clock));
+        response.put("valuedTotalUsdt", valuationReliable ? money(total) : null);
         if (breakdown) {
             response.put("breakdown", withShare);
         }
         response.put("sources", List.of("nx_user_wallet", "nx_staking_position", "nx_nex_lock_order", "nx_withdrawal_order", "nx_wallet_ledger", "nx_genesis_holding", "nx_treasury_legacy_lock_liability", "nx_vietqr_reconciliation"));
         return ApiResult.ok(response);
+    }
+
+    private BigDecimal nexLiabilityUnits() {
+        return safe(ledgerRepository.sumActiveNexLocked()).add(safe(ledgerRepository.sumActiveNexReward()));
+    }
+
+    private static boolean uvtValuationReliable(BigDecimal units, BigDecimal rate) {
+        return units.signum() == 0 || rate.signum() > 0;
+    }
+
+    private static String valuationStatus(boolean reliable) {
+        return reliable ? "AVAILABLE" : "VALUATION_UNAVAILABLE";
+    }
+
+    private List<Map<String, Object>> liabilityRows(
+            BigDecimal nexRate, BigDecimal nexLiabilityUnits, CommissionCoverageAmounts commissionCoverage) {
+        return List.of(
+                liability("withdrawable_balance", "可提余额", commissionCoverage.withdrawableUsdt(), "nx_user_wallet.usdt_available"),
+                liability("usdt_staking_principal", "USDT staking 本金", ledgerRepository.sumActiveStakingPrincipalUsdt(), "nx_staking_position.amount_usdt"),
+                liability("staking_interest", "staking 应付利息", ledgerRepository.sumActiveStakingInterestUsdt(), "nx_staking_position.estimated_interest_usdt"),
+                liability("genesis_daily_emission", "Genesis 排放承诺", ledgerRepository.genesisDailyLiabilityUsd(), "nx_genesis_holding × nx_genesis_series.daily_dividend_rate_pct"),
+                liability("nex_v2_future", "UVT v2 未来兑付", nexLiabilityUnits.multiply(nexRate), "nx_nex_lock_order active maturity"),
+                liability("withdrawal_queue", "待提现 queue", ledgerRepository.sumActiveWithdrawalQueueUsdt(), "nx_withdrawal_order active queue"),
+                liability("commission_cooling", "佣金冷却未解锁", commissionCoverage.coolingUsdt(), "nx_wallet_ledger pending commission"),
+                liability("lock_other", "锁仓本息其他", ledgerRepository.legacyLockOtherLiabilityUsd(), "nx_treasury_legacy_lock_liability active principal + accrued interest"),
+                liability("unverified_deposit", "待核实入金", ledgerRepository.pendingUnverifiedDepositUsdt(), "nx_vietqr_reconciliation open suspense rows"));
     }
 
     @SuppressWarnings("unchecked")
@@ -319,16 +369,10 @@ public class OpsTreasuryService {
         LocalDateTime now = LocalDateTime.now(clock);
         LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now);
         Map<String, Object> config = forecastConfigSnapshot();
-        BigDecimal reserveTotal = configuredReserveTotal(config);
-        List<Map<String, Object>> liabilityRows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
-        BigDecimal liabilityTotal = liabilityRows.stream()
-                .filter(row -> categoryEnabled(config, "liabilityCategories", String.valueOf(row.get("category"))))
-                .filter(row -> Boolean.TRUE.equals(config.get("genesisIncluded"))
-                        || !"genesis_daily_emission".equals(row.get("category")))
-                .filter(row -> Boolean.TRUE.equals(config.get("includeFarLiabilities"))
-                        || !"nex_v2_future".equals(row.get("category")))
-                .map(row -> (BigDecimal) row.get("amountUsdt"))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        ConfiguredTreasurySnapshot configured = configuredTreasurySnapshot(config);
+        boolean valuationReliable = configured.valuationReliable();
+        BigDecimal reserveTotal = configured.reserveUsdt();
+        BigDecimal liabilityTotal = configured.liabilitiesUsdt();
         BigDecimal currentNet = reserveTotal.subtract(liabilityTotal);
         List<Map<String, Object>> series = new ArrayList<>();
         BigDecimal flowAfterDay = BigDecimal.ZERO;
@@ -347,16 +391,24 @@ public class OpsTreasuryService {
             // The resulting deficit remains visible in netExposureUsdt.
             BigDecimal historicalReserve = reserveTotal.subtract(flowAfterDay).max(BigDecimal.ZERO);
             BigDecimal net = historicalReserve.subtract(liabilityTotal);
-            series.add(0, section("date", day.toString(), "reserveUsdt", money(historicalReserve),
-                    "liabilitiesUsdt", money(liabilityTotal), "netExposureUsdt", money(net), "negative", net.signum() < 0));
+            Map<String, Object> point = section("date", day.toString(), "reserveUsdt", money(historicalReserve),
+                    "liabilitiesUsdt", money(liabilityTotal), "netExposureUsdt", money(net), "negative", net.signum() < 0);
+            point.put("backcast", offset > 0);
+            point.put("valuedLiabilitiesUsdt", valuationReliable ? money(liabilityTotal) : null);
+            point.put("valuedNetExposureUsdt", valuationReliable ? money(net) : null);
+            series.add(0, point);
         }
-        return ApiResult.ok(section("window", days + "d", "series", series,
+        Map<String, Object> response = section("window", days + "d", "series", series,
+                "valuationReliable", valuationReliable,
+                "valuationStatus", valuationStatus(valuationReliable),
                 "appliedReserveCategories", config.get("reserveCategories"),
                 "appliedLiabilityCategories", config.get("liabilityCategories"),
                 "farLiabilitiesIncluded", config.get("includeFarLiabilities"),
                 "historyMethod", "current reserve rolled backward by cumulative canonical ledger flow; active liability snapshot held constant",
                 "currentNetExposureUsdt", money(currentNet),
-                "asOf", LocalDateTime.now(clock)));
+                "asOf", LocalDateTime.now(clock));
+        response.put("valuedCurrentNetExposureUsdt", valuationReliable ? money(currentNet) : null);
+        return ApiResult.ok(response);
     }
 
     /** B2 only: authoritative reserve-ledger windows plus canonical successful user deposits. */
@@ -429,6 +481,29 @@ public class OpsTreasuryService {
             response.put("pendingVersion", configVersion(D3_FORECAST_CONFIG_PENDING_VERSION_KEY));
         });
         return ApiResult.ok(response);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> previewForecastConfig(TreasuryForecastPreviewRequest request) {
+        if (request == null || request.expectedVersion() == null || request.expectedVersion() < 0) {
+            throw new BizException(400, "D3_EXPECTED_VERSION_REQUIRED");
+        }
+        long version = configVersion(D3_FORECAST_CONFIG_VERSION_KEY);
+        if (request.expectedVersion() != version) {
+            throw new BizException(409, "D3_FORECAST_CONFIG_VERSION_CONFLICT");
+        }
+        // Saving promotes due pending first; its candidate is the same pending policy either way.
+        // Preview reads that candidate virtually, without promotion, locks or history writes.
+        Map<String, Object> before = forecastConfigCandidateSnapshot();
+        Map<String, Object> after = validateForecastConfig(new TreasuryForecastConfigRequest(
+                request.reserveCategories(), request.liabilityCategories(), request.forecastWindow(),
+                request.genesisIncluded(), request.includeFarLiabilities(), request.stakingInterestMode(),
+                request.trialStressEnabled(), request.expectedVersion(), null, null), before);
+        Instant effectiveAt = LocalDate.now(clock.withZone(ZoneOffset.UTC))
+                .plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant();
+        return ApiResult.ok(section("before", before, "after", after,
+                "forecastDeltaPreview", forecastDeltaPreview(before, after),
+                "effectiveAt", effectiveAt, "version", version));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -568,40 +643,55 @@ public class OpsTreasuryService {
     private byte[] reconciliationCsvPayload() {
         Map<String, Object> reserve = reserve().getData();
         Map<String, Object> liabilities = liabilities(false).getData();
-        String csv = "item,amount_usdt,as_of\r\n"
-                + "reserve," + reserve.get("reserveTotalUsdt") + "," + reserve.get("asOf") + "\r\n"
-                + "liabilities," + liabilities.get("totalUsdt") + "," + liabilities.get("asOf") + "\r\n"
-                + "net_exposure," + ((BigDecimal) reserve.get("reserveTotalUsdt")).subtract((BigDecimal) liabilities.get("totalUsdt")) + "," + reserve.get("asOf") + "\r\n";
+        BigDecimal liabilityTotal = (BigDecimal) liabilities.get("valuedTotalUsdt");
+        Object status = liabilities.get("valuationStatus");
+        String csv = "item,amount_usdt,as_of,valuation_status\r\n"
+                + "reserve," + reserve.get("reserveTotalUsdt") + "," + reserve.get("asOf") + ",AVAILABLE\r\n"
+                + "liabilities," + (liabilityTotal == null ? "" : liabilityTotal) + "," + liabilities.get("asOf") + "," + status + "\r\n"
+                + "net_exposure," + (liabilityTotal == null ? "" : ((BigDecimal) reserve.get("reserveTotalUsdt")).subtract(liabilityTotal)) + "," + reserve.get("asOf") + "," + status + "\r\n";
         return ("\ufeff" + csv).getBytes(StandardCharsets.UTF_8);
     }
 
     @SuppressWarnings("unchecked")
     private byte[] liabilitiesCsvPayload() {
-        List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
-        StringBuilder csv = new StringBuilder("\ufeffcategory,label,amount_usdt,share,source\r\n");
+        Map<String, Object> liabilities = liabilities(true).getData();
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) liabilities.get("breakdown");
+        StringBuilder csv = new StringBuilder("\ufeffcategory,label,amount_usdt,share,source,valuation_status\r\n");
         for (Map<String, Object> row : rows) {
+            Object amount = row.get("valuedAmountUsdt");
+            Object share = row.get("valuedShare");
             csv.append(csvCell(row.get("category"))).append(',').append(csvCell(liabilityExportLabel(row.get("category"), row.get("label")))).append(',')
-                    .append(row.get("amountUsdt")).append(',').append(row.get("share")).append(',')
-                    .append(csvCell(row.get("source"))).append("\r\n");
+                    .append(amount == null ? "" : amount).append(',').append(share == null ? "" : share).append(',')
+                    .append(csvCell(row.get("source"))).append(',').append(liabilities.get("valuationStatus")).append("\r\n");
         }
         return csv.toString().getBytes(StandardCharsets.UTF_8);
     }
 
     private Map<String, Object> dualLedgerSnapshot() {
-        return dualLedgerSnapshot(true);
+        return dualLedgerSnapshot(null, true);
     }
 
-    private Map<String, Object> dualLedgerSnapshot(boolean includeDashboard) {
+    private Map<String, Object> dualLedgerSnapshot(BigDecimal proposedNexPrice, boolean fullView) {
+        return readDualLedgerSnapshot(proposedNexPrice, fullView).data();
+    }
+
+    private DualLedgerSnapshot readDualLedgerSnapshot(BigDecimal proposedNexPrice, boolean fullView) {
         LocalDateTime now = LocalDateTime.now(clock);
-        BigDecimal reserveUsd = (BigDecimal) reserve().getData().get("reserveTotalUsdt");
-        BigDecimal nexUsdRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
+        // B1 coverage needs the reserve balance, without the D3 forecast promotion used by the reserve panel.
+        BigDecimal reserveUsd = treasuryReserveBalance().availableUsd();
+        BigDecimal currentNexPrice = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
+        BigDecimal nexUsdRate = proposedNexPrice == null ? currentNexPrice : proposedNexPrice;
+        // A concurrent change after this read can only make this version stale.
+        long thresholdVersion = fullView ? b1ThresholdVersion() : 0;
         BigDecimal redlinePct = safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
-        BigDecimal nexLiabilityUnits = safe(ledgerRepository.sumActiveNexLocked())
-                .add(safe(ledgerRepository.sumActiveNexReward()));
-        boolean valuationReliable = nexLiabilityUnits.signum() == 0 || nexUsdRate.signum() > 0;
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> d3LiabilityRows = (List<Map<String, Object>>) liabilities(true).getData().get("breakdown");
-        List<Map<String, Object>> accounts = d3LiabilityRows.stream()
+        BigDecimal healthyPct = safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
+
+        BigDecimal nexLiabilityUnits = nexLiabilityUnits();
+        boolean valuationReliable = uvtValuationReliable(nexLiabilityUnits, currentNexPrice)
+                && (proposedNexPrice == null || proposedNexPrice.signum() > 0);
+        // F5 moves a commission from cooling to available in one transaction.
+        List<Map<String, Object>> accounts = liabilityRows(nexUsdRate, nexLiabilityUnits,
+                ledgerRepository.commissionCoverageAmounts()).stream()
                 .map(row -> account(
                         String.valueOf(row.get("category")),
                         String.valueOf(row.get("label")),
@@ -612,21 +702,26 @@ public class OpsTreasuryService {
                 .map(account -> (BigDecimal) account.get("amount"))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal coverageRatio = pct(reserveUsd, liabilitiesUsd);
-        Map<String, Object> coverageSnapshot = section(
+        boolean redlineBreached = liabilitiesUsd.signum() <= 0 ? coverageRatio.compareTo(redlinePct) < 0
+                : reserveUsd.multiply(BigDecimal.valueOf(100)).compareTo(liabilitiesUsd.multiply(redlinePct)) < 0;
+        boolean healthyForAlert = valuationReliable && liabilitiesUsd.signum() > 0
+                && reserveUsd.multiply(ONE_HUNDRED).compareTo(liabilitiesUsd.multiply(healthyPct)) >= 0;
+        Map<String, Object> snapshot = section(
                 "reserveUsd", money(reserveUsd),
                 "liabilitiesUsd", money(liabilitiesUsd),
                 "ratioReserveUsd", reserveUsd,
                 "ratioLiabilitiesUsd", liabilitiesUsd,
                 "nexUsdRate", nexUsdRate,
                 "valuationReliable", valuationReliable,
-                "coverageRatio", pctScale(coverageRatio),
-                "redlinePct", pctScale(redlinePct));
-        if (!includeDashboard) {
-            return section("snapshot", coverageSnapshot);
+                "coverageRatio", proposedNexPrice == null ? pctScale(coverageRatio) : coverageRatio,
+                "redlinePct", pctScale(redlinePct),
+                "healthyPct", pctScale(healthyPct),
+                "redlineBreached", redlineBreached);
+        if (!fullView) {
+            return new DualLedgerSnapshot(section("snapshot", snapshot), healthyForAlert);
         }
         LocalDateTime current24hStart = now.minusHours(24);
         LocalDateTime prev24hStart = now.minusHours(48);
-        BigDecimal healthyPct = safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
         BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
         String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
         BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
@@ -651,26 +746,28 @@ public class OpsTreasuryService {
                         "nx_config_item:wallet.dual-ledger.safety-thresholds",
                         "H1 growth rhythm facade"));
         response.put("h1Rhythm", bRhythmSummary());
-        coverageSnapshot.putAll(section(
-                "healthyPct", pctScale(healthyPct),
+        List<Map<String, Object>> coveragePoints = coverageSeriesPoints(now, reserveUsd, liabilitiesUsd);
+        snapshot.putAll(section(
                 "runRiskPct", pctScale(runRiskPct),
-                "redlineBreached", coverageRatio.compareTo(redlinePct) < 0,
                 "netFlow24hUsd", money(netFlow24hUsd),
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
                 "queueBacklogUsd", money(queueBacklogUsd),
                 "avgRiskScore", avgRiskScore.longValue(),
-                "coverageSeries", coverageSeries(now, reserveUsd, liabilitiesUsd),
+                "coverageSeries", coveragePoints.stream().map(point -> point.get("coverageRatio")).toList(),
+                "coverageSeriesPoints", coveragePoints,
+                "coverageSeriesIntervalHours", B1_COVERAGE_SERIES_INTERVAL_HOURS,
                 "scope", scope));
-        response.put("snapshot", coverageSnapshot);
+        response.put("snapshot", snapshot);
+        snapshot.put("thresholdVersion", thresholdVersion);
         response.put("accounts", accounts.stream().map(this::scaleAccount).toList());
         response.put("maturity7d", maturity7d());
         response.put("prev", section(
-                "reserveUsd", money(reserveUsd.subtract(prevNetFlow24hUsd)),
-                "netFlow24hUsd", money(prevNetFlow24hUsd),
-                "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
-                "avgRiskScore", avgRiskScore.longValue()));
-        return response;
+                "reserveUsd", money(reserveUsd.subtract(netFlow24hUsd)),
+                "netFlow24hUsd", money(prevNetFlow24hUsd)));
+        return new DualLedgerSnapshot(response, healthyForAlert);
     }
+
+    private record DualLedgerSnapshot(Map<String, Object> data, boolean healthyForAlert) {}
 
     private Map<String, Object> bRhythmSummary() {
         Map<String, Object> summary = new LinkedHashMap<>(GrowthRhythmSnapshot.from(configFacade, readTimeSeedPolicy).summary());
@@ -679,8 +776,23 @@ public class OpsTreasuryService {
         return summary;
     }
 
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> bDomainDashboard() {
-        Map<String, Object> dualLedger = dualLedgerSnapshot();
+        boolean acknowledged = configFacade.activeValue(B_ALERT_COVERAGE_ACK_KEY).map(Boolean::parseBoolean).orElse(false);
+        if (acknowledged) {
+            // Read coverage after locking the acknowledgement so an older sample cannot clear a later acknowledgement.
+            acknowledged = configFacade.activeValueForUpdate(B_ALERT_COVERAGE_ACK_KEY)
+                    .map(Boolean::parseBoolean).orElse(false);
+        }
+        var snapshot = readDualLedgerSnapshot(null, true);
+        if (acknowledged && snapshot.healthyForAlert()) {
+            saveCoverageAlertAcknowledgement(false);
+            acknowledged = false;
+        }
+        return ApiResult.ok(bDomainDashboard(snapshot.data(), acknowledged));
+    }
+
+    private Map<String, Object> bDomainDashboard(Map<String, Object> dualLedger, boolean acknowledged) {
         List<Map<String, Object>> warnings = new ArrayList<>();
         Map<String, Object> response = section(
                 "service", "nexion-backend",
@@ -698,13 +810,13 @@ public class OpsTreasuryService {
         response.put("warnings", warnings);
         response.put("dualLedger", dualLedger);
         response.put("alerts", section(
-                "coverageRedlineAcked", Boolean.parseBoolean(configFacade.activeValue(B_ALERT_COVERAGE_ACK_KEY).orElse("false")),
+                "coverageRedlineAcked", acknowledged,
                 "sources", List.of("nx_config_item:" + B_ALERT_COVERAGE_ACK_KEY)));
         response.put("liquidity", liquidityDashboard(dualLedger, warnings));
         response.put("funnel", funnelDashboard(warnings));
         response.put("rhythm", rhythmDashboard(dualLedger, warnings));
         response.put("riskRadar", riskRadarDashboard(dualLedger, warnings));
-        return ApiResult.ok(response);
+        return response;
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -735,6 +847,7 @@ public class OpsTreasuryService {
             String idempotencyKey,
             String reason,
             String operator) {
+        configFacade.activeValueForUpdate(B_ALERT_COVERAGE_ACK_KEY);
         Map<String, Object> snapshot = dualLedgerSnapshot();
         @SuppressWarnings("unchecked")
         Map<String, Object> values = (Map<String, Object>) snapshot.getOrDefault("snapshot", Map.of());
@@ -743,49 +856,60 @@ public class OpsTreasuryService {
         if (coverageRatio.compareTo(healthyPct) >= 0) {
             return ApiResult.fail(409, "B_ALERT_NOT_ACTIVE");
         }
-        configFacade.upsertAdminValue(
-                B_ALERT_COVERAGE_ACK_KEY,
-                "true",
-                "BOOLEAN",
-                "treasury_b",
-                "B1 coverage redline alert acknowledgement");
+        saveCoverageAlertAcknowledgement(true);
         audit("B1_COVERAGE_ALERT_ACKED", "TREASURY_ALERT", normalizedAlertId, null, section(
                 "alertId", normalizedAlertId,
                 "reason", reason,
                 "operator", operator,
                 "idempotencyKey", idempotencyKey));
-        Map<String, Object> response = bDomainDashboard().getData();
+        Map<String, Object> response = bDomainDashboard(snapshot, true);
         response.put("alertAck", section("alertId", normalizedAlertId, "acknowledged", true));
         return ApiResult.ok(response);
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    private void saveCoverageAlertAcknowledgement(boolean acknowledged) {
+        configFacade.upsertAdminValue(B_ALERT_COVERAGE_ACK_KEY, Boolean.toString(acknowledged),
+                "BOOLEAN", "treasury_b", "B1 coverage redline alert acknowledgement");
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> createInjection(String idempotencyKey, TreasuryInjectionRequest request) {
         requireD3Command(idempotencyKey, request == null ? null : request.reason());
-        BigDecimal amount = request.amount() == null ? BigDecimal.ZERO : request.amount().setScale(2, RoundingMode.HALF_UP);
-        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+        BigDecimal requestedAmount = request.amount();
+        if (requestedAmount == null || requestedAmount.signum() <= 0) {
             throw new BizException(400, "AMOUNT_MUST_BE_POSITIVE");
         }
+        if (requestedAmount.scale() > 2) {
+            throw new BizException(400, "D3_INJECTION_AMOUNT_PRECISION_INVALID");
+        }
+        BigDecimal amount = requestedAmount.setScale(2, RoundingMode.UNNECESSARY);
         if (!StringUtils.hasText(request.voucherNo())) {
             throw new BizException(400, "VOUCHER_NO_REQUIRED");
         }
         String voucherNo = request.voucherNo().trim();
-        if (!voucherNo.matches("[A-Za-z0-9][A-Za-z0-9:_./-]{5,95}")
-                || voucherNo.matches("(?i)^D3-\\d+$")
-                || voucherNo.matches("(?i).*(bootstrap|fixture).*")) {
-            throw new BizException(400, "VOUCHER_NO_INVALID");
-        }
         String reason = request.reason().trim();
         String operator = AdminActorResolver.resolve(request.operator());
         if (!StringUtils.hasText(operator)) {
             throw new BizException(400, OpsErrorCode.OPERATOR_REQUIRED.name());
         }
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+        // Replay the original receipt before the voucher format rules below so that a
+        // tightened rule never re-judges an already booked injection retried under the same key.
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBound(
                 D3_RESERVE_INJECTION_IDEMPOTENCY_SCOPE,
                 idempotencyKey,
                 reserveInjectionRequestHash(amount, voucherNo, reason, operator),
-                ApiResult.class,
-                () -> createInjectionNew(idempotencyKey.trim(), amount, voucherNo, reason, operator));
+                ApiResult.class, "finance_d3_read", voucherNo.toUpperCase(Locale.ROOT),
+                () -> createInjectionValidated(idempotencyKey.trim(), amount, voucherNo, reason, operator));
+    }
+
+    private ApiResult<Map<String, Object>> createInjectionValidated(
+            String idempotencyKey, BigDecimal amount, String voucherNo, String reason, String operator) {
+        if (!voucherNo.matches("[A-Za-z0-9][A-Za-z0-9:_./-]{5,95}")
+                || voucherNo.matches("(?i)^D3-\\d+$")
+                || voucherNo.matches("(?i).*(bootstrap|fixture).*")) {
+            throw new BizException(400, "VOUCHER_NO_INVALID");
+        }
+        return createInjectionNew(idempotencyKey, amount, voucherNo, reason, operator);
     }
 
     /**
@@ -793,7 +917,7 @@ public class OpsTreasuryService {
      * in one database transaction. The caller is profile-gated; this method itself never bypasses the
      * normal D3 idempotency, audit or outbox path.
      */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> ensureDevelopmentReserve(
             BigDecimal minimumReserveUsdt,
             LocalDate businessDay) {
@@ -869,6 +993,10 @@ public class OpsTreasuryService {
         } catch (DuplicateKeyException race) {
             throw new BizException(409, "VOUCHER_ALREADY_REGISTERED");
         }
+        if (configFacade.activeValueForUpdate(B_ALERT_COVERAGE_ACK_KEY).map(Boolean::parseBoolean).orElse(false)
+                && readDualLedgerSnapshot(null, false).healthyForAlert()) {
+            saveCoverageAlertAcknowledgement(false);
+        }
         auditRequired("D3_TREASURY_RESERVE_INJECTION", "TREASURY_RESERVE", voucherNo, operator, section(
                 "voucherNo", voucherNo,
                 "amount", amount,
@@ -930,88 +1058,196 @@ public class OpsTreasuryService {
         return ApiResult.ok(response);
     }
 
+    @SuppressWarnings({"unchecked", "rawtypes"})
     public ApiResult<Map<String, Object>> updateThresholds(String idempotencyKey, TreasuryThresholdRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
             return guard;
         }
-        boolean hasRedline = request.redlinePct() != null;
-        boolean hasHealthy = request.healthyPct() != null;
-        boolean hasRunRisk = request.runRiskPct() != null;
-        if (!hasRedline && !hasHealthy && !hasRunRisk) {
+        if (request.redlinePct() == null && request.healthyPct() == null && request.runRiskPct() == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "THRESHOLD_REQUIRED");
         }
-
-        BigDecimal redline = hasRedline
-                ? threshold(request.redlinePct(), "redlinePct", new BigDecimal("79.9"), BigDecimal.valueOf(150))
-                : safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct());
-        BigDecimal healthy = hasHealthy
-                ? threshold(request.healthyPct(), "healthyPct", new BigDecimal("99.9"), BigDecimal.valueOf(200))
-                : safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct());
-        BigDecimal runRisk = hasRunRisk
-                ? threshold(request.runRiskPct(), "runRiskPct", BigDecimal.ZERO, BigDecimal.valueOf(100))
-                : safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
-        if (redline.compareTo(healthy) >= 0) {
-            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REDLINE_MUST_BE_BELOW_HEALTHY");
-        }
-
-        String reason = request.reason().trim();
-        String operator = trimToNull(request.operator());
+        TreasuryThresholdRequest values = normalizeThresholds(request);
+        String operator = trimToNull(values.operator());
         if (operator == null) {
             return ApiResult.fail(OpsErrorCode.OPERATOR_REQUIRED.httpStatus(), OpsErrorCode.OPERATOR_REQUIRED.name());
         }
-        String requestHash = structuredRequestHash(section(
-                "redlinePct", hasRedline ? redline : null,
-                "healthyPct", hasHealthy ? healthy : null,
-                "runRiskPct", hasRunRisk ? runRisk : null,
-                "reason", reason,
-                "operator", operator), "B_THRESHOLD_UPDATE_HASH_FAILED");
-        @SuppressWarnings({"unchecked", "rawtypes"})
-        ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
+        Map<String, Object> payload = section(
+                "redlinePct", values.redlinePct(),
+                "healthyPct", values.healthyPct(),
+                "runRiskPct", values.runRiskPct(),
+                "reason", values.reason().trim(),
+                "operator", operator);
+        if (values.expectedVersion() != null) {
+            payload.put("expectedVersion", values.expectedVersion());
+        }
+        String requestHash = structuredRequestHash(payload, "B_THRESHOLD_UPDATE_HASH_FAILED");
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 B_THRESHOLD_IDEMPOTENCY_SCOPE,
                 idempotencyKey,
                 requestHash,
                 ApiResult.class,
-                () -> updateThresholdsNew(
-                        idempotencyKey.trim(), redline, healthy, runRisk,
-                        hasRedline, hasHealthy, hasRunRisk, reason, operator));
-        return result;
+                () -> updateThresholdsNew(idempotencyKey.trim(), values, values.expectedVersion(), operator, null));
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
+    public ApiResult<Map<String, Object>> previewThresholdApproval(TreasuryThresholdRequest request, long expectedVersion) {
+        if (request == null || request.redlinePct() == null || request.runRiskPct() != null) {
+            return ApiResult.fail(422, "B1_THRESHOLDS_PROPOSAL_INVALID");
+        }
+        B1ThresholdChange change = thresholdChange(normalizeThresholds(request));
+        ApiResult<Void> validation = validateThresholdChange(change, expectedVersion, true);
+        if (validation.getCode() != 0) {
+            return ApiResult.fail(validation.getCode(), validation.getMessage());
+        }
+        return ApiResult.ok(Map.of("before", change.before().summary(), "after", change.after().summary()));
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> executeApprovedThresholds(
+            String idempotencyKey, TreasuryThresholdRequest request, long expectedVersion) {
+        String operationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || operationId == null) {
+            return ApiResult.fail(409, "B1_THRESHOLDS_APPROVAL_REQUIRED");
+        }
+        if (request == null || request.redlinePct() == null || request.runRiskPct() != null) {
+            return ApiResult.fail(422, "B1_THRESHOLDS_PROPOSAL_INVALID");
+        }
+        ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request.reason());
+        if (guard != null) {
+            return guard;
+        }
+        return updateThresholdsNew(idempotencyKey.trim(), normalizeThresholds(request), expectedVersion,
+                AdminActorResolver.resolve(null), operationId);
     }
 
     private ApiResult<Map<String, Object>> updateThresholdsNew(
             String idempotencyKey,
-            BigDecimal redline,
-            BigDecimal healthy,
-            BigDecimal runRisk,
-            boolean hasRedline,
-            boolean hasHealthy,
-            boolean hasRunRisk,
-            String reason,
-            String operator) {
+            TreasuryThresholdRequest values,
+            Long expectedVersion,
+            String operator,
+            String approvalOperationId) {
+        if (approvalOperationId == null) {
+            var authentication = SecurityContextHolder.getContext().getAuthentication();
+            if (((values.redlinePct() != null || values.healthyPct() != null)
+                    && !TreasuryThresholdApproval.hasAuthority(authentication, "overview_b1_redline_write"))
+                    || (values.runRiskPct() != null
+                    && !TreasuryThresholdApproval.hasAuthority(authentication, "overview_b1_runrisk_write"))) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), OpsErrorCode.FORBIDDEN.name());
+            }
+        }
+        if (!A2ReplayContext.isReplaying()
+                && (values.redlinePct() != null || values.healthyPct() != null)
+                && lockMapper.countActiveByTarget("B", "coverage_thresholds", "current") > 0) {
+            throw new BizException(409, "OBJECT_LOCKED_BY_A2");
+        }
+        ledgerRepository.lockOperationMutex(B1_THRESHOLD_MUTEX);
+        B1ThresholdChange change = thresholdChange(values);
+        ApiResult<Void> validation = validateThresholdChange(change, expectedVersion, approvalOperationId != null);
+        if (validation.getCode() != 0) {
+            return ApiResult.fail(validation.getCode(), validation.getMessage());
+        }
         Map<String, Object> changed = new LinkedHashMap<>();
-        if (hasRedline) {
-            configFacade.upsertAdminValue(REDLINE_CONFIG_KEY, redline.toPlainString(), "NUMBER", "wallet", "B1 coverage redline threshold");
-            changed.put("redlinePct", redline);
+        if (values.redlinePct() != null) {
+            configFacade.upsertAdminValue(REDLINE_CONFIG_KEY, values.redlinePct().toPlainString(), "NUMBER", "wallet", "B1 coverage redline threshold");
+            changed.put("redlinePct", values.redlinePct());
         }
-        if (hasHealthy) {
-            configFacade.upsertAdminValue(HEALTHY_CONFIG_KEY, healthy.toPlainString(), "NUMBER", "wallet", "B1 coverage healthy threshold");
-            changed.put("healthyPct", healthy);
+        if (values.healthyPct() != null) {
+            configFacade.upsertAdminValue(HEALTHY_CONFIG_KEY, values.healthyPct().toPlainString(), "NUMBER", "wallet", "B1 coverage healthy threshold");
+            changed.put("healthyPct", values.healthyPct());
         }
-        if (hasRunRisk) {
-            configFacade.upsertAdminValue(RUN_RISK_CONFIG_KEY, runRisk.toPlainString(), "NUMBER", "wallet", "B1 run-risk threshold");
-            changed.put("runRiskPct", runRisk);
+        if (values.runRiskPct() != null) {
+            configFacade.upsertAdminValue(RUN_RISK_CONFIG_KEY, values.runRiskPct().toPlainString(), "NUMBER", "wallet", "B1 run-risk threshold");
+            changed.put("runRiskPct", values.runRiskPct());
+        }
+        long version = change.version();
+        if (change.redlineDirection() != 0 || change.before().healthyPct().compareTo(change.after().healthyPct()) != 0) {
+            version++;
+            configFacade.upsertAdminValue(B1_THRESHOLD_VERSION_KEY, Long.toString(version),
+                    "NUMBER", "wallet", "B1 coverage thresholds version");
         }
 
-        audit("B1_DUAL_LEDGER_THRESHOLDS_CHANGED", "DUAL_LEDGER_THRESHOLDS", "B1", operator, section(
-                "changed", changed,
-                "reason", reason,
-                "idempotencyKey", idempotencyKey));
+        Map<String, Object> auditDetail = section("changed", changed, "reason", values.reason().trim(),
+                "idempotencyKey", idempotencyKey);
+        if (approvalOperationId != null) {
+            auditDetail.put("operationId", approvalOperationId);
+            auditDetail.put("before", change.before().summary());
+            auditDetail.put("after", change.after().summary());
+            auditRequired("B1_DUAL_LEDGER_THRESHOLDS_CHANGED", "DUAL_LEDGER_THRESHOLDS", "B1", operator, auditDetail);
+            return ApiResult.ok(section("redlinePct", change.after().redlinePct(),
+                    "healthyPct", change.after().healthyPct(), "thresholdVersion", version));
+        }
+        audit("B1_DUAL_LEDGER_THRESHOLDS_CHANGED", "DUAL_LEDGER_THRESHOLDS", "B1", operator, auditDetail);
         Map<String, Object> response = dualLedger().getData();
         response.put("thresholdUpdate", changed);
         return ApiResult.ok(response);
     }
 
-    @Transactional
+    private TreasuryThresholdRequest normalizeThresholds(TreasuryThresholdRequest request) {
+        return new TreasuryThresholdRequest(
+                request.redlinePct() == null ? null
+                        : threshold(request.redlinePct(), "redlinePct", new BigDecimal("79.9"), BigDecimal.valueOf(150)),
+                request.healthyPct() == null ? null
+                        : threshold(request.healthyPct(), "healthyPct", new BigDecimal("99.9"), BigDecimal.valueOf(200)),
+                request.runRiskPct() == null ? null
+                        : threshold(request.runRiskPct(), "runRiskPct", BigDecimal.ZERO, BigDecimal.valueOf(100)),
+                request.reason(), request.operator(), request.expectedVersion());
+    }
+
+    private long b1ThresholdVersion() {
+        return configFacade.activeValue(B1_THRESHOLD_VERSION_KEY).map(Long::parseLong).orElse(0L);
+    }
+
+    private B1ThresholdChange thresholdChange(TreasuryThresholdRequest values) {
+        long version = b1ThresholdVersion();
+        B1CoverageThresholds before = new B1CoverageThresholds(
+                safetyThresholdDecimal(REDLINE_CONFIG_KEY, dualLedgerProperties.getRedlinePct()),
+                safetyThresholdDecimal(HEALTHY_CONFIG_KEY, dualLedgerProperties.getHealthyPct()));
+        B1CoverageThresholds after = new B1CoverageThresholds(
+                values.redlinePct() == null ? before.redlinePct() : values.redlinePct(),
+                values.healthyPct() == null ? before.healthyPct() : values.healthyPct());
+        return new B1ThresholdChange(version, before, after);
+    }
+
+    private ApiResult<Void> validateThresholdChange(B1ThresholdChange change, Long expectedVersion, boolean approval) {
+        if (expectedVersion != null && expectedVersion != change.version()) {
+            return ApiResult.fail(409, "CONFIG_VERSION_CONFLICT");
+        }
+        if (change.after().redlinePct().compareTo(change.after().healthyPct()) >= 0) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REDLINE_MUST_BE_BELOW_HEALTHY");
+        }
+        if (!approval) {
+            return change.redlineDirection() < 0 ? ApiResult.fail(409, "B1_THRESHOLDS_APPROVAL_REQUIRED") : ApiResult.ok();
+        }
+        if (change.redlineDirection() >= 0) {
+            return ApiResult.fail(422, "B1_THRESHOLDS_AMPLIFICATION_REQUIRED");
+        }
+        Map<?, ?> snapshot = (Map<?, ?>) dualLedgerSnapshot(null, false).get("snapshot");
+        if (!Boolean.TRUE.equals(snapshot.get("valuationReliable"))) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(), OpsErrorCode.COVERAGE_UNAVAILABLE.name());
+        }
+        BigDecimal reserve = decimal(snapshot.get("ratioReserveUsd"));
+        BigDecimal liabilities = decimal(snapshot.get("ratioLiabilitiesUsd"));
+        BigDecimal redline = change.after().redlinePct();
+        boolean belowRedline = liabilities.signum() == 0 ? pct(reserve, liabilities).compareTo(redline) < 0
+                : reserve.multiply(ONE_HUNDRED).compareTo(liabilities.multiply(redline)) < 0;
+        return belowRedline ? ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                OpsErrorCode.COVERAGE_BELOW_REDLINE.name()) : ApiResult.ok();
+    }
+
+    private record B1ThresholdChange(long version, B1CoverageThresholds before, B1CoverageThresholds after) {
+        int redlineDirection() {
+            return after.redlinePct().compareTo(before.redlinePct());
+        }
+    }
+
+    private record B1CoverageThresholds(BigDecimal redlinePct, BigDecimal healthyPct) {
+        String summary() {
+            return "红线 " + redlinePct.stripTrailingZeros().toPlainString()
+                    + "% / 健康线 " + healthyPct.stripTrailingZeros().toPlainString() + "%";
+        }
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     public ApiResult<Map<String, Object>> updateBankRunThresholds(
             String idempotencyKey,
@@ -1033,10 +1269,6 @@ public class OpsTreasuryService {
         BigDecimal redline = hasRedline
                 ? bankRunThreshold(request.redlinePct(), "redlinePct", new BigDecimal("10"), new BigDecimal("80"))
                 : currentBands.redlinePct();
-        if (redline.compareTo(yellow) <= 0) {
-            return ApiResult.fail(
-                    OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BANKRUN_REDLINE_MUST_EXCEED_YELLOW");
-        }
         String operator = AdminActorResolver.resolve(request.operator());
         if (!StringUtils.hasText(operator)) {
             return ApiResult.fail(OpsErrorCode.OPERATOR_REQUIRED.httpStatus(), OpsErrorCode.OPERATOR_REQUIRED.name());
@@ -1055,31 +1287,20 @@ public class OpsTreasuryService {
                 requestHash,
                 ApiResult.class,
                 () -> updateBankRunThresholdsNew(
-                        idempotencyKey.trim(), yellow, redline, hasYellow, hasRedline, reason, operator));
+                        idempotencyKey.trim(), hasYellow ? yellow : null, hasRedline ? redline : null, reason, operator));
     }
 
     private ApiResult<Map<String, Object>> updateBankRunThresholdsNew(
             String idempotencyKey,
             BigDecimal yellow,
             BigDecimal redline,
-            boolean hasYellow,
-            boolean hasRedline,
             String reason,
             String operator) {
-        if (hasYellow) {
-            configFacade.upsertAdminValue(
-                    BANK_RUN_YELLOW_CONFIG_KEY, yellow.stripTrailingZeros().toPlainString(),
-                    "NUMBER", "risk", "B5 bank-run warning threshold");
-        }
-        if (hasRedline) {
-            configFacade.upsertAdminValue(
-                    TreasuryEmergencySignalFacadeAdapter.BANK_RUN_REDLINE_CONFIG_KEY,
-                    redline.stripTrailingZeros().toPlainString(),
-                    "NUMBER", "risk", "B5 bank-run automatic stop threshold used by J1 R1");
-        }
+        var change = BankRunThresholdPolicy.applyDirect(configFacade, yellow, redline, null);
         audit("B5_BANKRUN_THRESHOLDS_CHANGED", "RISK_THRESHOLD", "bankrun", operator, section(
-                "yellowPct", yellow,
-                "redlinePct", redline,
+                "yellowPct", change.after().yellowPct(),
+                "redlinePct", change.after().redlinePct(),
+                "version", change.newVersion(),
                 "reason", reason,
                 "idempotencyKey", idempotencyKey,
                 "linkedDomain", "J1:R1"));
@@ -1120,6 +1341,7 @@ public class OpsTreasuryService {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
+        if (supportOwnership.currentSupportReader()) supportOwnership.customerQueryScope(userId);
         if (!ledgerRepository.userExists(userId)) {
             throw new BizException(404, "USER_NOT_FOUND");
         }
@@ -1178,6 +1400,7 @@ public class OpsTreasuryService {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(400, "USER_ID_REQUIRED");
         }
+        if (supportOwnership.currentSupportReader()) supportOwnership.customerQueryScope(userId);
         if (!ledgerRepository.userExists(userId)) {
             throw new BizException(404, "USER_NOT_FOUND");
         }
@@ -1193,8 +1416,14 @@ public class OpsTreasuryService {
                 .sorted(java.util.Comparator.comparing(TreasuryLedgerBillView::createdAt)
                         .thenComparing(TreasuryLedgerBillView::id))
                 .toList();
-        Map<String, BigDecimal> previous = new LinkedHashMap<>();
-        Map<String, BigDecimal> latestLedger = new LinkedHashMap<>();
+        Map<String, BigDecimal> openingBalances = new LinkedHashMap<>();
+        if (from != null) {
+            for (var balance : ledgerRepository.settledBalancesBefore(userId, from)) {
+                openingBalances.put(balance.asset(), safe(balance.balanceAfter()));
+            }
+        }
+        Map<String, BigDecimal> previous = new LinkedHashMap<>(openingBalances);
+        Map<String, BigDecimal> latestLedger = new LinkedHashMap<>(openingBalances);
         List<Map<String, Object>> rows = new ArrayList<>();
         int breakCount = 0;
         int unsettledCount = 0;
@@ -1250,6 +1479,8 @@ public class OpsTreasuryService {
                 "userId", userId,
                 "total", total,
                 "rows", rows,
+                "openingBalances", openingBalances,
+                "closingBalances", latestLedger,
                 "breakCount", breakCount,
                 "unsettledCount", unsettledCount,
                 "reconciliationScope", reconciliationScope,
@@ -1666,6 +1897,8 @@ public class OpsTreasuryService {
         if (!available) {
             return section(
                     "available", false,
+                    "usageAvailable", false,
+                    "usageReason", B4_OPERATION_BUDGET_USAGE_UNDEFINED,
                     "reason", total.signum() == 0 && missing.isEmpty()
                             ? "B4_OPERATION_BUDGET_TOTAL_ZERO"
                             : "B4_OPERATION_BUDGET_SOURCE_INCOMPLETE",
@@ -1678,6 +1911,8 @@ public class OpsTreasuryService {
                 .divide(denominator, 2, RoundingMode.HALF_UP)));
         return section(
                 "available", true,
+                "usageAvailable", false,
+                "usageReason", B4_OPERATION_BUDGET_USAGE_UNDEFINED,
                 "totalUsdt", money(total),
                 "missingKeys", List.of(),
                 "rows", rows);
@@ -1898,7 +2133,7 @@ public class OpsTreasuryService {
     }
 
     private Map<String, Object> liability(String category, String label, BigDecimal amount, String source) {
-        return section("category", category, "label", label, "amountUsdt", money(safe(amount)), "source", source);
+        return section("category", category, "label", label, "amountUsdt", safe(amount), "source", source);
     }
 
     private Map<String, Object> waterLevel(BigDecimal reserveTotal) {
@@ -1918,7 +2153,7 @@ public class OpsTreasuryService {
         } else if (coverDays.compareTo(BigDecimal.valueOf(15)) >= 0) {
             tier = "WATCH"; color = "cyan"; action = "加强监控到期金额和资金缺口"; notification = "在财务日报中标注";
         } else if (coverDays.compareTo(BigDecimal.valueOf(7)) >= 0) {
-            tier = "WARNING"; color = "yellow"; action = "建议在「提现参数配置」收紧提现节奏，并在「待审核提现」延后处理大额提现"; notification = "实时告警，值班人员跟进";
+            tier = "WARNING"; color = "yellow"; action = "建议在「USDT 提现参数」收紧提现节奏，并在「提现审核」延后处理大额提现"; notification = "实时告警，值班人员跟进";
         } else {
             tier = "DANGER"; color = "red"; action = "建议评估是否在「紧急停用开关」暂停提现，并上报超级管理员"; notification = "立即上报超级管理员，并在「风险提醒」跟进";
         }
@@ -1941,6 +2176,14 @@ public class OpsTreasuryService {
     private BigDecimal currentReserveWithVietQr() {
         return safe(ledgerRepository.currentReserveUsd()).add(safe(ledgerRepository.vietQrHeldReserveUsdt()));
     }
+
+    private TreasuryReserveBalance treasuryReserveBalance() {
+        BigDecimal ledgerReserve = currentReserveWithVietQr();
+        BigDecimal lockedPrincipal = safe(ledgerRepository.sumActiveStakingPrincipalUsdt());
+        return new TreasuryReserveBalance(ledgerReserve.subtract(lockedPrincipal).max(BigDecimal.ZERO), lockedPrincipal);
+    }
+
+    private record TreasuryReserveBalance(BigDecimal availableUsd, BigDecimal lockedStakingPrincipal) {}
 
     private int d3WindowDays(String window, Set<Integer> allowed) {
         String normalized = StringUtils.hasText(window) ? window.trim().toLowerCase(Locale.ROOT) : "7d";
@@ -1992,7 +2235,6 @@ public class OpsTreasuryService {
 
     private Map<String, Object> forecastConfigCandidateSnapshot() {
         return pendingForecastConfig()
-                .filter(pending -> clock.instant().isBefore(pending.effectiveAt()))
                 .<Map<String, Object>>map(pending -> new LinkedHashMap<>(pending.config()))
                 .orElseGet(this::activeForecastConfigSnapshot);
     }
@@ -2060,6 +2302,8 @@ public class OpsTreasuryService {
     }
 
     private void validateStoredForecastConfig(Map<String, Object> config) {
+        // Legacy 90-day policies remain readable until operators explicitly replace them.
+        // Dropping them here would silently reset unrelated stored forecast switches.
         d3WindowDays(String.valueOf(config.get("forecastWindow")), Set.of(7, 30, 90));
         String mode = String.valueOf(config.get("stakingInterestMode")).toUpperCase(Locale.ROOT);
         if (!Set.of("LINEAR", "AT_MATURITY").contains(mode)
@@ -2095,7 +2339,7 @@ public class OpsTreasuryService {
             throw new BizException(400, "D3_FORECAST_CONFIG_REQUIRED");
         }
         String window = StringUtils.hasText(request.forecastWindow()) ? request.forecastWindow().trim().toLowerCase(Locale.ROOT) : String.valueOf(before.get("forecastWindow"));
-        d3WindowDays(window, Set.of(7, 30, 90));
+        d3WindowDays(window, Set.of(7, 30));
         String mode = StringUtils.hasText(request.stakingInterestMode()) ? request.stakingInterestMode().trim().toUpperCase(Locale.ROOT) : String.valueOf(before.get("stakingInterestMode"));
         if (!Set.of("LINEAR", "AT_MATURITY").contains(mode)) {
             throw new BizException(400, "D3_STAKING_INTEREST_MODE_INVALID");
@@ -2126,23 +2370,50 @@ public class OpsTreasuryService {
 
     private Map<String, Object> forecastDeltaPreview(Map<String, Object> before, Map<String, Object> after) {
         BigDecimal genesisDaily = safe(ledgerRepository.genesisDailyLiabilityUsd());
-        boolean beforeGenesis = Boolean.TRUE.equals(before.get("genesisIncluded"));
-        boolean afterGenesis = Boolean.TRUE.equals(after.get("genesisIncluded"));
+        boolean beforeGenesis = Boolean.TRUE.equals(before.get("genesisIncluded"))
+                && categoryEnabled(before, "liabilityCategories", "genesis_daily_emission");
+        boolean afterGenesis = Boolean.TRUE.equals(after.get("genesisIncluded"))
+                && categoryEnabled(after, "liabilityCategories", "genesis_daily_emission");
         BigDecimal beforeDaily = beforeGenesis ? genesisDaily : BigDecimal.ZERO;
         BigDecimal afterDaily = afterGenesis ? genesisDaily : BigDecimal.ZERO;
         BigDecimal before7d = forecastTotal(before, 7);
         BigDecimal after7d = forecastTotal(after, 7);
         BigDecimal before30d = forecastTotal(before, 30);
         BigDecimal after30d = forecastTotal(after, 30);
-        return section("beforeDailyGenesisUsdt", money(beforeDaily), "afterDailyGenesisUsdt", money(afterDaily),
+        ConfiguredTreasurySnapshot beforeTreasury = configuredTreasurySnapshot(before);
+        ConfiguredTreasurySnapshot afterTreasury = configuredTreasurySnapshot(after);
+        BigDecimal beforeCoverage = beforeTreasury.valuationReliable() && beforeTreasury.liabilitiesUsdt().signum() > 0
+                ? pct(beforeTreasury.reserveUsdt(), beforeTreasury.liabilitiesUsdt()) : null;
+        BigDecimal afterCoverage = afterTreasury.valuationReliable() && afterTreasury.liabilitiesUsdt().signum() > 0
+                ? pct(afterTreasury.reserveUsdt(), afterTreasury.liabilitiesUsdt()) : null;
+        Map<String, Object> preview = section("beforeDailyGenesisUsdt", money(beforeDaily), "afterDailyGenesisUsdt", money(afterDaily),
                 "dailyDeltaUsdt", money(afterDaily.subtract(beforeDaily)),
                 "before7dUsdt", money(before7d), "after7dUsdt", money(after7d),
                 "delta7dUsdt", money(after7d.subtract(before7d)),
                 "before30dUsdt", money(before30d), "after30dUsdt", money(after30d),
                 "delta30dUsdt", money(after30d.subtract(before30d)),
+                "beforeReserveUsdt", beforeTreasury.reserveUsdt(), "afterReserveUsdt", afterTreasury.reserveUsdt(),
+                "reserveDeltaUsdt", money(afterTreasury.reserveUsdt().subtract(beforeTreasury.reserveUsdt())),
+                "beforeLiabilitiesUsdt", beforeTreasury.liabilitiesUsdt(), "afterLiabilitiesUsdt", afterTreasury.liabilitiesUsdt(),
+                "liabilitiesDeltaUsdt", money(afterTreasury.liabilitiesUsdt().subtract(beforeTreasury.liabilitiesUsdt())),
+                "beforeNetExposureUsdt", money(beforeTreasury.reserveUsdt().subtract(beforeTreasury.liabilitiesUsdt())),
+                "afterNetExposureUsdt", money(afterTreasury.reserveUsdt().subtract(afterTreasury.liabilitiesUsdt())),
+                "netExposureDeltaUsdt", money(afterTreasury.reserveUsdt().subtract(afterTreasury.liabilitiesUsdt())
+                        .subtract(beforeTreasury.reserveUsdt().subtract(beforeTreasury.liabilitiesUsdt()))),
+                "beforeCoverageStatus", beforeTreasury.coverageStatus(), "afterCoverageStatus", afterTreasury.coverageStatus(),
+                "coverageScope", "CONFIGURED_FULL_LIABILITIES",
+                "coverageFormula", "configuredReserveUsdt / configuredLiabilitiesUsdt * 100",
+                "coverageNote", "配置口径使用当前九类应付款按科目、创世和远期开关筛选；不含试用压力层，不是7/30天到期额；不改变B1全应付款安全覆盖率",
+                "removedLiabilityCategories", D3_LIABILITY_CATEGORIES.stream()
+                        .filter(category -> configuredLiabilityIncluded(before, category) && !configuredLiabilityIncluded(after, category)).toList(),
                 "reserveCategoryChanges", changedCategoryCount(before, after, "reserveCategories"),
                 "liabilityCategoryChanges", changedCategoryCount(before, after, "liabilityCategories"),
                 "note", "科目开关从下一个结算日（UTC 00:00）开始生效，不影响历史数据");
+        // section() omits nulls; these fields are explicitly nullable in the preview contract.
+        preview.put("beforeCoveragePct", beforeCoverage);
+        preview.put("afterCoveragePct", afterCoverage);
+        preview.put("coverageDeltaPct", beforeCoverage == null || afterCoverage == null ? null : afterCoverage.subtract(beforeCoverage));
+        return preview;
     }
 
     private BigDecimal forecastTotal(Map<String, Object> config, int days) {
@@ -2169,14 +2440,35 @@ public class OpsTreasuryService {
     }
 
     private BigDecimal configuredReserveTotal(Map<String, Object> config) {
-        Map<String, Object> canonical = reserve().getData();
-        BigDecimal total = categoryEnabled(config, "reserveCategories", "usdt")
-                ? decimal(canonical.get("reserveTotalUsdt"))
-                : BigDecimal.ZERO;
-        if (categoryEnabled(config, "reserveCategories", "otherLiquid")) {
-            total = total.add(decimal(canonical.get("otherLiquidUsdt")));
+        // Same D3 balance as reserve(); otherLiquid is canonically zero. Do not enter waterLevel/promotion.
+        return money(categoryEnabled(config, "reserveCategories", "usdt")
+                ? treasuryReserveBalance().availableUsd() : BigDecimal.ZERO);
+    }
+
+    private ConfiguredTreasurySnapshot configuredTreasurySnapshot(Map<String, Object> config) {
+        BigDecimal nexRate = ledgerRepository.latestNexUsdtPrice().map(this::safe).orElse(BigDecimal.ZERO);
+        BigDecimal nexUnits = nexLiabilityUnits();
+        var commissionCoverage = new CommissionCoverageAmounts(
+                ledgerRepository.sumUsdtAvailable(), ledgerRepository.sumPendingCommissionUsdt());
+        BigDecimal liabilities = liabilityRows(nexRate, nexUnits, commissionCoverage).stream()
+                .filter(row -> configuredLiabilityIncluded(config, String.valueOf(row.get("category"))))
+                .map(row -> money((BigDecimal) row.get("amountUsdt")))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        boolean valuationReliable = !configuredLiabilityIncluded(config, "nex_v2_future")
+                || uvtValuationReliable(nexUnits, nexRate);
+        return new ConfiguredTreasurySnapshot(configuredReserveTotal(config), money(liabilities), valuationReliable);
+    }
+
+    private boolean configuredLiabilityIncluded(Map<String, Object> config, String category) {
+        return categoryEnabled(config, "liabilityCategories", category)
+                && (Boolean.TRUE.equals(config.get("genesisIncluded")) || !"genesis_daily_emission".equals(category))
+                && (Boolean.TRUE.equals(config.get("includeFarLiabilities")) || !"nex_v2_future".equals(category));
+    }
+
+    private record ConfiguredTreasurySnapshot(BigDecimal reserveUsdt, BigDecimal liabilitiesUsdt, boolean valuationReliable) {
+        String coverageStatus() {
+            return !valuationReliable ? "VALUATION_UNAVAILABLE" : liabilitiesUsdt.signum() <= 0 ? "NO_LIABILITIES" : "AVAILABLE";
         }
-        return money(total);
     }
 
     private int d3WithdrawCooldownDays() {
@@ -2217,14 +2509,36 @@ public class OpsTreasuryService {
         if (row.bizNo() == null) return null;
         String userId = row.userId() == null ? null : row.userId().toString();
         String userNo = trimToNull(row.userNo());
+        String masked = maskUserNo(userNo);
         String[] segments = row.bizNo().split(":", -1);
         // Account tokens are separate from dates, course IDs and other reference metadata.
         for (int index = 0; index < segments.length; index++) {
-            if (segments[index].equals(userId) || segments[index].equals(userNo)) {
-                segments[index] = maskUserNo(userNo);
-            }
+            segments[index] = isBillReferenceAccount(segments[index], userId, userNo)
+                    ? masked
+                    : maskBinarySettlementAccount(segments[index], userId, userNo, masked);
         }
         return String.join(":", segments);
+    }
+
+    /**
+     * Only the two binary settlement ids carry the account between dashes:
+     * F3-BINARY-{account}-{yyyyMMdd} and BINARY-{account}-{yyyyMMdd}. Nothing else is touched, so an
+     * event id, an order number or a date that happens to equal the account stays as the business wrote it.
+     */
+    private String maskBinarySettlementAccount(String segment, String userId, String userNo, String masked) {
+        int accountIndex = segment.startsWith("F3-BINARY-") ? 2 : segment.startsWith("BINARY-") ? 1 : -1;
+        if (accountIndex < 0) return segment;
+        String[] parts = segment.split("-", -1);
+        if (parts.length <= accountIndex || !isBillReferenceAccount(parts[accountIndex], userId, userNo)) {
+            return segment;
+        }
+        parts[accountIndex] = masked;
+        return String.join("-", parts);
+    }
+
+    /** Matches this row's own account only, so amounts, dates and event ids in a reference stay readable. */
+    private boolean isBillReferenceAccount(String token, String userId, String userNo) {
+        return token != null && !token.isEmpty() && (token.equals(userId) || token.equals(userNo));
     }
 
     private String csvCell(Object value) {
@@ -2434,13 +2748,14 @@ public class OpsTreasuryService {
         return numerator.multiply(BigDecimal.valueOf(100)).divide(denominator, 6, RoundingMode.HALF_UP);
     }
 
-    private List<BigDecimal> coverageSeries(LocalDateTime now, BigDecimal reserveUsd, BigDecimal liabilitiesUsd) {
-        List<BigDecimal> series = new ArrayList<>();
+    private List<Map<String, Object>> coverageSeriesPoints(LocalDateTime now, BigDecimal reserveUsd, BigDecimal liabilitiesUsd) {
+        List<Map<String, Object>> series = new ArrayList<>();
         for (int i = 0; i < 8; i++) {
-            LocalDateTime point = now.minusHours((7L - i) * 3L);
+            LocalDateTime point = now.minusHours((7L - i) * B1_COVERAGE_SERIES_INTERVAL_HOURS);
             BigDecimal flowAfterPoint = safe(ledgerRepository.sumNetUsdtFlowBetween(point, now));
             BigDecimal historicalReserve = reserveUsd.subtract(flowAfterPoint).max(BigDecimal.ZERO);
-            series.add(pctScale(pct(historicalReserve, liabilitiesUsd)));
+            series.add(section("at", point, "coverageRatio", pctScale(pct(historicalReserve, liabilitiesUsd)),
+                    "backcast", i < 7));
         }
         return series;
     }

@@ -111,27 +111,21 @@ public class AccountDeletionAdminService {
         long version = number(row, "version");
         requireExpected(version, request.expectedVersion());
         Long userId = numberObject(row, "userId");
+        boolean balanceNotCleared;
         boolean unsettled;
         try {
+            // App 主 PRD v3.7：USDT、NEX 可用余额都必须等于 0 才可结案，负数同样算未结清。
+            balanceNotCleared = mapper.hasUnclearedUsableBalance(userId) > 0;
             unsettled = mapper.hasUnsettledFundsOrOrders(userId) > 0;
         } catch (RuntimeException ex) {
             // A missing/failed financial read must never be interpreted as an empty ledger.
-            String reason = "UNSETTLED_STATE_UNAVAILABLE";
-            if (mapper.transitionAccountDeletion(requestNo.trim(), from, "BLOCKED", version, reason, null) != 1) {
-                throw new BizException(409, "ACCOUNT_DELETION_CONCURRENT_UPDATE");
-            }
-            Map<String, Object> blocked = locked(requestNo);
-            audit("ADMIN_ACCOUNT_DELETION_BLOCKED", blocked, reason);
-            return view(blocked, false, false);
+            return blocked(requestNo, from, version, "UNSETTLED_STATE_UNAVAILABLE");
+        }
+        if (balanceNotCleared) {
+            return blocked(requestNo, from, version, "WALLET_BALANCE_NOT_CLEARED");
         }
         if (unsettled) {
-            String reason = "UNSETTLED_FUNDS_OR_ORDERS";
-            if (mapper.transitionAccountDeletion(requestNo.trim(), from, "BLOCKED", version, reason, null) != 1) {
-                throw new BizException(409, "ACCOUNT_DELETION_CONCURRENT_UPDATE");
-            }
-            Map<String, Object> blocked = locked(requestNo);
-            audit("ADMIN_ACCOUNT_DELETION_BLOCKED", blocked, reason);
-            return view(blocked, false, false);
+            return blocked(requestNo, from, version, "UNSETTLED_FUNDS_OR_ORDERS");
         }
         int disabled = mapper.disableAndAnonymizeUser(userId);
         mapper.anonymizeUserProfile(userId);
@@ -143,6 +137,19 @@ public class AccountDeletionAdminService {
         Map<String, Object> completed = locked(requestNo);
         audit("ADMIN_ACCOUNT_DELETION_COMPLETED", completed, request.reason().trim());
         return view(completed, revoked > 0, disabled > 0);
+    }
+
+    /**
+     * 按既有约定把请求置为 BLOCKED 并留下原因码。余额未结清与其它未结清项各用独立原因码，
+     * 运营/PC 能分清是哪一条不满足；未结清读取失败也走这里。
+     */
+    private AccountDeletionAdminView blocked(String requestNo, String from, long version, String reason) {
+        if (mapper.transitionAccountDeletion(requestNo.trim(), from, "BLOCKED", version, reason, null) != 1) {
+            throw new BizException(409, "ACCOUNT_DELETION_CONCURRENT_UPDATE");
+        }
+        Map<String, Object> blocked = locked(requestNo);
+        audit("ADMIN_ACCOUNT_DELETION_BLOCKED", blocked, reason);
+        return view(blocked, false, false);
     }
 
     private Map<String, Object> locked(String requestNo) {
@@ -198,7 +205,8 @@ public class AccountDeletionAdminService {
     private AccountDeletionAdminView view(Map<String, Object> row, boolean sessionsRevoked, boolean accountDisabled) {
         return new AccountDeletionAdminView(text(row, "requestNo"), numberObject(row, "userId"), text(row, "status"),
                 number(row, "version"), date(row, "requestedAt"), date(row, "reviewedAt"), date(row, "completedAt"),
-                textNullable(row, "reason"), textNullable(row, "blockReason"), sessionsRevoked, accountDisabled);
+                textNullable(row, "reason"), textNullable(row, "originalReason"), textNullable(row, "blockReason"),
+                sessionsRevoked, accountDisabled);
     }
 
     private void audit(String action, Map<String, Object> row, String reason) {

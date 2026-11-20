@@ -19,13 +19,17 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -44,12 +48,21 @@ public class OpsPlatformMenuService {
     private final AdminPermissionMapper permissionMapper;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
+    private final Clock clock;
 
     public ApiResult<PlatformMenuTreeOverview> overview() {
         List<AdminMenuEntity> all = menuMapper.selectAllActive();
         Map<Long, List<AdminMenuEntity>> byParent = all.stream()
                 .collect(Collectors.groupingBy(e -> e.getParentId() == null ? 0L : e.getParentId()));
-        List<MenuTreeNode> tree = buildChildren(byParent, 0L);
+        Map<Long, Long> roleBindingCounts = new HashMap<>();
+        for (AdminRoleMenuMapper.MenuBindingCount row : roleMenuMapper.countActiveMenuBindingsByMenu()) {
+            roleBindingCounts.put(row.menuId(), row.count());
+        }
+        Map<Long, Long> activePermissionCounts = new HashMap<>();
+        for (AdminPermissionMapper.MenuPermissionCount row : permissionMapper.countActivePermissionsByMenu()) {
+            activePermissionCounts.put(row.menuId(), row.count());
+        }
+        List<MenuTreeNode> tree = buildChildren(byParent, 0L, roleBindingCounts, activePermissionCounts);
         int domainCount = (int) all.stream().filter(e -> e.getParentId() == null).count();
         int pageCount = all.size() - domainCount;
         int activeCount = (int) all.stream().filter(e -> e.getStatus() != null && e.getStatus() == 1).count();
@@ -97,7 +110,7 @@ public class OpsPlatformMenuService {
         entity.setMenuName(request.menuName());
         entity.setMenuNameZh(StringUtils.hasText(request.menuNameZh()) ? request.menuNameZh() : request.menuName());
         entity.setParentId(parentId);
-        entity.setRoutePath(request.routePath());
+        entity.setRoutePath(request.routePath() == null ? "" : request.routePath());
         entity.setIcon(request.icon());
         entity.setSortOrder(request.sortOrder() == null ? 0 : request.sortOrder());
         entity.setStatus(1);
@@ -171,7 +184,20 @@ public class OpsPlatformMenuService {
             }
             entity.setStatus(request.status());
         }
-        menuMapper.updateById(entity);
+        // A7 uses updatedAt as an opaque logical version, stored at whole-second precision.
+        LocalDateTime nextVersion = LocalDateTime.now(clock).truncatedTo(ChronoUnit.SECONDS);
+        LocalDateTime previousVersion = entity.getUpdatedAt();
+        if (previousVersion != null) {
+            LocalDateTime afterPrevious = previousVersion.truncatedTo(ChronoUnit.SECONDS).plusSeconds(1);
+            if (afterPrevious.isAfter(nextVersion)) {
+                nextVersion = afterPrevious;
+            }
+        }
+        entity.setUpdatedAt(nextVersion);
+        if (menuMapper.updateById(entity) != 1) {
+            return rejectMutation(entity, "UPDATE", 409, "MENU_VERSION_STALE",
+                    request.reason(), request.operator(), idempotencyKey, Map.of());
+        }
         audit("A7_MENU_NODE_UPDATED", menuId.toString(), request.reason(), request.operator(), idempotencyKey,
                 Map.of("menuCode", entity.getMenuCode()));
         return ApiResult.ok(toView(entity));
@@ -246,11 +272,16 @@ public class OpsPlatformMenuService {
         return null;
     }
 
-    private List<MenuTreeNode> buildChildren(Map<Long, List<AdminMenuEntity>> byParent, Long parentId) {
+    private List<MenuTreeNode> buildChildren(Map<Long, List<AdminMenuEntity>> byParent, Long parentId,
+                                             Map<Long, Long> roleBindingCounts,
+                                             Map<Long, Long> activePermissionCounts) {
         List<AdminMenuEntity> children = byParent.getOrDefault(parentId, List.of());
         List<MenuTreeNode> nodes = new ArrayList<>(children.size());
         for (AdminMenuEntity e : children) {
-            nodes.add(new MenuTreeNode(toView(e), buildChildren(byParent, e.getId())));
+            nodes.add(new MenuTreeNode(toView(e),
+                    buildChildren(byParent, e.getId(), roleBindingCounts, activePermissionCounts),
+                    roleBindingCounts.getOrDefault(e.getId(), 0L),
+                    activePermissionCounts.getOrDefault(e.getId(), 0L)));
         }
         return nodes;
     }
@@ -275,7 +306,9 @@ public class OpsPlatformMenuService {
     }
 
     private MenuNodeView toView(AdminMenuEntity e) {
-        return new MenuNodeView(e.getId(), e.getMenuCode(), e.getMenuName(), e.getMenuNameZh(),
+        return new MenuNodeView(e.getId(), e.getMenuCode(),
+                ffdd.opsconsole.platform.domain.AdminMenuDisplayNames.resolve(e.getRoutePath(), e.getMenuName()),
+                ffdd.opsconsole.platform.domain.AdminMenuDisplayNames.resolve(e.getRoutePath(), e.getMenuNameZh()),
                 e.getParentId(), e.getRoutePath(), e.getIcon(), e.getSortOrder(), e.getStatus(), versionOf(e));
     }
 

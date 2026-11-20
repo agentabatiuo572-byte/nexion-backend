@@ -25,6 +25,12 @@ public record CopyContentRow(
         Long revision,
         List<String> usedVersionKeys) {
 
+    @com.fasterxml.jackson.annotation.JsonProperty(value = "audienceAllocationScope", access = com.fasterxml.jackson.annotation.JsonProperty.Access.READ_ONLY)
+    public String audienceAllocationScope() {
+        // The normal published-copy reader does not evaluate experiment audiences or splits.
+        return "EXPERIMENT_ONLY";
+    }
+
     public CopyContentRow(
             String key, String desc, String surface, String version, String status, String i18nKey,
             String expId, String lastChange, String draftVersion, String draftZh, String draftEn,

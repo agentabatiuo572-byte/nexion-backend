@@ -1,7 +1,9 @@
 # Run after the startup chain: runtime table prerequisites and migrations that depend on them.
+# The Vietnam payment DDL prerequisite intentionally omits this required D6 singleton.
+fresh_db/06_d6_fx_quote_config.sql
+fresh_db/07_d5_withdrawal_config.sql
 fresh_db/ddl-20260720_d1_finance_closure.sql
 fresh_db/ddl-20260722_f1_vrank_promotion_engine.sql
-fresh_db/ddl-20260722_g2_g3_closure.sql
 fresh_db/ddl-20260722_g7_repurchase_closure.sql
 # Raffle ticket backfill requires the G7 ticket table above, including on an empty database.
 migrations/20261025_genesis_raffle.sql
@@ -13,14 +15,19 @@ fresh_db/ddl-20260727_f4_leadership_pool_closure.sql
 fresh_db/ddl-20260727_g2_exchange_fee_allocation.sql
 fresh_db/ddl-20260727_k2_runtime_detection_closure.sql
 migrations/20260929_support_maintenance_s4.sql
-fresh_db/ddl-20261022_04_cregis_funds_preparation.sql
-fresh_db/ddl-20261022_05_cregis_auto_forward.sql
 fresh_db/ddl-20260713_k6_janus.sql
 fresh_db/ddl-20260717_a1_admin_mfa.sql
 fresh_db/ddl-20260721_e3_user_tradein_flow.sql
 fresh_db/ddl-20260727_h7_voucher_inventory_cas.sql
 fresh_db/03_app_runtime_tables.sql
 fresh_db/04_event_registry_restore.sql
+# Install the producer contracts after the fresh event registry has been restored.
+migrations/20261120_lc02_hdpay_withdrawal_schema.sql
+migrations/20261120_lc_bi_dau.sql
+migrations/20261120_lc_bi_registration_phase.sql
+# The registry restore replays the older G2 batch property list.
+migrations/20261106_g2_queue_batch_event_fields.sql
+migrations/20261106_g2_restore_queue_batch_event_fields.sql
 migrations/20261028_janus_retirement.sql
 migrations/20261028_support_ticket_rbac_retirement.sql
 migrations/20261028_f5_commission_key_split.sql
@@ -33,7 +40,25 @@ migrations/20260727_j4_emergency_playbook_event_schema.sql
 migrations/20260727_h5_daily_nex_canonical_closure.sql
 migrations/20260927_h3_quest_claim_event_schema.sql
 fresh_db/05_growth_event_rules.sql
+# The July wheel seed can predate the rule table installed by the step above.
+migrations/20261118_bug456_legacy_spring_spin_status.sql
 migrations/20261104_h4_holding_retire.sql
 # Repair legacy notification visibility after the reminder table exists and H4 triggers are retired.
 migrations/20261025_h4_reminder_visibility.sql
 migrations/20261101_compute_v2_settlement.sql
+
+# Reassert target DDL after fresh database prerequisites (idempotent, no seed changes).
+migrations/20261109_device_monthly_target.sql
+migrations/20261109_sim_policy_epoch.sql
+migrations/20261109_task_pools.sql
+
+# Reassert registry retirement after fresh prerequisites; the marker prevents repeat unwinding.
+migrations/20261109_datacenter_retirement.sql
+
+# PHONE features moved to E6; reassert menu-only reachability after fresh seeds.
+migrations/20261109_phone_menu_visibility.sql
+
+# Restore the H4 wheel award event registration that a DDL-only fresh install misses.
+# The migration inserts only when the registry row, lifecycle row and domain extension are absent.
+migrations/20261118_h4_wheel_award_event_registry.sql
+fresh_db/09_h9_home_display_batch.sql

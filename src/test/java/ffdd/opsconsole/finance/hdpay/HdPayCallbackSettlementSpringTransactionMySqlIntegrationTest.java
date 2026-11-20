@@ -487,7 +487,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
                     mock(ObjectStorageService.class), audit, idem, Clock.systemUTC()), VietQrReceiptEvidenceService.class, tx);
             OpsVietnamPaymentService bankService = transactionProxy(new OpsVietnamPaymentService(paymentAttribution(template.getMapper(VietnamPaymentMapper.class)),
                     template.getMapper(VietnamPaymentMapper.class), audit, idem, mock(FinanceSensitiveDataCipher.class),
-                    template.getMapper(AppVietQrIntentMapper.class), outbox, receiptEvidence, Clock.systemUTC()), OpsVietnamPaymentService.class, tx);
+                    template.getMapper(AppVietQrIntentMapper.class), outbox, receiptEvidence, mock(ffdd.opsconsole.finance.application.PayoutVndConfigService.class), Clock.systemUTC()), OpsVietnamPaymentService.class, tx);
             HdPayManualCreditRequest request = manualRequest(assetId, 0L, suffix);
             var bankRequest = new VietQrReceiptRegistrationRequest(bank, request.paymentReference(), null,
                     request.receivedVnd(), request.receivedAt(), null, "Actual unmatched receipt fixture", "spoofed");
@@ -862,7 +862,7 @@ class HdPayCallbackSettlementSpringTransactionMySqlIntegrationTest {
         var records = template.getMapper(AdminIdempotencyRecordMapper.class);
         var expiry = transactionProxy(new AdminIdempotencyExpiryTransitionExecutor(records), AdminIdempotencyExpiryTransitionExecutor.class, tx);
         var executor = transactionProxy(new AdminIdempotencyTransactionExecutor(records,
-                new ObjectMapper().findAndRegisterModules(), expiry), AdminIdempotencyTransactionExecutor.class, tx);
+                new ObjectMapper().findAndRegisterModules(), expiry, new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(records)), AdminIdempotencyTransactionExecutor.class, tx);
         return new AdminIdempotencyService(executor, Clock.systemUTC());
     }
 

@@ -21,6 +21,14 @@ public class AdminIdempotencyRecordEntity extends BaseEntity {
 
     private String status;
 
+    private Long originAdminId;
+    private String originMethod;
+    private String originPath;
+    private String originTarget;
+    private String originTargets;
+    private String originReadAuthority;
+    private Integer rollbackConfirmed;
+
     @TableField("response_json")
     private String responseJson;
 

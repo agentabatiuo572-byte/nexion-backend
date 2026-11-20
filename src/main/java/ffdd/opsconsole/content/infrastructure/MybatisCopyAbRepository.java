@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.infrastructure;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -52,7 +53,8 @@ import org.springframework.util.StringUtils;
 @Repository
 @RequiredArgsConstructor
 public class MybatisCopyAbRepository implements CopyAbRepository {
-    private static final DateTimeFormatter TS_LABEL = DateTimeFormatter.ofPattern("MM-dd HH:mm");
+    /** New writes keep the year so a version label is never ambiguous after a year boundary. */
+    private static final DateTimeFormatter TS_FULL = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final DateTimeFormatter DAY_LABEL = DateTimeFormatter.ofPattern("MM-dd");
 
     private final CopyContentMapper copyMapper;
@@ -94,6 +96,14 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
     @Override
     public Optional<CopyContentRow> findCopyForUpdate(String copyKey) {
         return Optional.ofNullable(findCopyEntityForUpdate(copyKey)).map(this::toCopyRow);
+    }
+
+    @Override
+    public boolean hasOtherPublishedCopyAtPosition(String copyKey, String positionKey) {
+        if (!StringUtils.hasText(copyKey) || !StringUtils.hasText(positionKey)) {
+            return false;
+        }
+        return copyMapper.countOtherLiveCopiesAtPosition(copyKey.trim(), positionKey.trim()) > 0;
     }
 
     @Override
@@ -159,10 +169,22 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         entity.setExperimentId(experimentId);
         entity.setCopyKey(request.copyKey().trim());
         entity.setAudience(audience);
-        CopyVersionEntity audienceSource = request.variants().isEmpty()
-                ? null
-                : findVersionEntity(request.copyKey().trim(), request.variants().get(0).version().trim());
-        entity.setAudienceSnapshotJson(audienceSource == null ? null : audienceSource.getAudienceJson());
+        CopyAudienceTarget audienceSource = null;
+        for (var variant : request.variants()) {
+            CopyVersionEntity version = findVersionEntity(request.copyKey().trim(), variant.version().trim());
+            if (version == null) continue;
+            CopyAudienceTarget candidate = readAudience(version.getAudienceJson(), version.getAudience());
+            if (candidate == null) continue;
+            if (audienceSource == null) audienceSource = candidate;
+            if (!"全量".equals(version.getAudience())
+                    || candidate.locales() != null && !candidate.locales().isEmpty()
+                    || candidate.tiers() != null && !candidate.tiers().isEmpty()
+                    || candidate.registrationDaysMin() != null || candidate.registrationDaysMax() != null) {
+                audienceSource = candidate;
+                break;
+            }
+        }
+        entity.setAudienceSnapshotJson(writeAudience(audienceSource));
         entity.setImpressionsLabel("0");
         entity.setConversionsLabel("0");
         entity.setState("SCHEDULED");
@@ -240,7 +262,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         archivePublishedVersion(copyKey, now);
         winner.setStatus("PUBLISHED");
         winner.setChain(normalizedOperator + " / experiment " + experimentId + " adopted");
-        winner.setTsLabel(TS_LABEL.format(now));
+        winner.setTsLabel(TS_FULL.format(now));
         winner.setLastOperator(normalizedOperator);
         winner.setUpdatedAt(now);
         versionMapper.updateById(winner);
@@ -335,7 +357,6 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         copy.setDraftAudienceJson(writeAudience(request.audienceTarget()));
         copy.setDraftTrafficSplit(request.trafficSplit().trim());
         copy.setDraftNote(request.versionNote().trim());
-        copy.setStatus("DRAFT_SAVED");
         copy.setRevision(nextRevision(copy));
         copy.setLastOperator(operator(request.operator()));
         copy.setUpdatedAt(now);
@@ -351,7 +372,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         }
         fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
                 request.zh(), request.en(), request.vi(), request.translations(), request.copyPosition(), "DRAFT", operator(request.operator()), now);
-        version.setTsLabel(TS_LABEL.format(now));
+        version.setTsLabel(TS_FULL.format(now));
         if (version.getId() == null) {
             versionMapper.insert(version);
         } else {
@@ -374,14 +395,19 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
             version.setVersion(request.version().trim());
             version.setCreatedAt(now);
             version.setIsDeleted(0);
-        }
-        fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
-                request.zh(), request.en(), request.vi(), request.translations(), request.copyPosition(), "PUBLISHED", operator(request.operator()), now);
-        version.setTsLabel(TS_LABEL.format(now));
-        if (version.getId() == null) {
+            fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
+                    request.zh(), request.en(), request.vi(), request.translations(), request.copyPosition(), "PUBLISHED", operator(request.operator()), now);
+            version.setTsLabel(TS_FULL.format(now));
             versionMapper.insert(version);
         } else {
-            versionMapper.updateById(version);
+            String actor = operator(request.operator());
+            versionMapper.update(null, new LambdaUpdateWrapper<CopyVersionEntity>()
+                    .eq(CopyVersionEntity::getId, version.getId())
+                    .set(CopyVersionEntity::getStatus, "PUBLISHED")
+                    .set(CopyVersionEntity::getChain, actor + " / content")
+                    .set(CopyVersionEntity::getTsLabel, TS_FULL.format(now))
+                    .set(CopyVersionEntity::getLastOperator, actor)
+                    .set(CopyVersionEntity::getUpdatedAt, now));
         }
 
         copy.setSurface(request.surface().trim());
@@ -448,7 +474,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         version.setIsDeleted(0);
         fillVersion(version, request.surface(), request.audience(), request.audienceTarget(), request.trafficSplit(), request.versionNote(),
                 request.zh(), request.en(), request.vi(), request.translations(), request.copyPosition(), "PUBLISHED", op, now);
-        version.setTsLabel(TS_LABEL.format(now));
+        version.setTsLabel(TS_FULL.format(now));
         versionMapper.insert(version);
 
         return findCopy(copyKey).orElse(toCopyRow(copy));
@@ -464,7 +490,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
         archivePublishedVersion(copyKey, now);
         target.setStatus("PUBLISHED");
         target.setChain(operator(operator) + " / rollback");
-        target.setTsLabel(TS_LABEL.format(now));
+        target.setTsLabel(TS_FULL.format(now));
         target.setLastOperator(operator(operator));
         target.setUpdatedAt(now);
         versionMapper.updateById(target);
@@ -1004,7 +1030,9 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                 audienceTarget,
                 entity.getTrafficSplit(),
                 entity.getVersionNote(),
-                estimateAudience(audienceTarget), MessageTranslations.read(entity.getTranslationsJson()));
+                estimateAudience(audienceTarget), MessageTranslations.read(entity.getTranslationsJson()),
+                entity.getCreatedAt() == null ? null : entity.getCreatedAt().toString(),
+                entity.getUpdatedAt() == null ? null : entity.getUpdatedAt().toString());
     }
 
     private CopyExperimentRow toExperimentRow(CopyExperimentEntity entity) {
@@ -1025,7 +1053,7 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                     long impressions = metric == null ? 0L : metric.impressions();
                     long conversions = metric == null ? 0L : metric.conversions();
                     BigDecimal cvr = impressions == 0
-                            ? BigDecimal.ZERO.setScale(2)
+                            ? null
                             : BigDecimal.valueOf(conversions)
                                     .multiply(BigDecimal.valueOf(100))
                                     .divide(BigDecimal.valueOf(impressions), 2, RoundingMode.HALF_UP);
@@ -1033,7 +1061,9 @@ public class MybatisCopyAbRepository implements CopyAbRepository {
                             variant.getVariantName(),
                             variant.getCopyVersion(),
                             variant.getSplitPct() == null ? 0 : variant.getSplitPct(),
-                            cvr);
+                            cvr,
+                            impressions,
+                            conversions);
                 })
                 .toList();
         CopyAudienceTarget audienceSnapshot = readAudience(

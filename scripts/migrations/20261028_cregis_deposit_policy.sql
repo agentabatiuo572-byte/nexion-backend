@@ -35,15 +35,7 @@ SELECT IF(@cregis_policy_installed=1,IF(@cregis_policy_schema_ready AND @cregis_
      OR d.signature_valid<>1 OR d.timestamp_valid<>1 OR d.ip_valid<>1 OR d.signature_valid IS NULL OR d.timestamp_valid IS NULL OR d.ip_valid IS NULL
      OR NOT EXISTS (SELECT 1 FROM nx_cregis_deposit_event e WHERE e.project_id=CAST(JSON_UNQUOTE(JSON_EXTRACT(d.raw_json,'$.pid')) AS UNSIGNED) AND e.cid=d.cid AND REPLACE(LOWER(e.txid),'0x','')=REPLACE(LOWER(d.txid),'0x','') AND LOWER(e.address)=LOWER(d.address) AND e.gross_amount=d.gross_amount AND e.block_number=CAST(JSON_UNQUOTE(JSON_EXTRACT(d.raw_json,'$.block_height')) AS UNSIGNED) AND e.status='CREDITED')))
  + (SELECT COUNT(*) FROM nx_cregis_reconcile_watermark WHERE active_run_id IS NOT NULL)
- -- Failed attempts retain INCOMPLETE after a successful retry; only later, stable coverage resolves them.
- + (SELECT COUNT(*) FROM nx_cregis_reconcile_run r
-    WHERE r.status IS NULL OR r.status NOT IN ('COMPLETE','INCOMPLETE') OR r.completed_at IS NULL
-       OR (r.status='COMPLETE' AND r.stable_passes<2)
-       OR (r.status='INCOMPLETE' AND NOT EXISTS (
-         SELECT 1 FROM nx_cregis_reconcile_run c
-         WHERE c.project_id=r.project_id AND c.status='COMPLETE' AND c.stable_passes>=2
-           AND c.completed_at>=r.completed_at
-           AND c.window_start<=r.window_start AND c.window_end>=r.window_end)))
+ + (SELECT COUNT(*) FROM nx_cregis_reconcile_run WHERE status IS NULL OR status <> 'COMPLETE' OR stable_passes<2 OR completed_at IS NULL)
  + (SELECT COUNT(*) FROM nx_cregis_review_case WHERE status IS NULL OR status NOT IN ('RESOLVED','REJECTED'))
  + (SELECT COUNT(*) FROM nx_cregis_exception_claim WHERE state IS NULL OR state NOT IN ('CREDITED','REJECTED'))
  + (SELECT COUNT(*) FROM nx_cregis_exception_refund WHERE state IS NULL OR state NOT IN ('COMPLETED','REJECTED','CANCELLED','FAILED_NO_TRANSFER','CANCELLED_LATE_EVIDENCE'))

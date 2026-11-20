@@ -9,6 +9,7 @@ import ffdd.opsconsole.finance.cregis.CregisProperties;
 import ffdd.opsconsole.finance.cregis.BscDepositProof;
 import ffdd.opsconsole.finance.cregis.CregisPayoutControl;
 import ffdd.opsconsole.finance.mapper.WithdrawalPayoutMapper;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.time.LocalDateTime;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -48,7 +49,7 @@ public class WithdrawalPayoutExecutor {
         // The local gateway is an acceptance probe only. It must never consume real wallet orders.
         if (mode == CregisProperties.Mode.LOCAL_SANDBOX) return;
         if (mode == CregisProperties.Mode.PROVIDER) {
-            for (var expired : mapper.expiredProviderAttempts(LocalDateTime.now(),50))
+            for (var expired : mapper.expiredProviderAttempts(LocalDateTime.now(BusinessCalendar.STORAGE_ZONE), 50))
                 finalizer.orphaned(expired,expired.providerCid(),"provider","CREGIS_SUBMISSION_UNKNOWN");
             var submitted = mapper.incompleteProviderSubmissions(providerObservationCursor.get(), 50);
             if (submitted.isEmpty() && !providerObservationCursor.get().isEmpty()) {
@@ -63,17 +64,16 @@ public class WithdrawalPayoutExecutor {
         }
         // Existing submitted orders keep being observed when the operator closes new payouts.
         if (mode == CregisProperties.Mode.PROVIDER && !payouts.enabled()) return;
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(BusinessCalendar.STORAGE_ZONE);
         for (var candidate : mapper.claimable(now, 50)) {
-            if(mode==CregisProperties.Mode.PROVIDER && java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(candidate.chain())) {
+            if(mode==CregisProperties.Mode.PROVIDER && java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(candidate.chain())) {
                 WithdrawalPayoutMapper.PayoutRow claimed;
                 try { claimed=dispatchGuard.begin(candidate,now); }
                 catch(RuntimeException unavailable) { continue; } // No HTTP request starts on a failed admission.
                 if(claimed!=null)dispatch(claimed,true);
                 continue;
             }
-            if (mapper.claimNewPayout(candidate.withdrawalNo(), now, now.plusMinutes(2)) != 1) continue;
-            WithdrawalPayoutMapper.PayoutRow claimed = mapper.payout(candidate.withdrawalNo());
+            WithdrawalPayoutMapper.PayoutRow claimed = dispatchGuard.claimWithoutProvider(candidate, now);
             if (claimed == null) continue;
             dispatch(claimed,false);
         }
@@ -111,7 +111,7 @@ public class WithdrawalPayoutExecutor {
     }
 
     private void dispatch(WithdrawalPayoutMapper.PayoutRow row,boolean providerIntentPersisted) {
-        if (!java.util.Set.of("USDT-BEP20","USDT-ERC20").contains(row.chain())) {
+        if (!java.util.Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20").contains(row.chain())) {
             finalizer.retry(row, "CREGIS_CHAIN_UNSUPPORTED");
             return;
         }

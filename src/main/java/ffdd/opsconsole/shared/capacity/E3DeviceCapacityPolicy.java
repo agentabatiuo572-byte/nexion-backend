@@ -5,7 +5,6 @@ import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -61,7 +60,7 @@ public final class E3DeviceCapacityPolicy {
     }
 
     public static Projection project(
-            String productCode,
+            String seriesCode,
             String deviceType,
             LocalDateTime purchasedAt,
             LocalDateTime activatedAt,
@@ -77,7 +76,7 @@ public final class E3DeviceCapacityPolicy {
         if (lifecycleStartedAt.isAfter(now)) {
             throw new IllegalArgumentException("E3_DEVICE_LIFECYCLE_START_INVALID");
         }
-        String configKey = classify(productCode, deviceType);
+        String configKey = classify(seriesCode, deviceType);
         if (configKey == null) {
             throw new IllegalArgumentException("E3_DEVICE_CAPACITY_CLASSIFICATION_MISSING");
         }
@@ -102,21 +101,19 @@ public final class E3DeviceCapacityPolicy {
                 .setScale(6, RoundingMode.HALF_UP);
     }
 
-    public static String classify(String productCode, String deviceType) {
-        String identity = (String.valueOf(productCode) + " " + String.valueOf(deviceType))
-                .toLowerCase(Locale.ROOT).replace("_", "-");
-        if (identity.contains("phone") || identity.contains("mobile")) return "capacityApplyToPhone";
-        if (identity.contains("cloud")) return "capacityApplyToCloudShare";
-        if (identity.contains("pc") || identity.contains("gpu")) return "capacityApplyToPcGpu";
-        if (identity.contains("share")) return "capacityApplyToCloudShare";
-        if (identity.contains("rack-p2") || identity.contains("rackp2")) return "capacityApplyToRackP2";
-        if (identity.contains("rack-p1") || identity.contains("rackp1") || identity.contains("rack")) {
-            return "capacityApplyToRackP1";
-        }
-        if (identity.contains("pro-v2") || identity.contains("prov2")) return "capacityApplyToProV2";
-        if (identity.contains("pro")) return "capacityApplyToPro";
-        if (identity.contains("s1") || identity.contains("box")) return "capacityApplyToS1";
-        return null;
+    public static String classify(String seriesCode, String deviceType) {
+        String kind = ProductSeries.kind(seriesCode, deviceType);
+        return switch (kind == null ? "" : kind) {
+            case "phone" -> "capacityApplyToPhone";
+            case "pc-gpu" -> "capacityApplyToPcGpu";
+            case "cloud-share" -> "capacityApplyToCloudShare";
+            case "stellarbox-s1" -> "capacityApplyToS1";
+            case "stellarbox-pro" -> "capacityApplyToPro";
+            case "stellarbox-pro-v2" -> "capacityApplyToProV2";
+            case "stellarrack-p1" -> "capacityApplyToRackP1";
+            case "stellarrack-p2" -> "capacityApplyToRackP2";
+            default -> null;
+        };
     }
 
     private static int remainingDays(LocalDateTime now, LocalDateTime endsAt) {

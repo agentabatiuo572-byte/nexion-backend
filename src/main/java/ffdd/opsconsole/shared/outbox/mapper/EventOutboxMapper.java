@@ -42,6 +42,7 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             """;
 
     @Insert("""
+            <script>
             INSERT INTO nx_event_outbox (
               event_id, aggregate_type, aggregate_id, event_type,
               event_name, family_key, event_ts, phase, account_age_months, cohort,
@@ -51,8 +52,17 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
               #{eventId}, #{aggregateType}, #{aggregateId}, #{eventType},
               #{eventName}, #{familyKey}, NOW(3), #{phase}, #{accountAgeMonths}, #{cohort},
               #{serverAuthoritative}, #{schemaRevision}, #{schemaRegistered}, #{analyticsEvent}, #{payload},
-              'PENDING', 0, NOW(), NOW(), NOW(), 0
+              <choose>
+                <when test='eventType == "admin.trust_content_published"'>
+                  'RECORDED', 0, NULL
+                </when>
+                <otherwise>
+                  'PENDING', 0, NOW()
+                </otherwise>
+              </choose>,
+              NOW(), NOW(), 0
             )
+            </script>
             """)
     int insertEvent(@Param("eventId") String eventId, @Param("aggregateType") String aggregateType,
                     @Param("aggregateId") String aggregateId, @Param("eventType") String eventType,
@@ -496,7 +506,12 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             SELECT event_id AS eventId,
                    event_type AS eventType,
                    retry_count AS retryCount,
-                   last_error AS lastError
+                   last_error AS lastError,
+                   CASE WHEN is_server_authoritative = 1
+                         AND JSON_VALID(payload)
+                         AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.user_id')) REGEXP '^[1-9][0-9]{0,18}$'
+                        THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.user_id')) AS UNSIGNED)
+                        ELSE NULL END AS userId
              FROM nx_event_outbox
              WHERE event_id = #{eventId}
                AND status = 'DEAD'
@@ -517,7 +532,12 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
             SELECT event_id AS eventId,
                    event_type AS eventType,
                    retry_count AS retryCount,
-                   last_error AS lastError
+                   last_error AS lastError,
+                   CASE WHEN is_server_authoritative = 1
+                         AND JSON_VALID(payload)
+                         AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.user_id')) REGEXP '^[1-9][0-9]{0,18}$'
+                        THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(payload,'$.user_id')) AS UNSIGNED)
+                        ELSE NULL END AS userId
               FROM nx_event_outbox
              WHERE event_id = #{eventId}
                AND status = 'DEAD'
@@ -560,6 +580,40 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
     record SchemaPropertyGateRow(String propertyName, String propertyType, boolean requiredField) {
     }
 
-    record H3DeadLetterRow(String eventId, String eventType, int retryCount, String lastError) {
+    record H3DeadLetterRow(String eventId, String eventType, int retryCount, String lastError, Long userId) {
+        /** Compatibility constructor for callers without the optional source user. */
+        public H3DeadLetterRow(String eventId, String eventType, int retryCount, String lastError) {
+            this(eventId, eventType, retryCount, lastError, null);
+        }
     }
+
+    /** Latest server-produced FAQ event whose payload version exactly matches the current FAQ version. */
+    @Select("""
+            <script>
+            SELECT faqId, operator
+              FROM (
+                SELECT aggregate_id AS faqId,
+                       JSON_UNQUOTE(JSON_EXTRACT(payload,'$.operator')) AS operator,
+                       ROW_NUMBER() OVER (PARTITION BY aggregate_id ORDER BY id DESC) AS rn
+                  FROM nx_event_outbox
+                 WHERE is_deleted=0
+                   AND aggregate_type='SUPPORT_FAQ'
+                   AND event_type='admin.support_faq_updated'
+                   AND (aggregate_id, JSON_UNQUOTE(JSON_EXTRACT(payload,'$.version'))) IN
+                   <foreach collection="refs" item="ref" open="(" separator="," close=")">
+                     (#{ref.faqId}, CAST(#{ref.version} AS CHAR))
+                   </foreach>
+              ) ranked
+             WHERE rn=1
+            </script>
+            """)
+    List<SupportFaqEventOperator> findLatestSupportFaqEventOperators(
+            @Param("refs") java.util.Collection<SupportFaqVersion> refs);
+
+    record SupportFaqVersion(String faqId, Integer version) {
+        public String getFaqId() { return faqId; }
+        public Integer getVersion() { return version; }
+    }
+
+    record SupportFaqEventOperator(String faqId, String operator) { }
 }

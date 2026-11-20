@@ -1,15 +1,23 @@
 package ffdd.opsconsole.shared.audit;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import ffdd.opsconsole.auth.mapper.AdminMapper;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.audit.mapper.AuditLogMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import jakarta.servlet.http.HttpServletRequest;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.Authentication;
@@ -38,6 +46,140 @@ public class AuditLogService {
     private final AuditProperties auditProperties;
     private final AdminMapper adminMapper;
     private final A2RuntimePolicy a2RuntimePolicy;
+    private final ObjectMapper objectMapper;
+
+    /** Called at the authenticated proposal/decision time, never while reading old history. */
+    public String captureAdminDisplayName(Long adminId) {
+        AdminEntity admin = adminMapper.selectById(adminId);
+        if (admin == null) return null;
+        String actor = AdminActorResolver.resolve(null);
+        if (actor != null && (actor.startsWith("admin:") || actor.startsWith("user:"))) actor = null;
+        return firstText(admin.getNickname(), actor);
+    }
+
+    public record F3Residual(BigDecimal left, BigDecimal right, BigDecimal amount) { }
+
+    /** Same per-owner maximum-leg remainder as F3's existing residual-pool query. */
+    public static F3Residual f3ResidualSnapshot(String policy, BigDecimal left, BigDecimal right,
+                                               BigDecimal consumedBefore, BigDecimal consumedNow) {
+        if (policy == null || left == null || right == null || consumedBefore == null || consumedNow == null
+                || left.signum() < 0 || right.signum() < 0 || consumedBefore.signum() < 0 || consumedNow.signum() < 0) return null;
+        if ("每次对碰清零".equals(policy)) return new F3Residual(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        if (!"转结".equals(policy) && !"每月清零".equals(policy)) return null;
+        BigDecimal consumed = consumedBefore.add(consumedNow);
+        if (consumed.compareTo(left.min(right)) > 0) return null;
+        BigDecimal remainderA = left.subtract(consumed).max(BigDecimal.ZERO);
+        BigDecimal remainderB = right.subtract(consumed).max(BigDecimal.ZERO);
+        return new F3Residual(remainderA, remainderB, remainderA.max(remainderB));
+    }
+
+    public Map<String, Map<String, Object>> f3SettlementReviews(Collection<String> settlementNos) {
+        if (settlementNos.isEmpty()) return Map.of();
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        Map<String, String> operations = new LinkedHashMap<>();
+        for (var audit : auditLogMapper.findF3SettlementAudits(settlementNos)) {
+            if (result.containsKey(audit.settlementNo())) continue;
+            JsonNode detail = f3AuditDetail(audit.detailJson());
+            if (detail == null) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            String operationId = clean(detail.path("a2OperationId").asText(null));
+            String mode = clean(detail.path("settlementMode").asText(null));
+            row.put("settlementMode", mode != null ? mode : "ADMIN".equals(audit.actorType()) ? "MANUAL"
+                    : "SYSTEM".equals(audit.actorType()) ? "AUTOMATIC" : null);
+            String policy = clean(detail.path("residualPolicy").asText(null));
+            row.put("residualPolicy", policy);
+            var residual = f3ResidualSnapshot(policy, f3AuditDecimal(detail.get("leftVolume")),
+                    f3AuditDecimal(detail.get("rightVolume")), f3AuditDecimal(detail.get("consumedBefore")),
+                    f3AuditDecimal(detail.get("consumedMatched")));
+            if (detail.hasNonNull("residualTrackARaw") && detail.hasNonNull("residualTrackBRaw")
+                    && detail.hasNonNull("residualAmountUsdt")) {
+                BigDecimal left = f3AuditDecimal(detail.get("residualTrackARaw"));
+                BigDecimal right = f3AuditDecimal(detail.get("residualTrackBRaw"));
+                BigDecimal amount = f3AuditDecimal(detail.get("residualAmountUsdt"));
+                residual = left == null || right == null || amount == null ? null : new F3Residual(left, right, amount);
+            }
+            row.put("residualTrackARaw", residual == null ? null : residual.left());
+            row.put("residualTrackBRaw", residual == null ? null : residual.right());
+            row.put("residualAmountUsdt", residual == null ? null : residual.amount());
+            row.put("proposerName", clean(detail.path("proposerName").asText(null)));
+            row.put("approverName", operationId == null ? null
+                    : firstText(detail.path("approverName").asText(null), f3HistoricalActorName(audit.actorUsername())));
+            row.put("a2OperationId", operationId);
+            if (operationId != null) operations.put(audit.settlementNo(), operationId);
+            result.put(audit.settlementNo(), row);
+        }
+        if (!operations.isEmpty()) {
+            Map<String, String> proposers = new LinkedHashMap<>();
+            auditLogMapper.findA2SettlementProposals(operations.values().stream().distinct().toList())
+                    .forEach(row -> proposers.putIfAbsent(row.operationId(), row.actorUsername()));
+            operations.forEach((settlementNo, operationId) -> {
+                var review = result.get(settlementNo);
+                if (review.get("proposerName") == null) review.put("proposerName", f3HistoricalActorName(proposers.get(operationId)));
+            });
+        }
+        return result;
+    }
+
+    public List<Map<String, Object>> f3BlockedSettlementAttempts(int limit) {
+        var attempts=auditLogMapper.findF3BlockedSettlementAttempts(Math.max(1, Math.min(100, limit)));
+        var rows=new java.util.ArrayList<Map<String, Object>>();
+        var ownerIds=new java.util.LinkedHashSet<Long>();
+        for(var audit:attempts) {
+            JsonNode detail = f3AuditDetail(audit.detailJson());
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("settlementNo", audit.settlementNo());
+            row.put("blockedAt", audit.recordedAt());
+            String ownerUserId = detail == null ? null : detail.path("ownerUserId").asText(null);
+            row.put("ownerUserId", ownerUserId);
+            if (StringUtils.hasText(ownerUserId)) {
+                try {
+                    long ownerId = Long.parseLong(ownerUserId.trim());
+                    if (ownerId > 0) ownerIds.add(ownerId);
+                } catch (NumberFormatException ignored) { }
+            }
+            for (String key : List.of("settlementDate", "reason", "settlementMode", "a2OperationId", "proposerName", "approverName")) {
+                row.put(key, detail == null ? null : detail.path(key).asText(null));
+            }
+            rows.add(row);
+        }
+        Map<Long,String> users = ownerIds.isEmpty() ? Map.of()
+                : auditLogMapper.findUserCodes(ownerIds).stream()
+                    .collect(java.util.stream.Collectors.toMap(AuditLogMapper.UserCode::userId, AuditLogMapper.UserCode::user));
+        for (var row : rows) {
+            String ownerUserId = (String) row.get("ownerUserId");
+            Long ownerId = null;
+            if (StringUtils.hasText(ownerUserId)) {
+                try { ownerId = Long.valueOf(ownerUserId.trim()); } catch (NumberFormatException ignored) { }
+            }
+            row.put("user", ownerId == null ? null : users.get(ownerId));
+        }
+        return rows;
+    }
+
+    private String f3HistoricalActorName(String actor) {
+        String name = clean(actor);
+        return name == null || name.startsWith("admin:") || name.startsWith("user:")
+                || "SYSTEM".equalsIgnoreCase(name) ? null : name;
+    }
+
+    private JsonNode f3AuditDetail(String detail) {
+        if (!StringUtils.hasText(detail)) return null;
+        try {
+            return objectMapper.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readTree(detail);
+        } catch (JsonProcessingException ex) {
+            // Malformed legacy audit metadata is unavailable, never a zero amount or a current value.
+            return null;
+        }
+    }
+
+    private BigDecimal f3AuditDecimal(JsonNode value) {
+        if (value == null || value.isNull()) return null;
+        try {
+            return new BigDecimal(value.asText());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
 
     public void record(AuditLogWriteRequest request) {
         if (!auditProperties.isEnabled() || request == null || !StringUtils.hasText(request.getAction())) {
@@ -97,18 +239,78 @@ public class AuditLogService {
         return list(request, MAX_LIMIT);
     }
 
+    public List<String> findE1PhaseIdsByHistoricalLabel(String label, LocalDateTime receiptTime) {
+        return auditLogMapper.findE1PhaseIdsByHistoricalLabel(label, receiptTime);
+    }
+
     /** Returns only the exact maker/key association, never a recent-log approximation. */
     public String findA2ProposalId(long actorId, String key) {
         if (actorId < 1 || !StringUtils.hasText(key) || key.length() > 128)
             throw new BizException(422, "A2_PROPOSAL_KEY_INVALID");
-        List<String> ids = auditLogMapper.findA2ProposalIds(actorId, key.trim());
-        if (ids.size() > 1) throw new BizException(409, "A2_PROPOSAL_RESULT_AMBIGUOUS");
-        return ids.isEmpty() ? null : ids.get(0);
+        var audit = findA2CommandAudit(actorId, key, "A2_OPERATION_PROPOSED", null);
+        return audit == null ? null : audit.operationId();
+    }
+
+    public AuditLogMapper.A2CommandAudit findA2CommandAudit(long actorId, String key, String action, String operationId) {
+        var matches = auditLogMapper.findA2CommandAudits(actorId, key.trim(), action, operationId);
+        if (matches.size() > 1) {
+            throw new BizException(409, "A2_PROPOSAL_RESULT_AMBIGUOUS");
+        }
+        return matches.isEmpty() ? null : matches.get(0);
+    }
+
+    /** An old K4 receipt may be replayed only by the single actor recorded on its success audit. */
+    public boolean isK4BatchRecomputeOwner(long recordId, String scope, String key, String hash, long actor) {
+        if (recordId < 1 || actor < 1 || !StringUtils.hasText(scope)
+                || !StringUtils.hasText(key) || !StringUtils.hasText(hash)) return false;
+        List<Long> owners = auditLogMapper.findK4BatchRecomputeOwners(recordId, scope, key.trim(), hash);
+        return owners != null && owners.size() == 1 && Long.valueOf(actor).equals(owners.get(0));
     }
 
     public List<AuditLogRecord> listForExport(AuditLogQueryRequest request, int maxRows) {
         return list(request, Math.max(1, Math.min(maxRows, 5000)));
     }
+
+    public Map<String, Long> findBiReportMakers(Collection<String> reportIds) {
+        Map<String, Long> makers = new LinkedHashMap<>();
+        if (!reportIds.isEmpty()) {
+            auditLogMapper.findBiReportMakers(reportIds).forEach(row -> makers.put(row.reportId(), row.makerId()));
+        }
+        return makers;
+    }
+
+    /** Pairs the exact successful create-audit maker with the current admin display name; never falls back to an id or email. */
+    public Map<String, BiReportMakerIdentity> findBiReportMakerIdentities(Collection<String> reportIds) {
+        Map<String, Long> makers = findBiReportMakers(reportIds);
+        if (makers.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> ids = makers.values().stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        Map<Long, String> names = new LinkedHashMap<>();
+        if (!ids.isEmpty()) {
+            List<AdminEntity> admins = adminMapper.selectBatchIds(ids);
+            if (admins != null) {
+                for (AdminEntity admin : admins) {
+                    if (admin == null || admin.getId() == null || Integer.valueOf(1).equals(admin.getIsDeleted())) {
+                        continue;
+                    }
+                    String name = firstText(admin.getNickname(), admin.getUsername());
+                    if (StringUtils.hasText(name)) {
+                        names.put(admin.getId(), name.trim());
+                    }
+                }
+            }
+        }
+        Map<String, BiReportMakerIdentity> identities = new LinkedHashMap<>();
+        makers.forEach((reportId, makerId) -> identities.put(reportId,
+                new BiReportMakerIdentity(makerId, names.get(makerId))));
+        return identities;
+    }
+
+    public record BiReportMakerIdentity(Long makerId, String displayName) { }
 
     /**
      * Returns only successful, exact A2 terminal outcomes for the supplied operation ids.
@@ -230,6 +432,12 @@ public class AuditLogService {
         boolean retentionExecutorAudit = action.startsWith("A2_AUDIT_RETENTION_");
         Integer retentionMonths = retentionExecutorAudit ? null : a2RuntimePolicy.retentionMonths();
         LocalDateTime expireAt = retentionMonths == null ? null : LocalDateTime.now().plusMonths(retentionMonths);
+        var detail = sanitizer.withRequiredSchemaVersion(request.getDetail(), a2RuntimePolicy.schemaVersion());
+        // Reserved correlation is always server-owned, including when the caller supplies the same key.
+        detail.remove("_adminCommand");
+        var command = ffdd.opsconsole.shared.idempotency.AdminIdempotencyExecutionContext.current();
+        if (command != null) detail.put("_adminCommand", Map.of("recordId", command.recordId(),
+                "scope", command.scope(), "commandKey", command.commandKey(), "requestHash", command.requestHash()));
         return new AuditLogMapper.AuditLogWrite(
                 firstText(request.getTraceId(), AuditTraceContext.currentTraceId(), requestTraceId(servletRequest)),
                 applicationNameProperties.getName(),
@@ -246,8 +454,7 @@ public class AuditLogService {
                 firstText(request.getPath(), servletRequest == null ? null : servletRequest.getRequestURI()),
                 normalizeCode(request.getResult(), "SUCCESS"),
                 normalizeCode(request.getRiskLevel(), "INFO"),
-                sanitizer.toSafeJson(sanitizer.withRequiredSchemaVersion(
-                        request.getDetail(), a2RuntimePolicy.schemaVersion())),
+                sanitizer.toSafeJson(detail),
                 retentionMonths,
                 expireAt);
     }
@@ -395,4 +602,217 @@ public class AuditLogService {
             Long userId,
             Long actorId,
             int limit) {}
+
+    /** Latest actual F4 leadership-pool settlement aggregate; per-rank data was never recorded. */
+    public LeadershipPoolSettlement latestLeadershipPoolSettlement() {
+        AuditLogMapper.LeadershipPoolSettlementAudit row =
+                auditLogMapper.findLatestLeadershipPoolSettlement();
+        if (row == null || !StringUtils.hasText(row.weekKey())) return null;
+        BigDecimal pool = decimalOrNull(row.poolAmountUsdt());
+        BigDecimal votes = decimalOrNull(row.totalVotes());
+        Integer users = integerOrNull(row.settledUsers());
+        if (pool == null || votes == null || users == null) return null;
+        return new LeadershipPoolSettlement(row.weekKey().trim(), pool, votes, users);
+    }
+
+    private static BigDecimal decimalOrNull(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
+        try { return new BigDecimal(raw.trim()); } catch (NumberFormatException ex) { return null; }
+    }
+
+    private static Integer integerOrNull(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
+        try { return Integer.valueOf(raw.trim()); } catch (NumberFormatException ex) { return null; }
+    }
+
+    public record LeadershipPoolSettlement(String weekKey, BigDecimal poolAmountUsdt,
+                                           BigDecimal totalVotes, Integer settledUsers) { }
+
+    /** Current admin display names by exact username; missing/deleted/blank maps to null, never id or email. */
+    public Map<String, String> findDisplayNamesByUsernames(Collection<String> usernames) {
+        if (usernames == null || usernames.isEmpty()) {
+            return Map.of();
+        }
+        List<String> normalized = usernames.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (normalized.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> result = new LinkedHashMap<>();
+        List<ffdd.opsconsole.auth.mapper.AdminMapper.AdminDisplayName> admins =
+                adminMapper.findDisplayNamesByUsernames(normalized);
+        if (admins != null) {
+            for (ffdd.opsconsole.auth.mapper.AdminMapper.AdminDisplayName admin : admins) {
+                if (admin != null && StringUtils.hasText(admin.username())
+                        && StringUtils.hasText(admin.displayName())) {
+                    result.put(admin.username(), admin.displayName().trim());
+                }
+            }
+        }
+        return result;
+    }
+    /**
+     * H8 batch evidence keyed by the settlement audit's correlation trace.
+     * The trace is not a transaction-unique ID (a compliant client may supply/reuse it),
+     * so multiple/ambiguous batch evidence is returned as unavailable rather than merged.
+     * No command key is used for grouping: keys are scoped and reusable.
+     */
+    public Map<String, H8SettlementBatch> findH8SettlementBatches(Collection<String> settlementNos) {
+        if (settlementNos == null || settlementNos.isEmpty()) {
+            return Map.of();
+        }
+        List<String> requested = settlementNos.stream().map(AuditLogService::clean)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        if (requested.isEmpty()) {
+            return Map.of();
+        }
+        List<AuditLogMapper.H8SettlementAudit> requestedAudits =
+                auditLogMapper.findH8SettlementAuditsBySettlementNos(requested);
+        Map<String, java.util.Set<String>> tracesBySettlement = new LinkedHashMap<>();
+        Map<String, java.util.Set<String>> actorsBySettlement = new LinkedHashMap<>();
+        if (requestedAudits != null) {
+            for (AuditLogMapper.H8SettlementAudit row : requestedAudits) {
+                String settlementNo = row == null ? null : clean(row.settlementNo());
+                String traceId = row == null ? null : clean(row.traceId());
+                if (settlementNo == null || traceId == null) continue;
+                tracesBySettlement.computeIfAbsent(settlementNo,
+                        ignored -> new java.util.LinkedHashSet<>()).add(traceId);
+                String actor = clean(row.actorUsername());
+                if (actor != null) {
+                    actorsBySettlement.computeIfAbsent(settlementNo,
+                            ignored -> new java.util.LinkedHashSet<>()).add(actor);
+                }
+            }
+        }
+        Map<String, String> settlementTrace = new LinkedHashMap<>();
+        Map<String, String> settlementActor = new LinkedHashMap<>();
+        for (String no : requested) {
+            java.util.Set<String> traces = tracesBySettlement.get(no);
+            if (traces != null && traces.size() == 1) {
+                settlementTrace.put(no, traces.iterator().next());
+                java.util.Set<String> actors = actorsBySettlement.get(no);
+                if (actors != null && actors.size() == 1) {
+                    settlementActor.put(no, actors.iterator().next());
+                }
+            }
+        }
+        if (settlementTrace.isEmpty()) {
+            return Map.of();
+        }
+        List<String> traceIds = settlementTrace.values().stream().distinct().toList();
+        List<AuditLogMapper.H8SettlementBatchAudit> batchRows =
+                auditLogMapper.findH8SettlementBatchAuditsByTraces(traceIds);
+        Map<String, List<AuditLogMapper.H8SettlementBatchAudit>> batchesByTrace = new LinkedHashMap<>();
+        if (batchRows != null) {
+            for (AuditLogMapper.H8SettlementBatchAudit row : batchRows) {
+                String traceId = row == null ? null : clean(row.traceId());
+                if (traceId == null) continue;
+                batchesByTrace.computeIfAbsent(traceId,
+                        ignored -> new java.util.ArrayList<>()).add(row);
+            }
+        }
+        List<AuditLogMapper.H8SettlementAudit> traceAudits =
+                auditLogMapper.findH8SettlementAuditsByTraces(traceIds);
+        Map<String, java.util.Set<String>> settlementNosByTrace = new LinkedHashMap<>();
+        if (traceAudits != null) {
+            for (AuditLogMapper.H8SettlementAudit row : traceAudits) {
+                String traceId = row == null ? null : clean(row.traceId());
+                String settlementNo = row == null ? null : clean(row.settlementNo());
+                if (traceId == null || settlementNo == null) continue;
+                settlementNosByTrace.computeIfAbsent(traceId,
+                        ignored -> new java.util.LinkedHashSet<>()).add(settlementNo);
+            }
+        }
+        List<AuditLogMapper.H8A2Approval> approvals =
+                auditLogMapper.findH8A2ApprovalsByTraces(traceIds);
+        Map<String, java.util.Set<String>> operationsByTrace = new LinkedHashMap<>();
+        Map<String, java.util.Set<String>> actorsByTrace = new LinkedHashMap<>();
+        if (approvals != null) {
+            for (AuditLogMapper.H8A2Approval row : approvals) {
+                String traceId = row == null ? null : clean(row.traceId());
+                String operationId = row == null ? null : clean(row.operationId());
+                if (traceId == null || operationId == null) continue;
+                operationsByTrace.computeIfAbsent(traceId, ignored -> new java.util.LinkedHashSet<>())
+                        .add(operationId);
+                String actor = clean(row.actorUsername());
+                if (actor != null) {
+                    actorsByTrace.computeIfAbsent(traceId, ignored -> new java.util.LinkedHashSet<>())
+                            .add(actor);
+                }
+            }
+        }
+        List<String> operationIds = operationsByTrace.values().stream()
+                .filter(values -> values.size() == 1).map(values -> values.iterator().next())
+                .distinct().toList();
+        Map<String, String> proposers = new LinkedHashMap<>();
+        if (!operationIds.isEmpty()) {
+            auditLogMapper.findA2SettlementProposals(operationIds).forEach(row -> {
+                String operationId = row == null ? null : clean(row.operationId());
+                String actor = row == null ? null : clean(row.actorUsername());
+                if (operationId != null && actor != null) {
+                    proposers.putIfAbsent(operationId, actor);
+                }
+            });
+        }
+        List<String> usernames = new java.util.ArrayList<>();
+        actorsByTrace.values().forEach(usernames::addAll);
+        proposers.values().forEach(usernames::add);
+        Map<String, String> names = new LinkedHashMap<>();
+        List<String> distinctUsernames = usernames.stream().filter(StringUtils::hasText).distinct().toList();
+        if (!distinctUsernames.isEmpty()) {
+            List<AdminMapper.H8DisplayName> admins =
+                    adminMapper.findH8DisplayNamesByUsernames(distinctUsernames);
+            if (admins != null) {
+                for (AdminMapper.H8DisplayName admin : admins) {
+                    if (admin != null && StringUtils.hasText(admin.username())
+                            && StringUtils.hasText(admin.displayName())) {
+                        names.put(admin.username(), admin.displayName().trim());
+                    }
+                }
+            }
+        }
+        Map<String, H8SettlementBatch> result = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : settlementTrace.entrySet()) {
+            String trace = entry.getValue();
+            List<AuditLogMapper.H8SettlementBatchAudit> batch = batchesByTrace.get(trace);
+            if (batch == null || batch.size() != 1) continue;
+            Integer settled = parseSettled(batch.get(0).settled());
+            java.util.Set<String> siblings = settlementNosByTrace.get(trace);
+            if (settled == null || siblings == null || !siblings.contains(entry.getKey())
+                    || siblings.size() != settled || settled < 1) continue;
+            java.util.Set<String> operations = operationsByTrace.get(trace);
+            String operationId = operations != null && operations.size() == 1
+                    ? operations.iterator().next() : null;
+            java.util.Set<String> actors = actorsByTrace.get(trace);
+            String actor = settlementActor.get(entry.getKey());
+            String approver = operationId != null && actor != null && actors != null
+                    && actors.size() == 1 && actors.contains(actor) ? names.get(actor) : null;
+            String proposer = approver == null ? null : names.get(proposers.get(operationId));
+            result.put(entry.getKey(), new H8SettlementBatch(trace, proposer, approver,
+                    List.copyOf(siblings), true));
+        }
+        return result;
+    }
+
+    private static String clean(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        String trimmed = value.trim();
+        return "null".equalsIgnoreCase(trimmed) ? null : trimmed;
+    }
+
+    private static Integer parseSettled(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
+        try {
+            int value = Integer.parseInt(raw.trim());
+            return value >= 0 ? value : null;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    public record H8SettlementBatch(String traceId, String proposerName, String approverName,
+                                    List<String> settlementNos, boolean complete) { }
 }

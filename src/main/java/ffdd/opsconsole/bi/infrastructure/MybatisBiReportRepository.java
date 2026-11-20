@@ -7,21 +7,27 @@ import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportSnapshot;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.domain.L1KpiAnalytics;
+import ffdd.opsconsole.bi.domain.L1RegistrationCohortQuery;
 import ffdd.opsconsole.bi.domain.L2FunnelAnalytics;
+import ffdd.opsconsole.bi.domain.BiSampleSuppression;
 import ffdd.opsconsole.bi.domain.L4OperationsAnalytics;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.platform.application.A4RuntimePolicyService;
 import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Repository
@@ -183,21 +189,50 @@ public class MybatisBiReportRepository implements BiReportRepository {
     public Map<String, Object> kpiDashboard(
             String window, String cohort, String phase, String locale, String ref) {
         return L1KpiAnalytics.calculate(mapper.selectL1EventFacts(), window, cohort, phase, locale, ref,
-                a4RuntimePolicyService.day0Seconds());
+                a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
     }
 
     @Override
     public Map<String, Object> kpiDrilldown(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
         return L1KpiAnalytics.drilldown(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref,
-                a4RuntimePolicyService.day0Seconds());
+                a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
     }
 
     @Override
     public Map<String, Object> kpiTrend(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
         return L1KpiAnalytics.trend(mapper.selectL1EventFacts(), kpiId, window, cohort, phase, locale, ref,
-                a4RuntimePolicyService.day0Seconds());
+                a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Map<String, Object> registrationKpis(L1RegistrationCohortQuery query) {
+        if (query.buckets().isEmpty()) {
+            return L1KpiAnalytics.calculateRegistrationCohorts(
+                    List.of(), List.of(), query, a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
+        }
+        LocalDateTime from = LocalDateTime.ofInstant(query.selectedFrom(), BusinessCalendar.STORAGE_ZONE);
+        LocalDateTime to = LocalDateTime.ofInstant(query.selectedToExclusive(), BusinessCalendar.STORAGE_ZONE);
+        LocalDateTime firstRegistration = registrationEdge(from);
+        LocalDateTime lastRegistrationExclusive = registrationEdge(to);
+        var registrations = mapper.selectL1Registrations(firstRegistration, lastRegistrationExclusive);
+        var facts = registrations.isEmpty() ? List.<Map<String, Object>>of()
+                : mapper.selectL1RegistrationEventFacts(from.truncatedTo(ChronoUnit.MICROS),
+                        lastRegistrationExclusive, query.observationEnd().truncatedTo(ChronoUnit.MICROS));
+        return L1KpiAnalytics.calculateRegistrationCohorts(facts, registrations, query,
+                a4RuntimePolicyService.day0Seconds(), firstFullDauDay());
+    }
+
+    private java.time.LocalDate firstFullDauDay() {
+        return L1KpiAnalytics.firstFullDauDay(mapper.selectFirstDauEventAt());
+    }
+
+    private static LocalDateTime registrationEdge(LocalDateTime value) {
+        // MySQL binds at most six fractional digits. Round half-open user boundaries upward.
+        LocalDateTime micros = value.truncatedTo(ChronoUnit.MICROS);
+        return micros.equals(value) ? micros : micros.plus(1, ChronoUnit.MICROS);
     }
 
     private Map<String, Object> funnelDashboard() {
@@ -216,13 +251,15 @@ public class MybatisBiReportRepository implements BiReportRepository {
                 "sources", List.of("nx_event_outbox:event_name", "nx_event_schema_registry"));
         if (allowIndependentFallback) {
             dashboard.put("stages", List.of(
-                        stage("registered", mapper.countA4DistinctActors("auth.register_completed"), "nx_event_outbox:auth.register_completed"),
-                        stage("profileCompleted", mapper.countA4DistinctActors("onboarding.profile_completed"), "nx_event_outbox:onboarding.profile_completed"),
-                        stage("ordered", mapper.countA4DistinctActors("checkout.started"), "nx_event_outbox:checkout.started"),
-                        stage("walletActivity", mapper.countA4DistinctActors("wallet.topup_confirmed"), "nx_event_outbox:wallet.topup_confirmed")));
+                         protectedL2Stage("registered", "auth.register_completed"),
+                         protectedL2Stage("profileCompleted", "onboarding.profile_completed"),
+                         protectedL2Stage("ordered", "checkout.started"),
+                         protectedL2Stage("walletActivity", "wallet.topup_confirmed")));
         }
+        var collectionFrom = firstFullDauDay();
+        dashboard.put("retentionCollectionFrom", collectionFrom == null ? null : collectionFrom.toString());
         Map<String, Object> analytics = L2FunnelAnalytics.calculate(
-                mapper.selectL2EventFacts(), cohort, phase, locale, ref);
+                mapper.selectL2EventFacts(), cohort, phase, locale, ref, collectionFrom);
         dashboard.put("capabilities", linked(
                 "sameUserFunnel", Boolean.TRUE.equals(analytics.get("available")),
                 "cohortRetention", Boolean.TRUE.equals(analytics.get("available")),
@@ -238,14 +275,22 @@ public class MybatisBiReportRepository implements BiReportRepository {
         return dashboard;
     }
 
+    private Map<String, Object> protectedL2Stage(String key, String event) {
+        long count = mapper.countA4DistinctActors(event);
+        return BiSampleSuppression.protect(stage(key, count, "nx_event_outbox:" + event),
+                BiSampleSuppression.belowThreshold(count), "count");
+    }
+
     private Map<String, Object> operationsDashboard() {
         return operationsDashboard("week", "ALL", null, null);
     }
 
     @Override
     public Map<String, Object> operationsDashboard(String period, String phase, String from, String to) {
+        List<Map<String, Object>> l4Facts = new ArrayList<>(mapper.selectL4EventFacts());
+        l4Facts.addAll(mapper.selectL4QuestDispatchFacts());
         Map<String, Object> result = new LinkedHashMap<>(
-                L4OperationsAnalytics.calculate(mapper.selectL4EventFacts(), period, phase, from, to));
+                L4OperationsAnalytics.calculate(l4Facts, period, phase, from, to));
         Object deviceValue = result.get("device");
         if (deviceValue instanceof Map<?, ?> deviceRaw) {
             @SuppressWarnings("unchecked")

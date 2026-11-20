@@ -12,12 +12,49 @@ import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.infrastructure.RiskDecisionEntity;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
+    /**
+     * Exact, unique-cluster H8 denial evidence from the same hot+cold audit pair used by
+     * AuditLogMapper. The retired hot row and its archive copy still count one reward.
+     */
+    String K2_DENIAL_EVIDENCE_SQL = """
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.rewardIdentity')) AS rewardIdentity,
+                   JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.clusterId')) AS clusterId
+              FROM nx_audit_log a
+             WHERE a.is_deleted = 0
+               AND a.action = 'REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED'
+               AND a.resource_type = 'REFERRAL_REWARD'
+               AND a.result = 'REJECTED'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.riskBlocked')) = 'true'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.rewardType')) = 'NEWCOMER_WELCOME_GIFT'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json, '$.attribution')) = 'UNIQUE_CLUSTER'
+            UNION ALL
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.rewardIdentity')) AS rewardIdentity,
+                   JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.clusterId')) AS clusterId
+              FROM nx_audit_log_archive a
+             WHERE a.content_sha256 IS NOT NULL
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.action')) = 'REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.resourceType')) = 'REFERRAL_REWARD'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.result')) = 'REJECTED'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.riskBlocked')) = 'true'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.rewardType')) = 'NEWCOMER_WELCOME_GIFT'
+               AND JSON_UNQUOTE(JSON_EXTRACT(a.cold_payload, '$.detail.attribution')) = 'UNIQUE_CLUSTER'
+            """;
+
+    @Select("SELECT DATE_FORMAT(last_success_at, '%Y-%m-%dT%H:%i:%s.%fZ') FROM nx_admin_risk_multi_account_check WHERE id = 1")
+    String lastSuccessfulMultiAccountCheckAt();
+
+    @Insert("""
+            INSERT INTO nx_admin_risk_multi_account_check (id, last_success_at) VALUES (1, UTC_TIMESTAMP(3))
+            ON DUPLICATE KEY UPDATE last_success_at = GREATEST(last_success_at, UTC_TIMESTAMP(3))
+            """)
+    void recordSuccessfulMultiAccountCheck();
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_risk_decision (
               id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -195,6 +232,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               actions_csv VARCHAR(128) NOT NULL,
               disposition VARCHAR(64) DEFAULT NULL,
               version BIGINT NOT NULL DEFAULT 0,
+              blocked_count BIGINT NOT NULL DEFAULT 0,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
               is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -206,6 +244,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
 
     @Update("ALTER TABLE nx_admin_risk_arbitrage_row ADD COLUMN version BIGINT NOT NULL DEFAULT 0 AFTER disposition")
     void addArbitrageRowVersionColumn();
+
+    @Update("ALTER TABLE nx_admin_risk_arbitrage_row ADD COLUMN blocked_count BIGINT NOT NULL DEFAULT 0 AFTER version")
+    void addArbitrageRowBlockedCountColumn();
 
     @Update("UPDATE nx_admin_risk_arbitrage_param SET is_deleted = 1, updated_at = NOW() WHERE param_key = #{key} AND is_deleted = 0")
     int retireObsoleteArbitrageParam(@Param("key") String key);
@@ -907,6 +948,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT h.withdrawal_no AS withdrawalNo,
                    h.user_no AS userNo,
                    h.amount_text AS amountText,
+                   CAST(w.amount AS CHAR) AS amountValue,
+                   NULLIF(w.asset, '') AS currency,
+                   CASE WHEN w.id IS NULL THEN NULL ELSE 'WITHDRAWAL_ORDER' END AS amountSource,
                    h.rule_id AS ruleId,
                    h.dimension,
                    h.action,
@@ -914,8 +958,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                        rd.reason,
                        CONCAT(h.dimension, '规则命中:', COALESCE(r.condition_text, h.rule_id), ' -> ', h.action)
                    ) AS reason,
-                   DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText
+                   DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText,
+                   r.condition_text AS conditionText
               FROM nx_admin_risk_withdraw_hit h
+              LEFT JOIN nx_withdrawal_order w
+                ON w.withdrawal_no = h.withdrawal_no AND w.is_deleted = 0
               LEFT JOIN nx_admin_risk_withdraw_rule r
                 ON r.rule_id = h.rule_id AND r.is_deleted = 0
               LEFT JOIN nx_risk_decision rd
@@ -936,6 +983,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT h.withdrawal_no AS withdrawalNo,
                    h.user_no AS userNo,
                    h.amount_text AS amountText,
+                   CAST(w.amount AS CHAR) AS amountValue,
+                   NULLIF(w.asset, '') AS currency,
+                   CASE WHEN w.id IS NULL THEN NULL ELSE 'WITHDRAWAL_ORDER' END AS amountSource,
                    h.rule_id AS ruleId,
                    h.dimension,
                    h.action,
@@ -943,8 +993,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                        rd.reason,
                        CONCAT(h.dimension, '规则命中:', COALESCE(r.condition_text, h.rule_id), ' -> ', h.action)
                    ) AS reason,
-                   DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText
+                   DATE_FORMAT(h.created_at, '%Y-%m-%d %H:%i:%s') AS timeText,
+                   r.condition_text AS conditionText
               FROM nx_admin_risk_withdraw_hit h
+              LEFT JOIN nx_withdrawal_order w
+                ON w.withdrawal_no = h.withdrawal_no AND w.is_deleted = 0
               LEFT JOIN nx_admin_risk_withdraw_rule r
                 ON r.rule_id = h.rule_id AND r.is_deleted = 0
               LEFT JOIN nx_risk_decision rd
@@ -998,6 +1051,46 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
              LIMIT 1
             """)
     RiskArbitrageParamView findArbitrageParam(@Param("key") String key);
+
+    @Select("""
+            <script>
+            SELECT id,value_text AS value,version,is_deleted AS deleted
+              FROM nx_admin_risk_arbitrage_param WHERE param_key = #{key}
+            <if test="lock">FOR UPDATE</if>
+            </script>
+            """)
+    K2OtpRiskSource otpRiskSource(@Param("key") String key, @Param("lock") boolean lock);
+
+    @Select("""
+            <script>
+            SELECT id,config_value AS value,status,is_deleted AS deleted
+              FROM nx_config_item WHERE config_key = #{key}
+            <if test="lock">FOR UPDATE</if>
+            </script>
+            """)
+    K2OtpCanonicalSource otpCanonicalSource(@Param("key") String key, @Param("lock") boolean lock);
+
+    @Update("""
+            UPDATE nx_admin_risk_arbitrage_param
+               SET value_text = #{value},version = version + 1,is_deleted = 0,updated_at = NOW()
+             WHERE id = #{before.id} AND version = #{before.version} AND is_deleted = #{before.deleted}
+               AND BINARY value_text = BINARY #{before.value}
+            """)
+    int initializeOtpRiskSource(@Param("before") K2OtpRiskSource before, @Param("value") String value);
+
+    @Update("""
+            UPDATE nx_config_item
+               SET config_value = #{value},value_type = #{valueType},config_group = 'auth-risk',
+                   visibility = 'ADMIN',remark = 'K2 OTP gate canonical configuration',
+                   status = 1,is_deleted = 0,updated_at = NOW()
+             WHERE id = #{before.id} AND status = #{before.status} AND is_deleted = #{before.deleted}
+               AND BINARY config_value = BINARY #{before.value}
+            """)
+    int initializeOtpCanonicalSource(@Param("before") K2OtpCanonicalSource before,
+                                     @Param("value") String value, @Param("valueType") String valueType);
+
+    record K2OtpRiskSource(Long id, String value, long version, int deleted) {}
+    record K2OtpCanonicalSource(Long id, String value, int status, int deleted) {}
 
     @Insert("""
             INSERT INTO nx_admin_risk_arbitrage_param (param_key,name,value_text,sub_text,note_text,version,is_deleted)
@@ -1479,6 +1572,126 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     List<RiskArbitrageRowRecord> arbitrageRows();
 
+    /** Raw welcome-gift amounts behind a K2 gift row; evidence-only gift rows are included and disposition-only rows keep the structured unavailable count. */
+    @Select("""
+            SELECT CONCAT('K2-GIFT-C', LEFT(SHA2(cluster.cluster_id, 256), 40)) AS rowId,
+                   SUM(settlement.newcomer_usdt) AS usdtRaw,
+                   SUM(settlement.newcomer_nex) AS nexRaw,
+                   COUNT(DISTINCT settlement.id) AS settledCount,
+                   (SELECT NULLIF(COUNT(DISTINCT e.rewardIdentity), 0)
+                      FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                      ) e
+                     WHERE e.clusterId = cluster.cluster_id
+                   ) AS blockedCount
+              FROM nx_admin_risk_multi_account_cluster cluster
+              JOIN nx_referral_reward_settlement settlement
+                ON settlement.is_deleted = 0
+               AND UPPER(settlement.status) = 'SETTLED'
+              JOIN nx_user invited
+                ON invited.id = settlement.invited_user_id
+               AND invited.is_deleted = 0
+               AND JSON_VALID(cluster.nodes_json) = 1
+               AND JSON_SEARCH(cluster.nodes_json, 'one',
+                       CONCAT('U', LPAD(invited.id,
+                           GREATEST(8, CHAR_LENGTH(CAST(invited.id AS CHAR))), '0'))) IS NOT NULL
+             WHERE cluster.is_deleted = 0
+               AND cluster.nodes_json IS NOT NULL
+             GROUP BY cluster.cluster_id
+            UNION ALL
+            -- Keep disposition-only gift rows visible without a countable SETTLED settlement.
+            SELECT risk.row_id AS rowId,
+                   0 AS usdtRaw,
+                   0 AS nexRaw,
+                   0 AS settledCount,
+                   (SELECT NULLIF(COUNT(DISTINCT e.rewardIdentity), 0)
+                      FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                      ) e
+                     WHERE e.clusterId = risk.cluster_id
+                   ) AS blockedCount
+              FROM nx_admin_risk_arbitrage_row risk
+             WHERE risk.is_deleted = 0
+               AND risk.view_key = 'gift'
+               AND (risk.disposition IS NOT NULL OR EXISTS (
+                   SELECT 1 FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                   ) e WHERE e.clusterId = risk.cluster_id AND e.rewardIdentity IS NOT NULL
+               ))
+               AND NOT EXISTS (
+                   SELECT 1
+                     FROM nx_admin_risk_multi_account_cluster cluster
+                     JOIN nx_referral_reward_settlement settlement
+                       ON settlement.is_deleted = 0
+                      AND UPPER(settlement.status) = 'SETTLED'
+                     JOIN nx_user invited
+                       ON invited.id = settlement.invited_user_id
+                      AND invited.is_deleted = 0
+                      AND JSON_VALID(cluster.nodes_json) = 1
+                      AND JSON_SEARCH(cluster.nodes_json, 'one',
+                              CONCAT('U', LPAD(invited.id,
+                                  GREATEST(8, CHAR_LENGTH(CAST(invited.id AS CHAR))), '0'))) IS NOT NULL
+                    WHERE cluster.cluster_id = risk.cluster_id
+                      AND cluster.is_deleted = 0
+                      AND cluster.nodes_json IS NOT NULL
+               )
+            """)
+    List<Map<String, Object>> arbitrageGiftAmounts();
+
+    /**
+     * Read-only facts for canonical gift rows retired by the projection refresh. The row is
+     * intentionally not re-created; callers expose these beside active rows only when the
+     * cluster is still readable and exact unique-cluster H8 evidence exists.
+     */
+    @Select("""
+            SELECT risk.row_id AS rowId,
+                   risk.cluster_id AS clusterId,
+                   (SELECT NULLIF(COUNT(DISTINCT e.rewardIdentity), 0)
+                      FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                      ) e
+                     WHERE e.clusterId = risk.cluster_id
+                   ) AS blockedCount
+              FROM nx_admin_risk_arbitrage_row risk
+              JOIN nx_admin_risk_multi_account_cluster cluster
+                ON cluster.cluster_id = risk.cluster_id AND cluster.is_deleted = 0
+             WHERE risk.is_deleted = 1
+               AND risk.view_key = 'gift'
+               AND risk.row_id LIKE 'K2-GIFT-C%'
+               AND risk.disposition IS NULL
+               AND risk.cluster_id IS NOT NULL
+               AND cluster.nodes_json IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM (""" + K2_DENIAL_EVIDENCE_SQL + """
+                   ) e WHERE e.clusterId = risk.cluster_id AND e.rewardIdentity IS NOT NULL
+               )
+             ORDER BY risk.updated_at DESC, risk.row_id ASC
+            """)
+    List<Map<String, Object>> retiredGiftDenialFacts();
+
+    /** Raw current-week USDT behind a K2 board row, read from the same snapshot projection. */
+    @Select("""
+            SELECT r.row_id AS rowId, MAX(s.cumulative_usdt) AS usdtRaw
+              FROM nx_admin_risk_arbitrage_row r
+              JOIN nx_user u
+                ON u.is_deleted = 0
+               AND CONCAT('U', LPAD(u.id,
+                       GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')) = r.cell1
+              JOIN nx_risk_k2_leaderboard_snapshot s
+                ON s.user_id = u.id
+               AND s.is_deleted = 0
+               AND s.period_type = 'week'
+               AND s.period_key = DATE_FORMAT(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.WEEK_DATE + """
+                   , '%Y-%m-%d')
+               AND s.snapshot_bucket = (
+                   SELECT MAX(latest.snapshot_bucket)
+                     FROM nx_risk_k2_leaderboard_snapshot latest
+                    WHERE latest.user_id = s.user_id
+                      AND latest.is_deleted = 0
+                      AND latest.period_type = s.period_type
+                      AND latest.period_key = s.period_key
+               )
+             WHERE r.view_key = 'board' AND r.is_deleted = 0
+             GROUP BY r.row_id
+            """)
+    List<Map<String, Object>> arbitrageBoardAmounts();
+
     @Select("""
             SELECT r.row_id AS rowId,r.view_key AS viewKey,r.cluster_id AS clusterId,
                    r.cell1,r.cell2,r.cell3,r.cell4,r.cell5,r.cell6,r.level_value AS level,
@@ -1504,7 +1717,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
 
     @Update("""
             UPDATE nx_admin_risk_arbitrage_row
-               SET disposition = #{disposition}, version = version + 1, updated_at = NOW()
+               SET disposition = #{disposition},
+                   version = version + 1, updated_at = NOW()
              WHERE row_id = #{rowId} AND version = #{expectedVersion}
                AND disposition IS NULL AND is_deleted = 0
             """)
@@ -1851,7 +2065,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
                    s.row_version AS rowVersion,
                    COALESCE(DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s'),DATE_FORMAT(s.updated_at,'%Y-%m-%d %H:%i:%s')) AS asOf,
-                   s.updated_text AS updatedText
+                   s.updated_text AS updatedText,
+                   (SELECT h.contributions_json FROM nx_admin_risk_score_history h
+                     WHERE h.user_no=s.user_no AND h.is_deleted=0
+                       AND s.model_version=CONCAT('k4-v',h.model_version) AND h.model_score=s.model_score
+                     ORDER BY h.id DESC LIMIT 1) AS capturedContributionsJson
               FROM nx_admin_risk_score_user s
               JOIN nx_user u
                 ON CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=s.user_no
@@ -1888,7 +2106,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
                    s.row_version AS rowVersion,
                    COALESCE(DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s'),DATE_FORMAT(s.updated_at,'%Y-%m-%d %H:%i:%s')) AS asOf,
-                   s.updated_text AS updatedText
+                   s.updated_text AS updatedText,
+                   (SELECT h.contributions_json FROM nx_admin_risk_score_history h
+                     WHERE h.user_no=s.user_no AND h.is_deleted=0
+                       AND s.model_version=CONCAT('k4-v',h.model_version) AND h.model_score=s.model_score
+                     ORDER BY h.id DESC LIMIT 1) AS capturedContributionsJson
               FROM nx_admin_risk_score_user s
               JOIN nx_admin_risk_score_model m
                 ON m.state = 'active'
@@ -2001,6 +2223,31 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     long countScoreUsersNeedingProjection(@Param("modelVersion") long modelVersion);
 
     @Select("""
+            WITH withdrawal_by_asset AS (
+                SELECT w.user_id, w.asset,
+                       SUM(CASE WHEN w.created_at >= NOW()-INTERVAL 24 HOUR THEN 1 ELSE 0 END) AS count24h,
+                       SUM(CASE WHEN w.created_at >= NOW()-INTERVAL 24 HOUR THEN w.amount ELSE 0 END) AS amount24h,
+                       SUM(CASE WHEN w.created_at >= NOW()-INTERVAL 7 DAY THEN 1 ELSE 0 END) AS count7d,
+                       SUM(CASE WHEN w.created_at >= NOW()-INTERVAL 7 DAY THEN w.amount ELSE 0 END) AS amount7d,
+                       SUM(CASE WHEN w.created_at < NOW()-INTERVAL 7 DAY THEN 1 ELSE 0 END) AS baselineCount,
+                       SUM(CASE WHEN w.created_at < NOW()-INTERVAL 7 DAY THEN w.amount ELSE 0 END) AS baselineAmount,
+                       MAX(CASE WHEN w.created_at >= NOW()-INTERVAL 24 HOUR THEN w.amount ELSE NULL END) AS max24h
+                  FROM nx_withdrawal_order w
+                  JOIN nx_user evidence_user ON evidence_user.id = w.user_id
+                 WHERE CONCAT('U',LPAD(evidence_user.id,GREATEST(8,CHAR_LENGTH(CAST(evidence_user.id AS CHAR))),'0')) = #{userNo}
+                   AND w.is_deleted=0 AND w.created_at >= NOW()-INTERVAL 37 DAY
+                 GROUP BY w.user_id, w.asset
+            ), withdrawal_capture AS (
+                SELECT user_id, JSON_ARRAYAGG(JSON_OBJECT(
+                    'currency', asset,
+                    'count24h', count24h, 'amount24h', CAST(amount24h AS CHAR),
+                    'count7d', count7d, 'amount7d', CAST(amount7d AS CHAR),
+                    'baselineCount', baselineCount, 'baselineAmount', CAST(baselineAmount AS CHAR),
+                    'baselineDailyCount', CAST(baselineCount / 30.0 AS CHAR),
+                    'baselineDailyAmount', CAST(baselineAmount / 30.0 AS CHAR),
+                    'max24h', CAST(max24h AS CHAR))) AS assets
+                  FROM withdrawal_by_asset GROUP BY user_id
+            )
             SELECT CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')) AS userNo,
                    COALESCE((SELECT MAX(c.account_count)
                                FROM nx_admin_risk_multi_account_cluster c
@@ -2049,7 +2296,17 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                      AS anomalySignals,
                    EXISTS(SELECT 1 FROM nx_risk_signal s
                            WHERE s.user_id=u.id AND s.is_deleted=0 AND s.signal_type='TAMPER_DETECTED'
-                             AND s.created_at>=NOW()-INTERVAL 30 DAY) AS tamperDetected
+                             AND s.created_at>=NOW()-INTERVAL 30 DAY) AS tamperDetected,
+                   JSON_OBJECT(
+                       'source', 'nx_withdrawal_order', 'amountBasis', 'ASSET_REQUESTED_GROSS',
+                       'capturedAt', DATE_FORMAT(NOW(), '%Y-%m-%dT%H:%i:%s'), 'timeZone', 'Asia/Shanghai',
+                       'statusFilter', 'ALL', 'baselineDivisorDays', 30,
+                       'windows', JSON_OBJECT(
+                           '24h', JSON_OBJECT('fromInclusive', DATE_FORMAT(NOW()-INTERVAL 24 HOUR, '%Y-%m-%dT%H:%i:%s'), 'toExclusive', NULL),
+                           '7d', JSON_OBJECT('fromInclusive', DATE_FORMAT(NOW()-INTERVAL 7 DAY, '%Y-%m-%dT%H:%i:%s'), 'toExclusive', NULL),
+                           'baseline', JSON_OBJECT('fromInclusive', DATE_FORMAT(NOW()-INTERVAL 37 DAY, '%Y-%m-%dT%H:%i:%s'),
+                               'toExclusive', DATE_FORMAT(NOW()-INTERVAL 7 DAY, '%Y-%m-%dT%H:%i:%s'))),
+                       'assets', COALESCE((SELECT assets FROM withdrawal_capture WHERE user_id=u.id), JSON_ARRAY())) AS withdrawalEvidenceJson
               FROM nx_user u
              WHERE CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))=#{userNo}
                AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
@@ -2269,7 +2526,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     List<RiskParamRecord> riskParams(@Param("section") String section);
 
-    @Select("SELECT value_text FROM nx_admin_risk_param WHERE section_key=#{section} AND param_key=#{key} AND is_deleted=0 LIMIT 1")
+    @Select("SELECT value_text FROM nx_admin_risk_param WHERE section_key=#{section} AND param_key=#{key} AND is_deleted=0 LIMIT 1 FOR UPDATE")
     String riskParamValue(@Param("section") String section, @Param("key") String key);
 
     @Insert("""
@@ -2456,33 +2713,6 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             @Param("giftsJson") String giftsJson,
             @Param("nodesJson") String nodesJson,@Param("edgesJson") String edgesJson);
 
-    @Update("""
-            <script>
-            UPDATE nx_admin_risk_multi_account_cluster SET is_deleted=1,updated_at=NOW()
-             WHERE is_deleted=0 AND status='detected'
-             <if test="ids != null and ids.size() > 0">
-               AND cluster_id NOT IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
-             </if>
-            </script>
-            """)
-    int retireMissingDetectedClusters(@Param("ids") java.util.Set<String> ids);
-
-    @Update("""
-            <script>
-            UPDATE nx_admin_risk_multi_account_cluster
-               SET status='cleared',review_note='IP 白名单自动清除',updated_by='K1_CLUSTER_SCHEDULER',
-                   version=version+1,updated_at=NOW()
-             WHERE is_deleted=0 AND status='detected'
-             <choose>
-               <when test="ids != null and ids.size() > 0">
-                 AND cluster_id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
-               </when>
-               <otherwise>AND 1=0</otherwise>
-             </choose>
-            </script>
-            """)
-    int clearWhitelistedDetectedClusters(@Param("ids") java.util.Set<String> ids);
-
     @Select("SELECT COUNT(*) FROM nx_admin_risk_ip_whitelist WHERE is_deleted = 0")
     long countIpWhitelist();
 
@@ -2510,7 +2740,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             SELECT cidr,note_text AS note,operator,expire_text AS expireText,active
               FROM nx_admin_risk_ip_whitelist
              WHERE cidr=#{cidr} AND is_deleted=0
-             LIMIT 1
+             LIMIT 1 FOR UPDATE
             """)
     IpWhitelistRecord ipWhitelistState(@Param("cidr") String cidr);
 
@@ -2641,7 +2871,8 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     }
 
     record ScoreUserRecord(
-            String userNo, Integer modelScore, String modelVersion, Long rowVersion, String asOf, String updatedText) {
+            String userNo, Integer modelScore, String modelVersion, Long rowVersion, String asOf, String updatedText,
+            String capturedContributionsJson) {
     }
 
     record ScoreUserSearchRecord(String userNo, Integer modelScore, String modelVersion, String updatedText,
@@ -2666,7 +2897,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             java.math.BigDecimal withdrawalBaselineDailyCount,
             java.math.BigDecimal withdrawalBaselineDailyAmount,
             java.math.BigDecimal maxWithdrawal24h,
-            Integer accountAgeDays, Integer anomalySignals, Boolean tamperDetected) {
+            Integer accountAgeDays, Integer anomalySignals, Boolean tamperDetected, String withdrawalEvidenceJson) {
     }
 
     record RiskParamRecord(String key, String name, String value, String unit, String sub, String note,

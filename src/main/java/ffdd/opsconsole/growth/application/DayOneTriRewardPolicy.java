@@ -35,6 +35,9 @@ final class DayOneTriRewardPolicy {
 
     static String normalizePolicy(String rawPolicy) {
         BigDecimal[] rewards = parse(rawPolicy);
+        if (rewards[0].stripTrailingZeros().scale() > 6 || rewards[1].stripTrailingZeros().scale() > 6) {
+            throw unavailable();
+        }
         return plain(rewards[0]) + " / " + plain(rewards[1]) + " / " + plain(rewards[2]) + " UVT";
     }
 
@@ -45,6 +48,18 @@ final class DayOneTriRewardPolicy {
     /** Project only the legacy asset suffix when reading stored policies. */
     private static String storedPolicy(String rawPolicy) {
         return rawPolicy == null ? null : rawPolicy.replaceFirst("(?i)\\s+NEX\\s*$", " UVT");
+    }
+
+    static boolean increases(String before, String after) {
+        BigDecimal[] next = parse(after);
+        if (before == null || before.isBlank()) return true;
+        BigDecimal[] previous;
+        try {
+            previous = parse(storedPolicy(before));
+        } catch (BizException invalidCurrentPolicy) {
+            throw new BizException(422, "QUEST_DAY_ONE_TRI_REWARD_INVALID");
+        }
+        return next[0].compareTo(previous[0]) > 0 || next[1].compareTo(previous[1]) > 0;
     }
 
     private static BigDecimal[] parse(String rawPolicy) {

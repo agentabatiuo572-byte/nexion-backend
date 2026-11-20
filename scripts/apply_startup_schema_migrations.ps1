@@ -17,6 +17,7 @@ $migrations = @(
   # H1 is a runtime dependency of H8 reward projection and several finance
   # gates.  Fresh schemas must receive the canonical rhythm keys before any
   # acceptance endpoint is opened; H8 also owns its permission/menu contract.
+  (Join-Path $root "scripts\migrations\20261120_lc_h1_rhythm.sql"),
   (Join-Path $root "scripts\migrations\20260711_rhythm_configurable.sql"),
   (Join-Path $root "scripts\migrations\20260722_h_domain_closure.sql"),
   (Join-Path $root "scripts\migrations\20260909_h5_legacy_milestone_reward.sql"),
@@ -32,6 +33,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260730_f5_commission_anomaly_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_recovery.sql"),
   (Join-Path $root "scripts\migrations\20260801_admin_idempotency_expiry_claim_index.sql"),
+  (Join-Path $root "scripts\migrations\20261108_b38_unknown_operation_investigation.sql"),
+  (Join-Path $root "scripts\migrations\20261108_b38_unknown_operation_target_membership.sql"),
   # The canonical schema intentionally keeps the pre-D2 withdrawal shape. D5
   # migrations below address columns created by this rerunnable prerequisite,
   # so a fresh database must apply it before the 20260807 hard blockers.
@@ -42,6 +45,7 @@ $migrations = @(
   # Apply the authoritative D3 closure immediately afterwards so those retired
   # capabilities cannot be resurrected in a fresh acceptance database.
   (Join-Path $root "scripts\migrations\20260720_d3_treasury_closure.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_d3_void_legacy_opening.sql"),
   (Join-Path $root "scripts\migrations\20260807_nexion_hard_blockers.sql"),
   (Join-Path $root "scripts\migrations\20261108_earnings_release_source_ref_index.sql"),
   (Join-Path $root "scripts\migrations\20260807_k6_evidence_hardening.sql"),
@@ -74,7 +78,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260813_compute_share_enrollment.sql"),
   (Join-Path $root "scripts\migrations\20260813_developer_access_request.sql"),
   (Join-Path $root "scripts\migrations\20260814_team_ambassador_application.sql"),
-  (Join-Path $root "scripts\migrations\20260816_team_ambassador_policy.sql"),
+  # Seed missing policy only on startup and keep the managed migration immutable.
+  (Join-Path $root "scripts\local\20260816_team_ambassador_policy.sql"),
   # Upgraded F4 databases may predate the mapper's audit projections.
   (Join-Path $root "scripts\migrations\20260905_team_ambassador_policy_audit_columns.sql"),
   (Join-Path $root "scripts\migrations\20260813_user_self_service.sql"),
@@ -96,7 +101,6 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260902_legal_terms_formal_publish.sql"),
   (Join-Path $root "scripts\migrations\20260817_h7_voucher_cadence.sql"),
   (Join-Path $root "scripts\migrations\20260817_genesis_holder_policy.sql"),
-  (Join-Path $root "scripts\migrations\20260820_home_grid_datacenter_metadata.sql"),
   (Join-Path $root "scripts\migrations\20260820_e2_task_price_history.sql"),
   (Join-Path $root "scripts\migrations\20260820_i4_homepage_trust_content.sql"),
   (Join-Path $root "scripts\migrations\20260821_h2_trial_card_offer.sql"),
@@ -105,6 +109,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261015_withdrawal_order_schema_readiness.sql"),
   (Join-Path $root "scripts\migrations\20260823_team_hardware_quota_product_alignment.sql"),
   (Join-Path $root "scripts\migrations\20260823_withdrawal_submitted_schema_alignment.sql"),
+  (Join-Path $root "scripts\migrations\20261108_b42_withdrawal_compliance_event_schema.sql"),
   (Join-Path $root "scripts\migrations\20260823_d2_lifecycle_event_schema_alignment.sql"),
   (Join-Path $root "scripts\migrations\20260824_nova_conversation_history.sql"),
   (Join-Path $root "scripts\migrations\20260909_app_conversation_dismissal.sql"),
@@ -146,6 +151,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260831_globe_task_read_index.sql"),
   # H3 mission category and direct App route are configured in PC and persisted by Java.
   (Join-Path $root "scripts\migrations\20260901_h3_mission_presentation_config.sql"),
+  # Never-opened mission drafts need a durable lifecycle marker; existing rows stay UNKNOWN.
+  (Join-Path $root "scripts\migrations\20261117_h3_mission_content_state.sql"),
   (Join-Path $root "scripts\migrations\20260901_genesis_showcase_authority.sql"),
   # Store bundle prices and App checkout read the same operator-owned E1 ladder.
   (Join-Path $root "scripts\migrations\20260902_bundle_discount_authority.sql"),
@@ -158,14 +165,17 @@ $migrations = @(
   # Weekly H3 completions publish the existing strict quest.completed A4 contract.
   # Exchange/referral thresholds are prospective server-derived H3 facts; their binding rows are idempotent.
   (Join-Path $root "scripts\migrations\20260907_h3_weekly_exchange_referral.sql"),
-  # Only the currently active H3 mission set may consume new canonical facts.
-  (Join-Path $root "scripts\migrations\20260902_h3_active_mission_event_alignment.sql"),
+  # H3 reward policy is provisioned independently of existing task bindings.
+  (Join-Path $root "scripts\migrations\20261120_lc_h3_mission_alignment.sql"),
   # New registrations freeze their H3 Day-One member, binding, reward, and deadline snapshot.
   # This is create-only: legacy rows remain explicitly unverifiable.
   (Join-Path $root "scripts\migrations\20260909_h3_day_one_instance_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261016_h3_weekly_definition_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261018_h3_regional_weekly_period.sql"),
-  (Join-Path $root "scripts\migrations\20260911_h3_day_one_registration_bindings.sql"),
+  (Join-Path $root "scripts\migrations\20261106_h3_weekly_phase_multiplier.sql"),
+  # Restore missing Day One definitions and receipts without reopening existing bindings.
+  (Join-Path $root "scripts\migrations\20261119_h3_invite_friend_registration_binding.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_h3_missing_bindings.sql"),
   # Lifetime purchase quota release must follow the reservation made by the
   # exact order line, never today's mutable SKU policy.
   (Join-Path $root "scripts\migrations\20260902_order_quota_reservation_lineage.sql"),
@@ -233,6 +243,7 @@ $migrations = @(
   # all three languages, so real pushes kept showing it. Rewrite only rows that
   # still match the whole token; the Java RetiredBrandGate now blocks new
   # publishes of the same defect.
+  (Join-Path $root "scripts\migrations\20261120_lc_i2_channels.sql"),
   (Join-Path $root "scripts\migrations\20260920_i2_nova_brand_retire.sql"),
   # E6's stored English download guide still led with test punctuation ("！！！Download
   # ..."). The page already refused to ship it, but the dirty value stayed in the
@@ -240,12 +251,6 @@ $migrations = @(
   # with test punctuation; the server-side gate now rejects new writes of the same
   # shape.
   (Join-Path $root "scripts\migrations\20260920_e6_download_copy_test_punctuation_cleanup.sql"),
-  # E2 had a tier ladder but no authoritative pricing rows, so the console showed
-  # six empty task classes and an empty task list (PURGE_GATE / read failed). The
-  # seed script existed but was never registered here, so it never ran on deploy.
-  # It is idempotent (INSERT ... ON DUPLICATE KEY UPDATE) and already documents the
-  # canonical six-class vocabulary, so registering it is the whole fix.
-  (Join-Path $root "scripts\seed_e2_task_pricing.sql"),
   # Prepare the H4 localization branch without inserting unreviewed translations.
   # Existing ongoing events still need operator-approved copy configured in H4.
   (Join-Path $root "scripts\migrations\20260920_h4_event_localized_content.sql"),
@@ -264,12 +269,6 @@ $migrations = @(
   # but not saved. Rewrite the remaining rows onto the current brand and the allowlist
   # wording; new writes are already blocked by RetiredBrandGate.
   (Join-Path $root "scripts\migrations\20260921_h2_e2_retired_brand_cleanup.sql"),
-  # The trial hero quoted "3-day trial credit $116" while the same screen's S1 card
-  # said $1.00/day. The display side already prefers the product's own daily yield,
-  # but no migration ever populated nx_product.estimated_daily_usdt, so it fell back
-  # to the stale policy value (38.52). Seed the catalogue-authoritative yield for the
-  # trial product and align the fallback policy values with it.
-  (Join-Path $root "scripts\migrations\20260921_h2_trial_product_daily_yield.sql"),
   # The payment-integration SKU "HDPay1U" is still reachable from the App store's
   # "more models" list. The publish gate would withhold it (no effective earnings),
   # so the live row must carry a nonzero yield; retire that row explicitly instead of
@@ -290,8 +289,6 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260926_phone_task_pause_timing.sql")
   # The H3 quest claim outbox must accept its instance fields before wallet settlement.
   (Join-Path $root "scripts\migrations\20260927_h3_quest_claim_event_schema.sql")
-  # Home's canonical E5 display row still carries the retired network brand.
-  (Join-Path $root "scripts\migrations\20260928_home_mobile_network_brand.sql")
   (Join-Path $root "scripts\migrations\20260928_phone_calibration_policy.sql")
   (Join-Path $root "scripts\migrations\20261101_direct_referral_bootstrap_compat.sql"),
   (Join-Path $root "scripts\migrations\20261006_seven_layer_direct_split.sql")
@@ -309,12 +306,15 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261022_02_cregis_exception_refund.sql")
   (Join-Path $root "scripts\migrations\20261022_03_cregis_reorg_resolution.sql")
   # Historical deposits must pass the policy snapshot preflight before PROVIDER mode starts.
+  # Complete the retry-compatible install before replaying the immutable historical file.
+  (Join-Path $root "scripts\migrations\20261028_00_cregis_deposit_policy_retry_compat.sql")
   (Join-Path $root "scripts\migrations\20261028_cregis_deposit_policy.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions.sql")
   # Grant H4 capabilities only after the promotion permission rows exist on a fresh database.
   (Join-Path $root "scripts\migrations\20261022_04_h4_superadmin_permissions.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_order_receipt.sql")
   (Join-Path $root "scripts\migrations\20261007_earnings_source_recovery.sql")
+  (Join-Path $root "scripts\migrations\20261105_promotion_refund_balance_recovery.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_list_snapshot.sql")
   (Join-Path $root "scripts\migrations\20261012_growth_promotions_snapshot_cleanup.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions_quota_restore.sql")
@@ -358,6 +358,9 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261019_phone_replacement_domain.sql")
   (Join-Path $root "scripts\migrations\20261019_phone_replacement_ops.sql")
   (Join-Path $root "scripts\migrations\20261021_g1_staking_app_visibility.sql")
+  # STK-BE-01 closes the same persisted visibility/gate key after the historical seed;
+  # the Java read default is already false and the old migration bytes stay unchanged.
+  (Join-Path $root "scripts\migrations\20261118_stk_be01_staking_visibility_off.sql")
   (Join-Path $root "scripts\migrations\20261021_g1_staking_visibility_event.sql")
   (Join-Path $root "scripts\migrations\20261021_oauth_provider_first_login.sql")
   (Join-Path $root "scripts\migrations\20261027_app_conversation_user_clear.sql")
@@ -376,6 +379,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261029_h4_retire_legacy_events.sql")
   (Join-Path $root "scripts\migrations\20261029_trust_documents.sql")
   (Join-Path $root "scripts\migrations\20261029_l6_trust_document_routes.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_i4_trust_sections.sql"),
   (Join-Path $root "scripts\migrations\20261029_i4_trust_centre_initial_copy.sql")
   # First-batch business facts and native push receipts remain separate from inbox delivery.
   (Join-Path $root "scripts\migrations\20261029_business_notifications.sql")
@@ -396,7 +400,14 @@ $migrations = @(
   # Network-aware Cregis readers require the earlier deposit and direct-payment tables.
   # This adds schema/pool state only; enabling ERC20 still requires explicit configuration.
   (Join-Path $root "scripts\migrations\20261031_z_cregis_erc20_network.sql")
+  (Join-Path $root "scripts\migrations\20261107_cregis_network_switches.sql")
+  (Join-Path $root "scripts\migrations\20261108_cregis_trc20_network.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_cregis_deployment_config.sql")
+  # Empty databases need the funds-preparation tables before the ERC20 ALTER.
+  (Join-Path $root "scripts\migrations\20261119_cregis_00_funds_preparation_schema.sql")
+  (Join-Path $root "scripts\migrations\20261119_cregis_erc20_funds_preparation.sql")
   (Join-Path $root "scripts\migrations\20261031_test_cloud_request_journal.sql")
+  (Join-Path $root "scripts\migrations\20261107_test_cloud_request_id_forward.sql")
   # The unresolved-request index depends on the journal table above.
   (Join-Path $root "scripts\migrations\20261101_compute_v2_resource_index.sql")
   # Shared device readers need this evidence table; the migration writes no TEST incident data.
@@ -412,10 +423,17 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261102_simulated_task_policy_uvt_asset.sql")
   (Join-Path $root "scripts\migrations\20261102_simulated_task_runtime.sql"),
   (Join-Path $root "scripts\migrations\20261102_simulated_task_runtime_recent_read_index.sql")
+  (Join-Path $root "scripts\migrations\20261116_simulated_task_home_live_index.sql")
   (Join-Path $root "scripts\migrations\20261103_english_rule_task_catalog.sql")
+  # Seed missing E2 classes only, after the catalog tables exist on fresh installs.
+  (Join-Path $root "scripts\seed_e2_task_pricing.sql")
   (Join-Path $root "scripts\migrations\20261103_retired_compute_read_views.sql")
   (Join-Path $root "scripts\migrations\20261103_retired_device_referral_read_view.sql")
-  (Join-Path $root "scripts\migrations\20261103_task_class_authorization.sql")
+  # Replay the pool-aware forward replacement; keep the historical cutover immutable.
+  (Join-Path $root "scripts\migrations\20261109_task_class_pool_compat.sql")
+  (Join-Path $root "scripts\migrations\20261109_device_monthly_target.sql")
+  (Join-Path $root "scripts\migrations\20261109_sim_policy_epoch.sql")
+  (Join-Path $root "scripts\migrations\20261109_task_pools.sql")
   (Join-Path $root "scripts\migrations\20261103_h9_globe_distribution.sql")
   (Join-Path $root "scripts\migrations\20261103_handoff_checkin_boost.sql")
   (Join-Path $root "scripts\migrations\20261103_handoff_commerce_trial.sql")
@@ -433,7 +451,100 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261104_h3_mission_neutral_name.sql")
   (Join-Path $root "scripts\migrations\20261104_console_menu_permission_neutral_names.sql")
   (Join-Path $root "scripts\migrations\20261104_console_page_catalog_remark_neutral_names.sql")
+  (Join-Path $root "scripts\migrations\20261105_d2_preserve_review_reason.sql")
+  (Join-Path $root "scripts\migrations\20261105_b0_snapshot_export_permission.sql")
+  (Join-Path $root "scripts\migrations\20261106_h4_approval_command_capacity.sql"),
+  (Join-Path $root "scripts\migrations\20261106_a4_app_event_registry_restore.sql"),
+  (Join-Path $root "scripts\migrations\20261106_h2_discount_rate_percent.sql"),
+  (Join-Path $root "scripts\migrations\20261106_h2_trial_deadline_snapshots.sql"),
+  (Join-Path $root "scripts\migrations\20261106_g4_emission_item_rate_snapshot.sql"),
+  (Join-Path $root "scripts\migrations\20261106_b32_user_daily_active.sql"),
+  (Join-Path $root "scripts\migrations\20261106_b32_daily_flow_wallet_index.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_bi_dau.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_bi_registration_phase.sql"),
+  (Join-Path $root "scripts\migrations\20261106_g2_queue_batch_event_fields.sql"),
+  (Join-Path $root "scripts\migrations\20261106_g2_restore_queue_batch_event_fields.sql"),
+  (Join-Path $root "scripts\migrations\20261106_zy_b31_menu_names_order.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_rbac_missing_codes.sql"),
+  (Join-Path $root "scripts\migrations\20261106_zz_b30_role_scope.sql"),
+  (Join-Path $root "scripts\migrations\20261106_zz_h5_tick_permission.sql"),
+  (Join-Path $root "scripts\migrations\20261106_zzz_f5_export_permission.sql"),
+  (Join-Path $root "scripts\migrations\20261106_zzzz_a6_role_remarks.sql"),
+  (Join-Path $root "scripts\migrations\20261106_e4_refunded_device_tasks.sql"),
+  (Join-Path $root "scripts\migrations\20261106_k1_last_success.sql"),
+  (Join-Path $root "scripts\migrations\20261106_k1_retired_release_params.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_risk_defaults.sql"),
+  (Join-Path $root "scripts\migrations\20261107_c2_impersonation_active_deadline.sql")
+  (Join-Path $root "scripts\migrations\20261107_b35_withdrawal_review_route.sql")
+  (Join-Path $root "scripts\migrations\20261107_be27_ambassador_materials.sql")
+  (Join-Path $root "scripts\migrations\20261107_be27_ambassador_budget_grant.sql")
+  (Join-Path $root "scripts\migrations\20261116_a1_be07_f4_review_command_key.sql")
+  (Join-Path $root "scripts\migrations\20261108_b38_finance_rbac_scope.sql")
+  (Join-Path $root "scripts\migrations\20261108_b38_unknown_operation_authority.sql")
+  (Join-Path $root "scripts\migrations\20261108_b43_support_c3_scope.sql")
+  (Join-Path $root "scripts\migrations\20261109_b37_order_refund_amount.sql")
+  (Join-Path $root "scripts\migrations\20261109_b36_business_summary.sql")
+  (Join-Path $root "scripts\migrations\20261109_b43_c2_account_reads_and_original_reason.sql")
   (Join-Path $root "scripts\migrations\20261109_i5_read_token_time_precision.sql")
+  (Join-Path $root "scripts\migrations\20261109_rbac_replay_scope.sql")
+  (Join-Path $root "scripts\migrations\20261109_rbac_wallet_pin_grants.sql")
+  (Join-Path $root "scripts\migrations\20261109_phone_menu_visibility.sql")
+  # App must be stopped before retiring the registry; the migration records a one-time marker.
+  (Join-Path $root "scripts\migrations\20261109_datacenter_retirement.sql")
+  # Normalize retained H4 asset aliases without replaying the historical prize-pool seed.
+  (Join-Path $root "scripts\migrations\20261116_h4_wheel_reward_kind_uvt.sql"),
+  # Clean known current display copy after legacy seeds; never create prize tiers
+  # or rewrite published content versions and historical evidence.
+  (Join-Path $root "scripts\migrations\20261116_bug426_current_uvt_display_names.sql"),
+  # Fence stale J4 execution progress writes with the generation claimed by recovery.
+  (Join-Path $root "scripts\migrations\20261116_j4_sop_execution_generation.sql"),
+  # Generated nicknames are unique: rename existing duplicates, then add uk_user_nickname.
+  (Join-Path $root "scripts\migrations\20261117_user_nickname_unique.sql"),
+  # The H4 wheel award event registration is lost in DDL-only installs.
+  # Restore it after the event governance structure and lifecycle closure above.
+  (Join-Path $root "scripts\migrations\20261118_h4_wheel_award_event_registry.sql"),
+  (Join-Path $root "scripts\migrations\20261118_bug456_legacy_spring_spin_status.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_wheel.sql"),
+  (Join-Path $root "scripts\migrations\20261118_bug457_nova_social_wrapped_uvel_titles.sql"),
+  (Join-Path $root "scripts\migrations\20261118_app_display_text_seed_names.sql"),
+  # Retire the last legacy Nova brand token and page codes in preloaded copy.
+  (Join-Path $root "scripts\migrations\20261119_i2_be06_nova_brand_trigger_copy.sql"),
+  # Align nx_admin_menu stock display names with current navigation names.
+  (Join-Path $root "scripts\migrations\20261119_a7_be02_menu_display_names.sql"),
+  # Remove legacy admin menu nodes that never appear in the PC left navigation.
+  (Join-Path $root "scripts\migrations\20261119_a7_be01_legacy_menu_removal.sql"),
+  # F1 voucher clawback column + wallet negative-balance constraint (BUG-515/F1-BE-10).
+  (Join-Path $root "scripts\migrations\20261119_f1_be04_voucher_redeemed_amount.sql"),
+  (Join-Path $root "scripts\migrations\20261119_f1_be06_wallet_negative_clawback.sql"),
+  # F1-BE-20: keep cumulative_deposit_usdt non-negative after the wallet CHECK rebuild.
+  (Join-Path $root "scripts\migrations\20261119_f1_be20_wallet_cumulative_non_negative.sql"),
+  (Join-Path $root "scripts\migrations\20261119_b53_product_series.sql"),
+  # Restore only the I4/I5 grants the legacy-menu run deleted, proven by catalog
+  # damage plus the same-run timestamp and no later A6 save (A7-BE-09). Runs once.
+  # Supersedes the broad A7-BE-07 repair, which stays in source control as
+  # delivered history and must not re-apply on every normal start.
+  (Join-Path $root "scripts\migrations\20261119_a7_be09_restore_i4_i5_damage_proven.sql"),
+  # E5 operator pause gets its own runtime state columns (E5-BE-19).
+  (Join-Path $root "scripts\migrations\20261119_e5_be19_ops_pause_state.sql"),
+  # Backfill only audit/event-proven operator pauses into the new state (E5-BE-20).
+  (Join-Path $root "scripts\migrations\20261120_e5_be20_ops_pause_backfill.sql"),
+  # I5-BE-03: register exchange in the I5 disclosure-gate action catalog.
+  (Join-Path $root "scripts\migrations\20261119_i5_be03_disclosure_gate_exchange.sql"),
+  (Join-Path $root "scripts\migrations\20261120_b54_binary_platform_settlement.sql"),
+  (Join-Path $root "scripts\migrations\20261120_b54_binary_platform_settlement_owner_index.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_market_team_payment.sql"),
+  # BUG-521: rename the legacy default phone comparison label to English (one-shot).
+  (Join-Path $root "scripts\migrations\20261120_e6_bug521_phone_label_english.sql"),
+  # BUG-522: store E3 trade-in eligibility as stable codes (known legacy values only, one-shot).
+  (Join-Path $root "scripts\migrations\20261120_e6_bug522_tradein_eligibility_codes.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_tradein_rules.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_e3_capacity_defaults.sql")
+  (Join-Path $root "scripts\migrations\20261101_compute_v2_task_policy.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_phone_tasks.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_a4_event_registry.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc02_hdpay_withdrawal_schema.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_h9_launch_display.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_h9_active_jobs_display.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
@@ -497,6 +608,37 @@ try {
   # Repo-relative paths (Push-Location above) keep this single -e argument under the Windows command-line limit.
   $rootPrefix = $root.Path.TrimEnd('\', '/')
   $mysqlArgs = @('--default-character-set=utf8mb4', '--protocol=tcp', '-h', $databaseUri.Host, '-P', $port, '-u', $Username, $database)
+  # Refuse the nickname migration before its UPDATE when final names collide with
+  # existing names or with each other. This is read-only; the operator resolves
+  # the listed rows and retries the controlled startup.
+  $nicknameTable = & $MySql @mysqlArgs -N -B -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user';"
+  if ($LASTEXITCODE -ne 0) { throw 'Could not inspect nx_user before nickname migration.' }
+  if ((@($nicknameTable) -join "`n").Trim() -ne '0') {
+    $nicknameSql = @'
+WITH ranked AS (
+  SELECT id, nickname AS original_nickname, is_deleted, created_at,
+         ROW_NUMBER() OVER (PARTITION BY nickname ORDER BY is_deleted, created_at, id) AS holder_rank
+    FROM nx_user
+), final_names AS (
+  SELECT id, original_nickname,
+         CONVERT(CASE WHEN holder_rank = 1 THEN original_nickname
+                      ELSE CONCAT(LEFT(original_nickname, 50), '-', CONV(id, 10, 36)) END
+                 USING utf8mb4) COLLATE utf8mb4_0900_ai_ci AS target_nickname
+    FROM ranked
+), conflicts AS (
+  SELECT target_nickname FROM final_names
+   GROUP BY target_nickname HAVING COUNT(*) > 1
+)
+SELECT f.id, f.original_nickname, f.target_nickname
+  FROM final_names f JOIN conflicts c ON f.target_nickname = c.target_nickname
+ ORDER BY f.target_nickname, f.id;
+'@
+    $nicknameConflicts = & $MySql @mysqlArgs -N -B -e $nicknameSql
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect nickname migration conflicts.' }
+    if ((@($nicknameConflicts) -join "`n").Trim().Length -gt 0) {
+      throw "Nickname migration conflicts must be resolved manually before startup (id, original, target): $((@($nicknameConflicts) -join '; '))."
+    }
+  }
   $runMigrations = {
     param($batch)
     $sources = ($batch | ForEach-Object { "source $($_.Substring($rootPrefix.Length + 1).Replace('\', '/'));" }) -join "`n"
@@ -534,14 +676,14 @@ try {
     'd2_gross_fee', 'd2_nex_burned', 'd2_network_fee_rate', 'd2_network_fee_min', 'd2_network_fee_max',
     'd2_network_fee', 'd2_nex_fee_offset_rate', 'd2_fee_waived', 'd2_actual_fee', 'd2_net_receive',
     'd5_policy_version', 'd5_use_nex_fee_offset', 'd2_lifecycle_owner', 'd2_freeze_period',
-    'd2_routing_priority', 'd2_k3_risk_route', 'd2_k4_risk_score', 'd2_k4_model_version', 'd2_k4_as_of',
+    'd2_routing_priority', 'd2_submission_risk_route', 'd2_k3_risk_route', 'd2_k4_risk_score', 'd2_k4_model_version', 'd2_k4_as_of',
     'd2_k4_band_low_max', 'd2_k4_band_high_min', 'd2_k4_auto_escalate_score', 'failure_reason',
-    'd2_previous_status', 'terminal_reason', 'retriable', 'created_at', 'updated_at', 'is_deleted'
+    'd2_previous_status', 'd2_pre_freeze_reason', 'terminal_reason', 'retriable', 'created_at', 'updated_at', 'is_deleted'
   )
   $withdrawalOrderColumnSql = ($withdrawalOrderColumns | ForEach-Object { "'$_'" }) -join ','
   $requiredWithdrawalColumnCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_withdrawal_order' AND COLUMN_NAME IN ($withdrawalOrderColumnSql);"
   if ($LASTEXITCODE -ne 0 -or (@($requiredWithdrawalColumnCount) -join "`n").Trim() -ne [string]$withdrawalOrderColumns.Count) {
-    throw "Withdrawal order schema startup postcondition failed: all $($withdrawalOrderColumns.Count) required columns must exist. Apply scripts/migrations/20261015_withdrawal_order_schema_readiness.sql and the controlled startup prerequisites. Backend startup has been stopped."
+    throw "Withdrawal order schema startup postcondition failed: all $($withdrawalOrderColumns.Count) required columns must exist. Apply the controlled startup prerequisites, including 20261015_withdrawal_order_schema_readiness.sql, 20261105_d2_preserve_review_reason.sql and 20261107_b35_withdrawal_review_route.sql. Backend startup has been stopped."
   }
   $requiredQuoteExpiryColumnCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_bank_payout_quote_expiry' AND COLUMN_NAME IN ('quote_no','expired_at');"
   if ($LASTEXITCODE -ne 0 -or (@($requiredQuoteExpiryColumnCount) -join "`n").Trim() -ne "2") {

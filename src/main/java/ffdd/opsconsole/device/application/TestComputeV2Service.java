@@ -518,7 +518,7 @@ public class TestComputeV2Service {
         }
         var selected=ComputeV2Selection.draw(candidates,random);var task=selected.candidate();
         var capacity=new HashMap<String,String>();for(var row:assignments.e3CapacityConfig())capacity.put(row.configKey(),row.configValue());
-        var projection=E3DeviceCapacityPolicy.project(owned.productCode(),owned.deviceType(),owned.purchasedAt(),owned.activatedAt(),
+        var projection=E3DeviceCapacityPolicy.project(owned.seriesCode(),owned.deviceType(),owned.purchasedAt(),owned.activatedAt(),
                 LocalDateTime.ofInstant(clock.instant(),DateTimeFormatConfig.BUSINESS_ZONE),capacity);
         long reward=ComputeV2Selection.micros(E3DeviceCapacityPolicy.applyCapacity(BigDecimal.valueOf(selected.rawMicros(),6),projection));
         Object input;
@@ -565,7 +565,7 @@ public class TestComputeV2Service {
         Integer pending=admission.pendingDeactivate(deviceId,userId);
         if((!completing && (pending==null || pending!=0)) || device.activatedAt()==null
                 || !Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(device.status().toUpperCase(Locale.ROOT))
-                || Boolean.TRUE.equals(device.dispatchPaused()) || device.pausedReason()!=null&&!device.pausedReason().isBlank())
+                || device.pausedReason()!=null&&!device.pausedReason().isBlank())
             throw error(409,"COMPUTE_V2_DEVICE_NOT_ACTIVE");
         if(admission.unresolvedLegacy(userId,deviceId)!=0) throw error(409,"COMPUTE_V2_V1_NOT_DRAINED");
         long ownedEnrolled=assignments.ownedDevices(userId).stream().filter(row->enrolled.contains(row.id()) && row.activatedAt()!=null

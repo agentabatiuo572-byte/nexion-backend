@@ -36,7 +36,6 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('device_e5_write',                         'E5 设备运维 - 常规写',             'API', '/devices/ops',            'WRITE', 0, 1, 0),
   ('device_e5_device_force_activate',         '强制激活设备',                     'API', '/devices/ops',            'HIGH',  1, 1, 0),
   ('device_e5_device_unbind',                 '解绑设备',                         'API', '/devices/ops',            'HIGH',  1, 1, 0),
-  ('device_e5_datacenter_pause',              '数据中心批量暂停',                 'API', '/devices/ops',            'HIGH',  1, 1, 0),
   -- E6 算力与设备配置 /devices/compute-config（全常规，无高敏）
   ('device_e6_read',                          'E6 算力与设备配置 - 读',           'API', '/devices/compute-config', 'READ',  0, 1, 0),
   ('device_e6_write',                         'E6 算力与设备配置 - 常规写',       'API', '/devices/compute-config', 'WRITE', 0, 1, 0),
@@ -62,6 +61,8 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('network_f4_write',                        'F4 池配额大使榜 - 常规写',         'API', '/network/leadership-pool','WRITE', 0, 1, 0),
   ('network_f4_pool_fund',                    '奖池资金类调整',                   'API', '/network/leadership-pool','HIGH',  1, 1, 0),
   ('network_f4_ambassador_approve',           '区域大使审批',                     'API', '/network/leadership-pool','HIGH',  1, 1, 0),
+  ('network_f4_ambassador_material_review',   '大使业务材料核验',                 'API', '/network/leadership-pool','WRITE', 0, 1, 0),
+  ('network_f4_ambassador_finance_review',    '大使费用材料核验',                 'API', '/network/leadership-pool','WRITE', 0, 1, 0),
   ('network_f4_leaderboard_control',          '排行榜控制(暂停/取消资格)',        'API', '/network/leadership-pool','HIGH',  1, 1, 0),
   -- F5 奖励记录核对 /network/commissions
   ('network_f5_read',                         'F5 奖励记录核对 - 读',             'API', '/network/commissions',    'READ',  0, 1, 0),

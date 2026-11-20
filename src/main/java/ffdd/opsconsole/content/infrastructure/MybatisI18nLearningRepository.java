@@ -6,7 +6,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.domain.I18nHardcodedFindingView;
 import ffdd.opsconsole.content.domain.I18nCopyQuality;
-import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.content.domain.I18nIntegrityIssueView;
 import ffdd.opsconsole.content.domain.I18nLearningRepository;
@@ -235,7 +234,9 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             if (previousDraft != null) {
                 if (messageVersionMapper.retireDraftCas(
                         key, value(previousDraft.getVersionNo()), now) != 1) {
-                    throw new IllegalStateException("I18N_MESSAGE_VERSION_CONFLICT");
+                    // retireDraftCas is an optimistic CAS; zero rows means another writer
+                    // changed the DRAFT between read and update, not an unknown DB result.
+                    throw new BizException(409, "I18N_MESSAGE_VERSION_CONFLICT");
                 }
                 previousDraft.setIsDeleted(1);
                 previousDraft.setUpdatedAt(now);
@@ -247,6 +248,12 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             version.setIsDeleted(0);
         } else {
             version = latestVersion(key, "DRAFT");
+            if (version != null && draftHoldsOtherText(version, zh, en, vi, translations)) {
+                // An unpublished draft holding different text is someone's work in progress. A publish
+                // coming from another source (an I1 copy publish, a template save) must be told instead of
+                // silently replacing it: the draft is left as it is and the caller rejects with a conflict.
+                throw new BizException(409, "I18N_DRAFT_OVERWRITE_CONFLICT");
+            }
             if (version == null) {
                 I18nMessageVersionEntity latest = latestVersion(key, null);
                 version = new I18nMessageVersionEntity();
@@ -272,6 +279,16 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
             publishTranslations(key, translations, now);
         }
         return toVersionPair(version);
+    }
+
+    /** True when the stored draft's text differs from what this publish would write. */
+    private boolean draftHoldsOtherText(I18nMessageVersionEntity draft, String zh, String en, String vi,
+                                        Map<String, String> translations) {
+        return !java.util.Objects.equals(draft.getZhValue(), zh.trim())
+                || !java.util.Objects.equals(draft.getEnValue(), en.trim())
+                || !java.util.Objects.equals(draft.getViValue(), vi.trim())
+                || !MessageTranslations.read(draft.getTranslationsJson())
+                        .equals(MessageTranslations.read(MessageTranslations.json(translations)));
     }
 
     @Override
@@ -475,6 +492,25 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     }
 
     @Override
+    public Optional<LearningCourseView> findLegacyCourseDraftForActivation(String courseId) {
+        return Optional.ofNullable(helpArticleMapper.lockLearningCourse(courseId))
+                .map(entity -> {
+                    String key = "learn." + courseId(entity.getArticleCode());
+                    return toCourseView(entity, lockCourseCopy(key + ".title"), lockCourseCopy(key + ".body"));
+                });
+    }
+
+    private I18nMessagePairView lockCourseCopy(String key) {
+        return findMessagePairForUpdate(key).orElseGet(() -> {
+            var rows = messageMapper.selectList(new LambdaQueryWrapper<I18nMessageEntity>()
+                    .eq(I18nMessageEntity::getMessageKey, key)
+                    .eq(I18nMessageEntity::getIsDeleted, 0)
+                    .last("FOR UPDATE"));
+            return rows.isEmpty() ? null : toPair(key, rows, "v1", "published");
+        });
+    }
+
+    @Override
     public List<LearningCourseView> listPublishedCourses() {
         return learningCourseEntities().stream()
                 .filter(entity -> Integer.valueOf(1).equals(entity.getStatus()))
@@ -528,6 +564,11 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
 
     @Override
     public List<I18nIntegrityIssueView> recomputeIntegrity(LocalDateTime now) {
+        return recomputeIntegrity(now, List.of("en"));
+    }
+
+    @Override
+    public List<I18nIntegrityIssueView> recomputeIntegrity(LocalDateTime now, List<String> requiredLanguages) {
         Map<String, List<String>> samples = new LinkedHashMap<>();
         for (String code : List.of("missing-zh", "missing-en", "missing-vi", "placeholder",
                 "placeholder-text", "retired-brand")) {
@@ -536,22 +577,8 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         for (I18nMessagePairView current : listMessagePairs()) {
             // A newer draft must not hide invalid copy that is still published to App users.
             I18nMessagePairView message = findPublishedMessagePair(current.messageKey()).orElse(current);
-            if (!StringUtils.hasText(message.zh())) samples.get("missing-zh").add(message.messageKey());
-            if (!StringUtils.hasText(message.en())) samples.get("missing-en").add(message.messageKey());
-            if (!StringUtils.hasText(message.vi())) samples.get("missing-vi").add(message.messageKey());
-            Set<String> zh = placeholders(message.zh()), en = placeholders(message.en()), vi = placeholders(message.vi());
-            if ((!zh.equals(en) || !zh.equals(vi)) && StringUtils.hasText(message.zh()) && StringUtils.hasText(message.en()) && StringUtils.hasText(message.vi())) samples.get("placeholder").add(message.messageKey());
-            // 🔴 占位符 token 一致 ≠ 文案已写好(zentao #67)。
-            //   已发布 v3 的中文正文是 "ccccc",三种语言的 token 集完全一致(都为空),
-            //   所以上面那条判据放它过门,扫描结论是「完整」。这里补两类**内容**判据:
-            //   · placeholder-text:整段是重复字符的占位文本(ccccc / xxxx / 测试);
-            //   · retired-brand:正文仍带退役品牌(与 RetiredBrandGate 同一口径,
-            //     旧品牌已经在 Nova 模板和 V-Rank 奖品名上出过两次同样的问题)。
-            if (I18nCopyQuality.isPlaceholderText(message.zh()) || I18nCopyQuality.isPlaceholderText(message.en()) || I18nCopyQuality.isPlaceholderText(message.vi())) {
-                samples.get("placeholder-text").add(message.messageKey());
-            }
-            if (RetiredBrandGate.anyCarriesRetiredBrand(message.zh(), message.en(), message.vi())) {
-                samples.get("retired-brand").add(message.messageKey());
+            for (String code : I18nCopyQuality.integrityIssueCodes(message, requiredLanguages)) {
+                samples.get(code).add(message.messageKey());
             }
         }
         upsertIntegrity("missing-zh", "缺少中文镜像", samples.get("missing-zh"), 10, now);
@@ -615,6 +642,14 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     }
 
     @Override
+    public LearningCourseView publishLegacyCourseDraft(LearningCourseView course, LocalDateTime now) {
+        String key = "learn." + course.id();
+        saveMessagePair(key + ".title", course.titleZh(), course.titleEn(), course.titleVi(), course.titleTranslations(), "published", now);
+        saveMessagePair(key + ".body", course.bodyZh(), course.bodyEn(), course.bodyVi(), course.bodyTranslations(), "published", now);
+        return updateCourseStatus(course.id(), "published", now);
+    }
+
+    @Override
     public LearningCourseView updateCourseReward(String courseId, BigDecimal rewardNex, LocalDateTime now) {
         HelpArticleEntity entity = Optional.ofNullable(helpArticleMapper.lockLearningCourse(courseId)).orElseThrow();
         entity.setRewardNex(rewardNex);
@@ -641,12 +676,25 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
     }
 
     @Override
+    public List<String> listAllCourseVersionLabels(String courseId) {
+        return courseVersionMapper.listAllVersionLabels(courseId);
+    }
+
+    @Override
     public Optional<LearningCourseVersionView> findCourseVersion(String courseId, String version) {
         return Optional.ofNullable(courseVersionMapper.selectOne(new LambdaQueryWrapper<LearningCourseVersionEntity>()
                         .eq(LearningCourseVersionEntity::getCourseId, courseId)
                         .eq(LearningCourseVersionEntity::getVersionLabel, version)
                         .eq(LearningCourseVersionEntity::getIsDeleted, 0)
                         .last("LIMIT 1")))
+                .map(this::toCourseVersionView);
+    }
+
+    @Override
+    public Optional<LearningCourseVersionView> findCourseVersionForActivation(String courseId, String version) {
+        return courseVersionMapper.lockCourseVersions(courseId).stream()
+                .filter(row -> version == null ? "DRAFT".equals(row.getStatus()) : version.equals(row.getVersionLabel()))
+                .findFirst()
                 .map(this::toCourseVersionView);
     }
 
@@ -704,10 +752,14 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                 .eq(LearningCourseVersionEntity::getVersionLabel, version)
                 .eq(LearningCourseVersionEntity::getStatus, "DRAFT")
                 .eq(LearningCourseVersionEntity::getIsDeleted, 0).last("LIMIT 1"));
-        if (entity == null) throw new IllegalStateException("LEARNING_COURSE_VERSION_NOT_DRAFT");
-        entity.setIsDeleted(1);
-        entity.setUpdatedAt(now);
-        courseVersionMapper.updateById(entity);
+        if (entity == null) throw new BizException(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
+        int affected = courseVersionMapper.update(null, Wrappers.<LearningCourseVersionEntity>lambdaUpdate()
+                .set(LearningCourseVersionEntity::getIsDeleted, 1)
+                .set(LearningCourseVersionEntity::getUpdatedAt, now)
+                .eq(LearningCourseVersionEntity::getId, entity.getId())
+                .eq(LearningCourseVersionEntity::getStatus, "DRAFT")
+                .eq(LearningCourseVersionEntity::getIsDeleted, 0));
+        if (affected != 1) throw new BizException(409, "LEARNING_COURSE_VERSION_NOT_DRAFT");
     }
 
     @Override
@@ -1012,7 +1064,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         all.addAll(placeholders(zh)); all.addAll(placeholders(en)); all.addAll(placeholders(vi));
         return new I18nMessagePairView(entity.getMessageKey(), namespaceOf(entity.getMessageKey()), en, zh, vi,
                 normalizedStatus(entity.getStatus()), versionLabel(entity.getVersionNo()), List.copyOf(all),
-                MessageTranslations.read(entity.getTranslationsJson()));
+                MessageTranslations.read(entity.getTranslationsJson()), entity.getCreatedAt(), entity.getUpdatedAt());
     }
 
     private String versionLabel(Integer versionNo) {
@@ -1075,6 +1127,11 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
         String bodyKey = "learn." + id + ".body";
         I18nMessagePairView title = (publishedOnly ? findPublishedMessagePair(titleKey) : findMessagePair(titleKey)).orElse(null);
         I18nMessagePairView body = (publishedOnly ? findPublishedMessagePair(bodyKey) : findMessagePair(bodyKey)).orElse(null);
+        return toCourseView(entity, title, body);
+    }
+
+    private LearningCourseView toCourseView(HelpArticleEntity entity, I18nMessagePairView title, I18nMessagePairView body) {
+        String id = courseId(entity.getArticleCode());
         String titleZh = title == null ? text(entity.getTitle(), "") : text(title.zh(), text(entity.getTitle(), ""));
         String titleEn = title == null ? "" : text(title.en(), "");
         String titleVi = title == null ? "" : text(title.vi(), "");
@@ -1087,7 +1144,7 @@ public class MybatisI18nLearningRepository implements I18nLearningRepository {
                 toViewCategory(entity.getCategory()),
                 toViewFormat(entity.getFormat()),
                 toViewLevel(entity.getLevel()),
-                entity.getRewardNex() == null ? BigDecimal.ZERO : entity.getRewardNex().stripTrailingZeros(),
+                entity.getRewardNex() == null ? null : entity.getRewardNex().stripTrailingZeros(),
                 entity.getFeatured() != null && entity.getFeatured() == 1,
                 value(entity.getDurationMin()) + " min",
                 "v" + Math.max(1, value(entity.getVersionNo())),

@@ -22,7 +22,7 @@ class PromotionOrderServiceTest {
     PromotionPolicyResolver policies=mock(PromotionPolicyResolver.class);
     AuditLogService audit=mock(AuditLogService.class);
     EventOutboxService outbox=mock(EventOutboxService.class);
-    PromotionOrderService service=new PromotionOrderService(db,quotes,evaluator,policies,audit,outbox);
+    PromotionOrderService service=new PromotionOrderService(db,null,null,quotes,evaluator,policies,audit,outbox);
     @BeforeEach void writesSucceed(){when(db.write(anyString(),any(Object[].class))).thenReturn(1);}
     @Test void oldOrdersStillLockTheRealBuyerBeforeOrderLock(){
         when(db.order("O1",false)).thenReturn(values("user_id",17L));

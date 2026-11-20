@@ -5,6 +5,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.AssignmentResult;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
+import ffdd.opsconsole.team.application.BinaryCurrentPeriodService;
 import ffdd.opsconsole.team.dto.BinaryLegAssignmentRequest;
 import ffdd.opsconsole.team.dto.BinarySettlementRequest;
 import jakarta.validation.Valid;
@@ -28,6 +29,14 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsBinarySettlementController {
     private final BinaryCommissionSettlementService service;
+    private final BinaryCurrentPeriodService currentPeriodService;
+
+    @GetMapping("/current-period")
+    @PreAuthorize("hasAuthority('network_f3_read')")
+    public ApiResult<Map<String, Object>> currentPeriod(Authentication authentication) {
+        authenticatedAdmin(authentication);
+        return ApiResult.ok(currentPeriodService.currentPeriod());
+    }
 
     @GetMapping("/assignments")
     @PreAuthorize("hasAuthority('network_f3_read')")
@@ -52,6 +61,7 @@ public class OpsBinarySettlementController {
                 request.ownerUserId(), request.memberUserId(), request.leg(), actor.id(), actor.username()));
     }
 
+    /** Compatibility route for recovering an existing settlement. New manual settlements start in A2. */
     @PostMapping("/settlements")
     @PreAuthorize("hasAuthority('network_f3_write')")
     public ApiResult<SettlementResult> settle(

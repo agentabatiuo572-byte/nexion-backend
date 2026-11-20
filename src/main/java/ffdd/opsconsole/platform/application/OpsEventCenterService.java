@@ -74,12 +74,12 @@ public class OpsEventCenterService {
     private static final List<String> SUNSET_DOMAINS = List.of("premium", "points", "nexv2");
 
     private static final List<EventFamilyDefinition> EVENT_FAMILY_DEFINITIONS = List.of(
-            familyDef("acquisition", "① 获客漏斗", "注册前后身份拼接 + 渠道归因",
+            familyDef("acquisition", "① 获客漏斗", "已记录的注册与获客事件；不推断匿名身份关联",
                     "app.session_started · auth.register_completed · device.first_yield_received",
                     "部分（注册、验证类由系统记录）",
                     List.of("APP_", "AUTH_", "C1_", "DEVICE_FIRST"),
-                    row("app.session_started", "匿名设备首次会话"),
-                    row("auth.register_started / completed", "注册链路开始与完成"),
+                    row("app.session_started", "应用会话开始（仅展示已记录事件）"),
+                    row("auth.register_started / completed", "已记录的注册开始或完成事件"),
                     row("device.first_yield_received", "首笔设备收益到账")),
             familyDef("conversion", "② 转化", "商城浏览、下单、试用和邀请转化",
                     "store.viewed · checkout.completed · trial.started · referral.invite_sent",
@@ -100,12 +100,12 @@ public class OpsEventCenterService {
                     row("genesis.purchased", "创世节点购买完成")),
             familyDef("retention", "④ 留存", "日活、签到、任务和推送触达",
                     "app.dau · daily.checkin · quest.completed · nova.push_clicked",
-                    "推送送达由系统记录",
+                    "推送发送与点击按各自事件统计，不把发送视为送达",
                     List.of("H3_", "H4_", "H5_", "H6_", "I2_", "I3_", "I7_", "DAILY_", "QUEST_", "NOVA_", "NOTIFICATION_"),
                     row("app.dau", "日活跃（关键指标 #2）"),
                     row("daily.checkin", "每日签到"),
                     row("quest.completed", "任务完成"),
-                    row("nova.push_sent / push_clicked", "推送送达与点击（关键指标 #6）")),
+                    row("nova.push_sent / push_clicked", "推送发送与点击")),
             familyDef("risk", "⑤ 风控", "系统检测到的风险信号",
                     "risk.multi_account_flagged · risk.score_updated · auth.login_locked",
                     "全部由系统记录",
@@ -127,8 +127,8 @@ public class OpsEventCenterService {
     private static final List<EventCommonField> COMMON_FIELDS = List.of(
             new EventCommonField("event_id", "event_id", "系统生成的唯一编号，用于去重", "必带"),
             new EventCommonField("event_name", "event_name", "domain.object_action,动作使用过去式", "必带"),
-            new EventCommonField("ts", "ts", "系统收到的时间（毫秒），不以用户设备时间为准", "以系统为准"),
-            new EventCommonField("identity", "user_id / anon_id", "二选一，注册前后可同时存在", "字段必带,值可空"),
+            new EventCommonField("ts", "ts", "事件发生时间（毫秒）：可来自已校验的客户端时间或服务端业务时间，不等同于接收时间", "以系统为准"),
+            new EventCommonField("identity", "user_id / anon_id", "按原事件标识读取；通用 App 行为仅在登录后采集，不按注册前设备编号自动关联", "字段必带,值可空"),
             new EventCommonField("session_id", "session_id", "单次会话 ID", "字段必带,值可空"),
             new EventCommonField("phase", "phase + 账户月龄", "事件发生时用户所在的运营阶段，用于分析阶段效果", "必带"),
             new EventCommonField("cohort", "cohort", "注册周(按周分群)", "必带"),
@@ -143,7 +143,6 @@ public class OpsEventCenterService {
             new EventKpiFormula(3, "逛商城", "看过商城的人 ÷ 注册数"),
             new EventKpiFormula(4, "下单转化", "完成支付的人 ÷ 看过商城的人"),
             new EventKpiFormula(5, "持有者推广", "发过邀请的设备持有者 ÷ 持有者总数"),
-            new EventKpiFormula(6, "Nova 点击率", "推送点击 ÷ 推送送达（以系统确认送达为准）"),
             new EventKpiFormula(7, "奖励触发", "直接邀请的好友下首单并产生奖励的人数 ÷ 直接邀请总人数"),
             new EventKpiFormula(8, "创世节点售罄天数", "从开售到卖完所用的天数"));
 
@@ -183,7 +182,7 @@ public class OpsEventCenterService {
                 COMMON_FIELDS,
                 dimensionParams(),
                 kpiFormulas(),
-                governanceMapper.listSchemas(50),
+                namedSchemas(governanceMapper.listSchemas(50)),
                 batches,
                 recentLogs(),
                 auditLogService.topActions(statsQuery(7, 10)),
@@ -199,7 +198,18 @@ public class OpsEventCenterService {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A4_SCHEMA_EVENT_NAME_INVALID");
         }
         EventCenterOverview.EventSchemaRegistration schema = governanceMapper.findSchemaRegistration(normalized);
-        return schema == null ? ApiResult.fail(404, "A4_EVENT_SCHEMA_NOT_FOUND") : ApiResult.ok(schema);
+        return schema == null ? ApiResult.fail(404, "A4_EVENT_SCHEMA_NOT_FOUND")
+                : ApiResult.ok(schema.withDisplayName(configFacade.activeValue(eventDisplayNameKey(normalized)).orElse(null)));
+    }
+
+    private List<EventCenterOverview.EventSchemaRegistration> namedSchemas(List<EventCenterOverview.EventSchemaRegistration> schemas) {
+        var names = configFacade.activeValuesByKeys(schemas.stream()
+                .map(schema -> eventDisplayNameKey(schema.eventName())).toList());
+        return schemas.stream().map(schema -> schema.withDisplayName(names.get(eventDisplayNameKey(schema.eventName())))).toList();
+    }
+
+    private String eventDisplayNameKey(String eventName) {
+        return "a4.event_label." + requestHash(eventName);
     }
 
     @Transactional
@@ -251,6 +261,7 @@ public class OpsEventCenterService {
                 normalized.eventName(), normalized.ownerDomain(), normalized.producer(), normalized.consumer(),
                 normalized.propertyName(), normalized.propertyType(), String.valueOf(normalized.serverAuthoritative()),
                 normalized.samplingPolicy(), normalized.expectedVersion(), normalized.reason());
+        if (normalized.displayName() != null) hash = requestHash(hash, normalized.displayName());
         return (ApiResult<EventCenterOverview>) idempotencyService.execute(
                 "A4_SCHEMA:" + normalized.eventName(), idempotencyKey.trim(), hash, ApiResult.class,
                 () -> registerSchemaOnce(normalized, idempotencyKey.trim()));
@@ -361,7 +372,7 @@ public class OpsEventCenterService {
                             "V4 内容批",
                             "inprogress",
                             "内容域(I1/I3/I5/I7)",
-                            "四类事件暂记 admin 占位 + 临时编号",
+                            "内容、通知、披露和课程的登记核对；工单状态不是报表启用条件",
                             domains("content", "notification", "disclosure", "learn"),
                             List.of(
                                     row("content.variant_exposed / converted", "A4 已注册 · I1 服务端稳定分桶、首曝与已支付/完成订单转化"),
@@ -397,8 +408,10 @@ public class OpsEventCenterService {
                         row("admin.emergency_playbook_executed", "应急剧本执行(J4)"),
                         row("admin.emergency_playbook_edited", "应急剧本编辑(J4)"))));
 
+        Map<String, String> configuredNames = configFacade.activeValuesByKeys(extensionRecords.stream()
+                .map(record -> eventDisplayNameKey(record.eventName())).distinct().toList());
         extensionRecords.stream()
-                .map(this::dynamicBatch)
+                .map(record -> dynamicBatch(record, configuredNames.get(eventDisplayNameKey(record.eventName()))))
                 .forEach(batches::add);
         return batches;
     }
@@ -451,15 +464,18 @@ public class OpsEventCenterService {
                 .toList();
     }
 
-    private EventDomainExtensionBatch dynamicBatch(DomainExtensionRecord record) {
-        return new EventDomainExtensionBatch(
-                "manual-" + record.id(),
-                "登记扩展工单",
-                normalizeBatchStatus(record.status()),
-                record.producer(),
+    private EventDomainExtensionBatch dynamicBatch(DomainExtensionRecord record, String configuredName) {
+        return extensionBatch("manual-" + record.id(), normalizeBatchStatus(record.status()),
                 "done".equalsIgnoreCase(record.status()) ? "字段已登记，归属已确认" : "等待登记字段并确认归属",
-                List.of(new EventDomainItem(record.domainName(), true)),
-                List.of(row(record.eventName(), "生产方 " + record.producer() + " → 消费方 " + record.consumer())));
+                record.domainName(), record.eventName(), record.producer(), record.consumer(), configuredName);
+    }
+
+    private EventDomainExtensionBatch extensionBatch(String id, String state, String impact, String module,
+            String event, String producer, String consumer, String configuredName) {
+        String name = StringUtils.hasText(configuredName) ? configuredName : EventCenterOverview.eventLabel(event);
+        return new EventDomainExtensionBatch(id, "登记扩展工单", state, EventCenterOverview.domainLabel(module), impact,
+                List.of(new EventDomainItem(module, true)),
+                List.of(new EventDetailRow(event, "事件登记与接入核对", name)), producer, consumer);
     }
 
     private List<AuditLogRecord> recentLogs() {
@@ -616,11 +632,7 @@ public class OpsEventCenterService {
         if (existing != null && governanceMapper.countProperty(existing.id(), schema.propertyName()) > 0) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_PROPERTY_DUPLICATE");
         }
-        if (existing != null && (!existing.ownerDomain().equals(schema.ownerDomain())
-                || !existing.producer().equals(schema.producer())
-                || !existing.consumers().equals(schema.consumer())
-                || existing.serverAuthoritative() != schema.serverAuthoritative()
-                || !existing.samplingPolicy().equals(schema.samplingPolicy()))) {
+        if (existing != null && !schemaMetadataMatches(existing, schema)) {
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A4_SCHEMA_METADATA_CONFLICT");
         }
 
@@ -652,6 +664,10 @@ public class OpsEventCenterService {
                 }
             }
             governanceMapper.insertProperty(schemaId, schema.propertyName(), schema.propertyType(), nextRevision);
+            if (schema.displayName() != null) {
+                configFacade.upsertAdminValue(eventDisplayNameKey(schema.eventName()), schema.displayName(),
+                        "STRING", "a4_event_labels", "运营事件名称");
+            }
             if (schema.extensionDomain()
                     && governanceMapper.completeDomainExtension(schema.ownerDomain(), schema.eventName()) != 1) {
                 throw new IllegalStateException("A4_DOMAIN_EXTENSION_CLOSE_FAILED");
@@ -716,6 +732,13 @@ public class OpsEventCenterService {
         return overview();
     }
 
+    static boolean schemaMetadataMatches(EventSchemaRecord existing, NormalizedSchema schema) {
+        return existing.ownerDomain().equals(schema.ownerDomain()) && existing.producer().equals(schema.producer())
+                && existing.consumers().equals(schema.consumer())
+                && existing.serverAuthoritative() == schema.serverAuthoritative()
+                && existing.samplingPolicy().equals(schema.samplingPolicy());
+    }
+
     private void carryForwardExistingProperties(EventSchemaRecord existing, int nextRevision) {
         int liveCount = governanceMapper.countLiveProperties(existing.id());
         int activeCount = governanceMapper.countActiveProperties(existing.id(), existing.currentRevision());
@@ -777,11 +800,9 @@ public class OpsEventCenterService {
                         "eventName", extension.eventName(),
                         "producer", extension.producer(),
                         "consumer", extension.consumer()));
-        return ApiResult.ok(new EventDomainExtensionBatch(
-                "manual-" + slug(extension.domainName() + "-" + extension.eventName()),
-                "登记扩展工单", "registered", extension.producer(), "等待登记字段并确认归属",
-                List.of(new EventDomainItem(extension.domainName(), true)),
-                List.of(row(extension.eventName(), "生产方 " + extension.producer() + " → 消费方 " + extension.consumer()))));
+        return ApiResult.ok(extensionBatch("manual-" + slug(extension.domainName() + "-" + extension.eventName()),
+                "registered", "等待登记字段并确认归属", extension.domainName(), extension.eventName(),
+                extension.producer(), extension.consumer(), null));
     }
 
     private void auditRequired(
@@ -859,7 +880,7 @@ public class OpsEventCenterService {
         return protectedFamily ? "100%" : "浏览/会话 " + percent + "% · 资金/风控/转化 100%";
     }
 
-    private NormalizedSchema normalizeSchema(EventSchemaRegistrationRequest request) {
+    NormalizedSchema normalizeSchema(EventSchemaRegistrationRequest request) {
         String eventName = lowerRequired(request.eventName(), "A4_SCHEMA_EVENT_NAME_REQUIRED");
         String ownerDomain = lowerRequired(request.ownerDomain(), "A4_SCHEMA_OWNER_DOMAIN_REQUIRED");
         String producer = lowerRequired(request.producer(), "A4_SCHEMA_PRODUCER_REQUIRED");
@@ -901,11 +922,17 @@ public class OpsEventCenterService {
             throw new IllegalArgumentException("A4_SERVER_AUTHORITY_REQUIRED");
         }
         String sampling = normalizeSampling(lowerRequired(request.samplingPolicy(), "A4_SCHEMA_SAMPLING_REQUIRED"), protectedFamily);
+        String displayName = StringUtils.hasText(request.displayName()) ? request.displayName().trim() : null;
+        if (displayName != null && (displayName.codePointCount(0, displayName.length()) > 64
+                || displayName.codePoints().anyMatch(Character::isISOControl)
+                || containsPiiTerm(displayName) || containsSunsetTerm(displayName))) {
+            throw new IllegalArgumentException("A4_EVENT_DISPLAY_NAME_INVALID");
+        }
         return new NormalizedSchema(eventName, ownerDomain, familyKey, producer, consumer, propertyName,
-                propertyType, authoritative, sampling, expectedVersion, reason, extensionDomain);
+                propertyType, authoritative, sampling, expectedVersion, reason, extensionDomain, displayName);
     }
 
-    private NormalizedSchemaProperty normalizeSchemaProperty(ExistingSchemaPropertyRequest request) {
+    NormalizedSchemaProperty normalizeSchemaProperty(ExistingSchemaPropertyRequest request) {
         String eventName = lowerRequired(request.eventName(), "A4_SCHEMA_EVENT_NAME_REQUIRED");
         String propertyName = lowerRequired(request.propertyName(), "A4_SCHEMA_PROPERTY_REQUIRED");
         String propertyType = lowerRequired(request.propertyType(), "A4_SCHEMA_PROPERTY_TYPE_REQUIRED");
@@ -929,7 +956,7 @@ public class OpsEventCenterService {
         return new NormalizedSchemaProperty(eventName, propertyName, propertyType, expectedVersion, reason);
     }
 
-    private NormalizedDomainExtension normalizeDomainExtension(EventDomainExtensionRequest request) {
+    NormalizedDomainExtension normalizeDomainExtension(EventDomainExtensionRequest request) {
         String domain = lowerRequired(request.domainName(), "A4_DOMAIN_EXTENSION_DOMAIN_REQUIRED");
         String eventName = lowerRequired(request.eventName(), "A4_DOMAIN_EXTENSION_EVENT_REQUIRED");
         String producer = textRequired(request.producer(), "A4_DOMAIN_EXTENSION_PRODUCER_REQUIRED");
@@ -1041,9 +1068,10 @@ public class OpsEventCenterService {
 
     private List<String> guardrails() {
         return List.of(
-                "资金和关键指标只统计由系统记录的事件",
+                "事件中心今日总量不筛权威标记。L1 允许非权威的商城浏览；B3 允许非权威的商城浏览，其余按各自查询的权威事件规则",
                 "事件名和字段要先登记再使用，字段里不能有明文个人敏感信息",
-                "Premium、积分系统、UVT v2 已下线，只保留历史数据和到期兑付");
+                "登记工单不控制 BI 启用；新增登记不自动改写或重新归类历史事件",
+                "B3 按注册、购买、复购、提现阶段查看，支持注册周、阶段和推荐来源筛选；不提供绑卡或锁定计划步骤；Premium、积分系统、UVT v2 仅保留历史数据和到期兑付");
     }
 
     private static EventFamily family(
@@ -1148,7 +1176,7 @@ public class OpsEventCenterService {
             String configKey) {
     }
 
-    private record NormalizedSchema(
+    record NormalizedSchema(
             String eventName,
             String ownerDomain,
             String familyKey,
@@ -1160,10 +1188,11 @@ public class OpsEventCenterService {
             String samplingPolicy,
             String expectedVersion,
             String reason,
-            boolean extensionDomain) {
+            boolean extensionDomain,
+            String displayName) {
     }
 
-    private record NormalizedSchemaProperty(
+    record NormalizedSchemaProperty(
             String eventName,
             String propertyName,
             String propertyType,
@@ -1171,7 +1200,7 @@ public class OpsEventCenterService {
             String reason) {
     }
 
-    private record NormalizedDomainExtension(
+    record NormalizedDomainExtension(
             String domainName,
             String eventName,
             String producer,

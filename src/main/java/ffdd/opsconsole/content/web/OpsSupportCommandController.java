@@ -96,7 +96,27 @@ public class OpsSupportCommandController {
         if("M3_CONVERSATION_TIMEOUT_POLICY".equals(receipt.getScope())) {
             if(!ownership.currentSuperAdmin() || timeoutPolicy.timeoutManageGrant(actor).isEmpty())
                 throw new BizException(403,"M3_TIMEOUT_POLICY_FORBIDDEN");
-            return ApiResult.ok(Map.of("status",receipt.getStatus()));
+            Integer businessCode = null;
+            String businessReason = null;
+            if ("SUCCEEDED".equals(receipt.getStatus()) && receipt.getResponseJson() != null) {
+                try {
+                    JsonNode response = json.readTree(receipt.getResponseJson());
+                    JsonNode code = response == null ? null : response.get("code");
+                    if (code != null && code.isIntegralNumber() && code.canConvertToInt()) businessCode = code.intValue();
+                    JsonNode message = response == null ? null : response.get("message");
+                    if (message != null && message.isTextual()
+                            && Set.of("M3_TIMEOUT_POLICY_STALE", "M3_TIMEOUT_POLICY_UNCHANGED").contains(message.textValue())) {
+                        businessReason = message.textValue();
+                    }
+                } catch (com.fasterxml.jackson.core.JsonProcessingException invalidReceipt) {
+                    // A missing or unreadable original reply proves no business outcome.
+                }
+            }
+            Map<String,Object> result = new LinkedHashMap<>();
+            result.put("status", receipt.getStatus());
+            result.put("businessCode", businessCode);
+            result.put("businessReason", businessReason);
+            return ApiResult.ok(result);
         }
         if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CREATE:")) return ApiResult.ok(bulk.recover(key));
         if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CANCEL:") || receipt.getScope().startsWith("M3_SUPPORT_BULK_RETRY:")) {
@@ -109,8 +129,37 @@ public class OpsSupportCommandController {
         String permission=receipt.getScope().startsWith("M3_")?"service_m3_read":"service_m1_read";
         if(!SupportOwnershipService.hasAuthority(permission)) throw new BizException(403,"SUPPORT_COMMAND_READ_FORBIDDEN");
         if(receipt.getScope().startsWith("SUPPORT_RANDOM:")) return ApiResult.ok(random.recover(key));
-        if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));
+        boolean send = receipt.getScope().equals("M3_CONVERSATION_REPLY:"+actor)
+                || receipt.getScope().equals("M3_CONVERSATION_INITIATE:"+actor);
+        boolean rolledBackSend = send && "FAILED".equals(receipt.getStatus()) && receipt.getResponseJson()!=null;
+        if(!"SUCCEEDED".equals(receipt.getStatus()) && !rolledBackSend) return ApiResult.ok(Map.of("status",receipt.getStatus()));
         JsonNode response=json.readTree(receipt.getResponseJson());
+        JsonNode rejection=response.path("data");
+        if(send && ffdd.opsconsole.content.application.SupportSessionService.SEND_REJECTION_RECEIPT
+                    .equals(rejection.path("receiptType").asText())) {
+            JsonNode code=response.path("code");
+            long customer=rejection.path("customerId").asLong();
+            String operation=rejection.path("operation").asText();
+            if(!code.isIntegralNumber() || !code.canConvertToInt() || code.intValue()<400 || code.intValue()>=500
+                    || !response.path("message").isTextual() || !rejection.path("customerId").isIntegralNumber() || customer<=0
+                    || !rejection.path("actorId").isIntegralNumber() || rejection.path("actorId").asLong()!=actor
+                    || !receipt.getScope().equals(operation+":"+actor)
+                    || !key.trim().equals(rejection.path("idempotencyKey").asText())
+                    || !Objects.equals(receipt.getRequestHash(),rejection.path("requestHash").asText())
+                    || !rejection.path("clientMessageId").asText().matches("[A-Za-z0-9_-]{8,128}")
+                    || !rejection.path("sent").isBoolean() || rejection.path("sent").booleanValue()) {
+                throw new BizException(409,"SUPPORT_COMMAND_RESULT_INVALID");
+            }
+            // The original sender reads their own rejected send. The receipt already proves who acted and
+            // which request it was, so the current holder of the customer is deliberately not consulted:
+            // a customer that moved away must not hide the fact that nothing was sent. No message body,
+            // attachment, customer profile or current holder is returned here.
+            return ApiResult.ok(Map.of("status","REJECTED","sent",false,"customerId",customer,
+                    "operation",operation,"idempotencyKey",key.trim(),
+                    "clientMessageId",rejection.path("clientMessageId").textValue(),
+                    "businessCode",code.intValue(),"businessReason",response.path("message").textValue()));
+        }
+        if (rolledBackSend) return ApiResult.ok(Map.of("status", receipt.getStatus()));
         Set<Long> customers=new TreeSet<>();
         collect(response.path("data"),customers);
         customers.forEach(ownership::lockCustomer);

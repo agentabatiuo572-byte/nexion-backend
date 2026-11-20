@@ -57,7 +57,8 @@ public class AppUserSecurityVerificationGuard {
         int failedCount = newWindow ? 1 : guard.getFailedCount() + 1;
         LocalDateTime windowStartedAt = newWindow ? now : guard.getWindowStartedAt();
         LocalDateTime lockedUntil = failedCount >= MAX_FAILURES ? now.plusMinutes(WINDOW_MINUTES) : null;
-        loginGuardMapper.recordFailure(key, failedCount, windowStartedAt, lockedUntil);
+        String lockKind = lockedUntil == null ? null : "SHORT";
+        loginGuardMapper.recordFailure(key, failedCount, windowStartedAt, lockedUntil, lockKind);
 
         auditRejected(userId, operation, failedCount, lockedUntil != null, lockedUntil, false);
         return new VerificationFailure(failedCount, lockedUntil != null);

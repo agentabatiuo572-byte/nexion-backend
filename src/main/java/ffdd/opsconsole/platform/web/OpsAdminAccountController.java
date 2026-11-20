@@ -13,6 +13,7 @@ import ffdd.opsconsole.platform.dto.AdminAccountStatusUpdateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacActionCreateRequest;
 import ffdd.opsconsole.platform.dto.AdminRbacGrantUpdateRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.AppTextChineseNotAllowedException;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.nio.charset.StandardCharsets;
@@ -177,6 +178,8 @@ public class OpsAdminAccountController {
                     requestHash,
                     ApiResult.class,
                     (Supplier) action);
+        } catch (AppTextChineseNotAllowedException ex) {
+            throw ex;
         } catch (BizException ex) {
             return ApiResult.fail(ex.getCode(), ex.getMessage());
         }

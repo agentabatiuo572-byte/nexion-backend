@@ -91,18 +91,6 @@ public class OpsAdminAuthService {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_DISABLED");
         }
 
-        if (mfaProperties.isTemporarySuperadminBypassEnabled()
-                && superAdmin(admin)
-                && "superadmin".equals(normalizedUsername)) {
-            log.warn("Temporary super-admin MFA bypass used for adminId={}", admin.getId());
-            return issueAuthenticatedSession(
-                    admin,
-                    normalizedUsername,
-                    ipAddress,
-                    userAgent,
-                    "ADMIN_AUTH_UNAVAILABLE");
-        }
-
         AdminAccountStateEntity state = accountStateMapper.selectActiveByAdminId(admin.getId());
         boolean enrollment = state == null
                 || !StringUtils.hasText(state.getTfaSecretEncrypted())
@@ -356,7 +344,10 @@ public class OpsAdminAuthService {
                         ? roleRelationMapper.selectAllActiveMenuNodes()
                         : roleRelationMapper.selectActiveMenuNodes(admin.getId());
         List<AdminLoginResponse.EffectiveMenuNode> safeMenuNodes =
-                effectiveMenuNodes == null ? List.of() : List.copyOf(effectiveMenuNodes);
+                effectiveMenuNodes == null ? List.of() : effectiveMenuNodes.stream()
+                        .map(node -> new AdminLoginResponse.EffectiveMenuNode(node.menuCode(),
+                                ffdd.opsconsole.platform.domain.AdminMenuDisplayNames.resolve(node.routePath(), node.menuName()),
+                                node.routePath(), node.parentCode(), node.sortOrder())).toList();
         List<String> effectiveMenus = safeMenuNodes.stream()
                 .map(AdminLoginResponse.EffectiveMenuNode::menuCode)
                 .toList();

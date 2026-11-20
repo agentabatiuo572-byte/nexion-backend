@@ -11,6 +11,8 @@ import ffdd.opsconsole.growth.mapper.WeeklyQuestSnapshotMapper.*;
 import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper.CanonicalQuestEventBinding;
 import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.MissionDefinition;
 import ffdd.opsconsole.shared.exception.BizException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.*;
 import java.time.temporal.WeekFields;
 import java.util.*;
@@ -75,7 +77,7 @@ public class WeeklyQuestSnapshotService {
         return initialize(null, false);
     }
 
-    private Header initialize(String eventWeek, boolean requireRhythm) {
+    private Header initialize(String eventWeek, boolean required) {
         List<Header> open=users==null?mapper.legacySnapshot(now()):mapper.openLegacy(now());
         if (open.size()>1) throw new BizException(409,"WEEKLY_LEGACY_WINDOW_OVERLAP");
         if (!open.isEmpty()) return eventWeek==null || open.get(0).instanceKey().equals(eventWeek)?open.get(0):null;
@@ -90,15 +92,23 @@ public class WeeklyQuestSnapshotService {
         existing = mapper.findAfterLock(key);
         if (existing != null) return contains(existing,clock.instant())?existing:null;
         LocalDate monday=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(current).with(DayOfWeek.MONDAY);
-        return publish(key,ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(monday),ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(monday.plusWeeks(1)),null,null,null,requireRhythm);
+        return publish(key,ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(monday),ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(monday.plusWeeks(1)),null,null,null,required);
     }
 
-    private Header publish(String key,LocalDateTime start,LocalDateTime end,String zone,LocalDate monday,String version,boolean requireRhythm) {
+    private Header publish(String key,LocalDateTime start,LocalDateTime end,String zone,LocalDate monday,String version,boolean required) {
         GrowthRhythmSnapshot policy = rhythm.snapshot();
         if (policy == null || !policy.reliable() || policy.currentMonth() <= 0
                 || policy.questBonusMultiplier() == null || policy.questBonusMultiplier().signum() <= 0) {
-            if (!requireRhythm) return null; // No usable week was publishable before initial H1 setup/repair.
+            if (!required) return null; // No usable week was publishable before initial H1 setup/repair.
             throw new BizException(409,"H1_RHYTHM_UNAVAILABLE");
+        }
+        String rawMultiplier = mapper.activeWeeklyPhaseMultiplier(OpsGrowthService.weeklyPhaseMultiplierConfigKey(policy.currentPhase()));
+        BigDecimal weeklyMultiplier;
+        try {
+            weeklyMultiplier = OpsGrowthService.parseWeeklyPhaseMultiplier(rawMultiplier);
+        } catch (IllegalArgumentException invalid) {
+            if (!required) return null; // A policy repair cannot freeze an unverifiable period.
+            throw new BizException(409,"H3_WEEKLY_PHASE_MULTIPLIER_UNAVAILABLE");
         }
         List<Definition> definitions = mapper.lockDefinitions();
         if (availability != null) {
@@ -111,8 +121,8 @@ public class WeeklyQuestSnapshotService {
         }
         Map<Long,Definition> items = new LinkedHashMap<>();
         for (Definition definition : definitions) items.putIfAbsent(definition.missionId(), definition);
-        Header header = new Header(key,start,end,policy.questBonusMultiplier(),
-                policy.currentMonth(),items.size(),zone,monday,version);
+        Header header = new Header(key,start,end,policy.questBonusMultiplier().setScale(6, RoundingMode.HALF_UP),
+                policy.currentMonth(),items.size(),zone,monday,version,policy.currentPhase(),weeklyMultiplier);
         mapper.insertHeader(header);
         int ordinal = 0;
         for (Definition item : items.values()) mapper.insertItem(key,item,ordinal++);
@@ -354,7 +364,8 @@ public class WeeklyQuestSnapshotService {
         String key="WEEK:"+UUID.randomUUID().toString().replace("-","");
         if (template!=null) {
             Header copy=new Header(key,period.storageFrom(),period.storageUntil(),template.questBonusMultiplier(),
-                    template.rhythmMonth(),template.requiredTaskCount(),period.zoneId(),period.localWeekStart(),version);
+                    template.rhythmMonth(),template.requiredTaskCount(),period.zoneId(),period.localWeekStart(),version,
+                    template.rhythmPhase(),template.weeklyPhaseMultiplier());
             mapper.insertHeaderFromTemplate(copy,template.instanceKey());
             mapper.copyItems(template.instanceKey(),key); mapper.copyBindings(template.instanceKey(),key);
             return copy;

@@ -10,6 +10,20 @@ import java.util.Map;
 import org.apache.ibatis.annotations.*;
 
 public interface SupportMaintenanceMapper extends BaseMapper<SupportMaintenanceCycleEntity> {
+    String NEXT_DUE_AT = """
+        CASE WHEN #{maintenanceDays} IS NULL OR lastExecutionAt IS NULL THEN NULL
+             ELSE TIMESTAMPADD(DAY,#{maintenanceDays},GREATEST(lastExecutionAt,COALESCE(lastSucceededAt,lastExecutionAt))) END
+        """;
+    @Select("<script>SELECT #{maintenanceDays} IS NOT NULL AND (lastExecutionAt IS NULL OR " + NEXT_DUE_AT + """
+          &lt;= #{at}) FROM (
+            SELECT MAX(executed_at) lastExecutionAt,
+              (SELECT MAX(closed_at) FROM nx_support_maintenance_cycle
+                WHERE assignment_id=#{assignment} AND status='SUCCEEDED' FOR SHARE) lastSucceededAt
+            FROM nx_support_maintenance_execution WHERE assignment_id=#{assignment} FOR SHARE
+          ) facts</script>
+        """)
+    boolean due(@Param("assignment") Long assignment,@Param("maintenanceDays") Integer maintenanceDays,@Param("at") LocalDateTime at);
+
     @Select("SELECT coverage_start_at coverageStartAt,observed_through_at observedThroughAt FROM nx_support_activity_coverage WHERE id=1 FOR SHARE")
     Coverage captureFence();
     @Select("SELECT coverage_start_at coverageStartAt,observed_through_at observedThroughAt FROM nx_support_activity_coverage WHERE id=1 FOR UPDATE")

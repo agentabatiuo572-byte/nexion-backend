@@ -28,6 +28,7 @@ import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -111,7 +112,6 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
     private static final Pattern SOP_K1_REF = Pattern.compile("^cluster-freeze:([a-z0-9._-]{1,64})$");
     private static final Pattern SOP_I5_REF = Pattern.compile(
             "^disclosure-publish:([a-z0-9_-]{2,32}):([a-z0-9._-]{1,32})$");
-    private static final Duration J4_EXECUTION_RECOVERY_LEASE = Duration.ofMinutes(2);
     /** A sandbox drill reached its terminal proof; no production side effect exists to roll back. */
     private static final String J4_DRILL_ROLLBACK_NOT_REQUIRED = "NOT_REQUIRED";
     private static final String J4_DRILL_VALIDATION_ONLY_REASON = "VALIDATION_ONLY_NO_PRODUCTION_ACTIONS";
@@ -781,20 +781,30 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     map("window", window), "", "读取篡改监控总览");
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "TAMPER_WINDOW_INVALID");
         }
-        Map<String, Object> alertConfig = tamperAlertConfig();
-        int threshold = intValue(alertConfig.get("threshold"));
-        int effectiveThreshold = scaledTamperThreshold(threshold, range.label());
+        Map<String, Object> alertConfig;
+        try {
+            alertConfig = tamperAlertConfig();
+        } catch (NumberFormatException invalidThreshold) {
+            boolean feedK4 = emergencyRepository.settingValue(TAMPER_FEED_K4)
+                    .map(Boolean::parseBoolean)
+                    .orElse(true);
+            alertConfig = map("threshold", null, "label", null, "feedK4", feedK4,
+                    "available", false, "unknownReason", "TAMPER_ALERT_THRESHOLD_INVALID");
+        }
+        Integer threshold = (Integer) alertConfig.get("threshold");
+        Integer effectiveThreshold = threshold == null ? null : scaledTamperThreshold(threshold, range.label());
         List<Map<String, Object>> paths = tamperPaths(range);
         int pageSize = accountPageSize <= 0 ? 5 : Math.min(accountPageSize, 50);
-        int totalAccounts = Math.toIntExact(emergencyRepository.countTamperAccounts(
+        Integer totalAccounts = effectiveThreshold == null ? null : Math.toIntExact(emergencyRepository.countTamperAccounts(
                 range.startAt(), range.endAt(), effectiveThreshold));
-        int pages = Math.max(1, (int) Math.min(Integer.MAX_VALUE,
+        Integer pages = totalAccounts == null ? null : Math.max(1, (int) Math.min(Integer.MAX_VALUE,
                 (totalAccounts + pageSize - 1L) / pageSize));
-        int page = Math.max(1, Math.min(accountPage, pages));
+        int page = pages == null ? 1 : Math.max(1, Math.min(accountPage, pages));
         int offset = Math.multiplyExact(page - 1, pageSize);
-        List<Map<String, Object>> pagedAccounts = emergencyRepository.pageTamperAccounts(
+        List<Map<String, Object>> pagedAccounts = effectiveThreshold == null ? List.of()
+                : emergencyRepository.pageTamperAccounts(
                         range.startAt(), range.endAt(), effectiveThreshold, offset, pageSize).stream()
-                .map(this::tamperAccountView)
+                .map(this::tamperAccountReadView)
                 .toList();
         int totalBlocked = paths.stream().mapToInt(row -> intValue(row.get("count"))).sum();
         TamperRange previousRange = range.previous();
@@ -813,14 +823,14 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 .stream()
                 .mapToInt(this::intValue)
                 .sum();
-        int sevenDayAlertAccounts = "7d".equals(range.label())
+        Integer sevenDayAlertAccounts = threshold == null ? null : ("7d".equals(range.label())
                 ? totalAccounts
                 : Math.toIntExact(emergencyRepository.countTamperAccounts(
-                        now.minusDays(7), now, scaledTamperThreshold(threshold, "7d")));
+                        now.minusDays(7), now, scaledTamperThreshold(threshold, "7d"))));
         Map<String, Object> sevenDayPreviewByThreshold = sevenDayThresholdPreview(now);
         Map<String, Object> selectedAlertConfig = new LinkedHashMap<>(alertConfig);
         selectedAlertConfig.put("effectiveThreshold", effectiveThreshold);
-        selectedAlertConfig.put("effectiveLabel", effectiveThreshold + " 次 / " + range.label());
+        selectedAlertConfig.put("effectiveLabel", effectiveThreshold == null ? null : effectiveThreshold + " 次 / " + range.label());
         selectedAlertConfig.put("sevenDayAlertAccounts", sevenDayAlertAccounts);
         selectedAlertConfig.put("sevenDayPreviewByThreshold", sevenDayPreviewByThreshold);
         Map<String, Object> response = map(
@@ -843,7 +853,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                         "total", totalAccounts,
                         "pages", pages,
                         "hasPrev", page > 1,
-                        "hasNext", page < pages),
+                        "hasNext", pages != null && page < pages),
                 "coverage", TamperCoverageRegistry.snapshot(),
                 "alertConfig", selectedAlertConfig,
                 "sources", List.of("nx_emergency_tamper_event", "nx_emergency_control_setting"));
@@ -1053,6 +1063,8 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         List<Map<String, Object>> executions = executionSeeds().stream().map(source -> {
             Map<String, Object> row = new LinkedHashMap<>(source);
             row.put("reversible", isReversibleExecution(source));
+            row.put("domainActions", impactRows(
+                    source.get("domainActions"), source.get("notificationDispatch"), null));
             return row;
         }).toList();
         long ready = playbooks.stream().filter(row -> "active".equals(row.get("state"))).count();
@@ -1148,7 +1160,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                         "reason", request.reason().trim(),
                         "idempotency_key", idempotencyKey.trim()));
         Map<String, Object> response = sopOverview().getData();
-        response.put("updated", row);
+        Map<String, Object> updated = new LinkedHashMap<>(row);
+        updated.put("sequence", impactRows(row.get("sequence"), null,
+                stringValue(row.get("notifyCampaignNo"), "")));
+        response.put("updated", updated);
         return ApiResult.ok(response);
     }
 
@@ -1366,18 +1381,19 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                         ApiResult.fail(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH"));
             }
             String existingExecId = stringValue(existingExecution.get().get("executionId"), "");
+            long existingGeneration = longValue(existingExecution.get().get("executionGeneration"));
             List<String> existingSteps = stringList(existingExecution.get().get("steps"));
             if (existingSteps.contains("pending") || existingSteps.contains("running")) {
-                if (!emergencyRepository.claimExecutionRecovery(
-                        existingExecId, LocalDateTime.now().minus(J4_EXECUTION_RECOVERY_LEASE))) {
+                long recoveryGeneration = emergencyRepository.claimExecutionRecovery(existingExecId);
+                if (recoveryGeneration < 0) {
                     return ApiResult.fail(409, "J4_EXECUTION_IN_PROGRESS:" + existingExecId);
                 }
                 return reconcileStaleExecution(
-                        existingExecution.get(), snapshotCode, operator, idempotencyKey);
+                        existingExecution.get(), snapshotCode, operator, idempotencyKey, recoveryGeneration);
             }
             if (existingSteps.contains("failed")) {
                 ensureExecutionOutcomeAudit(
-                        existingExecution.get(), snapshotCode, operator, idempotencyKey, true);
+                        existingExecution.get(), snapshotCode, operator, idempotencyKey, true, existingGeneration);
                 ensureJ4ExecutionOutcomeEvent(
                         existingExecution.get(), snapshotCode, operator, idempotencyKey, true);
                 return ApiResult.fail(409, "J4_EXECUTION_PARTIAL:" + existingExecId);
@@ -1387,7 +1403,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                         ApiResult.fail(409, "J4_EXECUTION_STATUS_INVALID:" + existingExecId));
             }
             ensureExecutionOutcomeAudit(
-                    existingExecution.get(), snapshotCode, operator, idempotencyKey, false);
+                    existingExecution.get(), snapshotCode, operator, idempotencyKey, false, existingGeneration);
             ensureJ4ExecutionOutcomeEvent(
                     existingExecution.get(), snapshotCode, operator, idempotencyKey, false);
             Map<String, Object> response = sopOverview().getData();
@@ -1441,6 +1457,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         String failure = null;
         appendExecution(seed, execId, emergency, idempotencyKey, effectiveRequest,
                 notificationDispatch, domainActions, stepStatuses);
+        long executionGeneration = 0L;
         try {
             auditRequiredInNewTransaction("J4_SOP_PLAYBOOK_EXECUTION_STARTED", "SOP_PLAYBOOK_EXECUTION",
                     execId, operator, emergency ? "CRITICAL" : "HIGH", map(
@@ -1463,7 +1480,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             notificationDispatch.put("auditStatus", "PENDING");
             notificationDispatch.put("requestHash", executionRequestHash);
             emergencyRepository.updateExecutionProgressIndependent(
-                    execId, stepStatuses, notificationDispatch, domainActions);
+                    execId, executionGeneration, stepStatuses, notificationDispatch, domainActions);
             throw auditFailure;
         }
         for (int index = 0; index < seed.seq().size(); index++) {
@@ -1477,7 +1494,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 notificationDispatch.put("failure", "J4_EXECUTION_CANCELLED");
                 failure = "J4_EXECUTION_CANCELLED";
                 emergencyRepository.updateExecutionProgressIndependent(
-                        execId, stepStatuses, notificationDispatch, domainActions);
+                        execId, executionGeneration, stepStatuses, notificationDispatch, domainActions);
                 break;
             }
             Map<String, Object> step = seed.seq().get(index);
@@ -1488,7 +1505,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 stepStatuses.set(index, "running");
                 markDomainActionStatus(domainActions, index + 1, "RUNNING");
                 emergencyRepository.updateExecutionProgressIndependent(
-                        execId, stepStatuses, notificationDispatch, domainActions);
+                        execId, executionGeneration, stepStatuses, notificationDispatch, domainActions);
                 if ("J1".equals(domain)) {
                     executeJ1Action(domainActions, index + 1, action, action.toLowerCase(Locale.ROOT), execId, effectiveRequest);
                 } else if ("J2".equals(domain)) {
@@ -1522,7 +1539,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 stepStatuses.set(index, "done");
                 markDomainActionStatus(domainActions, index + 1, "DONE");
                 emergencyRepository.updateExecutionProgressIndependent(
-                        execId, stepStatuses, notificationDispatch, domainActions);
+                        execId, executionGeneration, stepStatuses, notificationDispatch, domainActions);
             } catch (RuntimeException ex) {
                 stepStatuses.set(index, sideEffectCompleted ? "running" : "failed");
                 for (int remaining = index + 1; remaining < stepStatuses.size(); remaining++) {
@@ -1544,7 +1561,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 notificationDispatch.put("failure", failure);
                 if (!sideEffectCompleted) {
                     emergencyRepository.updateExecutionProgressIndependent(
-                            execId, stepStatuses, notificationDispatch, domainActions);
+                            execId, executionGeneration, stepStatuses, notificationDispatch, domainActions);
                 }
                 break;
             }
@@ -1562,7 +1579,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     "idempotencyKey", idempotencyKey));
             notificationDispatch.put("auditStatus", "AUDITED");
             emergencyRepository.updateExecutionProgress(
-                    execId, stepStatuses, notificationDispatch, domainActions);
+                    execId, executionGeneration, stepStatuses, notificationDispatch, domainActions);
             publishJ4Event(
                     "admin.emergency_playbook_executed",
                     execId,
@@ -1591,7 +1608,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "idempotencyKey", idempotencyKey));
         notificationDispatch.put("auditStatus", "AUDITED");
         emergencyRepository.updateExecutionProgress(
-                execId, stepStatuses, notificationDispatch, domainActions);
+                execId, executionGeneration, stepStatuses, notificationDispatch, domainActions);
         publishJ4Event(
                 "admin.emergency_playbook_executed",
                 execId,
@@ -1609,7 +1626,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "executionId", execId,
                 "code", seed.code(),
                 "emergency", emergency,
-                "domainActions", domainActions,
+                "domainActions", impactRows(domainActions, notificationDispatch, seed.notifyCampaignNo()),
                 "notificationDispatch", notificationDispatch,
                 "rollback", seed.rollback()));
         return ApiResult.ok(response);
@@ -1730,8 +1747,8 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     "PLAYBOOK_RESUME", executionId, operator, reason, idempotencyKey,
                     ApiResult.fail(409, "J4_EXECUTION_NOT_RECOVERABLE"));
         }
-        if (!emergencyRepository.claimExecutionRecovery(
-                executionId, LocalDateTime.now().minus(J4_EXECUTION_RECOVERY_LEASE))) {
+        long recoveryGeneration = emergencyRepository.claimExecutionRecovery(executionId);
+        if (recoveryGeneration < 0) {
             return rejectJ4(
                     "PLAYBOOK_RESUME", executionId, operator, reason, idempotencyKey,
                     ApiResult.fail(409, "J4_EXECUTION_STILL_ACTIVE"));
@@ -1743,7 +1760,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                         "reason", reason,
                         "idempotencyKey", idempotencyKey,
                         "semantics", "reconcile durable facts; never blindly repeat unknown side effects"));
-        return reconcileStaleExecution(execution, code, operator, idempotencyKey);
+        return reconcileStaleExecution(execution, code, operator, idempotencyKey, recoveryGeneration);
     }
 
     private Map<String, Object> executionCancellation(String executionId) {
@@ -2345,7 +2362,8 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             String playbookCode,
             String operator,
             String idempotencyKey,
-            boolean partial) {
+            boolean partial,
+            long executionGeneration) {
         Map<String, Object> notification = mutableMap(execution.get("notificationDispatch"));
         if ("AUDITED".equals(stringValue(notification.get("auditStatus"), ""))) {
             return;
@@ -2379,7 +2397,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     originalOperator, emergencyExecution ? "CRITICAL" : "HIGH", auditDetail);
         }
         notification.put("auditStatus", "AUDITED");
-        emergencyRepository.updateExecutionProgress(executionId, steps, notification, actions);
+        emergencyRepository.updateExecutionProgress(executionId, executionGeneration, steps, notification, actions);
     }
 
     private void ensureJ4ExecutionOutcomeEvent(
@@ -2416,7 +2434,8 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             Map<String, Object> execution,
             String playbookCode,
             String operator,
-            String idempotencyKey) {
+            String idempotencyKey,
+            long executionGeneration) {
         String executionId = stringValue(execution.get("executionId"), "");
         List<String> steps = new ArrayList<>(stringList(execution.get("steps")));
         List<Map<String, Object>> actions = mapList(execution.get("domainActions"));
@@ -2450,12 +2469,13 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             notification.put("failure", "J4_STALE_EXECUTION_RECONCILED");
         }
         emergencyRepository.updateExecutionProgress(
-                executionId, steps, notification, actions);
+                executionId, executionGeneration, steps, notification, actions);
         Map<String, Object> recovered = new LinkedHashMap<>(execution);
+        recovered.put("executionGeneration", executionGeneration);
         recovered.put("steps", steps);
         recovered.put("notificationDispatch", notification);
         recovered.put("domainActions", actions);
-        ensureExecutionOutcomeAudit(recovered, playbookCode, operator, idempotencyKey, partial);
+        ensureExecutionOutcomeAudit(recovered, playbookCode, operator, idempotencyKey, partial, executionGeneration);
         ensureJ4ExecutionOutcomeEvent(recovered, playbookCode, operator, idempotencyKey, partial);
         if (partial) {
             return ApiResult.fail(409, "J4_EXECUTION_PARTIAL:" + executionId + ":J4_STALE_EXECUTION_RECONCILED");
@@ -3188,6 +3208,60 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         return emergencyRepository.geoHits();
     }
 
+    /**
+     * One row per request the edge actually refused, read from the same event table the summary sums.
+     * New rows may carry the business user number resolved from a valid, read-only session at block
+     * time; anonymous and historical rows stay null. The read applies the existing account masking
+     * rule and never reconstructs an identity from a row id.
+     */
+    public ApiResult<PageResult<Map<String, Object>>> geoBlockHitDetail(
+            String countryCode, String endpointKey, Integer pageNum, Integer pageSize) {
+        String country = countryCode == null ? null : countryCode.trim().toUpperCase(Locale.ROOT);
+        if (country != null && (country.isEmpty() || !country.matches("[A-Z]{2}"))) {
+            throw new BizException(422, "J2_GEO_HIT_COUNTRY_INVALID");
+        }
+        String endpoint = endpointKey == null || endpointKey.trim().isEmpty() ? null : endpointKey.trim();
+        long safePage = pageNum == null || pageNum < 1 ? 1L : pageNum;
+        long safeSize = pageSize == null || pageSize < 1 ? 20L : Math.min(pageSize, 100);
+        long offset = (safePage - 1L) * safeSize;
+        if (offset > Integer.MAX_VALUE) throw new BizException(422, "J2_GEO_HIT_PAGE_INVALID");
+        long total = emergencyRepository.countGeoBlockEvents(country, endpoint);
+        List<Map<String, Object>> records = emergencyRepository
+                .geoBlockEventRows(country, endpoint, (int) safeSize, (int) offset)
+                .stream()
+                .map(this::maskGeoBlockUserNo)
+                .toList();
+        return ApiResult.ok(new PageResult<>(total, safePage, safeSize, records));
+    }
+
+    private Map<String, Object> maskGeoBlockUserNo(Map<String, Object> row) {
+        Map<String, Object> masked = new LinkedHashMap<>(row);
+        Object raw = row.get("userNo");
+        masked.put("userNo", StringUtils.hasText(raw == null ? null : String.valueOf(raw))
+                ? maskUserCode(String.valueOf(raw))
+                : null);
+        return masked;
+    }
+
+    /** Dedicated management read: all-country SUM over the same rolling 24h event table, no country LIMIT. */
+    public ApiResult<Map<String, Object>> geoBlockHitSummary() {
+        Map<String, Object> summary = emergencyRepository.geoHitSummary();
+        return ApiResult.ok(map(
+                "domain", "J2",
+                "window", "ROLLING_24H",
+                "available", true,
+                "windowStart", stringValue(summary.get("windowStart"), ""),
+                "capturedAt", stringValue(summary.get("capturedAt"), ""),
+                "totalBlockedEvents", longValue(summary.get("totalBlockedEvents")),
+                "countryCount", longValue(summary.get("countryCount")),
+                "source", List.of("nx_emergency_geo_block_event"),
+                "sourceFields", List.of("event_count", "recorded_at"),
+                "definition", "SUM(event_count) over all country_code in recorded_at [NOW()-1DAY, NOW()]",
+                "coverage", "recorded_geo_block_events_only",
+                "uniqueUsers", false,
+                "allAccessProof", false));
+    }
+
     private Map<String, Object> tamperAlertConfig() {
         int threshold = emergencyRepository.settingValue(TAMPER_THRESHOLD)
                 .map(Integer::parseInt)
@@ -3277,6 +3351,13 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         return account;
     }
 
+    /** Overview projection, including the config-save receipt: keep the old last field and add the same event MAX's full stored time. */
+    private Map<String, Object> tamperAccountReadView(Map<String, Object> row) {
+        Map<String, Object> account = tamperAccountView(row);
+        account.put("lastOccurredAt", row.get("lastOccurredAt"));
+        return account;
+    }
+
     private Map<String, Object> tamperAccount(String userCode, int count, String k4, String last, List<String> paths, String cluster) {
         String normalizedUserCode = toUserCode(userCode);
         return map("userCode", normalizedUserCode, "userNo", normalizedUserCode, "count", count, "k4", k4, "last", last, "paths", paths, "cluster", cluster);
@@ -3308,7 +3389,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "readinessReason", readinessReason,
                 "owner", seed.owner(),
                 "lastDrill", seed.lastDrill(),
-                "sequence", seed.seq(),
+                "sequence", impactRows(seed.seq(), null, seed.notifyCampaignNo()),
                 "notifyCampaignNo", seed.notifyCampaignNo(),
                 "notifyTemplate", seed.notifyTemplate(),
                 "rollback", seed.rollback(),
@@ -3317,6 +3398,110 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "version", seed.version(),
                 "customSummary", seed.summary(),
                 "lastExecution", seed.lastExecution());
+    }
+
+    /**
+     * Adds a read-only impact contract to playbook steps and execution actions.  No J4 action has
+     * an authoritative affected-user count: scopes and the already persisted target/notification
+     * quantities are exposed as such, while unknown user counts stay null with a machine reason.
+     */
+    private List<Map<String, Object>> impactRows(Object rowsValue, Object notificationValue, String defaultCampaignNo) {
+        Long notificationCount = null;
+        String effectiveCampaignNo = defaultCampaignNo;
+        if (notificationValue instanceof Map<?, ?> notification) {
+            notificationCount = nullableLong(notification.get("notificationCount"));
+            effectiveCampaignNo = firstText(defaultCampaignNo, notification.get("campaignNo"));
+        }
+        List<Map<String, Object>> sourceRows = mapList(rowsValue);
+        long i3Steps = sourceRows.stream()
+                .filter(row -> "I3".equals(stringValue(row.get("domain"), "").toUpperCase(Locale.ROOT)))
+                .count();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map<String, Object> source : sourceRows) {
+            Map<String, Object> row = new LinkedHashMap<>(source);
+            String domain = stringValue(row.get("domain"), "").toUpperCase(Locale.ROOT);
+            String action = stringValue(row.get("action"), "").replace("**", "").trim();
+            String ref = stringValue(row.get("ref"), "");
+            String configKey = stringValue(row.get("configKey"), "");
+            String campaignNo = firstText(row.get("campaignNo"), effectiveCampaignNo);
+            Long targetCount = "K1".equals(domain) ? nullableLong(row.get("affectedAccounts")) : null;
+            Long rowNotificationCount = nullableLong(row.get("notificationCount"));
+            Long actualNotifications = "I3".equals(domain)
+                    ? (rowNotificationCount != null ? rowNotificationCount
+                    : i3Steps == 1 ? notificationCount : null)
+                    : null;
+            row.put("impact", impactView(domain, action, ref, configKey, campaignNo, row, targetCount, actualNotifications));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private Map<String, Object> impactView(String domain, String action, String ref, String configKey,
+                                           String campaignNo, Map<String, Object> source, Long targetCount,
+                                           Long actualNotifications) {
+        String type = switch (domain) {
+            case "J1" -> "killswitch";
+            case "J2" -> "country";
+            case "C2" -> "user";
+            case "K1" -> "cluster";
+            case "I3" -> "campaign";
+            case "I5" -> "disclosure";
+            default -> "unknown";
+        };
+        String value = impactScopeValue(domain, action, ref, configKey, campaignNo, source);
+        Map<String, Object> scope = new LinkedHashMap<>();
+        scope.put("type", type);
+        scope.put("value", value);
+        if (targetCount != null) {
+            scope.put("targetUserCount", targetCount);
+        }
+        String reason = ("I3".equals(domain) && actualNotifications != null)
+                ? "NOTIFICATION_COUNT_ONLY"
+                : ("K1".equals(domain) && targetCount != null)
+                ? "TARGET_SCOPE_ONLY"
+                : "NO_AUTHORITATIVE_IMPACT_COUNT";
+        return map(
+                "available", false,
+                "reason", reason,
+                "scope", scope,
+                "estimatedUsers", null,
+                "actualAffectedUsers", null,
+                "actualNotifications", actualNotifications);
+    }
+
+    private String impactScopeValue(String domain, String action, String ref, String configKey,
+                                    String campaignNo, Map<String, Object> source) {
+        return switch (domain) {
+            case "J1" -> {
+                String gate = configKey.startsWith("killswitch.")
+                        ? configKey.substring("killswitch.".length()) : "";
+                yield firstText(gate, ref, action);
+            }
+            case "J2" -> firstText(source.get("country"), source.get("target"), afterColon(ref));
+            case "C2", "K1", "I5" -> firstText(source.get("target"), afterColon(ref));
+            case "I3" -> firstText(campaignNo, source.get("campaignNo"), ref);
+            default -> firstText(ref, source.get("target"), action);
+        };
+    }
+
+    private String afterColon(String value) {
+        String text = stringValue(value, "");
+        int colon = text.indexOf(':');
+        return colon >= 0 ? text.substring(colon + 1) : text;
+    }
+
+    private Long nullableLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private Map<String, Object> playbookDraftRow(String code, SopPlaybookCreateRequest request) {
@@ -3590,6 +3775,16 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             return Integer.parseInt(string.trim());
         }
         return 0;
+    }
+
+    private long longValue(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String string && StringUtils.hasText(string)) {
+            return Long.parseLong(string.trim());
+        }
+        return 0L;
     }
 
     private boolean boolValue(Object value) {
@@ -3913,9 +4108,11 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         String reason = ctx.reason();
         String idem = ctx.idempotencyKey();
         switch (cmd.op()) {
-            case "j1_gate_kill", "j1_gate_resume" -> {
-                String enabled = "j1_gate_kill".equals(cmd.op()) ? "disabled" : "enabled";
-                KillSwitchToggleRequest req = new KillSwitchToggleRequest(enabled, reason, operator);
+            case OpsKillSwitchService.RESTORE_OPERATION -> {
+                return killSwitchService.restoreApproved(cmd, idem, reason, operator);
+            }
+            case "j1_gate_kill" -> {
+                KillSwitchToggleRequest req = new KillSwitchToggleRequest("disabled", reason, operator);
                 return killSwitchService.toggle(str(p, "gateKey"), idem, req);
             }
             case "j1_batch_kill" -> {

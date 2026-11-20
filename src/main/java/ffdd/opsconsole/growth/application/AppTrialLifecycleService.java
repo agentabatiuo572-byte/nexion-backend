@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
@@ -20,6 +21,7 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
 import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.capacity.MonthlyTargetProjection;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -53,6 +55,9 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppTrialLifecycleService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
 
     // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
@@ -167,6 +172,8 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_COOLDOWN_ACTIVE");
         }
         int days = positiveInt(policy, "trialDays", 3);
+        int graceDays = nonNegativeInt(policy, "graceDays", 7);
+        int extensionDays = nonNegativeInt(policy, "extensionDays", 3);
         String configuredCap = policy.get("trialOffsetCapUSD");
         BigDecimal offsetCap = StringUtils.hasText(configuredCap) ? new BigDecimal(configuredCap) : null;
         String productCode = trialProductCode(policy);
@@ -178,20 +185,14 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
+        BigDecimal dailyUsdt = positiveOrNull(productDailyUsdt(product));
+        BigDecimal dailyNex = positiveOrNull(product.dailyNex());
+        if (dailyUsdt == null || dailyNex == null) {
+            return ApiResult.fail(409, "TRIAL_DAILY_YIELD_INVALID");
+        }
         if (!withinPhysicalSlotCapacity(userId, product, true)) return ApiResult.fail(409, "TRIAL_CAPACITY_FULL");
         String normalizedDevice = product.name();
         BigDecimal price = product.priceUsdt();
-        // 🔴 试用抵扣金必须与该商品的**权威日收益**同源(zentao #78)。
-        //   此前 dailyUsdt 取运营配置的 `shadowDailyUSD`(默认 38.52),与商城 S1 的
-        //   实际 $1.00/天相差约 38.5 倍,于是同一屏出现「3 天预计抵扣金 $116」和
-        //   「S1 上限 $1.00/d」。现在直接读 nx_product 的 estimated_daily_usdt / daily_nex,
-        //   配置值只在商品未配收益时兜底(并在快照里标明来源)。
-        BigDecimal productDailyUsdt = positiveOrNull(product.estimatedDailyUsdt());
-        BigDecimal productDailyNex = positiveOrNull(product.dailyNex());
-        BigDecimal dailyUsdt = productDailyUsdt != null ? productDailyUsdt
-                : decimal(policy, "shadowDailyUSD", "0");
-        BigDecimal dailyNex = productDailyNex != null ? productDailyNex
-                : decimal(policy, "shadowDailyNEX", "0");
         int seatsBeforeClaim = nonNegativeInt(policy, "seatsLeftToday", 0);
         if (seatsBeforeClaim <= 0 || mapper.consumeTrialQuota(quotaDate) != 1) {
             return ApiResult.fail(409, "TRIAL_QUOTA_EXHAUSTED");
@@ -204,16 +205,20 @@ public class AppTrialLifecycleService {
         String claimNo = "TRIAL-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String snapshot = "paymentRail=UVEL_USDT_WALLET,productCode=" + productCode
                 + ",trialDays=" + days
-                + ",dailyUsdtSource=" + (productDailyUsdt != null ? "nx_product.estimated_daily_usdt" : "policy.shadowDailyUSD")
-                + ",dailyNexSource=" + (productDailyNex != null ? "nx_product.daily_nex" : "policy.shadowDailyNEX")
+                + ",graceDays=" + graceDays + ",extensionDays=" + extensionDays
+                + ",dailyUsdtSource=" + (product.monthlyTargetUsdt() == null
+                        ? "nx_product.estimated_daily_usdt" : "nx_product.monthly_target_usdt")
+                + ",dailyNexSource=nx_product.daily_nex"
                 + ",dailyUsdt=" + dailyUsdt + ",dailyNex=" + dailyNex
                 + ",offsetCapUsdt=" + (offsetCap == null ? "UNLIMITED" : offsetCap) + ",priceUsdt=" + price
                 + ",seatsLeftTodayBefore=" + seatsBeforeClaim + ",seatsLeftTodayAfter=" + seatsAfterClaim;
         int changed = existing == null
                 ? mapper.insertTrial(userId, claimNo, idempotencyKey, paymentMethodId, normalizedDevice,
-                        days, dailyUsdt, dailyNex, offsetCap, price, now, now.plusDays(days), snapshot)
+                        days, graceDays, extensionDays, dailyUsdt, dailyNex, offsetCap, price,
+                        now, now.plusDays(days), snapshot)
                 : mapper.restartTrial(existing.id(), existing.version(), claimNo, idempotencyKey,
-                        paymentMethodId, normalizedDevice, days, dailyUsdt, dailyNex, offsetCap, price,
+                        paymentMethodId, normalizedDevice, days, graceDays, extensionDays,
+                        dailyUsdt, dailyNex, offsetCap, price,
                         now, now.plusDays(days), snapshot);
         if (changed != 1) throw new BizException(409, "TRIAL_START_CONFLICT");
         Attribution attr = requireAttribution(userId);
@@ -270,9 +275,8 @@ public class AppTrialLifecycleService {
         Settlement preview = settlement(row, policy, false, now);
         BigDecimal threshold = decimal(policy, "highQualityThresholdUSD", "100");
         if (preview.shadowUsdt().compareTo(threshold) < 0) return ApiResult.fail(409, "TRIAL_EXTENSION_THRESHOLD_NOT_MET");
-        int days = positiveInt(policy, "extensionDays", 3);
-        int graceDays = nonNegativeInt(policy, "graceDays", 7);
-        LocalDateTime extendedExpiresAt = row.expiresAt().plusDays((long) graceDays + days);
+        int days = Math.max(1, row.extensionDaysSnapshot());
+        LocalDateTime extendedExpiresAt = row.expiresAt().plusDays((long) row.graceDaysSnapshot() + days);
         if (mapper.extendTrial(row.id(), row.version(), extendedExpiresAt, now) != 1) {
             throw new BizException(409, "TRIAL_EXTENSION_CONFLICT");
         }
@@ -372,7 +376,7 @@ public class AppTrialLifecycleService {
         LocalDateTime now = businessNow();
         LocalDateTime conversionDeadline = row.expiresAt() == null ? null
                 : "EXTENDED".equals(normalize(row.status())) ? row.expiresAt()
-                : row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7));
+                : row.expiresAt().plusDays(row.graceDaysSnapshot());
         if (conversionDeadline == null || !now.isBefore(conversionDeadline)) {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
@@ -383,7 +387,7 @@ public class AppTrialLifecycleService {
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
         // Keep the claim's promised trial accrual, but require a valid current
         // product yield before any purchase or reward side effect.
-        if (positiveOrNull(product.estimatedDailyUsdt()) == null
+        if (positiveOrNull(productDailyUsdt(product)) == null
                 || positiveOrNull(product.dailyNex()) == null
                 || positiveOrNull(row.dailyUsdt()) == null
                 || positiveOrNull(row.dailyNex()) == null) {
@@ -414,6 +418,7 @@ public class AppTrialLifecycleService {
         if (confirmedQuote != null && !confirmedQuote.equals(quote.version())) {
             return ApiResult.fail(409, "TRIAL_QUOTE_CHANGED");
         }
+        String hostingCenter = hostingCenters.requirePool().assign("trial:" + row.claimNo());
         testCloudAdmission.requireCapacity(1);
         requireCoverage(quote.remainderUsdt(), quote.rewardNex());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, product.productNo(),
@@ -460,7 +465,7 @@ public class AppTrialLifecycleService {
         HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
                 "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : normalize(product.productType()),
-                instanceNo, row.deviceName(), subtotal) != 1) {
+                instanceNo, row.deviceName(), subtotal, hostingCenter) != 1) {
             throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
         }
         Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
@@ -527,7 +532,7 @@ public class AppTrialLifecycleService {
         if (row.expiresAt() == null) return ApiResult.fail(409, "TRIAL_DUE_TIME_MISSING");
         LocalDateTime dueAt = "EXTENDED".equals(state)
                 ? row.expiresAt()
-                : row.expiresAt().plusDays(nonNegativeInt(policy, "graceDays", 7));
+                : row.expiresAt().plusDays(row.graceDaysSnapshot());
         if (dueAt.isAfter(now)) return ApiResult.fail(409, "TRIAL_NOT_DUE");
         // FEAT-TRIAL02: expiry may close a trial, never authorize a purchase.
         return cancelOnce(userId, flag(policy, "autoChargeAtEnd", false) && now.isAfter(dueAt.plus(MAX_AUTO_SETTLEMENT_DELAY))
@@ -549,13 +554,7 @@ public class AppTrialLifecycleService {
         BigDecimal shadowNex = row.dailyNex().multiply(days).setScale(6, RoundingMode.DOWN);
         BigDecimal offset = row.offsetCapUsdt() == null ? shadowUsdt : shadowUsdt.min(row.offsetCapUsdt());
         BigDecimal remainder = shadowUsdt.subtract(offset).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
-        BigDecimal discount = BigDecimal.ZERO;
-        if (early) {
-            BigDecimal rate = decimal(policy, "discountRate", "15");
-            if (rate.compareTo(BigDecimal.ONE) > 0) rate = rate.movePointLeft(2);
-            discount = row.priceUsdt().multiply(rate)
-                    .min(decimal(policy, "discountCapUSD", "50")).setScale(6, RoundingMode.DOWN);
-        }
+        BigDecimal discount = early ? conversionPromoDiscount(row.priceUsdt(), policy) : BigDecimal.ZERO;
         BigDecimal charge = row.priceUsdt().subtract(discount).subtract(offset)
                 .max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
         return new Settlement(shadowUsdt, shadowNex, offset, remainder, discount, charge);
@@ -628,16 +627,24 @@ public class AppTrialLifecycleService {
     }
 
     private BigDecimal conversionPromoDiscount(BigDecimal catalogPrice, Map<String, String> policy) {
-        BigDecimal rate = decimal(policy, "discountRate", "15");
-        if (rate.compareTo(BigDecimal.ONE) > 0) rate = rate.movePointLeft(2);
-        return catalogPrice.multiply(rate)
+        return catalogPrice.multiply(conversionPromoRate(policy))
                 .min(decimal(policy, "discountCapUSD", "50"))
                 .setScale(6, RoundingMode.DOWN);
+    }
+
+    private BigDecimal conversionPromoRate(Map<String, String> policy) {
+        return decimal(policy, "discountRate", "15").movePointLeft(2);
     }
 
     /** 商品未配收益时列为 0/NULL —— 只有正值才算「有权威收益」。 */
     private static BigDecimal positiveOrNull(BigDecimal value) {
         return value != null && value.signum() > 0 ? value : null;
+    }
+
+    private static BigDecimal productDailyUsdt(AppTrialLifecycleMapper.ConversionProduct product) {
+        if (product == null) return null;
+        return product.monthlyTargetUsdt() == null
+                ? product.estimatedDailyUsdt() : MonthlyTargetProjection.daily(product.monthlyTargetUsdt());
     }
 
     private boolean validExpectedAmount(BigDecimal expected) {
@@ -665,7 +672,16 @@ public class AppTrialLifecycleService {
                 ? null : mapper.catalogProduct(configuredProductCode);
         AppTrialLifecycleMapper.ConversionProduct startProduct = configuredProductCode == null
                 ? null : mapper.conversionProduct(configuredProductCode);
-        boolean productAvailable = availablePhysicalTrialProduct(startProduct) && productReleased(startProduct);
+        BigDecimal catalogDailyUsdt = productDailyUsdt(catalogProduct);
+        BigDecimal catalogDailyNex = catalogProduct == null ? null : catalogProduct.dailyNex();
+        boolean validCatalogYield = positiveOrNull(catalogDailyUsdt) != null
+                && positiveOrNull(catalogDailyNex) != null;
+        boolean productAvailable = availablePhysicalTrialProduct(startProduct) && productReleased(startProduct)
+                && validCatalogYield;
+        if (!validCatalogYield) {
+            catalogDailyUsdt = null;
+            catalogDailyNex = null;
+        }
         boolean quotaAvailable = nonNegativeInt(policy, "seatsLeftToday", 0) > 0;
         boolean capacityAvailable = row != null && !restartable(normalize(row.status()))
                 || withinPhysicalSlotCapacity(userId, startProduct, lockCapacity);
@@ -689,15 +705,13 @@ public class AppTrialLifecycleService {
             putCanonicalProvenance(result, "nx_trial_claim");
             result.put("paymentRail", "UVEL_USDT_WALLET");
             result.put("config", safePolicy(policy, configuredProductCode,
-                    catalogProduct == null ? null : catalogProduct.name(),
+                    catalogProduct == null ? mapper.configuredProductName(configuredProductCode) : catalogProduct.name(),
                     catalogProduct == null ? null : catalogProduct.priceUsdt(),
-                    catalogProduct == null ? null : catalogProduct.estimatedDailyUsdt(),
-                    catalogProduct == null ? null : catalogProduct.dailyNex()));
+                    catalogDailyUsdt, catalogDailyNex));
             return result;
         }
         String effectiveState = effectiveState(row, now);
         Settlement preview = active(effectiveState) ? settlement(row, policy, false, now) : null;
-        int graceDays = nonNegativeInt(policy, "graceDays", 7);
         boolean canStart = restartable(effectiveState)
                 && (row.cooldownUntil() == null || !row.cooldownUntil().isAfter(now))
                 && productAvailable && trialGateEnabled && phaseOpen && !riskBlocked && quotaAvailable && capacityAvailable;
@@ -717,7 +731,7 @@ public class AppTrialLifecycleService {
         result.put("expiresAtEpochMs", epochMillis(row.expiresAt()));
         result.put("activeEndsAt", "EXTENDED".equals(effectiveState) ? null : row.expiresAt());
         LocalDateTime graceEndsAt = List.of("ACTIVE", "GRACE").contains(effectiveState)
-                ? row.expiresAt().plusDays(graceDays) : null;
+                ? row.expiresAt().plusDays(row.graceDaysSnapshot()) : null;
         LocalDateTime extendedEndsAt = "EXTENDED".equals(effectiveState) ? row.expiresAt() : null;
         result.put("graceEndsAt", graceEndsAt);
         result.put("graceEndsAtEpochMs", epochMillis(graceEndsAt));
@@ -756,12 +770,14 @@ public class AppTrialLifecycleService {
         // 用户已经按当时的数开始计息,中途改目录不该让他的 hero 数字跟着跳(zentao #78)。
         // 未领取/可重开时才回落目录商品值。
         Map<String, Object> config = safePolicy(policy, configuredProductCode,
-                frozenProduct ? row.deviceName() : catalogProduct == null ? null : catalogProduct.name(),
+                frozenProduct ? row.deviceName() : catalogProduct == null ? mapper.configuredProductName(configuredProductCode) : catalogProduct.name(),
                 frozenProduct ? row.priceUsdt() : catalogProduct == null ? null : catalogProduct.priceUsdt(),
-                frozenProduct ? row.dailyUsdt() : catalogProduct == null ? null : catalogProduct.estimatedDailyUsdt(),
-                frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex());
+                frozenProduct ? row.dailyUsdt() : catalogDailyUsdt,
+                frozenProduct ? row.dailyNex() : catalogDailyNex);
         if (frozenProduct) {
             config.put("trialDays", Integer.toString(Math.max(1, row.durationDays() == null ? 1 : row.durationDays())));
+            config.put("graceDays", Integer.toString(row.graceDaysSnapshot()));
+            config.put("extensionDays", Integer.toString(row.extensionDaysSnapshot()));
             config.put("trialOffsetCapUSD", row.offsetCapUsdt()==null?null:row.offsetCapUsdt().stripTrailingZeros().toPlainString());
         }
         result.put("config", config);
@@ -824,18 +840,14 @@ public class AppTrialLifecycleService {
 
     private Map<String, Object> safePolicy(
             Map<String, String> policy, String productCode, String productName, BigDecimal productPrice,
-            BigDecimal productDailyUsdt, BigDecimal productDailyNex) {
+            BigDecimal dailyUsdt, BigDecimal dailyNex) {
         Map<String, Object> result = new LinkedHashMap<>();
         Map<String, String> defaults = linkedString(
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
-                "discountRate", "0.15", "discountCapUSD", "20",
+                "discountCapUSD", "20",
                 "autoChargeAtEnd", "false", "highQualityThresholdUSD", "100",
-                "trialProductId", CANONICAL_TRIAL_PRODUCT_ID, "trialPriceUSD", "1299",
-                // 🔴 试用收益口径的兜底值不再是「像真数字」的 38.52/65(zentao #78):
-                //   真正的日收益来自该商品的 estimated_daily_usdt / daily_nex,这两个键只在
-                //   商品未配收益时兜底。给它们一个显式 0 而不是一个可观金额,运营看到
-                //   「0 + 提示」才会去查商品配置,而不是误以为 38.52 是权威值。
-                "shadowDailyUSD", "0", "shadowDailyNEX", "0", "cooldownDays", "30",
+                "trialPriceUSD", "1299",
+                "cooldownDays", "30",
                 "phaseOpen", "true", "autoPushEnabled", "true", "autoPushDelayMs", "1500",
                 "autoPushCooldownHours", "24", "autoPushMaxPerSession", "1",
                 "seatsLeftToday", "0", EARLY_DISCOUNT_KEY, "0");
@@ -846,6 +858,8 @@ public class AppTrialLifecycleService {
                 result.put(key, policy.getOrDefault(key, fallback));
             }
         });
+        // Installed App versions read rates at or below 1 as fractions.
+        result.put("discountRate", conversionPromoRate(policy).stripTrailingZeros().toPlainString());
         String offsetCap = policy.get("trialOffsetCapUSD");
         result.put("trialOffsetCapUSD",StringUtils.hasText(offsetCap)?offsetCap:null);
         // H2 emergency auto-push stop lives outside the regular policy table.
@@ -860,18 +874,8 @@ public class AppTrialLifecycleService {
         if (productPrice != null && productPrice.signum() > 0) {
             result.put("trialPriceUSD", productPrice.stripTrailingZeros().toPlainString());
         }
-        // 🔴 试用日收益必须与商品卡同一个数(zentao #78)。上面两个 shadow* 键只在商品未配收益时
-        //   兜底,但此前**没有任何地方**用商品值覆盖它们 —— safePolicy 只覆盖了商品名与价格,
-        //   于是 App 读到的是库里存的运营旧值(种子行 38.52),试用 hero 算出 3 × 38.52 封顶 $50,
-        //   而 S1 商品卡写的是 $1.00/天(3 天 ≈ $3)。同一次试用、两个页面、两个数,且按构造必然
-        //   对不上。claim 时的结算早已改读商品值(AppTrialLifecycleService:137-142),这里把**展示
-        //   侧**也对齐到同一权威来源,商品没配收益时才回落到 policy。
-        if (productDailyUsdt != null && productDailyUsdt.signum() > 0) {
-            result.put("shadowDailyUSD", productDailyUsdt.stripTrailingZeros().toPlainString());
-        }
-        if (productDailyNex != null && productDailyNex.signum() > 0) {
-            result.put("shadowDailyNEX", productDailyNex.stripTrailingZeros().toPlainString());
-        }
+        result.put("shadowDailyUSD", dailyUsdt == null ? null : dailyUsdt.stripTrailingZeros().toPlainString());
+        result.put("shadowDailyNEX", dailyNex == null ? null : dailyNex.stripTrailingZeros().toPlainString());
         return result;
     }
 
@@ -882,7 +886,7 @@ public class AppTrialLifecycleService {
     }
 
     private String trialProductCode(Map<String, String> policy) {
-        String productCode = canonicalTrialProductId(policy.getOrDefault("trialProductId", CANONICAL_TRIAL_PRODUCT_ID));
+        String productCode = canonicalTrialProductId(policy.get("trialProductId"));
         return productCode.matches("[A-Za-z0-9._-]{2,64}") ? productCode : null;
     }
 

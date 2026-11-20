@@ -32,4 +32,7 @@ public class PhoneReplacementException extends BizException {
         details=new Details(type,reason,actions,Map.copyOf(fields));
     }
     public Details details(){return details;}
+
+    @Override
+    public Object errorData() { return details; }
 }

@@ -3,6 +3,7 @@ package ffdd.opsconsole.market.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.market.domain.ExchangeOrderView;
 import ffdd.opsconsole.market.infrastructure.ExchangeOrderEntity;
+import ffdd.opsconsole.shared.config.BusinessPeriodSql;
 import java.math.BigDecimal;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -11,6 +12,9 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
+    String GATE_BUSINESS_DAY = "eo.created_at >= " + BusinessPeriodSql.Legacy.DAY_START
+            + " AND eo.created_at &lt; " + BusinessPeriodSql.Legacy.DAY_END;
+
     @Select("""
             SELECT COALESCE(SUM(CASE
                      WHEN UPPER(to_asset) = 'USDT' THEN to_amount
@@ -40,11 +44,15 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
     long countOrders();
 
     @Select("""
+            <script>
             SELECT COUNT(1)
-              FROM nx_exchange_order
-             WHERE is_deleted = 0
-               AND created_at >= """ + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
-               AND UPPER(status) = UPPER(#{status})
+              FROM nx_exchange_order eo
+             WHERE eo.is_deleted = 0
+               AND UPPER(eo.status) = UPPER(#{status})
+               AND (
+            """ + GATE_BUSINESS_DAY + """
+               )
+            </script>
             """)
     long countTodayByStatus(@Param("status") String status);
 
@@ -63,7 +71,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                    eo.rate,
                    UPPER(eo.status) AS status,
                    CASE UPPER(eo.status)
-                     WHEN 'QUEUED' THEN '次日队列'
+                     WHEN 'QUEUED' THEN '人工处理队列'
                      WHEN 'USER_CAP' THEN '单用户超限'
                      WHEN 'PLATFORM_CAP' THEN '平台超限'
                      WHEN 'GEO_BLOCKED' THEN '地域封锁'
@@ -98,13 +106,10 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                      WHEN 'USER_CAP' THEN '超过单用户日额度'
                      WHEN 'PLATFORM_CAP' THEN '超过平台日额度'
                      WHEN 'GEO_BLOCKED' THEN '命中 J2 地域封锁'
-                     WHEN 'QUEUED' THEN '超额度,排队等待次日处理'
+                     WHEN 'QUEUED' THEN '超额排队，等待人工处理'
                      ELSE NULL
                    END AS gateReason,
-                   CASE UPPER(eo.status)
-                     WHEN 'QUEUED' THEN '明天 00:00'
-                     ELSE NULL
-                   END AS etaLabel,
+                   CAST(NULL AS CHAR) AS etaLabel,
                    eo.created_at AS createdAt,
                    eo.updated_at AS updatedAt
               FROM nx_exchange_order eo
@@ -114,11 +119,14 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                AND UPPER(eo.status) IN
                <foreach collection='statuses' item='status' open='(' separator=',' close=')'>UPPER(#{status})</foreach>
              </if>
+               AND (UPPER(eo.status) NOT IN ('USER_CAP', 'PLATFORM_CAP', 'GEO_BLOCKED')
+                 OR (""" + GATE_BUSINESS_DAY + """
+               ))
              ORDER BY eo.created_at DESC, eo.id DESC
              LIMIT #{limit}
             </script>
             """)
-    List<ExchangeOrderView> listByStatuses(@Param("statuses") List<String> statuses, @Param("limit") int limit);
+    List<ExchangeOrderView> listOverviewOrdersByStatuses(@Param("statuses") List<String> statuses, @Param("limit") int limit);
 
     @Select("""
             SELECT eo.id,
@@ -134,7 +142,7 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                    eo.rate,
                    UPPER(eo.status) AS status,
                    CASE UPPER(eo.status)
-                     WHEN 'QUEUED' THEN '次日队列'
+                     WHEN 'QUEUED' THEN '人工处理队列'
                      WHEN 'USER_CAP' THEN '单用户超限'
                      WHEN 'PLATFORM_CAP' THEN '平台超限'
                      WHEN 'GEO_BLOCKED' THEN '地域封锁'
@@ -169,13 +177,10 @@ public interface ExchangeOrderMapper extends BaseMapper<ExchangeOrderEntity> {
                      WHEN 'USER_CAP' THEN '超过单用户日额度'
                      WHEN 'PLATFORM_CAP' THEN '超过平台日额度'
                      WHEN 'GEO_BLOCKED' THEN '命中 J2 地域封锁'
-                     WHEN 'QUEUED' THEN '超额度,排队等待次日处理'
+                     WHEN 'QUEUED' THEN '超额排队，等待人工处理'
                      ELSE NULL
                    END AS gateReason,
-                   CASE UPPER(eo.status)
-                     WHEN 'QUEUED' THEN '明天 00:00'
-                     ELSE NULL
-                   END AS etaLabel,
+                   CAST(NULL AS CHAR) AS etaLabel,
                    eo.created_at AS createdAt,
                    eo.updated_at AS updatedAt
               FROM nx_exchange_order eo

@@ -210,7 +210,6 @@ public class TestCloudExecutorService {
         if(active.size()>1) throw error(409,"TEST_CLOUD_ACTIVE_TASK_CONFLICT");
         boolean eligible=device.activatedAt()!=null
                 && Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(Objects.toString(device.status(),"").toUpperCase(Locale.ROOT))
-                && !Boolean.TRUE.equals(device.dispatchPaused())
                 && (device.pausedReason()==null || device.pausedReason().isBlank());
         if(fleet(i)) {
             var admission=!legacyEnabled()?null:mapper.legacyAdmission(i.ownerId(),i.deviceId(),i.instanceNo(),null,i.taskConfigId());
@@ -724,7 +723,7 @@ public class TestCloudExecutorService {
         if(lock && !Long.valueOf(i.ownerId()).equals(assignments.lockProductionUser(i.ownerId()))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
         var device=lock ? assignments.lockOwnedDevice(i.ownerId(),i.deviceId()) : assignments.ownedDevice(i.ownerId(),i.deviceId());
         if(device==null || i.deviceId()<=0 || !i.instanceNo().equals(device.instanceNo())
-                || (!fleet(i) && (!"cloud-share".equals(device.productCode())
+                || (!fleet(i) && (!"CLOUD_SHARE".equals(device.seriesCode())
                 || !Set.of("SHARE","CLOUD_SHARE").contains(Objects.toString(device.deviceType(),"").toUpperCase(Locale.ROOT))))) throw error(403,"TEST_CLOUD_BINDING_INVALID");
         // Reconciliation is read-only in effect and remains possible after a successful deferred deactivation.
         if(!live) return;
@@ -743,7 +742,7 @@ public class TestCloudExecutorService {
             return;
         }
         if(device.activatedAt()==null || !Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(Objects.toString(device.status(),"").toUpperCase(Locale.ROOT))
-                || Boolean.TRUE.equals(device.dispatchPaused()) || (device.pausedReason()!=null && !device.pausedReason().isBlank())
+                || (device.pausedReason()!=null && !device.pausedReason().isBlank())
                 || (!completingExistingTask && mapper.eligibleBinding(i.ownerId(),i.deviceId(),i.instanceNo())!=1)
                 || (lock ? assignments.lockPaidCloudShareDailyNex(i.ownerId(),i.deviceId())
                          : assignments.paidCloudShareDailyNex(i.ownerId(),i.deviceId()))==null) throw error(403,"TEST_CLOUD_BINDING_INVALID");

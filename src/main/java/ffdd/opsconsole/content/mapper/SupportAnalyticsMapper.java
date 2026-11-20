@@ -132,6 +132,79 @@ public interface SupportAnalyticsMapper {
         """)
     List<AttributionRow> attributions(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
 
+    @Select("""
+        <script>SELECT e.fact_id factId,
+          CASE WHEN JSON_TYPE(JSON_EXTRACT(e.attribution_evidence_json,'$.agent.displayName'))='STRING'
+            THEN JSON_UNQUOTE(JSON_EXTRACT(e.attribution_evidence_json,'$.agent.displayName'))
+            ELSE NULL END agentDisplayName
+        FROM nx_support_payment_attribution e WHERE e.fact_id IN
+        <foreach collection="factIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+        AND (
+        """+EVENT_SCOPE+"""
+          OR EXISTS(SELECT 1 FROM nx_user scope_customer WHERE scope_customer.id=e.customer_id AND scope_customer.sandbox=0
+        """+SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE+"""
+          )) ORDER BY e.fact_id</script>
+        """)
+    List<AgentDisplayName> agentDisplayNames(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
+
+    @Select("""
+        <script>SELECT e.fact_id factId,e.attribution_evidence_json evidenceJson
+        FROM nx_support_payment_attribution e WHERE e.fact_id IN
+        <foreach collection="factIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+        AND (
+        """+EVENT_SCOPE+"""
+          OR EXISTS(SELECT 1 FROM nx_user scope_customer WHERE scope_customer.id=e.customer_id AND scope_customer.sandbox=0
+        """+SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE+"""
+          )) ORDER BY e.fact_id</script>
+        """)
+    List<AgentEvidence> agentEvidence(@Param("scope") ReadScope scope,@Param("factIds") Collection<String> factIds);
+
+    @Select("""
+        <script>SELECT adminId,postVersion,displayName FROM (
+          SELECT CAST(p.resource_id AS UNSIGNED) adminId,
+                 CAST(JSON_UNQUOTE(JSON_EXTRACT(t.command_json,'$.params.expectedVersion')) AS UNSIGNED)+1 postVersion,
+                 JSON_UNQUOTE(JSON_EXTRACT(p.detail_json,'$.toDisplayName')) displayName
+            FROM nx_audit_log p
+            JOIN nx_admin_idempotency_record r
+              ON r.id=CAST(JSON_UNQUOTE(JSON_EXTRACT(p.detail_json,'$._adminCommand.recordId')) AS UNSIGNED)
+             AND r.is_deleted=0
+            JOIN nx_audit_operation_ticket t
+              ON t.operation_id=COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.id')),
+                                         JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.operationId')),
+                                         JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.data.id')),
+                                         JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.data.operationId')))
+             AND t.is_deleted=0
+           WHERE p.is_deleted=0 AND p.action='A1_OPERATOR_PROFILE_UPDATED'
+             AND p.resource_type='A1_ADMIN_ACCOUNT' AND p.result='SUCCESS'
+             AND p.resource_id IN
+             <foreach collection="adminIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+             AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(t.command_json,'$.op')))='a1_account_update_profile'
+          UNION ALL
+          SELECT CAST(JSON_UNQUOTE(JSON_EXTRACT(p.cold_payload,'$.resourceId')) AS UNSIGNED),
+                 CAST(JSON_UNQUOTE(JSON_EXTRACT(t.command_json,'$.params.expectedVersion')) AS UNSIGNED)+1,
+                 JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(p.cold_payload,'$.detail')),'$.toDisplayName'))
+            FROM nx_audit_log_archive p
+            JOIN nx_admin_idempotency_record r
+              ON r.id=CAST(JSON_UNQUOTE(JSON_EXTRACT(
+                    JSON_UNQUOTE(JSON_EXTRACT(p.cold_payload,'$.detail')),'$._adminCommand.recordId')) AS UNSIGNED)
+             AND r.is_deleted=0
+            JOIN nx_audit_operation_ticket t
+              ON t.operation_id=COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.id')),
+                                         JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.operationId')),
+                                         JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.data.id')),
+                                         JSON_UNQUOTE(JSON_EXTRACT(r.response_json,'$.data.operationId')))
+             AND t.is_deleted=0
+           WHERE p.content_sha256 IS NOT NULL
+             AND JSON_UNQUOTE(JSON_EXTRACT(p.cold_payload,'$.action'))='A1_OPERATOR_PROFILE_UPDATED'
+             AND JSON_UNQUOTE(JSON_EXTRACT(p.cold_payload,'$.resourceType'))='A1_ADMIN_ACCOUNT'
+             AND JSON_UNQUOTE(JSON_EXTRACT(p.cold_payload,'$.result'))='SUCCESS'
+             AND JSON_UNQUOTE(JSON_EXTRACT(p.cold_payload,'$.resourceId')) IN
+             <foreach collection="adminIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+             AND LOWER(JSON_UNQUOTE(JSON_EXTRACT(t.command_json,'$.op')))='a1_account_update_profile'
+        ) x WHERE postVersion IS NOT NULL ORDER BY adminId,postVersion</script>
+        """)
+    List<ProfileDisplayNameVersion> profileDisplayNameVersions(@Param("adminIds") Collection<Long> adminIds);
+
     /** Same authorized event/current-subject boundary as the source tuple; never public all-source material. */
     @Select("""
         <script>SELECT e.fact_id factId,e.source_partition sourcePartition,e.capture_db_utc captureDbUtc,
@@ -236,6 +309,9 @@ public interface SupportAnalyticsMapper {
                           LocalDateTime succeededAt,String sourceBusinessZone,String successTimeField,Integer fractionalSecondDigits,
                           String captureMode,String captureSchemaVersion,Long agentAdminId,Long groupId,Long ownerAdminId,
                           String agentStatus,String groupStatus,String ownerStatus) { }
+    record AgentDisplayName(String factId,String agentDisplayName) { }
+    record AgentEvidence(String factId,String evidenceJson) { }
+    record ProfileDisplayNameVersion(Long adminId,Long postVersion,String displayName) { }
 
     /** Current locking API-grant read; ordinary RR permission codes or the JWT cache are not this proof. */
     @Select("""

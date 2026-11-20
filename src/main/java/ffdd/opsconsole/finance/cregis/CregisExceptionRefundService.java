@@ -104,7 +104,7 @@ public class CregisExceptionRefundService {
             sources.reserve(evidence.source(),"REFUND",no);
             ownership.requireFresh(evidence);
             var row=map("caseNo",no,"projectId",project(),"sourceType",evidence.ref().type(),"sourceId",evidence.ref().id(),
-                    "claimantUserId",evidence.userId(),"txid",evidence.source().txid(),"logIndex",evidence.source().logIndex(),
+                    "chainId",evidence.source().network().chainId(),"claimantUserId",evidence.userId(),"txid",evidence.source().txid(),"logIndex",evidence.source().logIndex(),
                     "depositCid",evidence.source().cid(),"returnAddress",evidence.fromAddress(),"depositAddress",evidence.source().address(),
                     "grossAmount",evidence.source().grossAmount(),"feeAmount",snapshot.get("feeAmount"),"netAmount",snapshot.get("netAmount"),
                     "feePolicyVersion",snapshot.get("feePolicyVersion"),"ownershipReceipt",challenge,"evidenceHash",evidenceHash,
@@ -219,7 +219,7 @@ public class CregisExceptionRefundService {
     public void lateCallback(String caseNo) {
         lockGate();var old=db.byKey(project(),caseNo);
         if(old==null||!Set.of("FAILED_NO_TRANSFER","REPROPOSED").contains(text(old,"state")))return;
-        var guard=db.guard(project(),text(old,"txid"),(int)number(old,"logIndex"));
+        var guard=db.guard(network(old).chainId(),project(),text(old,"txid"),(int)number(old,"logIndex"));
         boolean restored=false;
         if(guard!=null&&"AVAILABLE".equals(guard.get("state"))) {
             sources.reserve(source(old),"REFUND",caseNo);restored=true;
@@ -271,14 +271,14 @@ public class CregisExceptionRefundService {
         record(next,text(row,"caseNo"),null,map("providerCid",observed.cid(),"netAmount",row.get("netAmount"),"txid",observed.txid()));
     }
     public CregisGateway.PayoutOrder query(Map<String,Object> row,long cid) {
-        var result=router.provider().queryPayout(new CregisGateway.PayoutQuery(cid,text(row,"businessKey"),text(row,"returnAddress"),decimal(row,"netAmount")));
+        var result=router.provider().queryPayout(new CregisGateway.PayoutQuery(cid,text(row,"businessKey"),text(row,"returnAddress"),decimal(row,"netAmount"),network(row).currency()));
         validateObserved(row,result,cid);return result;
     }
     private void validateObserved(Map<String,Object> row,CregisGateway.PayoutOrder result,long cid) {
-        if(result==null||result.cid()!=cid||result.status()==null||!CregisConstants.BSC_CHAIN_ID.equals(result.chainId())
-                ||!CregisConstants.USDT_BEP20_TOKEN_ID.equalsIgnoreCase(result.tokenId())
-                ||!CregisConstants.USDT_BEP20_CURRENCY.equalsIgnoreCase(result.currency())
-                ||!text(row,"businessKey").equals(result.thirdPartyId())||!text(row,"returnAddress").equalsIgnoreCase(result.address())
+        if(result==null||result.cid()!=cid||result.status()==null||!network(row).chainId().equals(result.chainId())
+                ||!network(row).tokenMatches(result.tokenId())
+                ||!network(row).currencyMatches(result.currency())
+                ||!text(row,"businessKey").equals(result.thirdPartyId())||!network(row).addressEquals(text(row,"returnAddress"),result.address())
                 ||result.amount()==null||decimal(row,"netAmount").compareTo(result.amount())!=0)throw new BizException(409,"CREGIS_REFUND_PROVIDER_CONFLICT");
     }
     public CregisExceptionOwnershipService.Evidence fresh(Map<String,Object> row) {
@@ -288,7 +288,7 @@ public class CregisExceptionRefundService {
     private void requireFresh(CregisExceptionOwnershipService.Evidence proof,Map<String,Object> row) {
         requireEligible(proof);
         if(proof.checkedAt().isBefore(Instant.now().minusSeconds(5))||!Objects.equals(proof.evidenceHash(),row.get("sourceEvidenceHash"))
-                ||!proof.fromAddress().equalsIgnoreCase(text(row,"returnAddress"))||proof.source().grossAmount().compareTo(decimal(row,"grossAmount"))!=0
+                ||!proof.source().network().addressEquals(proof.fromAddress(),text(row,"returnAddress"))||proof.source().grossAmount().compareTo(decimal(row,"grossAmount"))!=0
                 ||!proof.source().txid().equals(text(row,"txid"))||proof.source().logIndex()!=number(row,"logIndex"))
             throw new BizException(409,"CREGIS_REFUND_EVIDENCE_CHANGED");
         ownership.requireConsumed(text(row,"ownershipReceipt"),text(row,"ownershipReference"),"REFUND_ORIGIN",null,proof.evidenceHash());
@@ -296,15 +296,15 @@ public class CregisExceptionRefundService {
     private void requireEligible(CregisExceptionOwnershipService.Evidence proof) {
         if(proof==null||proof.source().projectId()!=project()||!Set.of("DUST_HOLD","UNATTRIBUTED_HOLD").contains(proof.sourceStatus())
                 ||proof.confirmations()<Math.max(15,transport.requiredConfirmations())||proof.fromAddress()==null
-                ||!proof.fromAddress().matches("(?i)0x[0-9a-f]{40}"))throw new BizException(409,"CREGIS_REFUND_SOURCE_NOT_ELIGIBLE");
+                ||!proof.source().network().validAddress(proof.fromAddress()))throw new BizException(409,"CREGIS_REFUND_SOURCE_NOT_ELIGIBLE");
     }
     private void requireDispatchSafe(Map<String,Object> row) {
         var gate=deposits.lockProvisionGate();String reason=gate==null?"":text(gate,"switchReason");
-        if(!transport.configured()||gate==null||"BUSY".equals(gate.get("state"))||reason.startsWith("EMERGENCY:")
+        if(!transport.configured(network(row))||gate==null||"BUSY".equals(gate.get("state"))||reason.startsWith("EMERGENCY:")
                 ||db.otherCriticalAlerts(project(),number(row,"depositCid"))!=0||db.criticalDeposits(project())!=0
                 ||deposits.disputedDeliveryCountForProject(project())!=0||db.otherActiveRefunds(project(),number(row,"id"))!=0)
             throw new BizException(409,"CREGIS_REFUND_DISPATCH_RISK_HOLD");
-        if(db.otherUnresolved(project(),number(row,"depositCid"),text(row,"txid"),(int)number(row,"logIndex"),
+        if(db.otherUnresolved(network(row).chainId(),project(),number(row,"depositCid"),text(row,"txid"),(int)number(row,"logIndex"),
                 text(row,"depositAddress"),decimal(row,"grossAmount"))!=0)
             throw new BizException(409,"CREGIS_REFUND_DISPATCH_RISK_HOLD");
     }
@@ -314,8 +314,9 @@ public class CregisExceptionRefundService {
                 ||user!=null&&user>0&&locks.countActiveByTarget("C","user",Long.toString(user))>0))
             throw new BizException(409,"OBJECT_LOCKED_BY_A2");
     }
+    static CregisNetwork network(Map<String,Object> row) { return CregisNetwork.fromChainId(text(row,"chainId")); }
     private CregisExceptionSourceService.Source source(Map<String,Object> row) {
-        return new CregisExceptionSourceService.Source(project(),number(row,"depositCid"),text(row,"txid"),(int)number(row,"logIndex"),text(row,"depositAddress"),decimal(row,"grossAmount"));
+        return new CregisExceptionSourceService.Source(project(),number(row,"depositCid"),text(row,"txid"),(int)number(row,"logIndex"),text(row,"depositAddress"),decimal(row,"grossAmount"),network(row));
     }
     private Map<String,Object> required(long id) { var row=db.byId(project(),id);if(row==null)throw new BizException(404,"CREGIS_REFUND_NOT_FOUND");return row; }
     private void requireRow(Map<String,Object> row,long version,String state) {if(row==null||number(row,"projectId")!=project()||number(row,"version")!=version||!state.equals(row.get("state")))throw conflict();}

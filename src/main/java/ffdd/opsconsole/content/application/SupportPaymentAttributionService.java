@@ -204,7 +204,7 @@ public class SupportPaymentAttributionService implements SupportPaymentAttributi
                 if(Objects.equals(candidate.userId(),customer) && Objects.equals(candidate.isDeleted(),0) && "ACTIVE".equals(candidate.status())
                         && candidate.endsAt()==null && positive(candidate.version()) && positive(candidate.agentAdminId())
                         && validAdmin(admins.get(candidate.agentAdminId()),candidate.agentAdminId())) {
-                    agent=Layer.known(candidate.agentAdminId());assignment=candidate;
+                    agent=Layer.known(candidate.agentAdminId(),adminDisplayName(admins.get(candidate.agentAdminId())));assignment=candidate;
                 } else agent=Layer.unknown("BINDING_INVALID");
             }
         }
@@ -307,7 +307,7 @@ public class SupportPaymentAttributionService implements SupportPaymentAttributi
         try { return json.writeValueAsString(value); }
         catch(JsonProcessingException ex) { throw new IllegalStateException("SUPPORT_PAYMENT_EVIDENCE_SERIALIZATION_FAILED",ex); }
     }
-    private static Map<String,Object> layer(Layer layer) { return map("status",layer.status(),"id",layer.id(),"reason",layer.reason()); }
+    private static Map<String,Object> layer(Layer layer) { return map("status",layer.status(),"id",layer.id(),"reason",layer.reason(),"displayName",layer.displayName()); }
     private static Map<String,Object> map(Object... pairs) {
         Map<String,Object> result=new LinkedHashMap<>();for(int i=0;i<pairs.length;i+=2)result.put((String)pairs[i],pairs[i+1]);return result;
     }
@@ -317,10 +317,14 @@ public class SupportPaymentAttributionService implements SupportPaymentAttributi
     // Admin accounts start at version 0; ownership history revisions start at 1.
     private static boolean validAdmin(Admin admin,Long id) { return admin!=null && Objects.equals(admin.id(),id) && admin.version()!=null && admin.version()>=0; }
     private static boolean validGroup(Group group,Long id) { return group!=null && Objects.equals(group.id(),id) && positive(group.version()); }
-    private record Layer(Long id,String status,String reason) {
-        static Layer known(Long id) { return new Layer(id,"KNOWN",null); }
-        static Layer unknown(String reason) { return new Layer(null,"UNKNOWN",reason); }
-        static Layer unassigned(String reason) { return new Layer(null,"UNASSIGNED",reason); }
+    private static String adminDisplayName(Admin admin) {
+        return admin==null || !text(admin.nickname()) ? null : admin.nickname().trim();
+    }
+    private record Layer(Long id,String status,String reason,String displayName) {
+        static Layer known(Long id) { return new Layer(id,"KNOWN",null,null); }
+        static Layer known(Long id,String displayName) { return new Layer(id,"KNOWN",null,displayName); }
+        static Layer unknown(String reason) { return new Layer(null,"UNKNOWN",reason,null); }
+        static Layer unassigned(String reason) { return new Layer(null,"UNASSIGNED",reason,null); }
     }
     private record Window<T>(boolean valid,List<T> current,String reason) { }
     private record Captured(Layer agent,Layer group,Layer owner,LocalDateTime captureDbUtc,Map<String,Object> witnesses) { }

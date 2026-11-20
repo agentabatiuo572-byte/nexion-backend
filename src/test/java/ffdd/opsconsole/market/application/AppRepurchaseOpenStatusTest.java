@@ -37,7 +37,7 @@ class AppRepurchaseOpenStatusTest {
     private final MockEnvironment environment = new MockEnvironment().withProperty("unused", "true");
     private final Clock clock = Clock.systemUTC();
     private final AdminIdempotencyService idempotency = new AdminIdempotencyService(
-            new AdminIdempotencyTransactionExecutor(records, new ObjectMapper(), expiry), clock);
+            new AdminIdempotencyTransactionExecutor(records, new ObjectMapper(), expiry, mock(AdminIdempotencyRollbackEvidence.class)), clock);
     private final AppRepurchaseService service = new AppRepurchaseService(
             mapper, disclosure, config, growth, idempotency, outbox, audit, clock, environment, sandbox, fundAdapter);
 

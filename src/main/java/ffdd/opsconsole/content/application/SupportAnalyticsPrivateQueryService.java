@@ -31,6 +31,7 @@ public class SupportAnalyticsPrivateQueryService {
     // Existing AppWalletBillsService.allowed and EarningsReleaseService.ASSETS, not a new currency catalog.
     static final Set<String> CURRENCIES=Set.of("USDT","UVT");
     static final Set<Sort> SORTS=Collections.unmodifiableSet(EnumSet.allOf(Sort.class));
+    private static final Set<View> FINANCIAL_DETAILS=EnumSet.of(View.NET_CONTRIBUTIONS,View.FIRST_DEPOSITS,View.FIRST_PURCHASES);
     public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper) {
         this.ownership=Objects.requireNonNull(ownership);this.stats=Objects.requireNonNull(stats);this.mapper=Objects.requireNonNull(mapper);
         this.funds=null;
@@ -43,7 +44,7 @@ public class SupportAnalyticsPrivateQueryService {
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> query(Map<String,List<String>> raw) {
         try {return execute(raw);}
-        catch(DataAccessException ex){LOG.warn("Support analytics query read failed",ex);throw unavailable();}
+        catch(DataAccessException ex){throw unavailable();}
     }
     private Map<String,Object> execute(Map<String,List<String>> raw) {
         var q=SupportAnalyticsQueryRequest.fromParameters(raw).normalize(CURRENCIES,SORTS);
@@ -61,20 +62,20 @@ public class SupportAnalyticsPrivateQueryService {
             sources=readSources(scope,c,grants,groups);
             version=SupportAnalyticsQueryVersion.evaluate(q,evidence(q,evaluation,sources));
         } catch(DataAccessException | IllegalArgumentException | IllegalStateException | NullPointerException ex) {
-            LOG.warn("Support analytics source evaluation failed",ex);
             reauthorize(q,scope,grants,groups);throw unavailable();
         } catch(BizException ex) {
-            reauthorize(q,scope,grants,groups);if(ex.getCode()==503){LOG.warn("Support analytics source unavailable",ex);throw unavailable();}throw ex;
+            reauthorize(q,scope,grants,groups);if(ex.getCode()==503){throw unavailable();}throw ex;
         }
         // Reauthorization always precedes version comparison, including unverifiable/failed sources.
         reauthorize(q,scope,grants,groups);
-        if(version.status()==SupportAnalyticsQueryVersion.Status.FAILED){LOG.warn("Support analytics source version failed");throw unavailable();}
+        if(version.status()==SupportAnalyticsQueryVersion.Status.FAILED){throw unavailable();}
         try {SupportAnalyticsQueryVersion.requireExpected(q,version);}
         catch(SupportAnalyticsQueryVersion.VersionConflict ex){throw new BizException(409,ex.getMessage());}
         if(q.filter()!=ServiceFilter.ALL && q.filter()!=ServiceFilter.WINDOW_ACTIVE && sources.taskRead()!=SupportAnalyticsQueryVersion.ReadState.COMPLETE)throw unavailable();
         if((q.filter()==ServiceFilter.ACTIVE || q.filter()==ServiceFilter.DORMANT) && sources.rules().dormantDays()==null)throw unavailable();
         var selected=evaluation.result().currentCustomers().stream().filter(row->matches(q,row,sources)).toList();
-        var rows=rows(q,evaluation,sources,selected);
+        var rows=FINANCIAL_DETAILS.contains(q.view())?new ArrayList<Row>():rows(q,evaluation,sources,selected);
+        var detailSummary=FINANCIAL_DETAILS.contains(q.view())?financialDetails(q,evaluation,sources,rows):null;
         rows.sort(rowOrder(q.direction()));
         long offset=(q.pageNum()-1)*q.pageSize();
         int start=(int)Math.min(offset,rows.size()),end=(int)Math.min(offset+q.pageSize(),rows.size());
@@ -86,6 +87,7 @@ public class SupportAnalyticsPrivateQueryService {
             "scopeSummary",scopeSummary(evaluation.result(),sources),"funds",selectedFunds(sources,selected));
         // asOf is display-only; no request clock enters the version.
         payload.put("asOf",evaluation.result().asOf().toString());
+        if(detailSummary!=null)payload.put("detailSummary",detailSummary);
         if(q.view()==View.AGENTS && evaluation.result().personnel().status()!=SupportAnalyticsStats.Status.AVAILABLE)payload.put("total",null);
         stats.requireFresh(evaluation);
         return payload;
@@ -107,20 +109,146 @@ public class SupportAnalyticsPrivateQueryService {
     }
     private static Set<PermissionStamp> grantKeys(List<PermissionStamp> rows) {return new HashSet<>(rows);}
     private static <T> List<T> checked(List<T> rows) {if(rows==null || rows.stream().anyMatch(Objects::isNull))throw unavailable();return List.copyOf(rows);}
-    private static BizException unavailable(){return new BizException(503,"SUPPORT_ANALYTICS_SOURCE_UNAVAILABLE");}
+    private static BizException unavailable(){return unavailable("SUPPORT_ANALYTICS_SOURCE_UNAVAILABLE");}
+    private static BizException unavailable(String reason){
+        LOG.warn("Support analytics query unavailable reason={}",reason);
+        return new BizException(503,reason);
+    }
+    private static BizException historyIncomplete(){return unavailable("SUPPORT_ANALYTICS_HISTORY_INCOMPLETE");}
+    private static BizException detailMismatch(){return unavailable("SUPPORT_ANALYTICS_DETAIL_MISMATCH");}
     private static boolean bool(Integer v){return Integer.valueOf(1).equals(v);}
     private static Boolean nullableBool(Integer v){if(v!=null && v!=0 && v!=1)throw unavailable();return v==null?null:v==1;}
     private static void validateView(Normalized q) {
         Set<Sort> allowed=switch(q.view()) {
             case OVERVIEW,CUSTOMERS,ACTIVITY -> EnumSet.complementOf(EnumSet.of(Sort.BOUND_CUSTOMER_COUNT,Sort.ACTIVE_CUSTOMER_COUNT,Sort.FIRST_CONFIRMED_CUSTOMER_COUNT,Sort.HASHRATE,Sort.SUCCEEDED_AT,Sort.AMOUNT));
             case AGENTS -> EnumSet.of(Sort.BOUND_CUSTOMER_COUNT,Sort.ACTIVE_CUSTOMER_COUNT,Sort.FIRST_CONFIRMED_CUSTOMER_COUNT,Sort.DEVICE_COUNT,Sort.PERSONAL_DEPOSIT);
-            case FINANCE -> EnumSet.of(Sort.SUCCEEDED_AT,Sort.AMOUNT);
+            case FINANCE,NET_CONTRIBUTIONS,FIRST_DEPOSITS,FIRST_PURCHASES -> EnumSet.of(Sort.SUCCEEDED_AT,Sort.AMOUNT);
             case DEVICES -> EnumSet.of(Sort.HASHRATE,Sort.LAST_ACTIVE_AT,Sort.REGISTERED_AT,Sort.DEVICE_COUNT);
         };
         if(!allowed.contains(q.sortKey()) || q.sortKey()==Sort.NET_CONTRIBUTION && q.basis()!=Basis.CURRENT_CUSTOMER_HISTORY
                 || q.basis()==Basis.CURRENT_ASSET && (q.view()==View.FINANCE || q.firstState()!=First.ALL
                 || Set.of(Sort.PERSONAL_DEPOSIT,Sort.TEAM_DEPOSIT,Sort.FIRST_SUCCEEDED_AT).contains(q.sortKey())))
             throw new BizException(422,"SUPPORT_ANALYTICS_SORT_INVALID");
+        if(FINANCIAL_DETAILS.contains(q.view()) && (q.basis()!=Basis.PERIOD_EVENT || q.currency()==null
+                || q.category()!=SupportAnalyticsQueryRequest.Category.ALL || q.firstState()!=First.ALL || q.filter()!=ServiceFilter.ALL || q.keyword()!=null))
+            throw new BizException(422,"SUPPORT_ANALYTICS_DETAIL_QUERY_INVALID");
+    }
+
+    private Map<String,Object> financialDetails(Normalized q,SupportAnalyticsService.QueryEvaluation evaluation,Sources sources,List<Row> rows) {
+        var c=evaluation.evidence();
+        record Detail(long customerId,String identity,String kind,BigDecimal amount,LocalDateTime at,Long agentId,Long groupId,String factId) {}
+        var facts=new ArrayList<Detail>();
+        Money expected;
+        if(q.view()==View.NET_CONTRIBUTIONS) {
+            if(c.netRead==null || !c.netRead.complete(c.financialIds))throw historyIncomplete();
+            expected=evaluation.result().financialSummary().currencies().stream().filter(v->q.currency().equals(v.currency()))
+                .map(CurrencyTotals::net).findFirst().orElseThrow(SupportAnalyticsPrivateQueryService::historyIncomplete);
+            var groups=evaluation.result().groups().stream().map(GroupAggregate::groupId).collect(java.util.stream.Collectors.toSet());
+            var events=new LinkedHashMap<String,Detail>();
+            for(var change:c.netRead.periodChanges(c.financialIds,q.currency(),evaluation.result().query(),c.scope,groups,null)) {
+                String paymentFactId=c.netRead.origins().get(change.contributionId()).paymentFactId();
+                var attribution=c.netRead.attributions().get(paymentFactId);
+                String identity=change.contributionId()+"|"+change.sourceReference();
+                events.merge(identity,new Detail(change.originCustomerId(),identity,"NET_CONTRIBUTION",
+                    change.amount(),change.succeededAt(),attribution.agentAdminId(),attribution.groupId(),paymentFactId),
+                    (before,next)->new Detail(before.customerId(),identity,before.kind(),before.amount().add(next.amount()),
+                        before.at(),before.agentId(),before.groupId(),before.factId()));
+            }
+            facts.addAll(events.values());
+        } else {
+            var kind=q.view()==View.FIRST_DEPOSITS?SupportPaymentFacts.Kind.DEPOSIT:SupportPaymentFacts.Kind.DEVICE_PURCHASE;
+            expected=evaluation.result().financialSummary().firstSources().stream().filter(v->q.currency().equals(v.currency()))
+                .map(v->kind==SupportPaymentFacts.Kind.DEPOSIT?v.deposits():v.purchases()).findFirst().orElseThrow(SupportAnalyticsPrivateQueryService::historyIncomplete);
+            for(var fact:c.selected) {
+                var first=c.first.get(fact.customerId());var history=c.firstHistory.get(fact.customerId());
+                if(fact.kind()!=kind || !q.currency().equals(fact.currency()) || first==null || !first.factId().equals(fact.factId())
+                        || history==null || history.status()!=SupportPaymentFacts.Status.READY)continue;
+                var attribution=c.validAttributions.get(fact.factId());
+                facts.add(new Detail(fact.customerId(),fact.factId(),fact.kind().name(),fact.amount(),fact.succeededAt(),
+                    attribution==null?null:attribution.agentAdminId(),attribution==null?null:attribution.groupId(),fact.factId()));
+            }
+        }
+        var agentDisplayNames=new LinkedHashMap<String,String>();
+        if(!facts.isEmpty()) {
+            var names=mapper.agentDisplayNames(c.scope,facts.stream().map(Detail::factId).distinct().toList());
+            if(names!=null)for(var name:names)if(name!=null && name.factId()!=null)agentDisplayNames.put(name.factId(),name.agentDisplayName());
+            var missing=facts.stream().map(Detail::factId).filter(id->!agentDisplayNames.containsKey(id)||agentDisplayNames.get(id)==null).distinct().toList();
+            if(!missing.isEmpty())agentDisplayNames.putAll(historicalAgentDisplayNames(c.scope,missing));
+        }
+        BigDecimal total=BigDecimal.ZERO,visible=BigDecimal.ZERO;
+        var customers=new HashSet<Long>();var visibleCustomers=new HashSet<Long>();
+        for(var fact:facts) {
+            total=total.add(fact.amount());customers.add(fact.customerId());
+            if(!c.current.containsKey(fact.customerId()))continue;
+            visible=visible.add(fact.amount());visibleCustomers.add(fact.customerId());
+            var display=sources.display().get(fact.customerId());
+            String id=UUID.nameUUIDFromBytes((q.view().name()+"|"+fact.identity()).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+            rows.add(new Row(fact.customerId(),id,q.sortKey()==Sort.AMOUNT?fact.amount():fact.at(),map("id",id,
+                "customerId",Long.toString(fact.customerId()),"customerNo",display.customerNo(),"nickname",display.nickname(),
+                "kind",fact.kind(),"currency",q.currency(),"amount",decimal(fact.amount()),"succeededAt",time(fact.at()),
+                "agentId",fact.agentId()==null?null:fact.agentId().toString(),"groupId",fact.groupId()==null?null:fact.groupId().toString(),
+                "agentDisplayName",agentDisplayNames.get(fact.factId()))));
+        }
+        if(expected.confirmedAmount()==null)throw historyIncomplete();
+        if(total.compareTo(expected.confirmedAmount())!=0)throw detailMismatch();
+        if(q.view()!=View.NET_CONTRIBUTIONS && expected.confirmedEvents()==null)throw historyIncomplete();
+        if(q.view()!=View.NET_CONTRIBUTIONS && !Objects.equals(expected.confirmedEvents(),(long)facts.size()))throw detailMismatch();
+        return map("currency",q.currency(),"status",expected.status().name(),"observedAmount",decimal(expected.observedAmount()),
+            "totalAmount",decimal(total),"visibleAmount",decimal(visible),"restrictedAmount",decimal(total.subtract(visible)),
+            "totalCount",(long)facts.size(),"visibleCount",(long)rows.size(),"restrictedCount",(long)facts.size()-rows.size(),
+            "customerCount",(long)customers.size(),"visibleCustomerCount",(long)visibleCustomers.size(),"restrictedCustomerCount",(long)customers.size()-visibleCustomers.size());
+    }
+
+    /**
+     * Exact fallback only when a future snapshot is absent: bind the admin version in the immutable
+     * attribution witness to the profile update's post-version, derived from the original A2 ticket
+     * expectedVersion. No nearest-time/current-name guess and no source => null.
+     */
+    private Map<String,String> historicalAgentDisplayNames(ReadScope scope,List<String> factIds) {
+        record Witness(Long adminId,Long version) { }
+        var evidence=mapper.agentEvidence(scope,factIds);
+        if(evidence==null || evidence.isEmpty())return Map.of();
+        var witnesses=new LinkedHashMap<String,Witness>();
+        var json=new com.fasterxml.jackson.databind.ObjectMapper();
+        for(var row:evidence) {
+            if(row==null || row.factId()==null || row.evidenceJson()==null)continue;
+            try {
+                var root=json.readTree(row.evidenceJson());
+                long adminId=root.path("agent").path("id").asLong(0);
+                long version=-1L;
+                for(var admin:root.path("admins")) {
+                    if(admin.path("id").asLong(0)==adminId && version<0 && admin.path("version").canConvertToLong())
+                        version=admin.path("version").asLong();
+                }
+                if(adminId>0 && version>=0)witnesses.put(row.factId(),new Witness(adminId,version));
+            } catch(Exception ignored) { }
+        }
+        if(witnesses.isEmpty())return Map.of();
+        var adminIds=witnesses.values().stream().map(Witness::adminId).distinct().toList();
+        var events=mapper.profileDisplayNameVersions(adminIds);
+        if(events==null || events.isEmpty())return Map.of();
+        var byAdmin=new LinkedHashMap<Long,List<SupportAnalyticsMapper.ProfileDisplayNameVersion>>();
+        for(var event:events) {
+            if(event!=null && event.adminId()!=null)
+                byAdmin.computeIfAbsent(event.adminId(), ignored->new ArrayList<>()).add(event);
+        }
+        var result=new LinkedHashMap<String,String>();
+        for(var entry:witnesses.entrySet()) {
+            var history=byAdmin.get(entry.getValue().adminId());
+            if(history==null)continue;
+            Long best=null;
+            String displayName=null;
+            for(var event:history) {
+                if(event.postVersion()==null || !event.postVersion().equals(entry.getValue().version())
+                        || event.displayName()==null || event.displayName().isBlank())continue;
+                if(best==null || event.postVersion()>best) {
+                    best=event.postVersion();
+                    displayName=event.displayName();
+                }
+            }
+            if(displayName!=null)result.put(entry.getKey(),displayName);
+        }
+        return result;
     }
 
     private record Sources(List<Long> groups,List<PermissionStamp> grants,List<PersonStamp> people,List<RoleStamp> roles,

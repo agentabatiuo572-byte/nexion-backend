@@ -42,12 +42,54 @@ public interface A4OutboxDiagnosticsMapper extends BaseMapper<EventOutboxEntity>
                    AND s.status = 'ACTIVE' AND s.is_deleted = 0)
             THEN o.event_type ELSE 'UNREGISTERED_EVENT_TYPE' END
             """;
+    // Only the five server-published weekly H3 facts carry a canonical user_id in
+    // payload. Do not infer a user from actor, aggregate_id or arbitrary event types.
+    String H3_USER_ID = """
+            CASE WHEN BINARY o.event_type IN (
+              'H3_STOREFRONT_THREE_PRODUCTS_VIEWED','H3_GENESIS_SECONDARY_MARKET_VIEWED',
+              'H3_COMPUTE_COMPLETED_50','H3_REFERRAL_REGISTERED','H3_EXCHANGE_COMPLETED')
+              AND o.is_server_authoritative = 1
+              AND JSON_VALID(o.payload)
+              AND JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.user_id')) REGEXP '^[1-9][0-9]{0,18}$'
+            THEN CAST(JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.user_id')) AS UNSIGNED)
+            ELSE NULL END
+            """;
     // Preserve indexable predicates; cap elapsed query time rather than silently sample totals.
     @Select("SELECT /*+ MAX_EXECUTION_TIME(1500) */ COUNT(*) AS total, COALESCE(SUM(" + UNRESOLVED + "),0) AS unresolved, "
             + "COALESCE(TIMESTAMPDIFF(SECOND,MIN(o.created_at),NOW()),0) AS oldestSeconds "
             + "FROM nx_event_outbox o WHERE " + BACKLOG)
     @Options(timeout = 3)
     Summary summary();
+
+    @Select("""
+            SELECT /*+ MAX_EXECUTION_TIME(1500) */
+                   o.event_type AS eventType,
+                   COUNT(DISTINCT o.event_id) AS outboxDeadCount,
+                   COUNT(DISTINCT CASE WHEN d.event_id IS NOT NULL THEN o.event_id END) AS bothLayersDeadCount,
+                   MIN(o.updated_at) AS oldestOutboxLastStateAt,
+                   CASE WHEN SUM(CASE WHEN d.event_id IS NOT NULL AND d.dead_at IS NULL THEN 1 ELSE 0 END) = 0
+                        THEN MIN(CASE WHEN d.event_id IS NOT NULL AND d.dead_at IS NOT NULL
+                                      THEN GREATEST(o.updated_at, d.dead_at) END)
+                        ELSE NULL END AS oldestBothLayersDeadObservedAt,
+                   SUM(CASE WHEN d.event_id IS NOT NULL AND d.dead_at IS NULL THEN 1 ELSE 0 END) AS missingDeliveryDeadAt
+              FROM nx_event_outbox o
+              LEFT JOIN nx_event_consumer_delivery d
+                ON d.event_id = o.event_id
+               AND d.consumer_group = 'h3-quest-completion'
+               AND d.status = 'DEAD'
+               AND d.is_deleted = 0
+             WHERE o.is_deleted = 0
+               AND o.status = 'DEAD'
+               AND o.event_type IN (
+                   'H3_STOREFRONT_THREE_PRODUCTS_VIEWED',
+                   'H3_GENESIS_SECONDARY_MARKET_VIEWED',
+                   'H3_COMPUTE_COMPLETED_50',
+                   'H3_REFERRAL_REGISTERED',
+                   'H3_EXCHANGE_COMPLETED')
+             GROUP BY o.event_type
+            """)
+    @Options(timeout = 3)
+    List<DeadLetterRow> deadLetters();
 
     @Select("SELECT /*+ MAX_EXECUTION_TIME(1500) */ " + SAFE_TYPE + " AS eventType, " + SAFE_STATUS + " AS safeStatus, COUNT(*) AS count, MIN(o.created_at) AS oldestAt, "
             + "SUM(" + UNRESOLVED + ") AS unresolved FROM nx_event_outbox o WHERE " + BACKLOG
@@ -70,7 +112,8 @@ public interface A4OutboxDiagnosticsMapper extends BaseMapper<EventOutboxEntity>
             + "'F4_ALERT_ENVELOPE_INVALID','F4_ALERT_PAYLOAD_INVALID','F4_ALERT_AUDIT_NOT_UNIQUE',"
             + "'F4_ALERT_AUDIT_CONFLICT','F4_ALERT_AUDIT_ALREADY_CLAIMED','F4_ALERT_RECEIPT_FAILED',"
             + "'F4_ALERT_RECEIPT_CONFLICT','F4_ALERT_PUBLICATION_FAILED','F4_ALERT_VERIFICATION_UNAVAILABLE') THEN o.last_error ELSE 'OTHER_ERROR' END AS errorCode, "
-            + UNRESOLVED + " AS auditLinkUnresolved FROM nx_event_outbox o WHERE " + BACKLOG
+            + UNRESOLVED + " AS auditLinkUnresolved, "
+            + H3_USER_ID + " AS userId FROM nx_event_outbox o WHERE " + BACKLOG
             + " AND o.id &gt; #{afterId}"
             + "<if test='eventType != null'><choose><when test='eventType == &quot;UNREGISTERED_EVENT_TYPE&quot;'> AND "
             + SAFE_TYPE + " = 'UNREGISTERED_EVENT_TYPE'</when><otherwise> AND o.event_type = #{eventType} AND BINARY o.event_type = BINARY #{eventType}</otherwise></choose></if>"
@@ -100,8 +143,31 @@ public interface A4OutboxDiagnosticsMapper extends BaseMapper<EventOutboxEntity>
     List<ReceiptRow> receipts(@Param("eventIds") List<String> eventIds);
 
     record Summary(long total, long unresolved, long oldestSeconds) {}
+    record DeadLetterRow(String eventType, long outboxDeadCount, long bothLayersDeadCount,
+            LocalDateTime oldestOutboxLastStateAt, LocalDateTime oldestBothLayersDeadObservedAt,
+            long missingDeliveryDeadAt) {}
     record GroupRow(String eventType, String safeStatus, long count, LocalDateTime oldestAt, long unresolved) {}
     record EventRow(long id, String eventId, String eventType, String status, int retryCount,
-            LocalDateTime createdAt, LocalDateTime nextRetryAt, String errorCode, boolean auditLinkUnresolved) {}
+            LocalDateTime createdAt, LocalDateTime nextRetryAt, String errorCode, boolean auditLinkUnresolved,
+            Long userId) {
+        /** Compatibility constructor for existing mapper callers without the optional source user. */
+        public EventRow(long id, String eventId, String eventType, String status, int retryCount,
+                LocalDateTime createdAt, LocalDateTime nextRetryAt, String errorCode, boolean auditLinkUnresolved) {
+            this(id, eventId, eventType, status, retryCount, createdAt, nextRetryAt, errorCode,
+                    auditLinkUnresolved, null);
+        }
+    }
     record ReceiptRow(String eventId, String status, long count) {}
+    record UserNoRow(Long userId, String userNo) {}
+
+    @Select("""
+            <script>
+            SELECT id AS userId,
+                   CONCAT('U', LPAD(id, GREATEST(8, LENGTH(CAST(id AS CHAR))), '0')) AS userNo
+              FROM nx_user
+             WHERE is_deleted = 0 AND id IN
+               <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>
+            </script>
+            """)
+    List<UserNoRow> userNos(@Param("ids") List<Long> ids);
 }

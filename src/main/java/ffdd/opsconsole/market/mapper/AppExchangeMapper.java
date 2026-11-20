@@ -19,6 +19,9 @@ public interface AppExchangeMapper {
     @Select("SELECT CONCAT('U', IF(id<100000000,LPAD(id,8,'0'),CAST(id AS CHAR))) FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 AND COALESCE(sandbox,0)=0 FOR UPDATE")
     String lockActiveUserNo(@Param("userId") Long userId);
 
+    @Select("SELECT language FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    String userLanguage(@Param("userId") Long userId);
+
     @Select("SELECT COALESCE(sandbox,0) FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer userSandbox(@Param("userId") Long userId);
 
@@ -138,7 +141,8 @@ public interface AppExchangeMapper {
              WHERE user_id=#{userId} AND is_deleted=0 AND COALESCE(nx_user_wallet.sandbox,0)=0
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=nx_user_wallet.user_id
                            AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
-               AND usdt_available+#{usdtDelta}>=0 AND nex_available+#{nexDelta}>=0
+               AND (#{usdtDelta}>0 OR usdt_available+#{usdtDelta}>=0)
+               AND nex_available+#{nexDelta}>=0
             """)
     int applyWalletDelta(@Param("userId") Long userId,@Param("usdtDelta") BigDecimal usdtDelta,
                          @Param("nexDelta") BigDecimal nexDelta);
@@ -365,9 +369,34 @@ public interface AppExchangeMapper {
             """)
     ExchangeRow recoveryOrder(@Param("userId") Long userId, @Param("exchangeNo") String exchangeNo);
 
+    /**
+     * Read-only projection of the orders that are really still queued. Used by the G2 approval path to price the
+     * exact extra payout a fee change creates (decision T11-1: no forecast, only orders already in the queue).
+     * Deliberately non-locking: a proposal must never block the batch executor.
+     */
+    @Select("""
+            SELECT UPPER(o.from_asset) AS fromAsset,o.from_amount AS fromAmount
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE UPPER(o.status)='QUEUED' AND o.is_deleted=0
+            """)
+    List<QueuedAmountRow> queuedAmounts();
+
     record ExchangeRow(String exchangeNo,String fromAsset,String toAsset,BigDecimal fromAmount,
-                       BigDecimal toAmount,BigDecimal rate,String status,LocalDateTime createdAt) {}
+                       BigDecimal toAmount,BigDecimal rate,String status,LocalDateTime createdAt,
+                       @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.ALWAYS)
+                       java.util.Map<String,Object> queueEstimate) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public ExchangeRow(String exchangeNo,String fromAsset,String toAsset,BigDecimal fromAmount,
+                           BigDecimal toAmount,BigDecimal rate,String status,LocalDateTime createdAt) {
+            this(exchangeNo,fromAsset,toAsset,fromAmount,toAmount,rate,status,createdAt,null);
+        }
+        public ExchangeRow withQueueEstimate(java.util.Map<String,Object> estimate) {
+            return new ExchangeRow(exchangeNo,fromAsset,toAsset,fromAmount,toAmount,rate,status,createdAt,estimate);
+        }
+    }
     record QueuedRow(Long userId,String exchangeNo,String fromAsset,BigDecimal fromAmount) {}
+    record QueuedAmountRow(String fromAsset,BigDecimal fromAmount) {}
     record UserAttribution(String phase,Integer accountAgeMonths,String cohort) {}
     record MarketPoint(BigDecimal priceUsdt,LocalDateTime sampledAt) {}
     record ExternalMarketPoint(String metricCode,String metricLabel,BigDecimal priceUsdt,

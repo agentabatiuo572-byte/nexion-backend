@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.mapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -41,6 +42,7 @@ public interface AppGrowthEngagementMapper {
             SELECT voucher_id voucherId,audience
               FROM nx_growth_voucher
              WHERE voucher_id=#{voucherId} AND is_deleted=0 AND LOWER(status)='active'
+               AND wheel_only=0
                AND (start_at=0 OR start_at<=#{nowMillis}) AND (end_at=0 OR end_at>=#{nowMillis})
                AND (claim_surfaces IS NULL OR JSON_LENGTH(claim_surfaces)=0
                     OR JSON_CONTAINS(claim_surfaces,JSON_QUOTE(#{surface})))
@@ -424,9 +426,10 @@ public interface AppGrowthEngagementMapper {
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".name'))),''),NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', 'en', '\".name'))),''),q.quest_name) title,
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".description'))),''),NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', 'en', '\".description'))),''),COALESCE(q.description,'')) subtitle,
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".rewardName'))),''),NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', 'en', '\".rewardName'))),''),q.reward_name) rewardName,
-                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT((SELECT CASE WHEN JSON_VALID(config_value) THEN config_value ELSE '{}' END FROM nx_config_item WHERE config_key='growth.content.localized' AND status=1 AND is_deleted=0 LIMIT 1), CONCAT('$.event.\"', q.quest_code, '\".\"', #{locale}, '\".rewardName'))),'') authoredRewardName,
-                   UPPER(q.reward_type) rewardType,
-                   q.reward_amount rewardAmount,
+                   UPPER(CASE WHEN LOWER(q.target_type)<>'wheel' AND u.id IS NOT NULL
+                              THEN u.reward_type ELSE q.reward_type END) rewardType,
+                   CASE WHEN LOWER(q.target_type)<>'wheel' AND u.id IS NOT NULL
+                        THEN u.reward_amount ELSE q.reward_amount END rewardAmount,
                    CASE WHEN q.badge_achievement_code='FEATURED' THEN 1 ELSE 0 END featured,
                    CASE WHEN LOWER(q.target_type)<>'wheel' AND q.target_value>0 THEN 1 ELSE 0 END trackable,
                    CASE WHEN LOWER(q.target_type)='wheel' THEN 1 ELSE q.target_value END targetValue,
@@ -523,48 +526,61 @@ public interface AppGrowthEngagementMapper {
             """)
     int joinEvent(@Param("userId") Long userId, @Param("event") EventReward event);
 
-    @Select("""
+    String LEGACY_EVENT_OPEN = """
+            q.status=1 AND q.is_deleted=0 AND q.target_value>0
+            AND q.target_type IN ('discount','referral','regional','boost','seasonal','onboarding')
+            AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
+            AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
+            """;
+
+    String LEGACY_EVENT_CLAIM_REMAINING = """
+            AND u.progress_value>=q.target_value AND UPPER(u.claim_status)<>'CLAIMED'
+            """;
+
+    String LEGACY_EVENT_REWARD = """
             SELECT q.id questId,q.quest_code eventCode,q.target_value targetValue,
                    u.reward_type rewardType,u.reward_amount rewardAmount,q.badge_achievement_code badgeCode
               FROM nx_user_event_quest u
-              JOIN nx_event_quest q ON q.id=u.quest_id AND q.status=1 AND q.is_deleted=0
+              JOIN nx_event_quest q ON q.id=u.quest_id AND q.quest_code=u.quest_code
              WHERE u.user_id=#{userId} AND u.quest_code=#{eventCode} AND u.is_deleted=0
-               AND q.target_value>0 AND LOWER(q.target_type)<>'wheel'
-               AND q.target_type IN ('discount','referral','regional','boost','seasonal','onboarding')
-               AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
-               AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
+               AND
+            """ + LEGACY_EVENT_OPEN;
+
+    @Select(LEGACY_EVENT_REWARD + LEGACY_EVENT_CLAIM_REMAINING + " LIMIT 1")
+    EventReward findClaimableLegacyEvent(@Param("userId") Long userId, @Param("eventCode") String eventCode);
+
+    @Select(LEGACY_EVENT_REWARD + """
                AND (u.progress_value>=q.target_value OR UPPER(u.claim_status) IN ('COMPLETED','CLAIMABLE'))
              LIMIT 1 FOR UPDATE
             """)
     EventReward lockClaimableEvent(@Param("userId") Long userId, @Param("eventCode") String eventCode);
 
     @Update("""
-            UPDATE nx_user_event_quest SET claim_status='CLAIMED',claimed_at=NOW(),updated_at=NOW()
-             WHERE user_id=#{userId} AND quest_code=#{eventCode}
-               AND UPPER(claim_status)<>'CLAIMED' AND is_deleted=0
-               AND progress_value >= (SELECT target_value FROM nx_event_quest
-                                        WHERE quest_code=#{eventCode} AND status=1 AND is_deleted=0
-                                          AND target_type IN ('discount','referral','wheel','regional','boost','seasonal','onboarding')
-                                          AND target_value>0 AND LOWER(target_type)<>'wheel'
-                                          AND (starts_at IS NULL OR starts_at<=UTC_TIMESTAMP())
-                                          AND (ends_at IS NULL OR ends_at>UTC_TIMESTAMP()) LIMIT 1)
-            """)
+            UPDATE nx_user_event_quest u SET claim_status='CLAIMED',claimed_at=NOW(),updated_at=NOW()
+             WHERE u.user_id=#{userId} AND u.quest_code=#{eventCode} AND u.is_deleted=0
+               AND EXISTS (SELECT 1 FROM nx_event_quest q
+                            WHERE q.id=u.quest_id AND q.quest_code=u.quest_code AND
+            """ + LEGACY_EVENT_OPEN + LEGACY_EVENT_CLAIM_REMAINING + ")")
     int claimEvent(@Param("userId") Long userId, @Param("eventCode") String eventCode);
+
+    String ACTIVE_ACHIEVEMENT = "achievement_code=#{badgeCode} AND status=1 AND is_deleted=0";
+    String USER_ACHIEVEMENT_KEY = "user_id=#{userId} AND achievement_code=#{badgeCode}";
+
+    // A soft-deleted holding occupies the same unique key and prevents a new insert.
+    @Select("SELECT COALESCE((SELECT is_deleted=0 FROM nx_user_achievement WHERE " + USER_ACHIEVEMENT_KEY + "), "
+            + "EXISTS(SELECT 1 FROM nx_achievement WHERE " + ACTIVE_ACHIEVEMENT + "))")
+    boolean canGrantAchievement(@Param("userId") Long userId, @Param("badgeCode") String badgeCode);
 
     @Insert("""
             INSERT IGNORE INTO nx_user_achievement
               (user_id,achievement_id,achievement_code,achievement_status,unlocked_at,created_at,updated_at,is_deleted)
             SELECT #{userId},a.id,a.achievement_code,'UNLOCKED',NOW(),NOW(),NOW(),0
               FROM nx_achievement a
-             WHERE a.achievement_code=#{badgeCode} AND a.status=1 AND a.is_deleted=0
-            """)
+             WHERE
+            """ + ACTIVE_ACHIEVEMENT)
     int unlockAchievement(@Param("userId") Long userId, @Param("badgeCode") String badgeCode);
 
-    @Select("""
-            SELECT id FROM nx_user_achievement
-             WHERE user_id=#{userId} AND achievement_code=#{badgeCode} AND is_deleted=0
-             LIMIT 1 FOR UPDATE
-            """)
+    @Select("SELECT id FROM nx_user_achievement WHERE " + USER_ACHIEVEMENT_KEY + " AND is_deleted=0 LIMIT 1 FOR UPDATE")
     Long lockUserAchievement(@Param("userId") Long userId, @Param("badgeCode") String badgeCode);
 
     @Select("SELECT nex_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1 FOR UPDATE")
@@ -825,7 +841,7 @@ public interface AppGrowthEngagementMapper {
               JOIN nx_user u ON u.id=s.user_id AND u.status='ACTIVE' AND u.is_deleted=0
                                     AND COALESCE(u.sandbox,0)=0
              WHERE s.current_streak>0 AND s.is_deleted=0
-             ORDER BY s.current_streak DESC,s.longest_streak DESC,s.user_id
+             ORDER BY s.current_streak DESC,s.longest_streak DESC,u.created_at,s.user_id
              LIMIT 5
             """)
     List<Map<String, Object>> topStreakers();
@@ -928,6 +944,7 @@ public interface AppGrowthEngagementMapper {
                    COALESCE(ps.last_seen_at,0) popupLastSeenAt,
                    COALESCE(ps.session_count,0) popupSessionCount,
                    v.status definitionStatus,v.is_deleted definitionDeleted,
+                   v.wheel_only wheelOnly,
                    v.issuance_limit issuanceLimit,
                    CASE WHEN v.issuance_limit>0 THEN (
                      SELECT COUNT(1) FROM nx_growth_voucher_grant issued
@@ -995,7 +1012,7 @@ public interface AppGrowthEngagementMapper {
               FROM nx_growth_voucher v
               LEFT JOIN nx_voucher_popup_sandbox_state ps
                 ON ps.run_id=#{runId} AND ps.user_id=#{userId} AND ps.voucher_id=v.voucher_id
-             WHERE v.is_deleted=0 AND LOWER(v.status)='active'
+             WHERE v.is_deleted=0 AND LOWER(v.status)='active' AND v.wheel_only=0
                AND (v.start_at=0 OR v.start_at<=#{nowMillis})
                AND (v.end_at=0 OR v.end_at>=#{nowMillis})
              ORDER BY v.updated_at DESC,v.id DESC
@@ -1009,6 +1026,7 @@ public interface AppGrowthEngagementMapper {
             SELECT v.voucher_id voucherId,v.audience
               FROM nx_growth_voucher v
              WHERE v.voucher_id=#{voucherId} AND v.is_deleted=0 AND LOWER(v.status)='active'
+               AND v.wheel_only=0
                AND (v.start_at=0 OR v.start_at<=#{nowMillis})
                AND (v.end_at=0 OR v.end_at>=#{nowMillis})
                AND (v.claim_surfaces IS NULL OR JSON_LENGTH(v.claim_surfaces)=0
@@ -1128,6 +1146,9 @@ public interface AppGrowthEngagementMapper {
             String rewardType,
             BigDecimal rewardAmount,
             String badgeCode) {
+        public String normalizedRewardType() {
+            return rewardType == null ? "" : rewardType.trim().toUpperCase(Locale.ROOT);
+        }
     }
 
     record StreakState(

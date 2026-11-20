@@ -63,10 +63,10 @@ class AppOrderCommandServiceTest {
         when(db.list(startsWith("SELECT p.product_no FROM nx_product"),any(Object[].class))).thenReturn(List.of(Map.of("product_no","DELETED")));
         when(db.one("SELECT id FROM nx_product WHERE product_no=? FOR UPDATE","DELETED"))
             .thenReturn(rowExists?Map.of("id",18L,"is_deleted",1):null);
-        var promotions=new PromotionOrderService(db,mock(ffdd.opsconsole.promotion.application.PromotionQuoteService.class),
+        var promotions=new PromotionOrderService(db,mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetService.class),
+            mock(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.class),mock(ffdd.opsconsole.promotion.application.PromotionQuoteService.class),
             mock(ffdd.opsconsole.promotion.application.PromotionEvaluationService.class),mock(ffdd.opsconsole.promotion.application.PromotionPolicyResolver.class),
             mock(AuditLogService.class),mock(EventOutboxService.class));
-        when(guard.isStrictProductionRuntime()).thenReturn(true);when(mapper.activeUserEnvironment(7L)).thenReturn(0);
         when(mapper.findDevelopmentPayOrderOwner("LIFE")).thenReturn(7L);
         when(mapper.lockUser(7L)).thenReturn(new ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.UserLock(7L,false));
         when(mapper.lockOrder("LIFE")).thenReturn(new AppOrderCommandMapper.OrderRow("LIFE",7L,18L,1,"SINGLE",1,"PENDING","PENDING_PAYMENT","WAITING_PAYMENT",false));

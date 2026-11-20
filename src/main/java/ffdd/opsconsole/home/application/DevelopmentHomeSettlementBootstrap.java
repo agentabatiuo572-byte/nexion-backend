@@ -74,6 +74,8 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
     private final String phone;
     @SuppressWarnings("ArchitectureConfigField")
     private final boolean enabled;
+    @SuppressWarnings("ArchitectureConfigField")
+    private final boolean simulatedTasksEnabled;
 
     @Autowired
     public DevelopmentHomeSettlementBootstrap(
@@ -84,7 +86,9 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             @Value("${nexion.home.development-settlement.enabled:false}") boolean enabled,
             EventOutboxService outboxService,
             AuditLogService auditLogService,
-            PlatformTransactionManager transactionManager) {
+            PlatformTransactionManager transactionManager,
+            @Value("${nexion.simulated-tasks.enabled:false}") boolean simulatedTasksEnabled) {
+        this.simulatedTasksEnabled = simulatedTasksEnabled;
         this.mapper = mapper;
         this.clock = clock;
         this.countryCode = countryCode == null ? "" : countryCode.trim();
@@ -125,6 +129,7 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
         this.outboxService = outboxService;
         this.auditLogService = auditLogService;
         this.deviceTransaction = IntSupplier::getAsInt;
+        this.simulatedTasksEnabled = false;
     }
 
     @Override
@@ -177,6 +182,8 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             progressed++;
             settledExistingTask = true;
         }
+        // An existing SIM runtime owns its lifecycle, including deferred deactivation.
+        if (device.simulatedRuntimePresent()) return progressed;
         if (device.pendingDeactivate() == null) {
             log.warn("event=DEVELOPMENT_TASK_DEVICE_SKIPPED deviceId={} reason=PENDING_DEACTIVATE_UNAVAILABLE",
                     device.userDeviceId());
@@ -187,6 +194,7 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             return progressed + finalizePendingDevice(device, now,
                     settledExistingTask ? "TASK_SETTLEMENT_COMPLETED" : "PENDING_WITHOUT_ACTIVE_TASK");
         }
+        if (simulatedTasksEnabled || !device.developmentDispatchAllowed()) return progressed;
         Map<String, String> capacityConfig = developmentCapacityConfig();
         if (!E3DeviceCapacityPolicy.validConfig(capacityConfig)) {
             log.warn("event=DEVELOPMENT_TASK_DEVICE_SKIPPED deviceId={} reason=E3_CAPACITY_CONFIG_INVALID",
@@ -275,7 +283,7 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
             }
             try {
                 E3DeviceCapacityPolicy.Projection capacity = E3DeviceCapacityPolicy.project(
-                        device.productCode(), device.deviceType(), device.purchasedAt(),
+                        device.seriesCode(), device.deviceType(), device.purchasedAt(),
                         device.activatedAt(), now, capacityConfig);
                 plans.add(new PlannedDevice(device, eligible, capacity));
             } catch (IllegalArgumentException invalid) {
@@ -358,13 +366,11 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
     }
 
     private int effectiveVram(DevelopmentTaskDevice device) {
-        String type = device.deviceType().trim().toUpperCase(Locale.ROOT);
-        String product = device.productCode().trim().toLowerCase(Locale.ROOT);
         // Cloud-share represents a managed provider slice rather than local physical VRAM.
         // Route it through the same low-capability E2 pool used by the 8 GB phone tier even if a
         // stale/incorrect physical VRAM value was persisted. The physical display value remains
         // untouched; this method is only the server routing equivalent.
-        if (type.equals("SHARE") || type.equals("CLOUD") || product.equals("cloud-share")) return 8;
+        if ("CLOUD_SHARE".equals(device.seriesCode())) return 8;
         return device.vramTotalGb() == null ? 0 : Math.max(0, device.vramTotalGb());
     }
 

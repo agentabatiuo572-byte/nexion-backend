@@ -4,10 +4,9 @@ package ffdd.opsconsole.bi.web;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
-import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.bi.application.OpsBiService;
 import ffdd.opsconsole.bi.domain.BiReportStreamDownload;
-import ffdd.opsconsole.bi.domain.BiReportView;
+import ffdd.opsconsole.bi.domain.BiReportPage;
 import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
 import ffdd.opsconsole.bi.dto.BiRegulatoryTemplateRequest;
 import ffdd.opsconsole.bi.dto.BiReportActionRequest;
@@ -61,7 +60,12 @@ public class OpsBiController {
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
             @RequestParam(value = "locale", required = false) String locale,
-            @RequestParam(value = "ref", required = false) String ref) {
+            @RequestParam(value = "ref", required = false) String ref,
+            @RequestParam(value = "granularity", required = false) String granularity,
+            @RequestParam(value = "asOf", required = false) String asOf) {
+        if (granularity != null || asOf != null) {
+            return biService.registrationKpis(null, null, window, from, to, cohort, phase, locale, ref, granularity, asOf);
+        }
         return biService.kpiOverview(l1Window(window, from, to), cohort, phase, locale, ref);
     }
 
@@ -75,7 +79,13 @@ public class OpsBiController {
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
             @RequestParam(value = "locale", required = false) String locale,
-            @RequestParam(value = "ref", required = false) String ref) {
+            @RequestParam(value = "ref", required = false) String ref,
+            @RequestParam(value = "granularity", required = false) String granularity,
+            @RequestParam(value = "asOf", required = false) String asOf,
+            @RequestParam(value = "bucketKey", required = false) String bucketKey) {
+        if (granularity != null || asOf != null || bucketKey != null) {
+            return biService.registrationKpis(kpiId, bucketKey, window, from, to, cohort, phase, locale, ref, granularity, asOf);
+        }
         return biService.kpiDrilldown(kpiId, l1Window(window, from, to), cohort, phase, locale, ref);
     }
 
@@ -89,7 +99,12 @@ public class OpsBiController {
             @RequestParam(value = "cohort", required = false) String cohort,
             @RequestParam(value = "phase", required = false) String phase,
             @RequestParam(value = "locale", required = false) String locale,
-            @RequestParam(value = "ref", required = false) String ref) {
+            @RequestParam(value = "ref", required = false) String ref,
+            @RequestParam(value = "granularity", required = false) String granularity,
+            @RequestParam(value = "asOf", required = false) String asOf) {
+        if (granularity != null || asOf != null) {
+            return biService.registrationKpis(kpiId, null, window, from, to, cohort, phase, locale, ref, granularity, asOf);
+        }
         return biService.kpiTrend(kpiId, l1Window(window, from, to), cohort, phase, locale, ref);
     }
 
@@ -227,7 +242,7 @@ public class OpsBiController {
 
     @GetMapping("/reports")
     @PreAuthorize("hasAuthority('bi_l5_read')")
-    public ApiResult<PageResult<BiReportView>> reports(@ModelAttribute BiReportQueryRequest request) {
+    public ApiResult<BiReportPage> reports(@ModelAttribute BiReportQueryRequest request) {
         return biService.reports(request);
     }
 

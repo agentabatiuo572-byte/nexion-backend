@@ -16,6 +16,9 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -378,6 +381,37 @@ public class VRankRewardDispatcher {
         }
         log.info("V-Rank voucher reward GRANTED: user={}, rank={}, voucherId={}, h7GrantId={}, replayed={}",
                 userId, rankCode, voucherId, grant.grantId(), grant.replayed());
+    }
+
+    /**
+     * F1 券补发:按 payoutId 生成新的 H7 发放来源与幂等键,真实发券。
+     * 首次发放的 source_id=userId:rankCode:voucher 已在冲正时作废;补发使用 payoutId 后缀
+     * 避免唯一键冲突,同时保持 source_type='VRANK_REWARD' 便于再次冲正时定位。
+     */
+    public VoucherGrantResult reissueVoucherReward(Long userId, String rankCode, String voucherId,
+                                                   String payoutId, String reissueKey, String operator) {
+        String suffix = "reissue:" + stableRound(payoutId + ":" + reissueKey);
+        String sourceId = userId + ":" + rankCode + ":voucher:" + suffix;
+        String grantKey = "vrank:" + userId + ":" + rankCode.toLowerCase(Locale.ROOT) + ":" + voucherId + ":" + suffix;
+        return voucherGrantFacade.grant(new VoucherGrantCommand(
+                userId, voucherId, grantKey, "VRANK_REWARD", sourceId, operator,
+                "F1 V-Rank voucher reissue"));
+    }
+
+    /** 每次获批补发绑定独立轮次键;同一轮重试得到同一键,回放旧发放;不同轮次得到不同键,发新券。 */
+    private static String stableRound(String seed) {
+        String source = StringUtils.hasText(seed) ? seed.trim() : "retry";
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(source.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 6; i++) {
+                sb.append(String.format("%02x", bytes[i]));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            return Integer.toHexString(source.hashCode());
+        }
     }
 
     private void dispatchSku(Long userId,

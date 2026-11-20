@@ -64,6 +64,9 @@ public class SupportMaintenanceService {
         }
         if(!currentPreference(customer).enabled()) throw new BizException(409,"SUPPORT_MAINTENANCE_STOPPED");
         LocalDateTime at=captureTime();
+        var rules=bindings.rules();
+        if(rules==null || !mapper.due(current.id(),rules.maintenanceDays(),at))
+            throw new BizException(409,"SUPPORT_MAINTENANCE_NOT_DUE");
         Cycle cycle=mapper.openCycle(customer);
         if(cycle==null) {
             ActivityState activity=mapper.activity(customer);

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
 import ffdd.opsconsole.growth.dto.GlobeDisplayConfig;
+import ffdd.opsconsole.home.application.HomeSharedSnapshotCache;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -23,6 +24,7 @@ import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -45,6 +47,7 @@ public class GrowthPublicStatsService {
     private static final List<String> MEMBER_ESTIMATE_FIELDS = List.of(
             "registeredUsersBase", "registeredUsersAnchorAt", TICK_INTERVAL, TICK_STEP_MIN, TICK_STEP_MAX);
     private static final long MAX_SAFE_INTEGER = 9_007_199_254_740_991L;
+    private static final List<String> GLOBE_CENTER_ORDER = List.of("sg", "jp", "vn", "uk", "fr", "de", "us-ny", "us-sj");
     private static final String DAILY_USD_KEY = "dailyUsdtPerBaseline";
     private static final BigDecimal SANDBOX_DAILY_USD = new BigDecimal("0.06");
     private static final Set<String> SANDBOX_PROFILES = Set.of("test");
@@ -60,6 +63,7 @@ public class GrowthPublicStatsService {
     private final Environment environment;
 
     private final Optional<HomeDisplayService> homeDisplay;
+    private final HomeSharedSnapshotCache homeSnapshots;
 
     private record RuntimeScope(boolean sandbox, String runId, String versionKey, String valuesKey) { }
 
@@ -98,7 +102,7 @@ public class GrowthPublicStatsService {
      * 不得再拿配置值派生「已付 / 收入 / 在线」这类事实表述。
      *
      * <p>完整运营参数仍只留在管理接口。networkPulse 是独立的首页展示投影，
-     * 复用 H9 用户增长配置与 HomeDisplay 在线批次，不改变 verified 或个人排名。
+     * 复用 H9 用户增长配置与 HomeDisplay 批次，不改变 verified 或个人排名。
      */
     public ApiResult<Map<String, Object>> publicProjection() {
         String runtimeError = runtimeError();
@@ -134,28 +138,186 @@ public class GrowthPublicStatsService {
         return ApiResult.ok(projection);
     }
 
+    /**
+     * Management-only snapshot of the same App display sources. It reads the H9 aggregate once,
+     * the shared HomeDisplay batch once, and uses the same registration/online formulas as the public
+     * App projection. It does not change the public projection, write path, permissions or cache rules.
+     */
+    public ApiResult<Map<String, Object>> appDisplay() {
+        String runtimeError = runtimeError();
+        if (runtimeError != null) {
+            return ApiResult.fail(503, runtimeError);
+        }
+        RuntimeScope scope = runtimeScope();
+        ApiResult<Map<String, Object>> result = overview(scope);
+        if (result.getCode() != 0) {
+            return result;
+        }
+        Map<String, Object> data = result.getData();
+        Map<?, ?> values = (Map<?, ?>) data.get("values");
+        Map<String, Object> batch = homeDisplayBatch(scope);
+        long sampleNow = batch == null ? clock.millis() : longValue(batch.get("serverNow"));
+        Long registeredUsers = estimatedMembers(values, sampleNow);
+        Map<String, Object> display = homeDisplayAt(batch);
+        Long activeJobsDisplay = activeJobsDisplay(scope, values, display);
+        Long activeJobsActual = null;
+        try {
+            activeJobsActual = scope.sandbox() ? homeSnapshots.sandboxActiveJobs(scope.runId())
+                    : homeSnapshots.productionActiveJobs();
+        } catch (DataAccessException unavailable) {
+            log.warn("Actual on-grid count unavailable for H9", unavailable);
+        }
+        GlobeDisplayConfig globe = (GlobeDisplayConfig) values.get("globeDisplay");
+        Long onlineDevices = display == null ? null : (Long) display.get("onlineDevices");
+        List<Map<String, Object>> centers = centerCounts(globe, onlineDevices, "onlineNodes");
+        List<Map<String, Object>> unavailable = new ArrayList<>();
+        if (activeJobsActual == null) {
+            unavailable.add(Map.of("field", "activeJobsActual", "reason", scope.sandbox()
+                    ? "APP_HOME_SANDBOX_RUN_ID_REQUIRED" : "APP_HOME_ON_GRID_UNAVAILABLE"));
+        }
+        if (activeJobsDisplay == null) {
+            unavailable.add(Map.of("field", "activeJobsDisplay", "reason", !scope.sandbox() && display == null
+                    ? "HOME_DISPLAY_SNAPSHOT_UNAVAILABLE" : "H9_ACTIVE_JOBS_BASE_UNPUBLISHED"));
+        }
+        if (centers == null || onlineDevices == null) {
+            unavailable.add(Map.of("field", "centerNodes[].onlineNodes", "reason", centers == null
+                    ? "APP_GLOBE_DISPLAY_UNAVAILABLE" : scope.sandbox()
+                    ? "HOME_DISPLAY_SANDBOX_UNAVAILABLE" : "HOME_DISPLAY_SNAPSHOT_UNAVAILABLE"));
+        }
+        if (registeredUsers == null) {
+            unavailable.add(Map.of("field", "registeredUsers",
+                    "reason", "H9_MEMBER_ESTIMATE_UNAVAILABLE"));
+        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("source", scope.sandbox()
+                ? "sandbox:h9-public-stats" : "server:home-display+public-stats");
+        response.put("sourceEnvironment", scope.sandbox() ? "SANDBOX" : "PRODUCTION");
+        response.put("version", data.get("version"));
+        response.put("capturedAt", Instant.ofEpochMilli(sampleNow).toString());
+        response.put("available", display != null);
+        response.put("reason", display != null ? null : scope.sandbox()
+                ? "HOME_DISPLAY_SANDBOX_UNAVAILABLE" : "HOME_DISPLAY_SNAPSHOT_UNAVAILABLE");
+        response.put("homeDisplay", display);
+        response.put("registeredUsers", registeredUsers);
+        response.put("activeJobsBase", values.get("activeJobsBase"));
+        response.put("activeJobsActual", activeJobsActual);
+        response.put("activeJobsDisplay", activeJobsDisplay);
+        response.put("activeJobsSource", activeJobsActual == null ? null
+                : scope.sandbox() ? "APP_HOME_SANDBOX_TASK_CATALOG" : "APP_HOME_ON_GRID");
+        response.put("globeDisplay", values.get("globeDisplay"));
+        response.put("centerNodes", centers);
+        response.put("centerNodesSource", centers == null ? null : "APP_DISPLAY_SIMULATION");
+        response.put("centerNodesStep", centers == null ? null : sampleNow / globe.intervalMs());
+        response.put("unavailable", unavailable);
+        return ApiResult.ok(response);
+    }
+
+    /** Matches App src/lib/globe-simulation.ts splitByWeights(total, weights, true) in fixed center order. */
+    static List<Map<String, Object>> centerCounts(GlobeDisplayConfig config, Long total, String countField) {
+        Map<String, GlobeDisplayConfig.Center> byId = new LinkedHashMap<>();
+        config.centers().forEach(center -> byId.put(center.id(), center));
+        double[] weights = new double[GLOBE_CENTER_ORDER.size()];
+        double sum = 0;
+        for (int i = 0; i < weights.length; i++) {
+            GlobeDisplayConfig.Center center = byId.get(GLOBE_CENTER_ORDER.get(i));
+            weights[i] = center.sharePct() == null ? center.nodes().doubleValue() : center.sharePct().doubleValue();
+            sum += weights[i];
+        }
+        // The App parser rejects a legacy configuration whose eight node weights are all zero.
+        if (sum == 0) return null;
+        long[] counts = null;
+        if (total != null) {
+            counts = new long[weights.length];
+            double allocated = 0;
+            for (int i = 0; i < weights.length; i++) {
+                double exact = total.doubleValue() * weights[i] / sum;
+                counts[i] = (long) Math.floor(exact);
+                allocated += counts[i];
+            }
+            for (double left = total.doubleValue() - allocated; left > 0; left--) {
+                int best = 0;
+                for (int i = 1; i < weights.length; i++) {
+                    if (weights[i] / (counts[i] + 1.0) > weights[best] / (counts[best] + 1.0)) {
+                        best = i;
+                    }
+                }
+                counts[best]++;
+            }
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (int i = 0; i < weights.length; i++) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", GLOBE_CENTER_ORDER.get(i));
+            row.put(countField, counts == null ? null : counts[i]);
+            result.add(row);
+        }
+        return result;
+    }
+
     private Map<String, Object> networkPulse(RuntimeScope scope, Map<String, Object> overview) {
         Map<String, Object> pulse = new LinkedHashMap<>();
         Map<?, ?> values = (Map<?, ?>) overview.get("values");
-        pulse.put("registeredUsers", hasMemberTick(values) ? tickedMembers(values) : compoundedMembers(values));
-        pulse.put("onlineDevices", null);
-        if (!scope.sandbox() && homeDisplay.isPresent()) {
-            try {
-                Map<String, Object> batch = homeDisplay.get().current();
-                long[] online = (long[]) batch.get("online");
-                int index = (int) Math.min(online.length - 1,
-                        Math.max(0L, (longValue(batch.get("serverNow")) - longValue(batch.get("startAt"))) / 1000));
-                pulse.put("onlineDevices", online[index]);
-            } catch (RuntimeException ex) {
-                log.warn("Home display snapshot unavailable for network pulse", ex);
-            }
-        }
+        Map<String, Object> display = homeDisplayAt(homeDisplayBatch(scope));
+        pulse.put("registeredUsers", estimatedMembers(values, clock.millis()));
+        pulse.put("onlineDevices", display == null ? null : display.get("onlineDevices"));
+        pulse.put("activeJobs", activeJobsDisplay(scope, values, display));
         return pulse;
+    }
+
+    public Long currentActiveJobsDisplay() {
+        Map<String, Object> display = homeDisplayAt(homeDisplayBatch(runtimeScope()));
+        return display == null ? null : (Long) display.get("activeJobs");
+    }
+
+    private Long activeJobsDisplay(RuntimeScope scope, Map<?, ?> values, Map<String, Object> display) {
+        if (scope.sandbox()) return HomeDisplayService.activeJobsBase(values);
+        return display == null ? null : (Long) display.get("activeJobs");
+    }
+
+    private Map<String, Object> homeDisplayBatch(RuntimeScope scope) {
+        if (scope.sandbox() || homeDisplay.isEmpty()) return null;
+        try {
+            return homeDisplay.get().current();
+        } catch (RuntimeException ex) {
+            log.warn("Home display snapshot unavailable for app-display/network pulse", ex);
+            return null;
+        }
+    }
+
+    private Map<String, Object> homeDisplayAt(Map<String, Object> batch) {
+        if (batch == null) return null;
+        long serverNow = longValue(batch.get("serverNow"));
+        long startAt = longValue(batch.get("startAt"));
+        long validUntil = longValue(batch.get("validUntil"));
+        long[] online = (long[]) batch.get("online");
+        long[] paidCents = (long[]) batch.get("paidCents");
+        Long[] activeJobs = (Long[]) batch.get("activeJobs");
+        if (serverNow >= validUntil || online.length == 0 || paidCents.length != online.length
+                || activeJobs.length != online.length) return null;
+        boolean enabled = Boolean.TRUE.equals(batch.get("enabled"));
+        int index = enabled ? (int) Math.max(0L, (serverNow - startAt) / 1000) : 0;
+        if (index < 0 || index >= online.length) return null;
+        Map<String, Object> display = new LinkedHashMap<>();
+        display.put("enabled", enabled);
+        display.put("startAt", startAt);
+        display.put("serverNow", serverNow);
+        display.put("validUntil", validUntil);
+        display.put("sequence", longValue(batch.get("sequence")));
+        display.put("onlineDevices", online[index]);
+        display.put("activeJobs", activeJobs[index]);
+        display.put("paidCents", paidCents[index]);
+        display.put("paid", BigDecimal.valueOf(paidCents[index], 2));
+        display.put("paidCurrency", "USDT");
+        return display;
     }
 
     /** Legacy model kept for aggregates saved before ticking existed: base compounded monthly from the anchor. */
     private Long compoundedMembers(Map<?, ?> values) {
-        double months = Math.max(0, (clock.millis() - longValue(values.get("registeredUsersAnchorAt")))
+        return compoundedMembers(values, clock.millis());
+    }
+
+    private Long compoundedMembers(Map<?, ?> values, long nowMs) {
+        double months = Math.max(0, (nowMs - longValue(values.get("registeredUsersAnchorAt")))
                 / (30d * 24 * 3_600_000));
         double registered = longValue(values.get("registeredUsersBase")) * Math.pow(
                 1 + decimalValue(values.get("registeredUsersMonthlyGrowthPct")).doubleValue() / 100, months);
@@ -190,9 +352,17 @@ public class GrowthPublicStatsService {
     }
 
     private Long tickedMembers(Map<?, ?> values) {
+        return tickedMembers(values, clock.millis());
+    }
+
+    private Long tickedMembers(Map<?, ?> values, long nowMs) {
         return tickedMembers(longValue(values.get("registeredUsersBase")), longValue(values.get("registeredUsersAnchorAt")),
                 longValue(values.get(TICK_INTERVAL)), longValue(values.get(TICK_STEP_MIN)),
-                longValue(values.get(TICK_STEP_MAX)), clock.millis());
+                longValue(values.get(TICK_STEP_MAX)), nowMs);
+    }
+
+    private Long estimatedMembers(Map<?, ?> values, long nowMs) {
+        return hasMemberTick(values) ? tickedMembers(values, nowMs) : compoundedMembers(values, nowMs);
     }
 
     private static boolean hasMemberTick(Map<?, ?> values) {
@@ -216,7 +386,7 @@ public class GrowthPublicStatsService {
         verified.put("onlineDevices", aggregate(deviceOps.countOnlineDevices(),
                 "nx_user_device OWNED+ACTIVATED 且 runtime.online_status=ONLINE、有效心跳在服务端最近10分钟内", "COUNT"));
         verified.put("completedPayoutUsdt", aggregate(deviceOps.completedWithdrawalTotal(),
-                "nx_withdrawal_order.status=COMPLETED 的 amount 合计", "SUM_USDT"));
+                "未删除、已记录完成时间且状态为 CONFIRMED 或 SUCCESS 的正式 USDT 提现本金合计", "SUM_USDT"));
         verified.put("capturedAt", Instant.ofEpochMilli(clock.millis()).toString());
         return verified;
     }
@@ -431,7 +601,7 @@ public class GrowthPublicStatsService {
         }
         var base = request.activeJobsBase();
         if (base != null && !base.isNull() && (!base.isIntegralNumber() || !base.canConvertToLong()
-                || !between(base.longValue(), 0L, 100_000_000L))) return "H9_ACTIVE_JOBS_BASE_INVALID";
+                || !between(base.longValue(), 0L, HomeDisplayBatch.MAX_ACTIVE_JOBS))) return "H9_ACTIVE_JOBS_BASE_INVALID";
         Object[] home = { request.homeOnlineCurrent(), request.homeOnlineStepMin(), request.homeOnlineStepMax(),
                 request.homePaidCurrent(), request.homePaidStepMin(), request.homePaidStepMax() };
         long supplied = java.util.Arrays.stream(home).filter(java.util.Objects::nonNull).count();
@@ -463,7 +633,7 @@ public class GrowthPublicStatsService {
             }
             if (!(values.get("homeDisplayEnabled") instanceof Boolean)) return "invalid";
             Object base = values.get("activeJobsBase");
-            if (base != null && (!(base instanceof Number) || !between(longValue(base), 0L, 100_000_000L))) return "invalid";
+            if (base != null && (!(base instanceof Number) || !between(longValue(base), 0L, HomeDisplayBatch.MAX_ACTIVE_JOBS))) return "invalid";
             if (!(values.get("globeDisplay") instanceof GlobeDisplayConfig globe) || !globe.valid()) return "invalid";
             long tickStored = TICK_FIELDS.stream().filter(key -> values.get(key) != null).count();
             if (tickStored != 0 && (tickStored != TICK_FIELDS.size() || !validMemberTick(intValue(values.get(TICK_INTERVAL)),

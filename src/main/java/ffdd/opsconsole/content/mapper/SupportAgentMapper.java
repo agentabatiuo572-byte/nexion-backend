@@ -111,6 +111,11 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
     List<Long> listAssignmentEligibleAgentIds(@Param("directoryIds") List<Long> directoryIds, @Param("scope") SupportOperatorScope scope);
 
     // One consistent SELECT: never mix current-read eligibility with a historical RR projection.
+    //
+    // BUG-508: 读写共用同一个「客服账号行必须存在」的判据。发送侧 findActiveDedicatedAdvisor 用
+    // JOIN nx_admin，nx_admin 行被物理删除时返回空；这里原为 LEFT JOIN，会继续投射一个名称为空的
+    // 幽灵客服。改成 JOIN 后账号行缺失时投影为空，App 走既有 AppSupportAdvisorView.unbound()。
+    // 软删/停用的账号行仍在（不在此过滤），其 ADVISOR_DISABLED 与资格判断一律不变。
     @Select("""
         <script>SELECT assignmentId,currentAdvisorId,currentAdvisorName,
                CASE WHEN eligible THEN 'ASSIGNED' ELSE 'ADVISOR_DISABLED' END assignmentState,
@@ -122,7 +127,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
         """ + SupportBindingMapper.ELIGIBLE_AGENT_BASE_FROM + SupportGroupMapper.UNIQUE_QUALIFICATION_SNAPSHOT + """
                           AND a.id=x.agent_admin_id) eligible
                   FROM nx_support_agent_user_assignment x
-                  LEFT JOIN nx_admin a ON a.id=x.agent_admin_id
+                  JOIN nx_admin a ON a.id=x.agent_admin_id
                   LEFT JOIN nx_support_agent_profile p ON p.admin_id=x.agent_admin_id
                   LEFT JOIN nx_admin_account_state st ON st.admin_id=x.agent_admin_id AND st.is_deleted=0
                  WHERE x.user_id=#{userId} AND x.status='ACTIVE' AND x.is_deleted=0) projection</script>

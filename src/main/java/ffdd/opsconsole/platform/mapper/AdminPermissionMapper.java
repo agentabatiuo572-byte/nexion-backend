@@ -40,7 +40,8 @@ public interface AdminPermissionMapper extends BaseMapper<AdminPermissionEntity>
               <if test="permType != null and permType != ''">
                 AND CASE
                       WHEN UPPER(TRIM(p.perm_type)) = 'CRITICAL' THEN 'HIGH'
-                      WHEN NULLIF(TRIM(p.perm_type), '') IS NOT NULL THEN UPPER(TRIM(p.perm_type))
+                      WHEN UPPER(TRIM(p.perm_type)) IN ('READ', 'WRITE', 'HIGH') THEN UPPER(TRIM(p.perm_type))
+                      WHEN NULLIF(TRIM(p.perm_type), '') IS NOT NULL THEN 'HIGH'
                       WHEN RIGHT(LOWER(TRIM(p.permission_code)), 5) = '_read' THEN 'READ'
                       WHEN RIGHT(LOWER(TRIM(p.permission_code)), 6) = '_write' THEN 'WRITE'
                       ELSE 'HIGH'
@@ -82,7 +83,8 @@ public interface AdminPermissionMapper extends BaseMapper<AdminPermissionEntity>
               <if test="permType != null and permType != ''">
                 AND CASE
                       WHEN UPPER(TRIM(p.perm_type)) = 'CRITICAL' THEN 'HIGH'
-                      WHEN NULLIF(TRIM(p.perm_type), '') IS NOT NULL THEN UPPER(TRIM(p.perm_type))
+                      WHEN UPPER(TRIM(p.perm_type)) IN ('READ', 'WRITE', 'HIGH') THEN UPPER(TRIM(p.perm_type))
+                      WHEN NULLIF(TRIM(p.perm_type), '') IS NOT NULL THEN 'HIGH'
                       WHEN RIGHT(LOWER(TRIM(p.permission_code)), 5) = '_read' THEN 'READ'
                       WHEN RIGHT(LOWER(TRIM(p.permission_code)), 6) = '_write' THEN 'WRITE'
                       ELSE 'HIGH'
@@ -127,4 +129,15 @@ public interface AdminPermissionMapper extends BaseMapper<AdminPermissionEntity>
 
     @Select("SELECT COUNT(*) FROM nx_admin_permission WHERE menu_id = #{menuId} AND status = 1 AND is_deleted = 0")
     long countActiveByMenuId(@Param("menuId") Long menuId);
+    /** Same active permission rows as countActiveByMenuId, grouped for the menu overview. */
+    @Select("""
+            SELECT menu_id AS menuId, COUNT(*) AS count
+              FROM nx_admin_permission
+             WHERE status = 1
+               AND is_deleted = 0
+             GROUP BY menu_id
+            """)
+    List<MenuPermissionCount> countActivePermissionsByMenu();
+
+    record MenuPermissionCount(Long menuId, long count) { }
 }

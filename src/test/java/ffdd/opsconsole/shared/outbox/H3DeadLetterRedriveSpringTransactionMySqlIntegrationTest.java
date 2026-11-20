@@ -177,7 +177,7 @@ class H3DeadLetterRedriveSpringTransactionMySqlIntegrationTest {
                 new AdminIdempotencyExpiryTransitionExecutor(records), interceptor,
                 AdminIdempotencyExpiryTransitionExecutor.class);
         AdminIdempotencyTransactionExecutor executor = proxied(new AdminIdempotencyTransactionExecutor(
-                records, new ObjectMapper().findAndRegisterModules(), transition), interceptor,
+                records, new ObjectMapper().findAndRegisterModules(), transition, new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(records)), interceptor,
                 AdminIdempotencyTransactionExecutor.class);
         return new H3DeadLetterRedriveService(template.getMapper(EventOutboxMapper.class),
                 template.getMapper(EventConsumerDeliveryMapper.class),

@@ -48,6 +48,10 @@ public interface DeviceCatalogRepository {
 
     PageResult<DeviceTaskView> pageTasks(DeviceTaskQueryRequest request);
 
+    default List<DeviceTaskView> lockTaskCatalog() {
+        return pageTasks(new DeviceTaskQueryRequest(null, null, null, 1L, 100L)).getRecords();
+    }
+
     Optional<DeviceTaskView> findTask(String taskId);
 
     Optional<DeviceTaskView> findTaskForUpdate(String taskId);
@@ -84,6 +88,14 @@ public interface DeviceCatalogRepository {
         return List.of();
     }
 
+    default boolean onboardingYieldSkuAvailable(String sku) {
+        return false;
+    }
+
+    default boolean bindOnboardingYieldSku(String key, String productNo, long version, LocalDateTime now) {
+        return false;
+    }
+
     default Optional<OnboardingYieldComparisonView> findOnboardingYieldComparison(String configKey) {
         return Optional.empty();
     }
@@ -100,6 +112,10 @@ public interface DeviceCatalogRepository {
 
     Optional<DeviceOrderFacts> findOrderFacts(String orderNo);
 
+    default List<DeviceOrderDetailView.OrderDevice> listOrderDevices(String orderNo) {
+        return List.of();
+    }
+
     List<DeviceOrderHistoryView> listOrderHistory(String orderNo);
 
     List<DeviceOrderFundingView> listOrderFunding(String orderNo);
@@ -108,6 +124,8 @@ public interface DeviceCatalogRepository {
             String orderNo, String expectedState, String state, LocalDateTime now);
 
     void recordOrderRefundReason(String orderNo, String refundReasonCode);
+
+    void recordOrderRefundAmount(String orderNo, BigDecimal refundAmountUsdt);
 
     void recordOrderCloseReason(String orderNo, String closeReasonCode);
 
@@ -121,6 +139,10 @@ public interface DeviceCatalogRepository {
             LocalDateTime now);
 
     boolean rollbackOrderAssets(String orderNo, LocalDateTime now);
+
+    default boolean rollbackRefundedOrderAssets(String orderNo, LocalDateTime now) {
+        return rollbackOrderAssets(orderNo, now);
+    }
 
     List<DevicePhaseView> listPhases(String scope, boolean includeArchived);
 

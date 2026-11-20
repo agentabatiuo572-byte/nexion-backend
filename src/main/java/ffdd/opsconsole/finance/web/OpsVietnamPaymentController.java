@@ -124,6 +124,12 @@ public class OpsVietnamPaymentController {
                 () -> service.updateFxQuote(idempotencyKey, request));
     }
 
+    @PostMapping("/fx-quote/preflight")
+    @PreAuthorize("hasAuthority('finance_d6_manage')")
+    public ApiResult<Map<String, Object>> preflightFxQuote(@RequestBody(required = false) FxQuoteUpdateRequest request) {
+        return service.previewFxQuote(request);
+    }
+
     private <T> ApiResult<T> auditedWrite(String action, String resourceType, String resourceId,
                                           Supplier<ApiResult<T>> operation) {
         ApiResult<T> result;

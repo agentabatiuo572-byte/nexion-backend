@@ -92,6 +92,10 @@ public interface I18nLearningRepository {
 
     List<I18nIntegrityIssueView> recomputeIntegrity(LocalDateTime now);
 
+    default List<I18nIntegrityIssueView> recomputeIntegrity(LocalDateTime now, List<String> requiredLanguages) {
+        return recomputeIntegrity(now);
+    }
+
     List<I18nHardcodedFindingView> listHardcodedFindings();
 
     List<LearningCourseView> listCourses();
@@ -116,6 +120,10 @@ public interface I18nLearningRepository {
         throw new UnsupportedOperationException("LEARNING_COURSE_LOCK_NOT_AVAILABLE");
     }
 
+    default Optional<LearningCourseView> findLegacyCourseDraftForActivation(String courseId) {
+        return findCourseForUpdate(courseId);
+    }
+
     LearningCourseView createCourse(String courseId, LearningCourseUpsertRequest request, LocalDateTime now);
 
     LearningCourseView updateCourseDraft(String courseId, LearningCourseUpsertRequest request, LocalDateTime now);
@@ -124,13 +132,29 @@ public interface I18nLearningRepository {
 
     LearningCourseView updateCourseStatus(String courseId, String status, LocalDateTime now);
 
+    default LearningCourseView publishLegacyCourseDraft(LearningCourseView course, LocalDateTime now) {
+        return updateCourseStatus(course.id(), "published", now);
+    }
+
     LearningCourseView updateCourseReward(String courseId, BigDecimal rewardNex, LocalDateTime now);
 
     LearningCourseView updateFeaturedCourse(String courseId, LocalDateTime now);
 
     default List<LearningCourseVersionView> listCourseVersions(String courseId) { return List.of(); }
 
+    /** Includes soft-deleted rows because their unique key still reserves the version label. */
+    default List<String> listAllCourseVersionLabels(String courseId) {
+        return listCourseVersions(courseId).stream().map(LearningCourseVersionView::version).toList();
+    }
+
     default Optional<LearningCourseVersionView> findCourseVersion(String courseId, String version) { return Optional.empty(); }
+
+    /** A null version selects the initial draft. Hold the version rows through approval or activation. */
+    default Optional<LearningCourseVersionView> findCourseVersionForActivation(String courseId, String version) {
+        return version == null
+                ? listCourseVersions(courseId).stream().filter(row -> "DRAFT".equals(row.status())).findFirst()
+                : findCourseVersion(courseId, version);
+    }
 
     default LearningCourseVersionView saveCourseVersion(String courseId, String version, String status,
             LearningCourseUpsertRequest request, Long expectedRevision, LocalDateTime now) {

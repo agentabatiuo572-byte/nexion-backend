@@ -4,47 +4,47 @@
   "validatedCandidateJarSha256": "b83ba5e1fc534d5caf31ecb2fad3ea016e578f08dcc0aca8d6c2bba55d36f94c",
   "validatedSourceFamilies": 20,
   "overlayEntries": 35,
-  "branchVariant": "main-canonical-validated-r22",
+  "branchVariant": "test-with-existing-business-preserved",
   "files": [
     {
       "path": "src/main/java/ffdd/opsconsole/finance/application/AppWithdrawalService.java",
       "validatedSourceSha256": "ea4fcb55c2a815f7a426f2580972d6aaa9cf328b331283d1197a47f801c8c7bf",
-      "integratedSourceSha256": "ea4fcb55c2a815f7a426f2580972d6aaa9cf328b331283d1197a47f801c8c7bf"
+      "integratedSourceSha256": "430588afe79a3422a8afaf22e7da8082263d008f685c8f13611c13283a184703"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/finance/cregis/CregisPayoutControl.java",
       "validatedSourceSha256": "ddf6034de25fdb319af66df4348b47d0b412996cdc3b029927b254ae22cdbd79",
-      "integratedSourceSha256": "ddf6034de25fdb319af66df4348b47d0b412996cdc3b029927b254ae22cdbd79"
+      "integratedSourceSha256": "16bfd30543329b85a7293db8094581d33b60bc949008e2166143bcab0d9fc082"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/platform/facade/PlatformConfigFacade.java",
       "validatedSourceSha256": "617a5bcc540c2a32950ad4dc04bbde13d96719bd4842cc8d2d29a119c3da04d8",
-      "integratedSourceSha256": "617a5bcc540c2a32950ad4dc04bbde13d96719bd4842cc8d2d29a119c3da04d8"
+      "integratedSourceSha256": "a7caefc0fbc46162591c002381dcfbe2c647a6b7ef6c77a93de3c336cc77f321"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/platform/domain/PlatformConfigRepository.java",
       "validatedSourceSha256": "533f0b8db87e7a60b6f070d276085310e7211a06a49b7c11dbdb711aec50dcc6",
-      "integratedSourceSha256": "533f0b8db87e7a60b6f070d276085310e7211a06a49b7c11dbdb711aec50dcc6"
+      "integratedSourceSha256": "058b2290451f8460aaf2c4e637770a56f22575102129e1130f948dfe655aab69"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/platform/infrastructure/MybatisPlatformConfigRepository.java",
       "validatedSourceSha256": "05d1203078f892b9b4aea1e3f99d1d853beb42bc8987290a89d936a864d28713",
-      "integratedSourceSha256": "05d1203078f892b9b4aea1e3f99d1d853beb42bc8987290a89d936a864d28713"
+      "integratedSourceSha256": "4cdbfe4b9b12b492e7e2db54635a7c11422979c0f4b4e9386f92fcd56a55fba4"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/platform/application/PlatformConfigFacadeAdapter.java",
       "validatedSourceSha256": "62fecf11abe778ee24718971beaced055f9e9d7e5b0ad04537d3e113c4a019ab",
-      "integratedSourceSha256": "62fecf11abe778ee24718971beaced055f9e9d7e5b0ad04537d3e113c4a019ab"
+      "integratedSourceSha256": "dd2cc36d36268d522e6361272235db45b20af539ce165688e59592d8dbe92cfd"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/treasury/application/OpsTreasuryService.java",
       "validatedSourceSha256": "95b6388d8b90e2860103b840835a19f4cb5b4d3223a82e4be56b325429017875",
-      "integratedSourceSha256": "95b6388d8b90e2860103b840835a19f4cb5b4d3223a82e4be56b325429017875"
+      "integratedSourceSha256": "abb4298c93201f7beb02b530b2899f83a7d8b6b4b76dd669490b1e2be233ee30"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/treasury/application/TreasuryCoverageFacadeAdapter.java",
       "validatedSourceSha256": "95d85c22daa34dd12a244cef6c89c0ad029d199bed1c2a133f080db0fea6f1c0",
-      "integratedSourceSha256": "95d85c22daa34dd12a244cef6c89c0ad029d199bed1c2a133f080db0fea6f1c0"
+      "integratedSourceSha256": "fc6c92784d73ffedee62b355b0f12799d5fbe4deeaec0ffc61c9452a44096da0"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/growth/facade/GrowthRhythmSnapshot.java",
@@ -54,17 +54,17 @@
     {
       "path": "src/main/java/ffdd/opsconsole/device/mapper/SimulatedTaskMapper.java",
       "validatedSourceSha256": "7a3b593f007dcd1906091c7b6bc052fb3130589f0c169b1f775e265247343579",
-      "integratedSourceSha256": "7a3b593f007dcd1906091c7b6bc052fb3130589f0c169b1f775e265247343579"
+      "integratedSourceSha256": "d5459f9e829335ff74bdd465a3469b1acc36a7c4f422121a50f04a9797ca9d68"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/home/application/AppHomeOverviewService.java",
       "validatedSourceSha256": "02d3933226dbb5e238392403fdef28e89791ead6d4bbbe3a53b516992846db37",
-      "integratedSourceSha256": "02d3933226dbb5e238392403fdef28e89791ead6d4bbbe3a53b516992846db37"
+      "integratedSourceSha256": "e66cd1ec6a8571b0e6c7af0efa7376f1c999fb825d3d1b8d30488c96cdd457a0"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/device/application/SimulatedTaskService.java",
       "validatedSourceSha256": "eedae60f6b45fbd843ba397a61181d12726ec1e8b633989ca8c219edb7c35694",
-      "integratedSourceSha256": "eedae60f6b45fbd843ba397a61181d12726ec1e8b633989ca8c219edb7c35694"
+      "integratedSourceSha256": "d95d92e559f6297620dc5c279dc015edcffb4c227b490a89cb251211da08ac96"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/home/application/HomeSharedSnapshotCache.java",
@@ -74,27 +74,27 @@
     {
       "path": "src/main/java/ffdd/opsconsole/home/mapper/AppHomeOverviewMapper.java",
       "validatedSourceSha256": "e8a6a78a9be54dc38f01877785002fea7da7fc27840e1d71adfc9c2634e9d64a",
-      "integratedSourceSha256": "e8a6a78a9be54dc38f01877785002fea7da7fc27840e1d71adfc9c2634e9d64a"
+      "integratedSourceSha256": "64bafb1368e84d95907005167da7f1f00508d7d797a0d303d23eabe98019e385"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.java",
       "validatedSourceSha256": "1ec0435704d57933270390e3b133123bb7cf603207f3bb5bf2253079b3afe8d2",
-      "integratedSourceSha256": "1ec0435704d57933270390e3b133123bb7cf603207f3bb5bf2253079b3afe8d2"
+      "integratedSourceSha256": "8d7e57fbfbe47ed5a22425751eb04213a0e9ab1148613eb31e861306025e2556"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/content/application/SupportAnalyticsFactSampler.java",
       "validatedSourceSha256": "6d84ab67bf7ecac6ed0ed1082a963ea17587c0e305fedd0938faa0472225f840",
-      "integratedSourceSha256": "6d84ab67bf7ecac6ed0ed1082a963ea17587c0e305fedd0938faa0472225f840"
+      "integratedSourceSha256": "cc22b71ba22b9ed1d67a423fcb55e13aff74129a3bdea478cb9f5e49510e3669"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/content/application/SupportLeaderboardSamplingScheduler.java",
       "validatedSourceSha256": "3cc6ae6954b6445424c2fe769aace1aa55ac91c756142e96031d855297a99712",
-      "integratedSourceSha256": "3cc6ae6954b6445424c2fe769aace1aa55ac91c756142e96031d855297a99712"
+      "integratedSourceSha256": "60de9022a7270dd61a9cf3ea2c3d76902505bacafecf71cc53e2d649aaf89c5d"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/device/application/AppTaskAssignmentService.java",
       "validatedSourceSha256": "3802b7aa8d28aaa5c2f337998a438a4f2f081ae1d465f955b297d9f80ae6201e",
-      "integratedSourceSha256": "3802b7aa8d28aaa5c2f337998a438a4f2f081ae1d465f955b297d9f80ae6201e"
+      "integratedSourceSha256": "47671c118698c730028e549b27d8d93f0d0221509f15b3ad26f359cbc7a8ffb7"
     },
     {
       "path": "src/main/java/ffdd/opsconsole/device/application/SimulatedTaskReadService.java",
@@ -104,10 +104,19 @@
     {
       "path": "src/main/java/ffdd/opsconsole/shared/security/mapper/AuthSessionMapper.java",
       "validatedSourceSha256": "0db4231bd57e77966af7b190cd61a607e64001c1610e251e16f0d2a9d52dc776",
-      "integratedSourceSha256": "0db4231bd57e77966af7b190cd61a607e64001c1610e251e16f0d2a9d52dc776"
+      "integratedSourceSha256": "2c4c07c49f8f831a27c66a4ff580399239b45544e2c6c4a7d4c399a415823456"
     }
   ],
-  "supportingTestAdaptations": [],
+  "supportingTestAdaptations": [
+    {
+      "path": "src/main/java/ffdd/opsconsole/finance/application/WithdrawalNetworkPolicy.java",
+      "sha256": "b9945ce50c4ebe2f7cb87bdf5a9b902f4180e9191bb8025d49ce9934c52c6b20"
+    },
+    {
+      "path": "src/main/java/ffdd/opsconsole/finance/application/D2WithdrawalReviewThreshold.java",
+      "sha256": "4d8025c6107c556798bb28efaa07014f9ffa4317c6d96dba7772ff4f10e8287e"
+    }
+  ],
   "productionPrerequisites": {
     "homeIndex": "idx_sim_task_home_live_cov",
     "homeIndexVisible": true,

@@ -16,11 +16,12 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
   ('platform_a1_account_disable',        'A1 禁用账号',                       'API', '/platform/rbac',             'HIGH',  0, 1, 0),
   ('platform_a1_rbac_grants_update',     'A1 改授权(RBAC)',                   'API', '/platform/rbac',             'HIGH',  0, 1, 0),
 
-  -- ===== A2 审计 & 操作确认 /platform/audit (4) =====
+  -- ===== A2 审计 & 操作确认 /platform/audit (5) =====
   ('platform_a2_read',                   'A2 审计&操作确认-页面读',           'API', '/platform/audit',            'READ',  0, 1, 0),
   ('platform_a2_write',                  'A2 审计&操作确认-页面常规写',       'API', '/platform/audit',            'WRITE', 0, 1, 0),
   ('platform_a2_proposal_create',        'A2 按业务权限创建待确认操作',       'API', '/platform/audit',            'WRITE', 0, 1, 0),
   ('platform_a2_operation_approve',      'A2 执行/放行(高敏工单)',            'API', '/platform/audit',            'HIGH',  1, 1, 0),
+  ('platform_a2_unknown_investigate',    'A2 未知结果核查结案',                'API', '/commands/investigations',   'HIGH',  0, 1, 0),
 
   -- ===== A3 系统配置 /platform/config (2) =====
   ('platform_a3_read',                   'A3 系统配置-页面读',                'API', '/platform/config',           'READ',  0, 1, 0),
@@ -77,5 +78,5 @@ ON DUPLICATE KEY UPDATE
   amplifies = VALUES(amplifies),
   status = 1, is_deleted = 0;
 
--- 统计：READ 14 · WRITE 11 · HIGH 12 = 37 权限点
+-- 统计：READ 14 · WRITE 11 · HIGH 13 = 38 权限点
 -- amplifies=1 计 4 个：platform_a2_operation_approve / overview_b1_redline_write / overview_b1_runrisk_write / overview_b5_threshold_write

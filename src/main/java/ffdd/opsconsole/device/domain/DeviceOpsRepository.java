@@ -1,28 +1,37 @@
 package ffdd.opsconsole.device.domain;
 
 import ffdd.opsconsole.shared.api.PageResult;
-import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 public interface DeviceOpsRepository {
     Map<String, Object> overviewCounters();
 
-    /** Current fleet telemetry plus durable E5 operator events. Never synthesizes missing samples. */
+    /** Durable device operator events, latest 50 within the last 24 hours. */
     default Map<String, Object> e5Observability() {
         return Map.of();
     }
 
-    PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request);
+    PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request, boolean phones);
+
+    Set<Long> legacyPendingDeviceIds(List<Long> deviceIds);
+
+    PageResult<DeviceOpsView> pageUserDevices(Long userId, long page, long size);
 
     List<DeviceOpsView> listUserDevices(Long userId, int limit);
 
     Optional<DeviceOpsView> findDevice(Long deviceId);
 
     Optional<DeviceOpsView> restoreDevice(Long deviceId, LocalDateTime restoredAt);
+
+    /** FALSE/empty when the row is missing; the caller decides the refusal. */
+    default Optional<String> ownershipStatus(Long deviceId) {
+        return Optional.empty();
+    }
 
     default long countActiveDevicesByUser(Long userId) {
         return 0;
@@ -40,6 +49,11 @@ public interface DeviceOpsRepository {
         return Optional.empty();
     }
 
+    /** Writer target status for a force activation; adapter computes the same CASE as activateE5Device. */
+    default String e5ActivationTargetStatus(Long deviceId) {
+        return null;
+    }
+
     default Optional<DeviceOpsView> deactivateE5Device(Long deviceId, boolean unbind, LocalDateTime now) {
         return Optional.empty();
     }
@@ -52,11 +66,13 @@ public interface DeviceOpsRepository {
         return 0;
     }
 
-    default int resumeDevicesByUser(Long userId, LocalDateTime now) {
+    default int resumeDevicesByUser(Long userId, List<Long> deviceIds, LocalDateTime now) {
         return 0;
     }
 
-    DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth);
+    void syncSimulatedPause(Long userId, List<Long> deviceIds, boolean pause, LocalDateTime now);
+
+    DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int earlyEnd, int midEnd);
 
     Optional<DeviceOpsView> executeTradeinAction(String operation, Long deviceId, String tradeInNo, LocalDateTime now);
 
@@ -64,23 +80,4 @@ public interface DeviceOpsRepository {
 
     void upsertE3Config(String key, String value, String valueType, String operator);
 
-    List<DeviceDatacenterView> datacenterSummaries();
-
-    Optional<DeviceDatacenterView> findDatacenter(String dcLocation);
-
-    DeviceDatacenterView createDatacenter(DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now);
-
-    Optional<DeviceDatacenterView> updateDatacenter(String dcLocation, DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now);
-
-    boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now);
-
-    /** 跨域引用计数:设备/待履约订单/SKU,用于删除前的硬保护校验。 */
-    DatacenterReferenceCount countDatacenterReferences(String dcLocation);
-
-    /** 软数据中心软删成功后同步清理设备表 dc_location 与运营状态行,防悬挂引用。 */
-    void syncDatacenterReferencesOnDelete(String dcLocation, String operator, LocalDateTime now);
-
-    void pauseDatacenter(String dcLocation, String reason, String operator, LocalDateTime now);
-
-    void resumeDatacenter(String dcLocation, String operator, LocalDateTime now);
 }

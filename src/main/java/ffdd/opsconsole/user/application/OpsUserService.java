@@ -4,6 +4,7 @@ package ffdd.opsconsole.user.application;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -24,6 +25,7 @@ import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.user.domain.UserAccountActionOverview;
+import ffdd.opsconsole.user.domain.UserAccountActionListView;
 import ffdd.opsconsole.user.domain.UserAccountActionContext;
 import ffdd.opsconsole.user.domain.UserAccountListEntryView;
 import ffdd.opsconsole.user.domain.UserAccountView;
@@ -71,6 +73,7 @@ import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -237,7 +240,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "lock",
                     "lockShort",
                     "短锁",
-                    "密码或两步验证连错触发，锁定期间一切登录和验证码都拒绝",
+                    "达到短锁阈值后，密码登录和登录验证码发起入口按当前锁状态拒绝；不代表注册或找回密码验证码一律停用",
                     "auth.risk.login_lock_threshold",
                     "次",
                     3,
@@ -253,7 +256,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     "lock",
                     "lockLong",
                     "长锁",
-                    "连错升级，触发后强制走密码重置",
+                    "累计失败达到长锁阈值时触发；长锁与人工要求重置密码是不同状态",
                     "auth.risk.login_long_lock_threshold",
                     "次",
                     5,
@@ -266,7 +269,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     24,
                     "次数 5-20，时长 12-48 小时"));
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService monthlyTargetReads;
     private final UserOpsRepository userRepository;
+    private final ffdd.opsconsole.user.mapper.UserAccountActionMapper accountActionMapper;
     private final TreasuryCoverageFacade coverageFacade;
     private final PlatformConfigFacade configFacade;
     private final FinanceWithdrawalControlFacade financeWithdrawalControlFacade;
@@ -280,6 +286,21 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     private final JwtTokenProvider tokenProvider;
     private final Clock clock;
     private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership;
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> activeSummary() {
+        Instant generatedAt = clock.instant();
+        LocalDate today = BusinessCalendar.legacy().dateAt(generatedAt);
+        return ApiResult.ok(Map.of("today", dailyActiveSummary(today),
+                "yesterday", dailyActiveSummary(today.minusDays(1)), "generatedAt", generatedAt));
+    }
+
+    private Map<String, Object> dailyActiveSummary(LocalDate date) {
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("date", date);
+        summary.put("activeUsers", userRepository.dailyActiveUsers(date));
+        return summary;
+    }
 
     @Transactional
     public ApiResult<Map<String, Object>> overview() {
@@ -359,14 +380,25 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             throw new IllegalArgumentException(validationError);
         }
         var scope=supportReader()?supportOwnership.defaultQueryScope(null,null):null;
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()
+                || !(authentication.getDetails() instanceof Map<?, ?> details)
+                || !"ADMIN".equals(details.get("subjectType"))) {
+            throw new BizException(403, "C1_EXPORT_ACTOR_REQUIRED");
+        }
+        String role = scope == null ? text(roleResolver.resolveCode()).trim().toUpperCase(Locale.ROOT) : "SUPPORT";
+        boolean full = Set.of("SUPER_ADMIN", "RISK", "AUDITOR").contains(role);
+        String receiptScope = scope == null
+                ? "C1_USER_LIST_EXPORT:ADMIN:" + authentication.getName() + (full ? ":FULL" : ":MASKED")
+                : "C1_USER_LIST_EXPORT:" + scope.actorId();
         UserProfileExportFile file=idempotencyService.execute(
-                scope==null?"C1_USER_LIST_EXPORT":"C1_USER_LIST_EXPORT:"+scope.actorId(),
+                receiptScope,
                 normalizedKey,
                 // Idempotency persistence is CHAR(64): hash the complete semantic request
                 // (filter + reason) instead of storing the concatenated material itself.
                 filterHash(filterHash(query) + "|reason=" + exportReason),
                 UserProfileExportFile.class,
-                () -> buildProfileExport(normalizedKey, request,scope));
+                () -> buildProfileExport(normalizedKey, request, scope, role, full));
         if(scope!=null) {
             List<Long> ids=file.customerIds();
             if(ids==null || ids.size()!=file.rowCount() || ids.stream().distinct().count()!=ids.size()
@@ -378,7 +410,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     }
 
     private UserProfileExportFile buildProfileExport(String idempotencyKey, UserProfileExportRequest request,
-            ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope) {
+            ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope, String role, boolean full) {
         int pageSize = 200;
         UserQueryRequest firstQuery = exportQuery(request, 1, pageSize);
         PageResult<UserAccountView> first = scope==null?userRepository.pageProfiles(firstQuery):userRepository.pageSupportProfiles(firstQuery,scope);
@@ -400,7 +432,6 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(createdAt)
                 + "-"
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase(Locale.ROOT);
-        String role = scope==null?text(roleResolver.resolveCode()).trim().toUpperCase(Locale.ROOT):"SUPPORT";
         String exportFilterHash = filterHash(exportQuery(request, 1, pageSize));
         requiredAudit(
                 "ADMIN.USER_LIST_EXPORTED",
@@ -422,13 +453,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "occurred_at", Instant.now().toString()));
         return new UserProfileExportFile(
                 jobNo + ".csv",
-                profileExportCsv(rows, role),
+                profileExportCsv(rows, full),
                 rows.size(),scope==null?null:rows.stream().map(UserAccountView::id).toList());
     }
 
-    private byte[] profileExportCsv(List<UserAccountView> rows, String role) {
+    private byte[] profileExportCsv(List<UserAccountView> rows, boolean full) {
         StringBuilder csv = new StringBuilder(4096 + rows.size() * 320);
-        boolean full = Set.of("SUPER_ADMIN", "RISK", "AUDITOR").contains(role);
         if (!full) {
             csv.append('\ufeff')
                     .append("用户编码,昵称,手机号(脱敏),国家/地区,生命周期,V-Rank,状态,注册时间,最近登录\r\n");
@@ -746,25 +776,15 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         boolean twoFactorEnabled = status == null ? Boolean.TRUE.equals(account.twoFactorEnabled()) : status.twoFactorEnabled();
         int loginFailCount = status == null ? 0 : status.loginFailCount();
         boolean passwordResetRequired = status != null && status.passwordResetRequired();
-        int longLockThreshold = configInt("auth.risk.login_long_lock_threshold", 10);
-        boolean longLock = passwordResetRequired || (longLockThreshold > 0 && loginFailCount >= longLockThreshold);
-        boolean locked = status != null && (status.locked() || longLock);
-        String lockKind = !locked ? "NONE" : longLock ? "LONG" : "SHORT";
-        String lockLabel = switch (lockKind) {
-            case "LONG" -> configInt("auth.risk.long_lock_duration_hours", 24) + " 小时长锁";
-            case "SHORT" -> (status == null ? 15 : Math.max(status.lockDurationMinutes(), 1)) + " 分钟短锁";
-            default -> "未锁定";
-        };
-        String lockReason = switch (lockKind) {
-            case "LONG" -> "连续失败达到长锁阈值或已挂强制重置";
-            case "SHORT" -> "连续登录/两步验证失败达到短锁阈值";
-            default -> "当前无锁定";
-        };
-        String lockLeft = switch (lockKind) {
-            case "LONG" -> configInt("auth.risk.long_lock_duration_hours", 24) + " 小时内";
-            case "SHORT" -> (status == null ? 15 : Math.max(status.lockDurationMinutes(), 1)) + " 分钟内";
-            default -> "—";
-        };
+        boolean locked = status != null && status.locked();
+        String storedLockKind = !locked || status.lockKind() == null ? "" : status.lockKind().trim().toUpperCase(Locale.ROOT);
+        String lockKind = locked ? ("SHORT".equals(storedLockKind) ? "SHORT" : "LONG") : "NONE";
+        boolean legacyUnknownKind = locked && !"SHORT".equals(storedLockKind) && !"LONG".equals(storedLockKind);
+        String lockLabel = locked ? ("SHORT".equals(lockKind) ? "已锁定（短锁）" : "已锁定（长锁）") : "未锁定";
+        String lockReason = !locked ? "当前无锁定" : legacyUnknownKind ? "历史锁未记录类型，按长锁处理" : "按触发时的锁类型处理";
+        // This fallback read knows the configured duration, not the remaining time of a particular lock.
+        String lockLeft = !locked ? "—" : status.lockedUntil() == null ? "解除时间未提供"
+                : "锁定至 " + status.lockedUntil().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
         return new UserSecurityUserRow(
                 account.id(),
                 account.userNo(),
@@ -781,6 +801,22 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     public ApiResult<UserAccountActionOverview> accountActionOverview() {
         return ApiResult.ok(loadAccountActionOverview());
+    }
+
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public ApiResult<PageResult<UserAccountActionListView>> accountActionAccounts(
+            String status, int pageNum, int pageSize) {
+        String normalized = status == null ? "FROZEN" : status.trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("ACTIVE", "FROZEN", "BANNED", "RESTRICTED", "DISABLED").contains(normalized)) {
+            return ApiResult.fail(422, "ACCOUNT_ACTION_STATUS_INVALID");
+        }
+        if (pageNum < 1 || pageNum > 100_000 || pageSize < 1 || pageSize > 100) {
+            return ApiResult.fail(422, "ACCOUNT_ACTION_PAGE_INVALID");
+        }
+        long total = accountActionMapper.countAccounts(normalized);
+        List<UserAccountActionListView> records = accountActionMapper.pageAccounts(
+                normalized, (pageNum - 1) * pageSize, pageSize);
+        return ApiResult.ok(new PageResult<>(total, pageNum, pageSize, records));
     }
 
     public ApiResult<UserAccountView> accountActionAccount(String userKey) {
@@ -837,7 +873,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         UserImpersonationSessionView session = userRepository.findImpersonation(sessionNo.trim()).orElse(null);
         if (session == null || !Objects.equals(session.userId(), userId)
                 || !"ACTIVE".equalsIgnoreCase(session.status())
-                || session.expiresAt() == null || !session.expiresAt().isAfter(LocalDateTime.now())) {
+                || session.expiresAt() == null || !session.expiresAt().isAfter(LocalDateTime.now(clock))) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "IMPERSONATION_SESSION_INACTIVE");
         }
         UserAccountView account = userRepository.findById(userId).orElse(null);
@@ -846,12 +882,19 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         UserAccountListEntryView accountList = userRepository.findAccountList(userId)
                 .filter(entry -> "ACTIVE".equalsIgnoreCase(entry.status()))
-                .filter(entry -> entry.expiresAt() == null || entry.expiresAt().isAfter(LocalDateTime.now()))
+                .filter(entry -> entry.expiresAt() == null || entry.expiresAt().isAfter(LocalDateTime.now(clock)))
                 .orElse(null);
         long activeSessions = userRepository.countActiveSessions(userId, sessionIdleDays());
         List<UserReadonlyDeviceView> devices = "DEVICES".equals(normalizedPage)
                 ? userRepository.readonlyDevices(userId, 20)
                 : List.of();
+        if(!devices.isEmpty()) {
+            var current=monthlyTargetReads.projections(devices.stream().map(UserReadonlyDeviceView::id).toList());
+            devices=devices.stream().map(d->{
+                var p=current.get(d.id());
+                return p==null || p.target()==null ? d : new UserReadonlyDeviceView(d.instanceNo(),d.name(),d.deviceType(),d.generation(),d.status(),d.hashrate(),p.daily(),d.dailyNex(),d.lastSeenAt(),d.id());
+            }).toList();
+        }
         Map<String, Object> screen = buildImpersonationScreen(
                 normalizedPage, account, accountList, activeSessions, devices);
         Map<String, Object> response = new LinkedHashMap<>();
@@ -911,7 +954,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         Map.of("symbol", "UVT", "available", account.walletNex())));
                 screen.put("accountStatus", account.status());
                 screen.put("actions", Map.of("deposit", false, "withdraw", false, "transfer", false));
-                screen.put("readOnlyHint", "模拟登录只读模式，充值、提现和转账均不可操作");
+                screen.put("readOnlyHint", "用户数据只读视图，充值、提现和转账均不可操作");
             }
             case "DEVICES" -> {
                 screen.put("template", "H5_DEVICES");
@@ -1184,7 +1227,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(404, "IMPERSONATION_SESSION_NOT_FOUND");
         }
         if (!"ACTIVE".equalsIgnoreCase(existing.status())
-                || (existing.expiresAt() != null && !existing.expiresAt().isAfter(LocalDateTime.now()))) {
+                || (existing.expiresAt() != null && !existing.expiresAt().isAfter(LocalDateTime.now(clock)))) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         String reason = request.reason().trim();
@@ -1205,11 +1248,11 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         existing.reason(),
                         existing.expiresAt(),
                         existing.createdAt(),
-                        LocalDateTime.now(),
+                        LocalDateTime.now(clock),
                         operator,
                         reason,
                         0L));
-        LocalDateTime sessionEnd = updated.endedAt() == null ? LocalDateTime.now() : updated.endedAt();
+        LocalDateTime sessionEnd = updated.endedAt() == null ? LocalDateTime.now(clock) : updated.endedAt();
         LocalDateTime sessionStart = existing.createdAt() == null
                 ? sessionEnd.minusMinutes(existing.ttlMinutes())
                 : existing.createdAt();
@@ -1287,12 +1330,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 "reason", reason,
                 "idempotencyKey", idempotencyKey.trim());
         c2RequiredAudit("C2_USER_SESSIONS_REVOKED", "USER_SESSION", String.valueOf(userId), userId, operator, detail);
-        outboxService.publish("USER_SECURITY", String.valueOf(userId), "admin.session_revoked", Map.of(
-                "targetUserId", userId,
-                "operator", operator,
-                "reason", reason,
-                "revokedCount", activeSessionCount,
-                "occurredAt", LocalDateTime.now().toString()));
+        publishUserSecurityEvent("admin.session_revoked", userId, operator, reason, Map.of("scope", "all"));
         return ApiResult.ok(response);
     }
 
@@ -1381,6 +1419,14 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         long lockedShort = userRepository.countRegistrationLoginLocksToday("SHORT");
         long lockedLong = userRepository.countRegistrationLoginLocksToday("LONG");
         long configVersion = configLong(C6_CONFIG_VERSION_KEY, 0L);
+        boolean otpIncludesRegistration = false;
+        boolean otpCountsSuccessfulSends = false;
+        boolean captchaTriggeredProducerFound = false;
+        boolean countsUseBusinessDay = true;
+        boolean stuffingClusters7dIsCredentialStuffing = false;
+        boolean stuffingClusters7dCountsMultiAccountThresholdHits = true;
+        boolean stuffingClusters7dCountsFirstInsertedOnly = true;
+        boolean stuffingClusters7dIncludesAllDispositions = true;
         UserRegistrationRiskOverview overview = new UserRegistrationRiskOverview(
                 new UserRegistrationRiskStats(
                         userRepository.countRegistrationOtpToday(),
@@ -1391,7 +1437,15 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         userRepository.countRegistrationStuffingClusters7d(),
                         captchaState.disabled(),
                         captchaState.restoreAt() == null ? "" : captchaState.restoreAt().toString(),
-                        captchaState.remainingSeconds()),
+                        captchaState.remainingSeconds(),
+                        otpIncludesRegistration,
+                        otpCountsSuccessfulSends,
+                        captchaTriggeredProducerFound,
+                        countsUseBusinessDay,
+                        stuffingClusters7dIsCredentialStuffing,
+                        stuffingClusters7dCountsMultiAccountThresholdHits,
+                        stuffingClusters7dCountsFirstInsertedOnly,
+                        stuffingClusters7dIncludesAllDispositions),
                 REGISTRATION_RISK_PARAM_DEFINITIONS.stream()
                         .map(definition -> registrationRiskParamView(definition, configVersion))
                         .toList(),
@@ -1408,7 +1462,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                         "nx_config_item:auth.risk.*"),
                 List.of("C6 writes require Idempotency-Key and Confirm-with-Reason",
                         "K1 multi-account params are rejected here with 422 " + K1_REJECT_CODE,
-                        "CAPTCHA off is whitelist-only, absolute-deadline bounded, and automatically restored"));
+                        "CAPTCHA off is whitelist-only, absolute-deadline bounded, and automatically restored"),
+                captchaAlwaysScenes(),
+                h5RegisterCaptcha(),
+                true);
         return ApiResult.ok(overview);
     }
 
@@ -1505,7 +1562,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("fromTwoFactorEnabled", true);
         detail.put("toTwoFactorEnabled", false);
         c5RequiredAudit("C5_TWO_FACTOR_DISABLED", "USER_SECURITY", String.valueOf(userId), userId, actor, detail);
-        publishC5Event("admin.2fa_disabled", userId, actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.2fa_disabled", userId, actor, request.reason().trim(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -1544,7 +1601,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("passwordResetRequired", true);
         detail.put("sessionsRevoked", true);
         c5RequiredAudit("C5_PASSWORD_RESET_REQUESTED", "USER_SECURITY", String.valueOf(userId), userId, actor, detail);
-        publishC5Event("admin.password_reset_requested", userId, actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.password_reset_requested", userId, actor, request.reason().trim(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -1575,8 +1632,9 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return c5Rejected(userId, idempotencyKey, request, "C5_USER_UNLOCK_REJECTED", 409,
                     "C5_ACTION_STATE_CHANGED");
         }
-        int longThreshold = configInt("auth.risk.login_long_lock_threshold", 10);
-        String serverLockKind = before.loginFailCount() >= longThreshold ? "LONG" : "SHORT";
+        // 按触发时存下的锁类型判断；历史未存类型按长锁处理。
+        String storedLockKind = before.lockKind() == null ? "" : before.lockKind().trim().toUpperCase(Locale.ROOT);
+        String serverLockKind = "SHORT".equals(storedLockKind) ? "SHORT" : "LONG";
         String requestedLockKind = StringUtils.hasText(request.lockKind())
                 ? request.lockKind().trim().toUpperCase(Locale.ROOT) : "";
         if (!serverLockKind.equals(requestedLockKind)) {
@@ -1598,7 +1656,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("fromLoginFailCount", before.loginFailCount());
         detail.put("toLoginFailCount", 0);
         c5RequiredAudit("C5_USER_UNLOCKED", "USER_SECURITY", String.valueOf(userId), userId, actor, detail);
-        publishC5Event("admin.user_unlocked", userId, actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.user_unlocked", userId, actor, request.reason().trim(), detail);
         return ApiResult.ok(updated);
     }
 
@@ -1735,10 +1793,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "C5_REASON_LENGTH_OR_FORMAT_INVALID");
         }
         String normalizedRefreshTokenId = refreshTokenId.trim();
+        String subject = AdminActorResolver.subjectId();
+        String identity = StringUtils.hasText(subject) ? subject : operator(request.operator());
         return idempotentC2(
                 "C5_SESSION_REVOKE_ONE:" + normalizedRefreshTokenId,
                 idempotencyKey,
-                normalizedRefreshTokenId + "|" + request.reason().trim(),
+                normalizedRefreshTokenId + "|" + identity + "|" + request.reason().trim(),
                 () -> doRevokeSession(normalizedRefreshTokenId, idempotencyKey.trim(), request));
     }
 
@@ -1767,13 +1827,18 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("reason", request.reason().trim());
         detail.put("idempotencyKey", idempotencyKey);
         c5RequiredAudit("C5_SESSION_REVOKED", "USER_SESSION", refreshTokenId, session.userId(), actor, detail);
-        publishC5Event("admin.session_revoked", session.userId(), actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.session_revoked", session.userId(), actor, request.reason().trim(), detail);
         return ApiResult.ok(updated);
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> revokeAllSecuritySessions(
             Long userId, String idempotencyKey, UserSessionRevokeAllRequest request) {
+        ApiResult<Map<String, Object>> approvalGuard = delegatedDirectExecutionGuard(
+                "c2_session_revoke_all", "USER_SESSION", String.valueOf(userId), userId);
+        if (approvalGuard != null) {
+            return approvalGuard;
+        }
         ApiResult<Map<String, Object>> guard = requireUserCommand(
                 userId, idempotencyKey, request == null ? null : request.reason());
         if (guard != null) {
@@ -1808,7 +1873,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         detail.put("reason", request.reason().trim());
         detail.put("idempotencyKey", idempotencyKey);
         c5RequiredAudit("C5_ALL_SESSIONS_REVOKED", "USER_SESSION", String.valueOf(userId), userId, actor, detail);
-        publishC5Event("admin.session_revoked", userId, actor, request.reason().trim(), detail);
+        publishUserSecurityEvent("admin.session_revoked", userId, actor, request.reason().trim(), detail);
         return ApiResult.ok(Map.of("userId", userId, "revokedSessionCount", activeBefore));
     }
 
@@ -1875,8 +1940,10 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IMPERSONATION_SESSION_ALREADY_ACTIVE");
         }
         String sessionNo = "IMP-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
-        LocalDateTime sessionStart = LocalDateTime.now();
-        LocalDateTime expiresAt = sessionStart.plusMinutes(ttlMinutes);
+        Instant issuedAt = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        Instant deadline = issuedAt.plusSeconds(ttlMinutes * 60L);
+        LocalDateTime sessionStart = LocalDateTime.ofInstant(issuedAt, BusinessCalendar.STORAGE_ZONE);
+        LocalDateTime expiresAt = LocalDateTime.ofInstant(deadline, BusinessCalendar.STORAGE_ZONE);
         String operator = operator(request.operator());
         userRepository.recordImpersonationSession(sessionNo, userId, ttlMinutes, operator, request.reason().trim(), expiresAt);
         Map<String, Object> response = new LinkedHashMap<>();
@@ -1888,7 +1955,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         response.put("claim", "impersonate_readonly");
         response.put("writePolicy", "DENY");
         response.put("boundary", "server-issued impersonation identity is read-only and expires with this session");
-        response.put("accessToken", tokenProvider.createImpersonationToken(userId, userNo, sessionNo, ttlMinutes));
+        response.put("accessToken", tokenProvider.createImpersonationToken(userId, userNo, sessionNo, issuedAt, deadline));
         Map<String, Object> detail = Map.of(
                 "ttlMinutes", ttlMinutes,
                 "reasonCode", reasonCode,
@@ -1924,8 +1991,8 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     () -> executeAssetAdjustment(userId, idempotencyKey, request, false));
         } catch (DuplicateKeyException ex) {
             c3FailureAudit("C3_ASSET_ADJUSTMENT_REJECTED", String.valueOf(userId), userId, actor,
-                    "C3_ALREADY_REVERSED", idempotencyKey);
-            throw new BizException(409, "C3_ALREADY_REVERSED");
+                    "C3_ADJUSTMENT_CREATE_CONFLICT", idempotencyKey);
+            throw new BizException(409, "C3_ADJUSTMENT_CREATE_CONFLICT");
         } catch (RuntimeException ex) {
             c3FailureAudit("C3_ASSET_ADJUSTMENT_FAILED", String.valueOf(userId), userId, actor,
                     text(ex.getMessage()), idempotencyKey);
@@ -1939,72 +2006,13 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             String idempotencyKey,
             UserAssetAdjustmentRequest request) {
         String actor = operator(request == null ? null : request.operator());
-        ApiResult<Map<String, Object>> guard = requireC3Command(userId, idempotencyKey, request);
+        ApiResult<Map<String, Object>> guard = requireC3Authority("user_c3_adjust_create");
         if (guard != null) {
             c3FailureAudit("C3_LARGE_ADJUSTMENT_REQUEST_REJECTED", String.valueOf(userId), userId, actor,
                     guard.getMessage(), idempotencyKey);
             return guard;
         }
-        try {
-            return idempotentC3("C3_LARGE_ADJUSTMENT_REQUEST", idempotencyKey, c3Fingerprint(userId, request, null), () -> {
-                UserAccountView account = userRepository.findById(userId).orElse(null);
-                if (account == null) {
-                    return c3Reject(404, "USER_NOT_FOUND", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                String asset;
-                String direction;
-                BigDecimal amount;
-                String reasonCode;
-                String evidenceRef;
-                try {
-                    asset = normalizeAsset(request.asset());
-                    direction = normalizeDirection(request.direction());
-                    amount = positiveAmount(request.amount());
-                    reasonCode = normalizeC3ReasonCode(request.reasonCode(), request.referenceType(), request.referenceId());
-                    evidenceRef = requireC3Evidence(request.evidenceRef());
-                } catch (IllegalArgumentException ex) {
-                    return c3Reject(400, ex.getMessage(), String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-                BigDecimal nexRate = c3NexUsdRate(coverage);
-                if ("UVT".equals(asset) && nexRate.signum() <= 0) {
-                    return c3Reject(422, "C3_NEX_PRICE_UNAVAILABLE", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                BigDecimal amountUsd = ("USDT".equals(asset) ? amount : amount.multiply(nexRate))
-                        .setScale(8, RoundingMode.HALF_UP).stripTrailingZeros();
-                if (amount.scale() > 6 || amountUsd.compareTo(C3_MAX_AMOUNT_USD) > 0) {
-                    return c3Reject(400, "C3_AMOUNT_EXCEEDS_LIMIT", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                if (amountUsd.compareTo(C3_LARGE_THRESHOLD_USD) <= 0) {
-                    return c3Reject(400, "C3_LARGE_REQUEST_THRESHOLD_NOT_REACHED", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                if (!"SUPPORT".equals(normalizeRole(roleResolver.resolveCode()))) {
-                    return c3Reject(403, "C3_LARGE_REQUEST_SUPPORT_ONLY", String.valueOf(userId), userId, actor, idempotencyKey);
-                }
-                String requestNo = "REQ-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT);
-                userRepository.createAssetAdjustment(
-                        requestNo, userId, asset, direction, amount, amountUsd, reasonCode, request.reason().trim(),
-                        evidenceRef, idempotencyKey.trim(), null, actor);
-                c3RequiredAudit("C3_LARGE_ADJUSTMENT_REQUESTED", requestNo, userId, actor, Map.of(
-                        "asset", asset,
-                        "direction", direction,
-                        "amount", amount,
-                        "amountUsd", amountUsd,
-                        "reasonCode", reasonCode,
-                        "reason", request.reason().trim(),
-                        "evidenceRef", evidenceRef,
-                        "idempotencyKey", idempotencyKey.trim()));
-                return ApiResult.ok(Map.of(
-                        "requestNo", requestNo,
-                        "adjustmentNo", requestNo,
-                        "status", "PENDING_REVIEW",
-                        "amountUsd", amountUsd));
-            });
-        } catch (RuntimeException ex) {
-            c3FailureAudit("C3_LARGE_ADJUSTMENT_REQUEST_FAILED", String.valueOf(userId), userId, actor,
-                    text(ex.getMessage()), idempotencyKey);
-            throw ex;
-        }
+        return c3Reject(410, "C3_LARGE_REQUEST_RETIRED", String.valueOf(userId), userId, actor, idempotencyKey);
     }
 
     private ApiResult<Map<String, Object>> executeAssetAdjustment(
@@ -2929,18 +2937,18 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.fail(status, failureReason);
     }
 
-    private void publishC5Event(
-            String eventType, Long userId, String actor, String reason, Map<String, Object> auditDetail) {
+    private void publishUserSecurityEvent(
+            String eventType, Long userId, String actor, String reason, Map<String, Object> detail) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("targetUserId", userId);
         payload.put("operator", actor);
         payload.put("role", normalizeRole(roleResolver.resolveCode()));
         payload.put("reason", reason);
-        if (auditDetail.containsKey("lockKind")) {
-            payload.put("lockKind", auditDetail.get("lockKind"));
+        if (detail.containsKey("lockKind")) {
+            payload.put("lockKind", detail.get("lockKind"));
         }
-        if (auditDetail.containsKey("scope")) {
-            payload.put("scope", auditDetail.get("scope"));
+        if (detail.containsKey("scope")) {
+            payload.put("scope", detail.get("scope"));
         }
         payload.put("occurredAt", LocalDateTime.now().toString());
         outboxService.publish("USER_SECURITY", String.valueOf(userId), eventType, payload);
@@ -2985,20 +2993,23 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         if (A2ReplayContext.isReplaying()) {
             return null;
         }
-        if (!Set.of("c2_account_freeze", "c2_account_unfreeze").contains(operation)) {
+        boolean sessionRevocation = "c2_session_revoke_all".equals(operation);
+        if (!sessionRevocation && !Set.of("c2_account_freeze", "c2_account_unfreeze").contains(operation)) {
             return null;
         }
         var authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !authentication.isAuthenticated()) {
-            return null;
-        }
-        Set<String> authorities = authentication.getAuthorities().stream()
-                .map(authority -> authority.getAuthority())
-                .collect(java.util.stream.Collectors.toSet());
-        if (!"FINANCE".equalsIgnoreCase(text(roleResolver.resolveCode()))
-                || !authorities.contains("platform_a2_proposal_create")
-                || authorities.contains("platform_a2_operation_approve")) {
-            return null;
+        if (!sessionRevocation) {
+            if (authentication == null || !authentication.isAuthenticated()) {
+                return null;
+            }
+            Set<String> authorities = authentication.getAuthorities().stream()
+                    .map(authority -> authority.getAuthority())
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!"FINANCE".equalsIgnoreCase(text(roleResolver.resolveCode()))
+                    || !authorities.contains("platform_a2_proposal_create")
+                    || authorities.contains("platform_a2_operation_approve")) {
+                return null;
+            }
         }
         String safeResourceId = resourceId == null ? "" : resourceId;
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
@@ -3008,7 +3019,7 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                 .bizNo(safeResourceId)
                 .userId(userId)
                 .actorType("ADMIN")
-                .actorUsername(operator(String.valueOf(authentication.getName())))
+                .actorUsername(operator(null))
                 .result("REJECTED")
                 .riskLevel("HIGH")
                 .detail(Map.of(
@@ -3162,7 +3173,9 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                             raw.locked(),
                             raw.passwordResetRequired(),
                             lockThreshold,
-                            lockDurationMinutes);
+                            lockDurationMinutes,
+                            raw.lockedUntil(),
+                            raw.lockKind());
                 })
                 .orElse(null);
     }
@@ -3439,6 +3452,25 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
             if (value >= 0 && value <= 50) return value;
         } catch (NumberFormatException ignored) { }
         throw new BizException(503, "C6_CAPTCHA_THRESHOLD_INVALID");
+    }
+
+    private List<String> captchaAlwaysScenes() {
+        String raw = configFacade.activeValue("auth.risk.captcha_always_scenes").orElse("register");
+        Set<String> always = Arrays.stream(raw.split(","))
+                .map(String::trim)
+                .filter(value -> !value.isEmpty())
+                .map(value -> value.toUpperCase(Locale.ROOT))
+                .collect(java.util.stream.Collectors.toSet());
+        if (!Set.of("REGISTER", "LOGIN", "RESET").containsAll(always)) {
+            return List.of("REGISTER", "LOGIN", "RESET");
+        }
+        return List.of("REGISTER", "LOGIN", "RESET").stream()
+                .filter(always::contains)
+                .toList();
+    }
+
+    private boolean h5RegisterCaptcha() {
+        return !"0".equals(configFacade.activeValue("auth.risk.h5_register_captcha").orElse("1"));
     }
 
     private int sessionIdleDays() {

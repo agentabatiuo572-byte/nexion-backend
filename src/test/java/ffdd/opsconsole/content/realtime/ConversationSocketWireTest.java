@@ -26,6 +26,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -97,9 +99,6 @@ class ConversationSocketWireTest {
         var guard=ffdd.opsconsole.content.SupportTestDependencies.ownership();
         when(access.canWrite(any(Authentication.class),anyString(),eq("CV-1"))).thenAnswer(invocation->access.canRead(invocation.getArgument(0),invocation.getArgument(1),"CV-1"));
         when(access.participants("CV-1")).thenReturn(Optional.of(new ConversationSocketAccess.Participants("100", "seat-9", guard)));
-        when(access.presenceKeys(user, "USER")).thenReturn(Set.of("USER:100"));
-        when(access.presenceKeys(otherUser, "USER")).thenReturn(Set.of("USER:200"));
-        when(access.presenceKeys(agent, "ADMIN")).thenReturn(Set.of("ADMIN:seat-9"));
         doReturn(ApiResult.ok(Map.of("messageId", 31))).when(commands).execute(eq(user), eq("USER"), any());
 
         String singleUse = tickets.issue("Bearer token-user", "USER");
@@ -282,8 +281,18 @@ class ConversationSocketWireTest {
         }
 
         @Bean
-        ConversationSocketTickets conversationSocketTickets(ConversationSocketAccess access) {
-            return new ConversationSocketTickets(access);
+        ConversationSocketTickets conversationSocketTickets(ConversationSocketAccess access, StringRedisTemplate redis) {
+            return new ConversationSocketTickets(access, redis);
+        }
+
+        @Bean
+        ConversationSocketRedis conversationSocketRedis() {
+            return mock(ConversationSocketRedis.class);
+        }
+
+        @Bean
+        ApplicationEventPublisher applicationEventPublisher() {
+            return mock(ApplicationEventPublisher.class);
         }
 
         @Bean
@@ -291,8 +300,10 @@ class ConversationSocketWireTest {
                 ObjectMapper json,
                 ConversationSocketTickets tickets,
                 ConversationSocketAccess access,
-                ConversationSocketCommands commands) {
-            return new ConversationSocketHandler(json, tickets, access, commands);
+                ConversationSocketCommands commands,
+                ConversationSocketRedis socketRedis,
+                ApplicationEventPublisher events) {
+            return new ConversationSocketHandler(json, tickets, access, commands, socketRedis, events);
         }
     }
 }

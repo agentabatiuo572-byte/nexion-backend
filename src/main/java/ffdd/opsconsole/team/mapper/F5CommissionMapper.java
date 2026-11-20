@@ -73,7 +73,7 @@ public interface F5CommissionMapper {
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
                    CASE
                      WHEN LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
-                       THEN GREATEST(0, DATEDIFF(e.unlock_at, NOW()))
+                       THEN GREATEST(0, COALESCE(DATEDIFF(e.unlock_at, NOW()), 0))
                      ELSE 0
                    END AS coolingDaysLeft,
                    CASE
@@ -127,6 +127,9 @@ public interface F5CommissionMapper {
              <if test="cursor != null">
                AND e.id &lt; #{cursor}
              </if>
+             <if test="eventId != null">
+               AND e.id = #{eventId}
+             </if>
              ORDER BY e.id DESC
              LIMIT #{limit}
             </script>
@@ -138,7 +141,8 @@ public interface F5CommissionMapper {
             @Param("status") String status,
             @Param("cohort") String cohort,
             @Param("cursor") Long cursor,
-            @Param("limit") int limit);
+            @Param("limit") int limit,
+            @Param("eventId") Long eventId);
 
     /**
      * Bounded export with redacted identities and canonical business source/group references.
@@ -472,8 +476,8 @@ public interface F5CommissionMapper {
 
     @Update("""
             UPDATE nx_commission_event
-               SET status = 'FROZEN',
-                   unlock_at = NULL,
+               SET frozen_from_status = status,
+                   status = 'FROZEN',
                    updated_at = NOW()
              WHERE user_id = #{userId}
                AND LOWER(commission_type) = #{kind}

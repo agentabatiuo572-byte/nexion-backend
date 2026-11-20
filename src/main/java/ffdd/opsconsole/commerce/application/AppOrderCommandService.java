@@ -1,5 +1,6 @@
 package ffdd.opsconsole.commerce.application;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
@@ -41,6 +42,9 @@ import org.springframework.util.StringUtils;
 
 @Service
 public class AppOrderCommandService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
     private static final String MAINTENANCE_KILLSWITCH_KEY = "killswitch.maintenance";
@@ -220,6 +224,9 @@ public class AppOrderCommandService {
         if (fullyDiscounted) {
             List<AppOrderCommandMapper.VoucherGrantRow> usedVouchers =
                     mapper.lockUsedVouchersForOrder(userId, orderNo);
+            if (usedVouchers != null && usedVouchers.isEmpty()) {
+                usedVouchers = mapper.lockRevokedVrankVouchersForOrder(userId, orderNo);
+            }
             if (usedVouchers == null || usedVouchers.size() != 1
                     || usedVouchers.get(0) == null
                     || !StringUtils.hasText(usedVouchers.get(0).grantId())) {
@@ -346,12 +353,16 @@ public class AppOrderCommandService {
             wallet = mapper.lockDevelopmentWallet(userId);
             if (!validWallet(wallet)) return ApiResult.fail(409, "ORDER_WALLET_UNAVAILABLE");
         }
-        if (!fullyDiscounted && !external && wallet.usdtAvailable().compareTo(order.amountUsdt()) < 0) {
-            // Insufficient balance is recoverable by topping up. Throw so the
-            // idempotency record becomes FAILED and the same payment intent can
-            // be reclaimed safely after the wallet balance changes.
-            throw new BizException(409, "ORDER_WALLET_INSUFFICIENT");
+        if (!fullyDiscounted && !external) {
+            BigDecimal shortfall = order.amountUsdt().subtract(wallet.usdtAvailable());
+            if (shortfall.signum() > 0) {
+                // Insufficient balance is recoverable by topping up. Throw so the
+                // idempotency record becomes FAILED and the same payment intent can
+                // be reclaimed safely after the wallet balance changes.
+                throw new BizException(409, "ORDER_WALLET_INSUFFICIENT");
+            }
         }
+        var hostingPool = hostingCenters.requirePool();
         testCloudAdmission.requireCapacity(order.quantity());
         if (consumeInventory) consumePaymentInventory(userId, orderNo, order.quantity());
         BigDecimal balanceAfter = fullyDiscounted || external ? null : wallet.usdtAvailable().subtract(order.amountUsdt());
@@ -387,7 +398,7 @@ public class AppOrderCommandService {
                             + "|" + item.productId() + "|" + unitIndex)
                             .substring(0, 24).toUpperCase(Locale.ROOT);
                     if (mapper.insertWalletDevice(
-                            orderNo, userId, item.productId(), instanceNo, unitIndex) != 1) {
+                            orderNo, userId, item.productId(), instanceNo, unitIndex, hostingPool.assign(instanceNo)) != 1) {
                         throw new BizException(409, "DEVICE_ACTIVATION_CONFLICT");
                     }
                     publishDevelopmentDeviceActivated(userId, instanceNo, paymentRail);
@@ -397,7 +408,7 @@ public class AppOrderCommandService {
             for (int unitIndex = 0; unitIndex < order.quantity(); unitIndex++) {
                 String instanceNo = "NEX-ORD-" + sha256(orderNo + "|" + unitIndex)
                         .substring(0, 24).toUpperCase(Locale.ROOT);
-                if (mapper.insertDevelopmentDevice(orderNo, userId, instanceNo, unitIndex) != 1) {
+                if (mapper.insertDevelopmentDevice(orderNo, userId, instanceNo, unitIndex, hostingPool.assign(instanceNo)) != 1) {
                     throw new BizException(409, "DEVICE_ACTIVATION_CONFLICT");
                 }
                 publishDevelopmentDeviceActivated(userId, instanceNo, paymentRail);
@@ -466,7 +477,10 @@ public class AppOrderCommandService {
     }
 
     private boolean validWallet(AppOrderCommandMapper.DevelopmentWallet wallet) {
-        return wallet != null && wallet.usdtAvailable() != null && wallet.usdtAvailable().signum() >= 0
+        // F1 permits a negative USDT available balance for legitimate debt. A
+        // negative balance is a payment shortfall, not a missing/invalid wallet;
+        // only structural faults remain unavailable here.
+        return wallet != null && wallet.usdtAvailable() != null
                 && wallet.version() != null && wallet.version() >= 0;
     }
 
@@ -624,7 +638,7 @@ public class AppOrderCommandService {
         if (promotions != null) promotions.lockOrderParticipants(orderNo);
     }
 
-    /** Called in the transaction that locks and expires the original direct intent. */
+    /** Called in the transaction holding the original direct intent lock. */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
     public boolean expireDirectPaymentOrder(Long userId,String orderNo) {
         return expirePendingOrder(userId,orderNo,30,true);
@@ -639,8 +653,9 @@ public class AppOrderCommandService {
         if (order == null || !userId.equals(order.userId())
                 || !"PENDING_PAYMENT".equalsIgnoreCase(order.orderStatus())
                 || !"PENDING".equalsIgnoreCase(order.paymentStatus())
-                || (!direct && mapper.countDirectPaymentIntents(normalized) > 0)
-                || mapper.countActiveDirectPaymentIntent(normalized) > 0
+                || (!direct
+                    ? mapper.countDirectPaymentIntents(normalized) > 0
+                    : mapper.countDirectPaymentIntentsBlockingExpiry(normalized) > 0)
                 || mapper.countNonCancellableHdPaySessions(normalized) > 0
                 || mapper.countExpiredPayableOrder(normalized, userId, ttlMinutes) == 0) {
             return false;

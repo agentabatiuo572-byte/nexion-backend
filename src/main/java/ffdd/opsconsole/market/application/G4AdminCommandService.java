@@ -28,6 +28,7 @@ import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -44,15 +45,18 @@ public class G4AdminCommandService {
     private final Clock clock;
     private final EarningsReleaseService earningsReleaseService;
     private final Environment environment;
+    private final G4DividendPolicy dividendPolicy;
 
-    @Transactional
-    public ApiResult<Map<String,Object>> updateParam(String key,String idem,NexMarketValueUpdateRequest request){
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public ApiResult<Map<String,Object>> updateParam(String rawKey,String idem,NexMarketValueUpdateRequest request){
+        String key=rawKey==null?"":rawKey.trim();
         requireCommand(idem,request);
+        if("supply".equals(key.trim())) marketService.requireGenesisSupplyPermission();
         if(List.of("dividend","divBase","airdropPct","emissionCurve").contains(key)) requireDecision(request.decisionRef());
         return once("PARAM:"+key,idem,request,()->{
             ApiResult<Map<String,Object>> result=marketService.updateGenesisParam(idem,key,request);
             requireSuccess(result);
-            outbox.publish("GENESIS_PARAM",key,"admin.genesis_param_changed",linked(
+            if (!"dividend".equals(key)) outbox.publish("GENESIS_PARAM",key,"admin.genesis_param_changed",linked(
                     "paramKey",key,"newValue",request.value(),"decisionRef",text(request.decisionRef(),"NOT_REQUIRED")));
             return result;
         });
@@ -88,33 +92,27 @@ public class G4AdminCommandService {
         boolean open=config.activeValue("growth.phase.genesis_emissions_open")
                 .map(v->List.of("1","true","on","enabled","open").contains(v.trim().toLowerCase())).orElse(false);
         if(!open) throw new BizException(409,"G4_GENESIS_EMISSION_GATE_CLOSED");
-        AppGenesisMapper.SeriesRow series=mapper.lockActiveSeries();
-        if(series==null) throw new BizException(409,"G4_GENESIS_SERIES_NOT_FOUND");
-        AppGenesisMapper.EmissionBatchRow existing=mapper.lockEmissionBatch(batchNo);
+        var state=dividendPolicy.requireEmission(batchNo);
+        AppGenesisMapper.EmissionBatchRow existing=state.batch();
         if(existing!=null && "COMPLETED".equals(existing.status())){
             return replayedBatch(batchNo,existing);
         }
-        List<AppGenesisMapper.HoldingRow> holdings=mapper.lockEmissionHoldings();
-        BigDecimal rate=nz(series.dailyEmissionRatePct());
-        // Genesis daily emission is a product liability based on the immutable series unit price.
-        // A secondary-market resale price must never amplify or shrink the promised daily payout.
-        BigDecimal total=holdings.stream().map(h->emissionAmount(series.priceUsdt(),rate)).reduce(BigDecimal.ZERO,BigDecimal::add);
-        int inserted=mapper.insertEmissionBatch(new AppGenesisMapper.EmissionBatchWrite(batchNo,LocalDateTime.now(clock),rate,
-                holdings.size(),money(total),AdminActorResolver.resolve("system"),request.reason().trim(),request.decisionRef().trim()));
-        if(inserted==0){
-            existing=mapper.lockEmissionBatch(batchNo);
-            if(existing!=null && "COMPLETED".equals(existing.status())){
-                return replayedBatch(batchNo,existing);
+        List<AppGenesisMapper.EmissionItemRow> pendingItems=state.pendingItems();
+        if(existing==null){
+            if(mapper.insertEmissionBatch(new AppGenesisMapper.EmissionBatchWrite(batchNo,LocalDateTime.now(clock),
+                    state.count(),money(state.amount()),AdminActorResolver.resolve("system"),request.reason().trim(),request.decisionRef().trim()))!=1){
+                throw new BizException(409,"GENESIS_EMISSION_BATCH_CONFLICT");
             }
-        }
-        if(inserted==1){
-            for(AppGenesisMapper.HoldingRow h:holdings){
-                BigDecimal amount=emissionAmount(series.priceUsdt(),rate);
-                if(amount.signum()>0) mapper.insertEmissionItem(new AppGenesisMapper.EmissionItemWrite(batchNo,h.holdingNo(),h.userId(),amount));
+            for(var holding:state.holdings()){
+                if(holding.amountUsdt().signum()>0 && mapper.insertEmissionItem(new AppGenesisMapper.EmissionItemWrite(
+                        batchNo,holding.holdingNo(),holding.userId(),holding.amountUsdt(),holding.dailyRatePct()))!=1){
+                    throw new BizException(409,"GENESIS_EMISSION_ITEM_CONFLICT");
+                }
             }
+            pendingItems=mapper.lockPendingEmissionItems(batchNo);
         }
         int paid=0; BigDecimal paidTotal=BigDecimal.ZERO;
-        for(AppGenesisMapper.EmissionItemRow item:mapper.lockPendingEmissionItems(batchNo)){
+        for(AppGenesisMapper.EmissionItemRow item:pendingItems){
             BigDecimal before=mapper.lockWallet(item.userId());
             if(before==null) throw new BizException(409,"GENESIS_EMISSION_WALLET_CONFLICT");
             String billNo="G4E-"+batchNo+"-"+item.holdingNo();
@@ -130,7 +128,7 @@ public class G4AdminCommandService {
             outbox.publishUserEvent("GENESIS_HOLDING",item.holdingNo(),"genesis.emission_paid",
                     item.userId(),policy.phase(),policy.accountAgeMonths(),policy.cohort(),linked(
                             "holdingNo",item.holdingNo(),"amountUsdt",item.amountUsdt(),
-                            "rateApplied",rate,"paidAt",paidAt));
+                            "rateApplied",item.rateAppliedPct(),"paidAt",paidAt));
             paid++; paidTotal=paidTotal.add(item.amountUsdt());
         }
         mapper.completeEmissionBatch(batchNo);
@@ -179,13 +177,12 @@ public class G4AdminCommandService {
         return ApiResult.ok(response);
     }
 
-    private BigDecimal emissionAmount(BigDecimal base,BigDecimal rate){return money(nz(base).multiply(rate).divide(BigDecimal.valueOf(100),6,RoundingMode.HALF_UP));}
     private void requireCommand(String key,NexMarketValueUpdateRequest r){
         if(!StringUtils.hasText(key)) throw new BizException(428,"IDEMPOTENCY_KEY_REQUIRED");
         if(r==null) throw new BizException(422,"REQUEST_REQUIRED");
         requireText(r.reason(),"REASON_LENGTH_INVALID",8,200);
     }
-    private void requireDecision(String value){requireText(value,"G4_DECISION_REF_REQUIRED",3,128);}
+    private void requireDecision(String value){G4DividendPolicy.requireDecision(value);}
     private void requireText(String value,String code,int min,int max){if(!StringUtils.hasText(value)||value.trim().length()<min||value.trim().length()>max)throw new BizException(422,code);}
     private void requireSuccess(ApiResult<?> result){if(result==null||result.getCode()!=0)throw new BizException(result==null?500:result.getCode(),result==null?"G4_COMMAND_FAILED":result.getMessage());}
     @SuppressWarnings({"rawtypes","unchecked"}) private ApiResult<Map<String,Object>> once(String scope,String key,Object request,Supplier<ApiResult<Map<String,Object>>> action){return (ApiResult<Map<String,Object>>)(ApiResult)idempotency.execute("ADMIN:G4_"+scope,key,sha256(String.valueOf(request)),ApiResult.class,(Supplier)action);}

@@ -27,6 +27,7 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
                 start_at BIGINT NOT NULL DEFAULT 0,
                 end_at BIGINT NOT NULL DEFAULT 0,
                 claim_surfaces JSON NULL,
+                wheel_only TINYINT(1) NOT NULL DEFAULT 0,
                 popup_enabled TINYINT(1) NOT NULL DEFAULT 0,
                 popup_delay_ms BIGINT NOT NULL DEFAULT 1300,
                 popup_cooldown_hours BIGINT NOT NULL DEFAULT 24,
@@ -63,6 +64,7 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
                    start_at AS startAt,
                    end_at AS endAt,
                    COALESCE(JSON_EXTRACT(claim_surfaces, '$'), JSON_ARRAY()) AS claimSurfacesJson,
+                   wheel_only AS wheelOnly,
                    popup_enabled AS popupEnabled,
                    popup_delay_ms AS popupDelayMs,
                    popup_cooldown_hours AS popupCooldownHours,
@@ -105,6 +107,20 @@ public interface GrowthVoucherMapper extends BaseMapper<Object> {
 
     @Select("SELECT COUNT(1) FROM nx_growth_voucher WHERE voucher_id = #{voucherId} AND is_deleted = 0")
     long countByVoucherId(@Param("voucherId") String voucherId);
+
+    @Select("""
+            SELECT voucher_type AS type, version, splittable FROM nx_growth_voucher
+             WHERE voucher_id = #{voucherId} AND is_deleted = 0
+             FOR UPDATE
+            """)
+    Map<String, Object> lockVoucherTemplate(@Param("voucherId") String voucherId);
+
+    @Select("""
+            SELECT id FROM nx_growth_voucher_grant
+             WHERE voucher_id = #{voucherId} AND is_deleted = 0
+             LIMIT 1 FOR UPDATE
+            """)
+    Long findIssuedGrantForUpdate(@Param("voucherId") String voucherId);
 
     @Insert("""
             INSERT INTO nx_growth_voucher (

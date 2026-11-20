@@ -24,7 +24,7 @@ import org.springframework.stereotype.Component;
 /** Only platform-wide Home facts; account and financial reads remain on the request path. */
 @Component
 @Slf4j
-class HomeSharedSnapshotCache {
+public class HomeSharedSnapshotCache {
     private static final long MAX_AGE_MILLIS = 5_000;
     private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
     private final AppHomeOverviewMapper mapper;
@@ -56,6 +56,33 @@ class HomeSharedSnapshotCache {
     }
 
     record Snapshot(long validUntil, Long activeRuleSlotsCount, List<TaskPriceHistoryRow> marketTaskPriceHistory) {}
+
+    /** The production Home on-grid count, including the same optional rule slots as the App response. */
+    public Long productionActiveJobs() {
+        AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid("PRODUCTION", false);
+        Long activeJobs = grid == null ? null : grid.activeJobs();
+        return includeRuleSlots(activeJobs)
+                ? activeJobsWithRuleSlots(activeJobs, "PRODUCTION", false, current()) : activeJobs;
+    }
+
+    /** Sandbox Home displays distinct task-catalog classes, not production running jobs. */
+    public Long sandboxActiveJobs(String runId) {
+        if (!AppHomeOverviewService.validSandboxRunId(runId)) return null;
+        List<AppHomeOverviewMapper.MarketTaskRow> tasks = mapper.marketTasks();
+        return (long) AppHomeOverviewService.uniqueTaskCodes(tasks == null ? List.of() : tasks).size();
+    }
+
+    boolean includeRuleSlots(Long activeJobs) {
+        return activeJobs != null && environment.getProperty("nexion.simulated-tasks.enabled", Boolean.class, false);
+    }
+
+    Long activeJobsWithRuleSlots(Long activeJobs, String sourceEnvironment, boolean accountSandbox, Snapshot snapshot) {
+        Snapshot slotsSnapshot = snapshot != null && snapshot.validUntil() > clock.millis() ? snapshot : null;
+        LocalDateTime publicNow = LocalDateTime.ofInstant(clock.instant(), SERVER_ZONE);
+        return activeJobs + (slotsSnapshot == null
+                ? mapper.activeRuleSlots(sourceEnvironment, accountSandbox, publicNow)
+                : slotsSnapshot.activeRuleSlotsCount());
+    }
 
     Snapshot current() {
         Snapshot snapshot = readCurrent();

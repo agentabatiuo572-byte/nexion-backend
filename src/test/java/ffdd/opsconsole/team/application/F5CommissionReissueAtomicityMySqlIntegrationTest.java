@@ -206,7 +206,7 @@ class F5CommissionReissueAtomicityMySqlIntegrationTest {
                 AdminIdempotencyExpiryTransitionExecutor.class);
         AdminIdempotencyTransactionExecutor executor = proxied(
                 new AdminIdempotencyTransactionExecutor(
-                        idempotencyMapper, new ObjectMapper().findAndRegisterModules(), transition),
+                        idempotencyMapper, new ObjectMapper().findAndRegisterModules(), transition, new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(idempotencyMapper)),
                 interceptor, AdminIdempotencyTransactionExecutor.class);
         AdminIdempotencyService idempotency = new AdminIdempotencyService(executor, Clock.systemUTC());
 

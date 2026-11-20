@@ -86,6 +86,7 @@ public class AppTaskAssignmentService {
     private final Clock clock;
     private final TestComputeWorkerService testWorker;
     private final SupportDeviceFundAdapter deviceFunds;
+    private final HardwareDailyUvtService hardwareDailyUvt;
     private final ffdd.opsconsole.common.boundary.PhoneExecutionSessionContract phoneSessions;
     private final ffdd.opsconsole.device.mapper.SimulatedTaskMapper simulatedTasks;
 
@@ -682,8 +683,7 @@ public class AppTaskAssignmentService {
             if(safe(availableTasks).stream().anyMatch(row->row==null || row.minVram()==null))
                 throw new BizException(503,"E2_TASK_CONFIG_INVALID");
             String configuredTask=environment.getProperty(TestCloudExecutorService.PREFIX+"task-config-id","");
-            availableTasks=safe(availableTasks).stream().filter(row->"EM".equalsIgnoreCase(row.taskClass())
-                    && "BGE-M3".equals(row.modelName()) && configuredTask.equals(row.taskId())).toList();
+            availableTasks = testCloudTaskPool(safe(availableTasks), configuredTask);
         }
         TaskConfigRow task = chooseTask(availableTasks, routingVram);
         List<ConfigRow> capacityRows = safe(mapper.e3CapacityConfig());
@@ -694,7 +694,7 @@ public class AppTaskAssignmentService {
         BigDecimal reward;
         try {
             E3DeviceCapacityPolicy.Projection capacity = E3DeviceCapacityPolicy.project(
-                    device.productCode(), device.deviceType(), device.purchasedAt(),
+                    device.seriesCode(), device.deviceType(), device.purchasedAt(),
                     device.activatedAt(), now, capacityConfig);
             reward = E3DeviceCapacityPolicy.applyCapacity(
                     midpoint(task.minReward(), task.maxReward()), capacity);
@@ -835,11 +835,14 @@ public class AppTaskAssignmentService {
         }
         if (grant != null) testWorker.requireCurrent(grant);
         String receiptNo = "CTR-" + taskNo.substring(Math.max(0, taskNo.length() - 32));
+        // Keep the wallet key used by refund and funds evidence for device-day rewards.
         String dailyNexBizNo = "CLOUD_SHARE_DAILY:" + task.deviceId() + ":" + utcDay;
         BigDecimal paidShareDailyNex = mapper.lockPaidCloudShareDailyNex(userId, task.deviceId());
-        BigDecimal rewardNex = paidShareDailyNex != null && paidShareDailyNex.signum() > 0
+        BigDecimal dailyUvt = paidShareDailyNex != null ? paidShareDailyNex
+                : hardwareDailyUvt.amount(userId, task.deviceId(), activeBinding.productCode(), activeBinding.seriesCode(), now);
+        BigDecimal rewardNex = dailyUvt.signum() > 0
                 && mapper.lockDailyCloudShareNex(userId, dailyNexBizNo) == null
-                ? paidShareDailyNex : BigDecimal.ZERO;
+                ? dailyUvt : BigDecimal.ZERO;
         if (grant != null) testWorker.requireTask(grant, task, LocalDateTime.now(clock));
         if (mapper.insertReceipt(userId, task.deviceId(), task, receiptNo, proof.proofHash(),
                 rewardNex, "CREDITED", sourceEnvironment, now) != 1) {
@@ -864,7 +867,7 @@ public class AppTaskAssignmentService {
             BigDecimal nexBalanceAfter = mapper.walletNex(userId);
             if (nexBalanceAfter == null
                     || mapper.insertCloudShareNexLedger(userId, task.deviceId(), receiptNo,
-                        dailyNexBizNo, rewardNex, nexBalanceAfter, now) != 1
+                        dailyNexBizNo, rewardNex, nexBalanceAfter, paidShareDailyNex == null, now) != 1
                     || mapper.insertCloudShareNexEvent("EARN-NEX-" + receiptNo, userId, task.deviceId(),
                         receiptNo, rewardNex, now) != 1) {
                 throw new BizException(409, "TASK_ASSIGNMENT_NEX_SETTLEMENT_CONFLICT");
@@ -964,9 +967,12 @@ public class AppTaskAssignmentService {
         if (device.vramTotalGb() == null || device.vramTotalGb() < 0) {
             throw new BizException(409, "TASK_ASSIGNMENT_VRAM_UNAVAILABLE");
         }
-        if (Boolean.TRUE.equals(device.dispatchPaused())) throw new BizException(409, "TASK_ASSIGNMENT_DC_PAUSED");
+
         if (StringUtils.hasText(device.pausedReason())
                 && !(phone(device) && Set.of("PHONE_LOW_BATTERY", "PHONE_OFFLINE").contains(device.pausedReason()))) {
+            throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_PAUSED");
+        }
+        if (device.opsPaused() != null && device.opsPaused() == 1) {
             throw new BizException(409, "TASK_ASSIGNMENT_DEVICE_PAUSED");
         }
         if (!phone(device) && StringUtils.hasText(device.onlineStatus())
@@ -980,24 +986,32 @@ public class AppTaskAssignmentService {
         if (pool.stream().anyMatch(task -> task == null || task.minVram() == null)) {
             throw new BizException(503, "E2_TASK_CONFIG_INVALID");
         }
+        return preferredTask(pool, vramTotalGb)
+                .orElseThrow(() -> new BizException(409, "TASK_ASSIGNMENT_NO_ELIGIBLE_TASK"));
+    }
+
+    static List<TaskConfigRow> testCloudTaskPool(List<TaskConfigRow> rows, String configuredTask) {
+        return rows.stream().filter(row -> "EM".equalsIgnoreCase(row.taskClass())
+                && "BGE-M3".equals(row.modelName()) && configuredTask.equals(row.taskId())).toList();
+    }
+
+    static java.util.Optional<TaskConfigRow> preferredTask(List<TaskConfigRow> pool, int vramTotalGb) {
         return pool.stream()
                 .filter(task -> !PhoneComputeV2Access.MODEL.equals(task.modelName()))
                 .filter(task -> activeDevice(task.status()))
                 .filter(task -> !killed(task.killInit()))
                 .filter(task -> task.minVram() != null && task.minVram() <= vramTotalGb)
                 .filter(task -> midpoint(task.minReward(), task.maxReward()).signum() > 0)
-                .max(Comparator.comparing(task -> midpoint(task.minReward(), task.maxReward())
-                        .divide(BigDecimal.valueOf(requiredSeconds(task.taskClass())), 12, RoundingMode.HALF_UP)))
-                .orElseThrow(() -> new BizException(409, "TASK_ASSIGNMENT_NO_ELIGIBLE_TASK"));
+                .max(Comparator.comparing(AppTaskAssignmentService::taskRewardRate));
+    }
+
+    static BigDecimal taskRewardRate(TaskConfigRow task) {
+        return midpoint(task.minReward(), task.maxReward())
+                .divide(BigDecimal.valueOf(requiredSeconds(task.taskClass())), 12, RoundingMode.HALF_UP);
     }
 
     static int effectiveRoutingVram(DeviceRow device) {
-        String identity = String.join(" ", value(device.deviceType()), value(device.productCode()))
-                .toUpperCase(Locale.ROOT);
-        if (identity.contains("CLOUD-SHARE") || identity.contains("CLOUD_SHARE")
-                || identity.matches(".*\\bSHARE\\b.*")) {
-            return 8;
-        }
+        if ("CLOUD_SHARE".equals(device.seriesCode())) return 8;
         return device.vramTotalGb();
     }
 
@@ -1112,21 +1126,21 @@ public class AppTaskAssignmentService {
         return SETTLED_EARNING_STATUSES.contains(value(status).toUpperCase(Locale.ROOT));
     }
 
-    private int requiredSeconds(String taskClass) {
+    private static int requiredSeconds(String taskClass) {
         return switch (value(taskClass).toUpperCase(Locale.ROOT)) {
             case "IG" -> 18; case "VG" -> 900; case "LL" -> 12;
             case "FT" -> 1800; case "EM" -> 5; case "SP" -> 30; default -> 60;
         };
     }
 
-    private BigDecimal midpoint(BigDecimal min, BigDecimal max) {
+    private static BigDecimal midpoint(BigDecimal min, BigDecimal max) {
         BigDecimal low = min == null ? BigDecimal.ZERO : min;
         BigDecimal high = max == null ? low : max;
         if (low.signum() < 0 || high.compareTo(low) < 0) throw new BizException(503, "E2_TASK_REWARD_INVALID");
         return low.add(high).divide(BigDecimal.valueOf(2), 6, RoundingMode.HALF_UP);
     }
 
-    private boolean killed(String value) {
+    private static boolean killed(String value) {
         String normalized = value(value).toLowerCase(Locale.ROOT).replace(" ", "");
         return normalized.equals("kill") || normalized.equals("killed") || normalized.equals("已kill");
     }
@@ -1165,7 +1179,7 @@ public class AppTaskAssignmentService {
         }
     }
     private boolean completed(String status) { return "COMPLETED".equalsIgnoreCase(status); }
-    private boolean activeDevice(String status) { return "ACTIVE".equalsIgnoreCase(status) || "ONLINE".equalsIgnoreCase(status); }
+    private static boolean activeDevice(String status) { return "ACTIVE".equalsIgnoreCase(status) || "ONLINE".equalsIgnoreCase(status); }
     private LocalDateTime now() { return LocalDateTime.now(clock).withNano(0); }
     private void requireUser(Long userId) { if (userId == null || userId <= 0) throw new BizException(401, "USER_AUTH_REQUIRED"); }
     private void requireDevelopmentAccount(Long userId) {

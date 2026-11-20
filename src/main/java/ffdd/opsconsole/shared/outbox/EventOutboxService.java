@@ -336,7 +336,10 @@ public class EventOutboxService {
      * back to PENDING when a binding appears, so they must stay dispatchable).
      */
     static final Set<String> RECORD_ONLY_EVENT_TYPES = Set.of(
+            "E2_TASK_POOL_RANDOM_ADDED",
+            "E2_TASK_POOL_STATUS_CHANGED",
             "account.app_session_replaced",
+            "app.dau",
             "phone.replacement_succeeded",
             "phone.replacement_rejected",
             "phone.replacement_request_created",
@@ -389,9 +392,6 @@ public class EventOutboxService {
             "admin.conversation_category_toggled",
             "admin.conversation_script_published",
             "admin.conversation_template_published",
-            "admin.datacenter_created",
-            "admin.datacenter_deleted",
-            "admin.datacenter_updated",
             "admin.device_deactivated",
             "admin.device_deactivation_requested",
             "admin.emergency_playbook_edited",
@@ -422,6 +422,7 @@ public class EventOutboxService {
             "admin.tradein_action_executed",
             "admin.tradein_config_changed",
             "admin.trust_content_archived",
+            "admin.trust_content_published",
             "auth.development_passkey_login",
             "auth.oauth_sandbox_account_created",
             "auth.oauth_sandbox_login",
@@ -702,5 +703,20 @@ public class EventOutboxService {
 
     private int normalizeLimit(int limit) {
         return Math.max(1, Math.min(limit, MAX_LIMIT));
+    }
+
+    /** Maps each FAQ to the server operator of the event that matches its exact current version. */
+    public Map<String, String> findLatestSupportFaqOperators(
+            java.util.Collection<EventOutboxMapper.SupportFaqVersion> refs) {
+        if (refs == null || refs.isEmpty()) {
+            return Map.of();
+        }
+        List<EventOutboxMapper.SupportFaqEventOperator> rows = mapper.findLatestSupportFaqEventOperators(refs);
+        if (rows == null || rows.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, String> result = new HashMap<>();
+        rows.forEach(row -> result.put(row.faqId(), row.operator()));
+        return result;
     }
 }

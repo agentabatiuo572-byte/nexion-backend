@@ -4,12 +4,15 @@ import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsMapper;
 import ffdd.opsconsole.bi.mapper.BehaviorAnalyticsSandboxMapper;
 import ffdd.opsconsole.bi.web.BehaviorEventRequest;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -56,6 +59,7 @@ public class BehaviorAnalyticsService {
     private final BehaviorAnalyticsSandboxMapper sandboxMapper;
     private final EventOutboxService outbox;
     private final AuditLogService auditLogService;
+    private final A2RuntimePolicy a2RuntimePolicy;
     private final Environment environment;
     @Value("${nexion.analytics.pseudonym-secret:${jwt.secret:nexion-l6-local-only}}")
     private final String pseudonymSecret;
@@ -304,7 +308,7 @@ public class BehaviorAnalyticsService {
         String normalizedDepth = normalizeDepth(depth);
         List<BehaviorAnalyticsMapper.ActivityRow> rows = new ArrayList<>(
                 mapper.activity(query.startAt(), query.endAt(), query.device(), query.locale(), normalizedDepth));
-        sortActivity(rows, sort);
+        sortActivity(rows, sort, false);
         return ApiResult.ok(linked(
                 "available", true,
                 "status", "AVAILABLE",
@@ -406,7 +410,9 @@ public class BehaviorAnalyticsService {
 
     public ApiResult<Map<String, Object>> pageCatalog() {
         requireProductionL6Surface();
-        List<BehaviorAnalyticsMapper.CatalogRow> pages = mapper.listCatalog();
+        // The whole deployed manifest snapshot, not just the tracked rows: an excluded list can only be
+        // reported from the rows the snapshot actually keeps out of tracking.
+        List<BehaviorAnalyticsMapper.CatalogRow> pages = mapper.listHistoricalCatalog();
         List<BehaviorAnalyticsMapper.CatalogRow> tracked = pages.stream().filter(BehaviorAnalyticsMapper.CatalogRow::tracked).toList();
         List<BehaviorAnalyticsMapper.CatalogRow> excluded = pages.stream().filter(row -> !row.tracked()).toList();
         return ApiResult.ok(linked("totalPages", pages.size(), "trackedCount", tracked.size(),
@@ -414,14 +420,30 @@ public class BehaviorAnalyticsService {
     }
 
     public byte[] exportBehavior(String window, String device, String locale, String depth, String sort) {
+        return exportBehavior(window, device, locale, depth, sort, null);
+    }
+
+    public byte[] exportBehavior(String window, String device, String locale, String depth, String sort, String sortDir) {
+        return exportBehavior(window, device, locale, depth, sort, sortDir, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public byte[] exportBehavior(String window, String device, String locale, String depth, String sort, String sortDir, String reason) {
         // Must precede queries, audit, and outbox: acceptance admins cannot
         // use the production export route to create production side effects.
         requireProductionL6Surface();
+        String normalizedReason = text(reason);
+        require(!normalizedReason.isEmpty(), "REASON_REQUIRED");
+        int reasonLength = normalizedReason.codePointCount(0, normalizedReason.length());
+        require(reasonLength >= 8 && reasonLength <= 200, "REASON_LENGTH_INVALID");
+        a2RuntimePolicy.validateReason(normalizedReason);
         Query query = query(window, device, locale);
         String normalizedDepth = normalizeDepth(depth);
+        String direction = text(sortDir).toLowerCase(Locale.ROOT);
+        require(sortDir == null || Set.of("asc", "desc").contains(direction), "L6_SORT_DIRECTION_INVALID");
         List<BehaviorAnalyticsMapper.ActivityRow> rows = new ArrayList<>(
                 mapper.activity(query.startAt(), query.endAt(), query.device(), query.locale(), normalizedDepth));
-        sortActivity(rows, sort);
+        sortActivity(rows, sort, "asc".equals(direction));
         require(!rows.isEmpty(), "L6_EXPORT_EMPTY");
         Map<String, BehaviorAnalyticsMapper.CatalogRow> catalog = new LinkedHashMap<>();
         mapper.listHistoricalCatalog().forEach(row -> catalog.put(row.route(), row));
@@ -441,7 +463,8 @@ public class BehaviorAnalyticsService {
                 .result("SUCCESS")
                 .riskLevel("LOW")
                 .detail(linked("window", query.window(), "depth", normalizedDepth, "device", valueOrAll(query.device()),
-                        "locale", valueOrAll(query.locale()), "rows", rows.size(), "containsPii", false))
+                        "locale", valueOrAll(query.locale()), "rows", rows.size(), "containsPii", false,
+                        "reason", normalizedReason))
                 .build());
         outbox.publish("BI_REPORT", exportId, "admin.report_exported", linked(
                 "reportId", exportId,
@@ -451,7 +474,7 @@ public class BehaviorAnalyticsService {
                 "containsPii", false,
                 "maskingPolicy", "AGGREGATED",
                 "operator", AdminActorResolver.resolve("unknown"),
-                "reason", "L6 behavior aggregate export",
+                "reason", normalizedReason,
                 "format", "CSV"));
         return csv.toString().getBytes(StandardCharsets.UTF_8);
     }
@@ -475,7 +498,7 @@ public class BehaviorAnalyticsService {
         return normalized;
     }
 
-    private void sortActivity(List<BehaviorAnalyticsMapper.ActivityRow> rows, String sort) {
+    private void sortActivity(List<BehaviorAnalyticsMapper.ActivityRow> rows, String sort, boolean ascending) {
         String normalized = text(sort).toLowerCase(Locale.ROOT);
         if (normalized.isEmpty()) normalized = "pv";
         require(Set.of("pv", "clicks", "dwellms", "dwell", "bouncerate", "bounce").contains(normalized),
@@ -483,11 +506,22 @@ public class BehaviorAnalyticsService {
         Comparator<BehaviorAnalyticsMapper.ActivityRow> comparator = switch (normalized) {
             case "clicks" -> Comparator.comparingLong(BehaviorAnalyticsMapper.ActivityRow::clicks);
             case "dwellms", "dwell" -> Comparator.comparingLong(BehaviorAnalyticsMapper.ActivityRow::dwellMs);
-            case "bouncerate", "bounce" -> Comparator.comparingDouble(BehaviorAnalyticsMapper.ActivityRow::bounceRate);
+            case "bouncerate", "bounce" -> {
+                Comparator<BehaviorAnalyticsMapper.ActivityRow> bounce =
+                        Comparator.comparingDouble(BehaviorAnalyticsMapper.ActivityRow::bounceRate);
+                // The matrix sorts on its three-place value, with ties in the original API order.
+                yield ascending ? Comparator.comparing(BehaviorAnalyticsService::matrixBounceRate)
+                        .thenComparing(bounce.reversed()) : bounce;
+            }
             case "pv" -> Comparator.comparingLong(BehaviorAnalyticsMapper.ActivityRow::pv);
             default -> throw new IllegalStateException("L6_SORT_UNREACHABLE");
         };
-        rows.sort(comparator.reversed().thenComparing(BehaviorAnalyticsMapper.ActivityRow::route));
+        rows.sort((ascending ? comparator : comparator.reversed()).thenComparing(BehaviorAnalyticsMapper.ActivityRow::route));
+    }
+
+    private static BigDecimal matrixBounceRate(BehaviorAnalyticsMapper.ActivityRow row) {
+        double rate = row.pv() == 0 ? 0 : row.bounceRate() * row.pv() / row.pv();
+        return new BigDecimal(rate).setScale(3, RoundingMode.HALF_UP);
     }
 
     private String normalizeRoute(String value) {

@@ -5,8 +5,63 @@ import ffdd.opsconsole.auth.infrastructure.AdminEntity;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+import java.util.Collection;
+import java.util.List;
 
 public interface AdminMapper extends BaseMapper<AdminEntity> {
+    @Select("""
+            <script>
+            SELECT username, COALESCE(NULLIF(nickname,''), NULLIF(username,'')) AS displayName
+              FROM nx_admin
+             WHERE is_deleted=0
+               AND username IN
+               <foreach collection="usernames" item="username" open="(" separator="," close=")">#{username}</foreach>
+            </script>
+            """)
+    List<AdminDisplayName> findDisplayNamesByUsernames(@Param("usernames") Collection<String> usernames);
+
+    record AdminDisplayName(String username, String displayName) { }
+
+    @Select("""
+            <script>
+            SELECT id, COALESCE(NULLIF(nickname,''), NULLIF(username,'')) AS displayName
+              FROM nx_admin
+             WHERE is_deleted=0
+               AND id IN
+               <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<AdminIdDisplayName> findDisplayNamesByIds(@Param("ids") Collection<Long> ids);
+
+    record AdminIdDisplayName(Long id, String displayName) { }
+
+    @Select("""
+            <script>
+            SELECT id, username, COALESCE(NULLIF(nickname,''), NULLIF(username,'')) AS displayName
+              FROM nx_admin
+             WHERE is_deleted=0
+               AND id IN
+               <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<AdminIdIdentity> findIdentitiesByIds(@Param("ids") Collection<Long> ids);
+
+    /** Display name keeps the repository-wide nickname-before-username order. */
+    record AdminIdIdentity(Long id, String username, String displayName) { }
+
+    @Select("""
+            <script>
+            SELECT username, COALESCE(NULLIF(nickname,''), NULLIF(username,'')) AS displayName
+              FROM nx_admin
+             WHERE is_deleted=0
+               AND username IN
+               <foreach collection="usernames" item="username" open="(" separator="," close=")">#{username}</foreach>
+            </script>
+            """)
+    List<H8DisplayName> findH8DisplayNamesByUsernames(@Param("usernames") Collection<String> usernames);
+
+    record H8DisplayName(String username, String displayName) { }
+
     @Select("SELECT id FROM nx_admin WHERE username=#{username} LIMIT 1")
     Long findIdByUsername(@Param("username") String username);
 

@@ -47,7 +47,9 @@ public class EmergencyPlatformStateProvider implements PlatformEmergencyStatePro
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("key", "geo-block");
             row.put("name", "地区访问限制");
-            row.put("status", clear ? "没有限制" : blocked + " 个地区禁止访问 · " + limited + " 个地区限流");
+            row.put("status", clear ? "没有限制" : blocked + " 个地区封锁 · " + limited + " 个地区受限");
+            row.put("blockedRegionCount", blocked);
+            row.put("limitedRegionCount", limited);
             row.put("up", clear);
             row.put("lastChange", latestChange(overview.get("recentChanges")));
             row.put("chain", "地区访问限制");

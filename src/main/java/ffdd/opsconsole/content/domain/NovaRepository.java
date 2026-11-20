@@ -15,6 +15,8 @@ public interface NovaRepository {
 
     Optional<NovaChannelView> channel(String key);
 
+    List<Map<String, Object>> channelPushSentCounts(LocalDateTime fromAt, LocalDateTime toAt);
+
     int nextChannelOrder();
 
     void createChannel(String key, String name, String trigger, String tick, String cooldown,
@@ -104,6 +106,16 @@ public interface NovaRepository {
                 .skip(Math.max(0, offset))
                 .limit(Math.max(1, limit))
                 .toList();
+    }
+
+    /** Same as the default above, evaluated against a caller-supplied instant instead of the system clock. */
+    default List<NovaSocialEventView> socialEvents(String eventType, String status, java.time.LocalDateTime asOf,
+                                                   int limit, int offset) {
+        return socialEvents(eventType, status, limit, offset);
+    }
+
+    default long countSocialEvents(String eventType, String status, java.time.LocalDateTime asOf) {
+        return countSocialEvents(eventType, status);
     }
 
     default long countSocialEvents(String eventType, String status) {

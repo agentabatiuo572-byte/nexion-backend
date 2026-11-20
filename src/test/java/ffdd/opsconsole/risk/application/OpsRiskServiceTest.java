@@ -88,6 +88,7 @@ class OpsRiskServiceTest {
     private final ChainAddressReputationGateway chainAddressReputationGateway = mock(ChainAddressReputationGateway.class);
     private final OpsRiskService service = new OpsRiskService(
             riskRepository,
+            mock(ffdd.opsconsole.risk.mapper.RiskOpsMapper.class),
             configFacade,
             auditLogService,
             lockMapper,
@@ -95,7 +96,8 @@ class OpsRiskServiceTest {
             superAdminAuthorization,
             userAccountControlFacade,
             eventOutboxService,
-            chainAddressReputationGateway);
+            chainAddressReputationGateway,
+            mock(RiskReleaseParamsService.class));
 
     @BeforeEach
     void stubLockMapperNoActiveLock() {
@@ -1332,10 +1334,11 @@ class OpsRiskServiceTest {
                     projectionOrder.add(userNo);
                     return Optional.of(users.get(userNo));
                 });
-        OpsRiskService publishService = new OpsRiskService(
-                repository, configFacade, auditLogService, lockMapper,
+        OpsRiskService publishService = new OpsRiskService(repository, mock(ffdd.opsconsole.risk.mapper.RiskOpsMapper.class), configFacade, auditLogService, lockMapper,
                 idempotencyService, superAdminAuthorization, userAccountControlFacade,
-                eventOutboxService, chainAddressReputationGateway);
+                eventOutboxService,
+            chainAddressReputationGateway,
+            mock(RiskReleaseParamsService.class));
         var method = OpsRiskService.class.getDeclaredMethod(
                 "recomputeK4Scores", RiskScoreModelView.class, List.class,
                 String.class, String.class, String.class);

@@ -69,6 +69,12 @@ public class OpsUserController {
     private final OpsUser360Service user360Service;
     private final AdminOperatorRoleResolver roleResolver;
 
+    @GetMapping("/active-summary")
+    @PreAuthorize("hasAuthority('user_c1_read')")
+    public ApiResult<Map<String, Object>> activeSummary() {
+        return userService.activeSummary();
+    }
+
     @GetMapping("/overview")
     @PreAuthorize("hasAuthority('user_c1_read')")
     public ApiResult<Map<String, Object>> overview(Authentication authentication) {
@@ -95,12 +101,8 @@ public class OpsUserController {
     @PreAuthorize("hasAuthority('user_c1_read')")
     public ApiResult<PageResult<UserProfileListView>> profiles(
             @ModelAttribute UserQueryRequest request, Authentication authentication) {
-        boolean riskFilter = request != null && (request.riskMin() != null
-                || (request.riskBand() != null && !request.riskBand().isBlank()));
-        boolean canReadK4 = authentication != null && authentication.getAuthorities().stream()
-                .anyMatch(authority -> "risk_k4_read".equals(authority.getAuthority())
-                        || "ROLE_SUPER_ADMIN".equals(authority.getAuthority()));
-        if (riskFilter && !canReadK4) {
+        if (riskFilterForbidden(request == null ? null : request.riskMin(),
+                request == null ? null : request.riskBand(), authentication)) {
             return ApiResult.fail(403, "C1_RISK_FILTER_FORBIDDEN");
         }
         ApiResult<PageResult<UserAccountView>> result = userService.profilePage(request);
@@ -122,10 +124,16 @@ public class OpsUserController {
     }
 
     @PostMapping("/profiles/export")
-    @PreAuthorize("hasAuthority('user_c1_write')")
+    @PreAuthorize("hasAuthority('user_c1_export')")
     public ResponseEntity<?> exportProfiles(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) UserProfileExportRequest request) {
+        if (riskFilterForbidden(request == null ? null : request.riskMin(),
+                request == null ? null : request.riskBand(), SecurityContextHolder.getContext().getAuthentication())) {
+            return ResponseEntity.status(403)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(ApiResult.fail(403, "C1_RISK_FILTER_FORBIDDEN"));
+        }
         if (!StringUtils.hasText(idempotencyKey)) {
             return jsonFailure(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED);
         }
@@ -154,6 +162,15 @@ public class OpsUserController {
     @PreAuthorize("hasAuthority('user_c2_read')")
     public ApiResult<UserAccountView> accountActionAccount(@PathVariable String userKey) {
         return userService.accountActionAccount(userKey);
+    }
+
+    @GetMapping("/account-actions/accounts")
+    @PreAuthorize("hasAuthority('user_c2_read')")
+    public ApiResult<PageResult<ffdd.opsconsole.user.domain.UserAccountActionListView>> accountActionAccounts(
+            @RequestParam(defaultValue = "FROZEN") String status,
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        return userService.accountActionAccounts(status, pageNum, pageSize);
     }
 
     @GetMapping("/account-actions/accounts/{userKey}/context")
@@ -405,6 +422,14 @@ public class OpsUserController {
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody UserSessionRevokeRequest request) {
         return userService.revokeSession(refreshTokenId, idempotencyKey, request);
+    }
+
+    private boolean riskFilterForbidden(Integer riskMin, String riskBand, Authentication authentication) {
+        boolean riskFilter = riskMin != null || StringUtils.hasText(riskBand);
+        boolean canReadK4 = authentication != null && authentication.getAuthorities().stream()
+                .anyMatch(authority -> "risk_k4_read".equals(authority.getAuthority())
+                        || "ROLE_SUPER_ADMIN".equals(authority.getAuthority()));
+        return riskFilter && !canReadK4;
     }
 
     private ResponseEntity<ApiResult<Map<String, Object>>> jsonFailure(OpsErrorCode errorCode) {

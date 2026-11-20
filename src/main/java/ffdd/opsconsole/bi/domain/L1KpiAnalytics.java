@@ -1,5 +1,6 @@
 package ffdd.opsconsole.bi.domain;
 
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
@@ -17,16 +18,22 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Objects;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.Predicate;
 
 /** L1 pure read-model calculator over schema-accepted A4 KPI event facts. */
 public final class L1KpiAnalytics {
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final int MINIMUM_SAMPLE_SIZE = 5;
+    public static final List<Integer> KPI_IDS = List.of(1, 2, 3, 4, 5, 7, 8);
+    private static final List<Integer> REGISTRATION_COHORT_KPI_IDS = List.of(1, 2, 3, 4, 5, 7);
+    private static final String DAU_NOT_COLLECTED = "DAU_NOT_COLLECTED";
     private static final List<String> COLORS = List.of(
             "#2dd4bf", "#60a5fa", "#818cf8", "#c084fc",
-            "#f472b6", "#fb7185", "#f59e0b", "#84cc16");
+            "#f472b6", "#f59e0b", "#84cc16");
 
     private L1KpiAnalytics() {
     }
@@ -57,6 +64,13 @@ public final class L1KpiAnalytics {
             String locale,
             String ref,
             int day0WindowSeconds) {
+        LocalDate collectionFrom = firstFullCollectionDay(facts(rawRows));
+        return calculate(rawRows, window, cohort, phase, locale, ref, day0WindowSeconds, collectionFrom);
+    }
+
+    public static Map<String, Object> calculate(
+            List<Map<String, Object>> rawRows, String window, String cohort, String phase, String locale, String ref,
+            int day0WindowSeconds, LocalDate collectionFrom) {
         if (day0WindowSeconds < 30 || day0WindowSeconds > 600) {
             throw new IllegalArgumentException("A4_DAY0_POLICY_INVALID");
         }
@@ -75,25 +89,34 @@ public final class L1KpiAnalytics {
         Map<String, Object> plain = new LinkedHashMap<>();
         Map<String, Object> ext = new LinkedHashMap<>();
         for (KpiSpec spec : specs) {
-            KpiValue current = value(spec.id(), all, from, end, dimensions, day0WindowSeconds);
-            KpiValue previous = value(spec.id(), all, previousFrom, from, dimensions, day0WindowSeconds);
-            List<Double> spark = spark(spec.id(), all, from, end, dimensions, day0WindowSeconds);
-            String status = status(spec, current.value());
+            KpiValue current = value(spec.id(), all, from, end, dimensions, day0WindowSeconds, collectionFrom);
+            KpiValue previous = value(spec.id(), all, previousFrom, from, dimensions, day0WindowSeconds, collectionFrom);
+            Trend spark = spark(spec.id(), all, from, end, dimensions, day0WindowSeconds, collectionFrom);
+            Double currentValue = current.visibleValue();
+            Double previousValue = previous.visibleValue();
+            boolean suppressed = current.suppressed();
+            boolean showCounts = !suppressed && !DAU_NOT_COLLECTED.equals(current.reason());
+            Long numerator = showCounts ? current.numerator() : null;
+            Long denominator = showCounts ? current.denominator() : null;
             kpis.add(linked(
                     "n", spec.id(), "kpiId", String.valueOf(spec.id()), "name", spec.name(),
-                    "value", current.value(), "target", spec.target(), "unit", spec.unit(),
-                    "dir", spec.direction(), "band", spec.band(), "status", status,
-                    "available", current.value() != null, "unavailableReason", current.reason(),
-                    "momDelta", delta(current.value(), previous.value()), "cohort", defaultText(cohort, "全部 cohort"),
-                    "vis", spec.maturity(), "spark", spark,
-                    "numerator", current.numerator(), "denominator", current.denominator(),
+                    "value", currentValue, "target", spec.target(), "unit", spec.unit(),
+                    "dir", spec.direction(), "band", spec.band(), "status", suppressed ? "SUPPRESSED" : status(spec, currentValue),
+                    "available", currentValue != null, "unavailableReason", suppressed ? null : current.reason(),
+                    "suppressed", suppressed, "previousSuppressed", previous.suppressed(),
+                    "momDelta", delta(currentValue, previousValue), "cohort", defaultText(cohort, "全部 cohort"),
+                    "vis", spec.maturity(), "spark", spark.values(), "sparkSuppressed", spark.suppressed(),
+                    "sparkUnavailableReasons", spark.reasons(),
+                    "numerator", numerator,
+                    "denominator", denominator,
                     "kpiSpec", spec.formula()));
             plain.put(String.valueOf(spec.id()), spec.plain());
             ext.put(String.valueOf(spec.id()), linked(
                     "fx", spec.formula(), "fxBold", spec.events(),
-                    "num", String.valueOf(current.numerator()), "den", String.valueOf(current.denominator()),
-                    "delta", deltaLabel(current.value(), previous.value()),
-                    "note", current.value() == null ? unavailableMessage(current.reason()) : spec.note(),
+                    "num", Objects.toString(numerator, null),
+                    "den", Objects.toString(denominator, null),
+                    "delta", deltaLabel(currentValue, previousValue),
+                    "note", suppressed ? "样本过小" : currentValue == null ? unavailableMessage(current.reason()) : spec.note(),
                     "jump", spec.jumps()));
         }
         return linked(
@@ -106,9 +129,227 @@ public final class L1KpiAnalytics {
                         .filter(dimensions)
                         .toList(), from, end),
                 "kpiColors", COLORS, "kpiPlain", plain, "kpiExt", ext,
-                "capabilities", linked("eightKpis", true, "drilldown", true, "trend", true,
+                "capabilities", linked("sevenKpis", true, "drilldown", true, "trend", true,
                         "incompleteRatesAreNull", true),
                 "sources", List.of("nx_event_outbox", "nx_event_schema_registry"));
+    }
+
+    public static Map<String, Object> calculateRegistrationCohorts(List<Map<String, Object>> rawEventRows,
+            List<Map<String, Object>> registrationRows, L1RegistrationCohortQuery query, int day0WindowSeconds) {
+        LocalDate collectionFrom = firstFullCollectionDay(registrationCohortFacts(rawEventRows));
+        return calculateRegistrationCohorts(rawEventRows, registrationRows, query, day0WindowSeconds, collectionFrom);
+    }
+
+    public static Map<String, Object> calculateRegistrationCohorts(List<Map<String, Object>> rawEventRows,
+            List<Map<String, Object>> registrationRows, L1RegistrationCohortQuery query, int day0WindowSeconds,
+            LocalDate collectionFrom) {
+        if (day0WindowSeconds < 30 || day0WindowSeconds > 600) {
+            throw new IllegalStateException("A4_DAY0_POLICY_INVALID");
+        }
+        NavigableMap<Instant, CohortBucket> buckets = new TreeMap<>();
+        for (L1RegistrationCohortQuery.Bucket bucket : query.buckets()) {
+            buckets.put(bucket.selectedFrom(), new CohortBucket(bucket, new CohortTally()));
+        }
+        Map<String, CohortMember> members = cohortMembers(registrationRows, buckets);
+        LocalDateTime end = query.observationEnd();
+        for (EventFact event : registrationCohortFacts(rawEventRows)) {
+            // The beneficiary of a commission can be outside the referred user's registration cohort.
+            String actor = event.name().equals("commission.paid") ? event.sourceActor() : event.actor();
+            CohortMember member = members.get(actor);
+            if (member != null && !event.at().isBefore(member.registeredAt()) && !event.at().isAfter(end)) {
+                member.events().add(event);
+            }
+        }
+
+        CohortTally summary = new CohortTally();
+        String locale = query.locale().isEmpty() ? null : normalizeLocale(query.locale());
+        Predicate<EventFact> dimensions = dimensions(null, query.phase(), locale, query.ref());
+        for (CohortMember member : members.values()) {
+            boolean historyCovered = !member.registeredAt().isBefore(query.historyFrom());
+            addCohortMember(summary, member, dimensions, query.asOf(), end, day0WindowSeconds, historyCovered, collectionFrom);
+        }
+        return registrationCohortDashboard(query, day0WindowSeconds, summary, buckets.values().stream().toList());
+    }
+
+    private static List<EventFact> registrationCohortFacts(List<Map<String, Object>> rows) {
+        try {
+            return facts(Objects.requireNonNull(rows));
+        } catch (IllegalArgumentException invalidFact) {
+            throw new IllegalStateException("L1_EVENT_FACT_INVALID", invalidFact);
+        }
+    }
+
+    private static Map<String, CohortMember> cohortMembers(List<Map<String, Object>> rows,
+            NavigableMap<Instant, CohortBucket> buckets) {
+        Map<String, CohortMember> members = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            String actor = row == null ? "" : text(row, "userId", "user_id");
+            LocalDateTime registeredAt = row == null ? null : dateTime(value(row, "registeredAt", "registered_at"));
+            if (actor.isBlank() || registeredAt == null) {
+                throw new IllegalStateException("L1_REGISTRATION_FACT_INVALID");
+            }
+            Instant at = L1RegistrationCohortQuery.instant(registeredAt);
+            Map.Entry<Instant, CohortBucket> entry = buckets.floorEntry(at);
+            if (entry == null || !at.isBefore(entry.getValue().bucket().selectedToExclusive())) continue;
+            CohortTally bucket = entry.getValue().tally();
+            CohortMember duplicate = members.putIfAbsent(actor, new CohortMember(registeredAt, bucket, new ArrayList<>()));
+            if (duplicate != null && !duplicate.registeredAt().equals(registeredAt)) {
+                throw new IllegalStateException("L1_REGISTRATION_FACT_INVALID");
+            }
+        }
+        return members;
+    }
+
+    private static void addCohortMember(CohortTally summary, CohortMember member,
+            Predicate<EventFact> dimensions, Instant asOf, LocalDateTime end, int day0WindowSeconds, boolean historyCovered,
+            LocalDate collectionFrom) {
+        List<EventFact> events = member.events();
+        List<EventFact> registrations = events.stream().filter(named("auth.register_completed")).toList();
+        summary.addRegistration(!registrations.isEmpty(), historyCovered);
+        member.bucket().addRegistration(!registrations.isEmpty(), historyCovered);
+        if (!historyCovered) return;
+        EventFact registration = registrations.stream().filter(dimensions).findFirst().orElse(null);
+        for (int id : REGISTRATION_COHORT_KPI_IDS) {
+            KpiValue result = null;
+            Boolean mature = null;
+            if (id >= 3) {
+                result = value(id, events, member.registeredAt(), end, dimensions, day0WindowSeconds, collectionFrom);
+            } else if (registration != null && id == 1) {
+                mature = !registration.at().plusSeconds(day0WindowSeconds).isAfter(end);
+                if (mature) {
+                    result = value(id, events, member.registeredAt(), end, dimensions, day0WindowSeconds, collectionFrom);
+                }
+            } else if (registration != null) {
+                LocalDate registrationDay = businessDay(registration.at());
+                mature = !BusinessCalendar.legacy().startOf(registrationDay.plusDays(8)).isAfter(asOf);
+                if (mature) {
+                    boolean active = events.stream().anyMatch(event -> day7Activity(event, registration.actor(),
+                            registrationDay, end));
+                    result = !dauCovered(collectionFrom, registrationDay.plusDays(7))
+                            ? dauNotCollected() : new KpiValue(null, active ? 1 : 0, 1, null);
+                }
+            }
+            summary.metrics.get(id).add(result, mature);
+            member.bucket().metrics.get(id).add(result, mature);
+        }
+    }
+
+    private static Map<String, Object> registrationCohortDashboard(L1RegistrationCohortQuery query, int day0WindowSeconds,
+            CohortTally summary, List<CohortBucket> buckets) {
+        List<Map<String, Object>> kpis = new ArrayList<>();
+        Map<String, Object> plain = new LinkedHashMap<>();
+        Map<String, Object> ext = new LinkedHashMap<>();
+        int onTarget = 0;
+        for (KpiSpec spec : specs(day0WindowSeconds)) {
+            String kpiId = String.valueOf(spec.id());
+            Map<String, Object> item = linked(
+                    "n", spec.id(), "kpiId", kpiId, "name", spec.name(), "target", spec.target(),
+                    "unit", spec.unit(), "dir", spec.direction(), "band", spec.band(), "vis", spec.maturity(),
+                    "kpiSpec", spec.formula(), "cohort", defaultText(query.cohort(), "全部 cohort"),
+                    "scope", REGISTRATION_COHORT_KPI_IDS.contains(spec.id()) ? "REGISTRATION_COHORT" : "NOT_APPLICABLE_TO_COHORT",
+                    "momDelta", null, "comparisonUnavailableReason", "COHORT_COMPARISON_UNDEFINED", "points",
+                    buckets.stream().map(bucket -> cohortPoint(bucket, spec.id(), query.asOf())).toList());
+            item.putAll(cohortMetric(summary, spec.id()));
+            String status = Boolean.TRUE.equals(item.get("suppressed"))
+                    ? "SUPPRESSED" : status(spec, (Double) item.get("value"));
+            item.put("status", status);
+            if (status.equals("GREEN")) onTarget++;
+            kpis.add(item);
+            plain.put(kpiId, spec.plain());
+            ext.put(kpiId, linked("fx", spec.formula(), "fxBold", spec.events(), "delta", "—",
+                    "num", Objects.toString(item.get("numerator"), null),
+                    "den", Objects.toString(item.get("denominator"), null),
+                    "note", cohortNote((String) item.get("unavailableReason"), spec), "jump", spec.jumps()));
+        }
+        List<Map<String, Object>> versions = BusinessCalendar.legacy().versions().stream()
+                .sorted(Comparator.comparing(BusinessCalendar.Version::effectiveStorageAt))
+                .map(version -> linked("effectiveDate", version.effectiveDate().toString(), "zoneId", version.zone().getId()))
+                .toList();
+        return linked(
+                "module", "L1", "window", query.window(), "contractVersion", L1RegistrationCohortQuery.CONTRACT_VERSION,
+                "granularity", query.granularity(), "observationAsOf", query.asOf().toString(),
+                "range", linked("registrationFrom", L1RegistrationCohortQuery.instant(query.registrationFrom()).toString(),
+                        "registrationToExclusive", L1RegistrationCohortQuery.instant(query.registrationToExclusive()).toString(),
+                        "selectedFrom", Objects.toString(query.selectedFrom(), null),
+                        "selectedToExclusive", Objects.toString(query.selectedToExclusive(), null)),
+                "calendar", linked("track", BusinessCalendar.LEGACY, "weekStartsOn", "MONDAY", "weekNumbering", "ISO", "versions", versions),
+                "filters", linked("cohort", emptyToNull(query.cohort()), "phase", emptyToNull(query.phase()),
+                        "locale", emptyToNull(query.locale()), "ref", emptyToNull(query.ref())),
+                "coverage", linked("registrationTimeSource", "nx_user.created_at", "historyComplete",
+                        summary.historyComplete && summary.registrationComplete,
+                        "registrationEventCoverage", summary.registrationComplete ? "COMPLETE" : "INCOMPLETE"),
+                "kpis", kpis, "applicableKpiCount", REGISTRATION_COHORT_KPI_IDS.size(), "onTargetKpiCount", onTarget,
+                "phaseSwitchIndex", null, "kpiColors", COLORS, "kpiPlain", plain, "kpiExt", ext,
+                "capabilities", linked("sevenKpis", true, "drilldown", true, "trend", true, "incompleteRatesAreNull", true,
+                        "registrationCohorts", true, "minimumSampleSize", MINIMUM_SAMPLE_SIZE,
+                        "maxPoints", L1RegistrationCohortQuery.MAX_POINTS, "phaseMarkers", false),
+                "sources", List.of("nx_user", "nx_event_outbox", "nx_event_schema_registry"));
+    }
+
+    private static Map<String, Object> cohortPoint(CohortBucket bucket, int id, Instant asOf) {
+        L1RegistrationCohortQuery.Bucket boundary = bucket.bucket();
+        Map<String, Object> point = linked("bucketKey", boundary.key(), "startDate", boundary.startDate().toString(),
+                "endDateExclusive", boundary.endDateExclusive().toString(), "registrationFrom", boundary.from().toString(),
+                "registrationToExclusive", boundary.toExclusive().toString(), "selectedFrom", boundary.selectedFrom().toString(),
+                "selectedToExclusive", boundary.selectedToExclusive().toString(), "partial", boundary.partial(),
+                "observationAsOf", asOf.toString());
+        point.putAll(cohortMetric(bucket.tally(), id));
+        return point;
+    }
+
+    private static Map<String, Object> cohortMetric(CohortTally cohort, int id) {
+        boolean applicable = REGISTRATION_COHORT_KPI_IDS.contains(id);
+        boolean sourceIncomplete = applicable && (!cohort.historyComplete || (id <= 3 && !cohort.registrationComplete));
+        String sampleBasis = id == 1 || id == 3 ? "NUMERATOR_USERS" : "DENOMINATOR_USERS";
+        boolean dauMissing = id == 2 && cohort.metrics.get(id).dauMissing;
+        if (!applicable || sourceIncomplete || dauMissing) {
+            return linked("value", null, "available", false, "unavailableReason",
+                    !applicable ? "COHORT_NOT_APPLICABLE" : sourceIncomplete ? "SOURCE_INCOMPLETE" : DAU_NOT_COLLECTED,
+                    "suppressed", false,
+                    "cohortSize", null, "eligibleUsers", null, "sampleSize", null, "numerator", null, "denominator", null,
+                    "sampleBasis", applicable ? sampleBasis : null, "mature", null,
+                    "maturityStatus", !applicable ? "NOT_APPLICABLE" : id >= 3 ? "OPEN_ENDED" : "UNKNOWN");
+        }
+
+        MetricTally metric = cohort.metrics.get(id);
+        long sampleSize = id == 1 || id == 3 ? metric.numerator : metric.denominator;
+        boolean suppressed = sampleSize < MINIMUM_SAMPLE_SIZE;
+        String reason = metric.denominator == 0 ? emptyCohortMetricReason(id, metric.maturityCandidates > 0)
+                : suppressed ? "BELOW_MINIMUM" : null;
+        String maturity = id >= 3 ? "OPEN_ENDED" : metric.maturityCandidates == 0 ? "UNKNOWN"
+                : metric.denominator == 0 ? "IMMATURE"
+                : metric.denominator < metric.maturityCandidates ? "PARTIAL" : "MATURE";
+        Boolean mature = id >= 3 || metric.maturityCandidates == 0 ? null : maturity.equals("MATURE");
+        return linked("value", reason == null ? round(metric.numerator * 100D / metric.denominator) : null,
+                "available", reason == null, "unavailableReason", reason, "suppressed", suppressed,
+                "cohortSize", suppressed ? null : cohort.cohortSize, "eligibleUsers", suppressed ? null : metric.denominator,
+                "sampleSize", suppressed ? null : sampleSize, "numerator", suppressed ? null : metric.numerator,
+                "denominator", suppressed ? null : metric.denominator, "sampleBasis", sampleBasis,
+                "mature", mature, "maturityStatus", maturity);
+    }
+
+    private static String emptyCohortMetricReason(int id, boolean hasMaturityCandidates) {
+        return switch (id) {
+            case 1 -> hasMaturityCandidates ? "NO_MATURE_DAY0_COHORT" : "NO_REGISTRATION_DENOMINATOR";
+            case 2 -> "NO_MATURE_DAY7_COHORT";
+            case 3 -> "NO_REGISTRATION_DENOMINATOR";
+            case 4 -> "NO_STORE_VIEW_DENOMINATOR";
+            case 5 -> "NO_DEVICE_HOLDER_DENOMINATOR";
+            case 7 -> "NO_DIRECT_REFERRAL_DENOMINATOR";
+            default -> throw new IllegalArgumentException("KPI_ID_UNKNOWN");
+        };
+    }
+
+    private static String cohortNote(String reason, KpiSpec spec) {
+        if (reason == null) return spec.note();
+        return switch (reason) {
+            case "BELOW_MINIMUM" -> "样本过小";
+            case "SOURCE_INCOMPLETE" -> "该注册范围的权威事件覆盖不全";
+            case "COHORT_NOT_APPLICABLE" -> "平台累计售罄速度不适用于注册批次";
+            case "NO_MATURE_DAY0_COHORT" -> "当前注册范围尚无完成 Day0 观察期的用户";
+            case "NO_MATURE_DAY7_COHORT" -> "当前注册范围尚无完整观察第 7 天的用户";
+            default -> unavailableMessage(reason);
+        };
     }
 
     public static Map<String, Object> drilldown(
@@ -120,7 +361,13 @@ public final class L1KpiAnalytics {
     public static Map<String, Object> drilldown(
             List<Map<String, Object>> rows, int kpiId, String window,
             String cohort, String phase, String locale, String ref, int day0WindowSeconds) {
-        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds);
+        return drilldown(rows, kpiId, window, cohort, phase, locale, ref, day0WindowSeconds, firstFullCollectionDay(facts(rows)));
+    }
+
+    public static Map<String, Object> drilldown(
+            List<Map<String, Object>> rows, int kpiId, String window,
+            String cohort, String phase, String locale, String ref, int day0WindowSeconds, LocalDate collectionFrom) {
+        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds, collectionFrom);
         Object selected = ((List<?>) dashboard.get("kpis")).stream()
                 .filter(row -> row instanceof Map<?, ?> map && Objects.equals(map.get("n"), kpiId))
                 .findFirst().orElse(null);
@@ -138,13 +385,22 @@ public final class L1KpiAnalytics {
     public static Map<String, Object> trend(
             List<Map<String, Object>> rows, int kpiId, String window,
             String cohort, String phase, String locale, String ref, int day0WindowSeconds) {
-        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds);
+        return trend(rows, kpiId, window, cohort, phase, locale, ref, day0WindowSeconds, firstFullCollectionDay(facts(rows)));
+    }
+
+    public static Map<String, Object> trend(
+            List<Map<String, Object>> rows, int kpiId, String window,
+            String cohort, String phase, String locale, String ref, int day0WindowSeconds, LocalDate collectionFrom) {
+        Map<String, Object> dashboard = calculate(rows, window, cohort, phase, locale, ref, day0WindowSeconds, collectionFrom);
         Object selected = ((List<?>) dashboard.get("kpis")).stream()
                 .filter(row -> row instanceof Map<?, ?> map && Objects.equals(map.get("n"), kpiId))
                 .findFirst().orElse(null);
-        Object values = selected instanceof Map<?, ?> map ? map.get("spark") : List.of();
+        Map<?, ?> row = selected instanceof Map<?, ?> map ? map : Map.of();
         return linked("module", "L1", "kpiId", kpiId, "labels", dashboard.get("weeks"),
-                "values", values, "filters", dashboard.get("filters"), "sources", dashboard.get("sources"));
+                "values", row.get("spark"), "suppressed", row.get("suppressed"),
+                "suppressedPoints", row.get("sparkSuppressed"),
+                "unavailableReasons", row.get("sparkUnavailableReasons"),
+                "filters", dashboard.get("filters"), "sources", dashboard.get("sources"));
     }
 
     private static KpiValue value(
@@ -153,7 +409,7 @@ public final class L1KpiAnalytics {
             LocalDateTime from,
             LocalDateTime end,
             Predicate<EventFact> dimensions,
-            int day0WindowSeconds) {
+            int day0WindowSeconds, LocalDate collectionFrom) {
         return switch (id) {
             case 1 -> orderedRatio(
                     anchors(events, "auth.register_completed", from, end, dimensions),
@@ -162,11 +418,11 @@ public final class L1KpiAnalytics {
                             && event.latencySec() != null && event.latencySec() <= day0WindowSeconds,
                     (long) day0WindowSeconds,
                     end,
-                    "NO_REGISTRATION_DENOMINATOR");
-            case 2 -> day7(events, from, end, dimensions);
+                    "NO_REGISTRATION_DENOMINATOR").withNumeratorSample();
+            case 2 -> day7(events, from, end, dimensions, collectionFrom);
             case 3 -> orderedRatio(
                     anchors(events, "auth.register_completed", from, end, dimensions),
-                    events, named("store.viewed"), null, end, "NO_REGISTRATION_DENOMINATOR");
+                    events, named("store.viewed"), null, end, "NO_REGISTRATION_DENOMINATOR").withNumeratorSample();
             case 4 -> orderedRatio(
                     anchors(events, "store.viewed", from, end, dimensions),
                     events, named("checkout.completed"), null, end, "NO_STORE_VIEW_DENOMINATOR");
@@ -174,9 +430,6 @@ public final class L1KpiAnalytics {
                     anchors(events, Set.of("device.purchase_completed", "device.first_yield_received"),
                             from, end, dimensions),
                     events, named("referral.invite_sent"), null, end, "NO_DEVICE_HOLDER_DENOMINATOR");
-            case 6 -> orderedRatio(
-                    anchors(events, "nova.push_sent", from, end, dimensions),
-                    events, named("nova.push_clicked"), null, end, "NO_PUSH_SENT_DENOMINATOR");
             case 7 -> directReferralCommissionRate(
                     anchors(events, "referral.bound", from, end, dimensions),
                     events, end);
@@ -192,27 +445,50 @@ public final class L1KpiAnalytics {
             List<EventFact> events,
             LocalDateTime from,
             LocalDateTime end,
-            Predicate<EventFact> dimensions) {
+            Predicate<EventFact> dimensions, LocalDate collectionFrom) {
         Map<String, EventFact> registrations = firstByActor(events.stream()
                 .filter(named("auth.register_completed"))
                 .filter(dimensions)
                 .filter(event -> {
                     LocalDate matureOn = businessDay(event.at()).plusDays(7);
                     return !matureOn.isBefore(businessDay(from))
-                            && !matureOn.isAfter(businessDay(end));
+                            && !BusinessCalendar.legacy().storageStart(matureOn.plusDays(1)).isAfter(end.plusNanos(1));
                 })
                 .toList());
-        Set<String> mature = new LinkedHashSet<>();
+        if (registrations.values().stream().anyMatch(
+                registration -> !dauCovered(collectionFrom, businessDay(registration.at()).plusDays(7)))) {
+            return dauNotCollected();
+        }
         Set<String> active = new LinkedHashSet<>();
-        registrations.forEach((actor, registration) -> {
-            mature.add(actor);
-            boolean found = events.stream().anyMatch(event -> event.actor().equals(actor)
-                    && event.name().equals("app.dau")
-                    && !event.at().isAfter(end)
-                    && ChronoUnit.DAYS.between(businessDay(registration.at()), businessDay(event.at())) == 7);
-            if (found) active.add(actor);
-        });
-        return ratio(active, mature, "NO_MATURE_DAY7_COHORT");
+        for (EventFact event : events) {
+            EventFact registration = registrations.get(event.actor());
+            if (registration != null && day7Activity(event, event.actor(), businessDay(registration.at()), end)) {
+                active.add(event.actor());
+            }
+        }
+        return ratio(active, registrations.keySet(), "NO_MATURE_DAY7_COHORT");
+    }
+
+    private static LocalDate firstFullCollectionDay(List<EventFact> events) {
+        return events.stream().filter(named("app.dau")).map(EventFact::at).min(LocalDateTime::compareTo)
+                .map(L1KpiAnalytics::firstFullDauDay).orElse(null);
+    }
+
+    public static LocalDate firstFullDauDay(LocalDateTime firstDauAt) {
+        return firstDauAt == null ? null : businessDay(firstDauAt).plusDays(1);
+    }
+
+    private static boolean dauCovered(LocalDate collectionFrom, LocalDate activityDay) {
+        return collectionFrom != null && !activityDay.isBefore(collectionFrom);
+    }
+
+    private static KpiValue dauNotCollected() {
+        return new KpiValue(null, 0, 0, DAU_NOT_COLLECTED);
+    }
+
+    private static boolean day7Activity(EventFact event, String actor, LocalDate registrationDay, LocalDateTime end) {
+        return event.actor().equals(actor) && event.name().equals("app.dau") && !event.at().isAfter(end)
+                && ChronoUnit.DAYS.between(registrationDay, businessDay(event.at())) == 7;
     }
 
     private static KpiValue orderedRatio(
@@ -258,18 +534,20 @@ public final class L1KpiAnalytics {
 
     private static KpiValue genesis(List<EventFact> events) {
         List<EventFact> purchases = events.stream().filter(named("genesis.purchased")).toList();
+        long purchasers = purchases.stream().map(EventFact::actor).distinct().count();
         long sold = purchases.stream().mapToLong(event -> Math.max(0, event.quantity())).sum();
-        if (purchases.isEmpty()) return new KpiValue(null, 0, 1000, "NO_GENESIS_PURCHASES");
-        if (sold < 1000) return new KpiValue(null, sold, 1000, "GENESIS_NOT_SOLD_OUT");
+        if (purchases.isEmpty()) return new KpiValue(null, 0, 1000, purchasers, "NO_GENESIS_PURCHASES");
+        if (sold < 1000) return new KpiValue(null, sold, 1000, purchasers, "GENESIS_NOT_SOLD_OUT");
         LocalDate first = businessDay(purchases.get(0).at());
         long cumulative = 0;
         for (EventFact event : purchases) {
             cumulative += Math.max(0, event.quantity());
             if (cumulative >= 1000) {
-                return new KpiValue((double) Math.max(1, ChronoUnit.DAYS.between(first, businessDay(event.at())) + 1), sold, 1000, null);
+                return new KpiValue((double) Math.max(1, ChronoUnit.DAYS.between(first, businessDay(event.at())) + 1),
+                        sold, 1000, purchasers, null);
             }
         }
-        return new KpiValue(null, sold, 1000, "GENESIS_NOT_SOLD_OUT");
+        return new KpiValue(null, sold, 1000, purchasers, "GENESIS_NOT_SOLD_OUT");
     }
 
     private static KpiValue ratio(Set<String> numerator, Set<String> denominator, String reason) {
@@ -279,23 +557,26 @@ public final class L1KpiAnalytics {
         return new KpiValue(round(matched.size() * 100D / denominator.size()), matched.size(), denominator.size(), null);
     }
 
-    private static List<Double> spark(
+    private static Trend spark(
             int id,
             List<EventFact> events,
             LocalDateTime from,
             LocalDateTime to,
             Predicate<EventFact> dimensions,
-            int day0WindowSeconds) {
+            int day0WindowSeconds, LocalDate collectionFrom) {
         List<Double> result = new ArrayList<>();
+        List<Boolean> suppressed = new ArrayList<>();
+        List<String> reasons = new ArrayList<>();
         long seconds = Math.max(1, ChronoUnit.SECONDS.between(from, to));
         for (int index = 0; index < 6; index++) {
             LocalDateTime start = from.plusSeconds(seconds * index / 6);
             LocalDateTime end = from.plusSeconds(seconds * (index + 1) / 6);
-            KpiValue point = value(id, events, start, end, dimensions, day0WindowSeconds);
-            if (point.value() == null) return List.of();
-            result.add(point.value());
+            KpiValue point = value(id, events, start, end, dimensions, day0WindowSeconds, collectionFrom);
+            result.add(point.visibleValue());
+            suppressed.add(point.suppressed());
+            reasons.add(point.suppressed() ? null : point.reason());
         }
-        return result;
+        return new Trend(result, suppressed, reasons);
     }
 
     private static List<String> sparkLabels(LocalDateTime from, LocalDateTime to) {
@@ -328,7 +609,6 @@ public final class L1KpiAnalytics {
                 spec(3, "注册→进 store", 30, "%", "gte", List.of(), "V1 实时", "看过商城的去重用户 ÷ 注册完成人数", "store.viewed distinct user ÷ auth.register_completed", List.of("store.viewed", "auth.register_completed"), "客户端浏览事件按锁定 KPI 口径统计", "/analytics/funnel-cohort"),
                 spec(4, "购买转化", 5, "%", "band", List.of(5, 10), "V1 实时", "支付完成去重用户 ÷ 看过商城去重用户", "checkout.completed ÷ store.viewed", List.of("checkout.completed", "store.viewed"), "健康带为 5%–10%", "/analytics/funnel-cohort"),
                 spec(5, "L4→L5 推广", 40, "%", "gte", List.of(), "V4 完整", "发出邀请的设备持有者 ÷ 设备持有者", "device holder referral.invite_sent ÷ device holders", List.of("referral.invite_sent", "device.purchase_completed"), "推广率不是提现或收入指标", "/analytics/operations"),
-                spec(6, "Nova 推送点击", 25, "%", "gte", List.of(), "V1 实时", "推送点击去重用户 ÷ 推送送达去重用户", "nova.push_clicked ÷ nova.push_sent", List.of("nova.push_clicked", "nova.push_sent"), "点击为锁定的客户端 KPI 事件", "/analytics/funnel-cohort"),
                 spec(7, "团队奖励触发率", 80, "%", "gte", List.of(), "V4 完整", "直接邀请的好友中产生首笔奖励的人数 ÷ 直接邀请的好友人数", "L1 referred first commission.paid ÷ referral.bound", List.of("commission.paid", "referral.bound"), "只计算能与邀请关系匹配的奖励事件", "/analytics/operations"),
                 spec(8, "Genesis 售罄速度", 14, "d", "lte", List.of(), "V1 实时", "累计售出达到 1,000 的自然日数", "genesis.purchased cumulative 1,000 days", List.of("genesis.purchased"), "未售罄时显示不可计算并保留进度", "/analytics/financial"));
     }
@@ -465,6 +745,7 @@ public final class L1KpiAnalytics {
 
     private static String unavailableMessage(String reason) {
         return switch (defaultText(reason, "SOURCE_INCOMPLETE")) {
+            case DAU_NOT_COLLECTED -> "未采集";
             case "GENESIS_NOT_SOLD_OUT" -> "Genesis 尚未累计售出 1,000，售罄天数不可计算";
             case "NO_MATURE_DAY7_COHORT" -> "当前筛选范围没有已满 7 天的注册 cohort";
             default -> "当前筛选范围缺少权威分母，指标不可计算；不会用 0% 冒充结果";
@@ -550,7 +831,63 @@ public final class L1KpiAnalytics {
     private record EventFact(String eventId, String name, String actor, String sourceActor,
                              String commissionKind, LocalDateTime at, String cohort,
                              String phase, String locale, String ref, Double latencySec, long quantity) { }
-    private record KpiValue(Double value, long numerator, long denominator, String reason) { }
+    private record Trend(List<Double> values, List<Boolean> suppressed, List<String> reasons) { }
+
+    private record CohortBucket(L1RegistrationCohortQuery.Bucket bucket, CohortTally tally) { }
+    private record CohortMember(LocalDateTime registeredAt, CohortTally bucket, List<EventFact> events) { }
+
+    private static final class CohortTally {
+        private final Map<Integer, MetricTally> metrics = new LinkedHashMap<>();
+        private long cohortSize;
+        private boolean registrationComplete = true;
+        private boolean historyComplete = true;
+
+        private CohortTally() {
+            for (int id : REGISTRATION_COHORT_KPI_IDS) metrics.put(id, new MetricTally());
+        }
+
+        private void addRegistration(boolean registrationCovered, boolean historyCovered) {
+            cohortSize++;
+            registrationComplete &= registrationCovered;
+            historyComplete &= historyCovered;
+        }
+
+    }
+
+    private static final class MetricTally {
+        private long numerator;
+        private long denominator;
+        private long maturityCandidates;
+        private boolean dauMissing;
+
+        private void add(KpiValue value, Boolean mature) {
+            if (mature != null) maturityCandidates++;
+            if (value != null) {
+                dauMissing |= DAU_NOT_COLLECTED.equals(value.reason());
+                numerator += value.numerator();
+                denominator += value.denominator();
+            }
+        }
+    }
+
+    private record KpiValue(Double value, long numerator, long denominator, long sampleSize, String reason) {
+        private KpiValue(Double value, long numerator, long denominator, String reason) {
+            this(value, numerator, denominator, denominator, reason);
+        }
+
+        // These B3-aligned ratios already constrain the numerator to a subset of the denominator.
+        private KpiValue withNumeratorSample() {
+            return new KpiValue(value, numerator, denominator, numerator, reason);
+        }
+
+        private boolean suppressed() {
+            return !DAU_NOT_COLLECTED.equals(reason) && sampleSize < MINIMUM_SAMPLE_SIZE;
+        }
+
+        private Double visibleValue() {
+            return suppressed() ? null : value;
+        }
+    }
     private record WindowRange(String label, LocalDateTime from, LocalDateTime to) { }
     private record KpiSpec(int id, String name, double target, String unit, String direction,
                            List<Integer> band, String maturity, String plain, String formula,

@@ -23,6 +23,8 @@ public interface BiReportRepository {
 
     Map<String, Object> kpiTrend(int kpiId, String window, String cohort, String phase, String locale, String ref);
 
+    Map<String, Object> registrationKpis(L1RegistrationCohortQuery query);
+
     Map<String, Object> operationsDashboard(String period, String phase, String from, String to);
 
     List<Map<String, Object>> networkTreeRows(String period, int depth, int limit);

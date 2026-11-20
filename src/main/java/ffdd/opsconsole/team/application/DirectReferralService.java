@@ -137,7 +137,11 @@ public class DirectReferralService {
             if(amount.signum()<=0||money(row,"cancelled_"+suffix).compareTo(amount)>=0||assetCredited(row,suffix))continue;
             if(!Set.of("COOLING","PENDING","UNLOCKED").contains(text(event,"status")))throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
             earnings.creditReward(id,type,no+":"+("USDT".equals(asset)?"USDT":"NEX"),asset,amount,text(row,"source_environment"),no+":"+("USDT".equals(asset)?"USDT":"NEX"));
-            ledger.postLedgerEntry(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
+            if ("USDT".equals(asset)) {
+                ledger.postLedgerEntryWithActualBalance(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
+            } else {
+                ledger.postLedgerEntry(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
+            }
             mapper.creditedAsset(no,asset);mapper.recoveredEventStatus(number(event,"id"),"UNLOCKED");changed=true;if("USDT".equals(asset))newUsdt=true;
         }
         var after=mapper.group(no);int credited=0;boolean all=true;
@@ -350,6 +354,8 @@ public class DirectReferralService {
             String from=text(requested,"status");
             if("UNLOCKED".equals(target)){releaseSelected(no,eventId);return;}
             if(("FROZEN".equals(target)&&Set.of("COOLING","PENDING").contains(from))||("COOLING".equals(target)&&"FROZEN".equals(from))){
+                String unfreezeBlocked=OpsTeamService.commissionUnfreezeBlockedReason(from,target,requested.get("unlockAt"));
+                if(unfreezeBlocked!=null)throw new BizException(409,unfreezeBlocked);
                 if("COOLING".equals(target)&&held(number(row,"beneficiary_user_id"),"network"))throw new BizException(409,"DIRECT_REFERRAL_SPONSOR_FROZEN");
                 mapper.recoveredEventStatus(eventId,target);return;
             }
@@ -432,7 +438,7 @@ public class DirectReferralService {
         return changed;
     }
 
-    public Map<String,Object> eventSnapshot(Long eventId){String no=mapper.groupForEvent(eventId);if(no==null)return Map.of();var value=view(mapper.group(no));if("network".equals(value.get("kind"))){var event=mapper.eventView(eventId);value.put("status",text(event,"status").toLowerCase(Locale.ROOT));value.put("operationScope","single_event");}else value.put("operationScope","dual_asset_group");return value;}
+    public Map<String,Object> eventSnapshot(Long eventId){String no=mapper.groupForEvent(eventId);if(no==null)return Map.of();var value=view(mapper.group(no));value.put("groupStatus",text(value,"status"));if("network".equals(value.get("kind"))){var event=mapper.eventView(eventId);value.put("status",text(event,"status").toLowerCase(Locale.ROOT));value.put("operationScope","single_event");}else value.put("operationScope","dual_asset_group");return value;}
     public List<Map<String,Object>> pendingForOps(String kind,Long user,String cohort){var scope=policies.scope();return mapper.pendingForOps(scope.sourceEnvironment(),scope.runId(),kind,user,cohort).stream().map(this::view).toList();}
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)

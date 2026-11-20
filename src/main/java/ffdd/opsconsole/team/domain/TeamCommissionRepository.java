@@ -1,6 +1,7 @@
 package ffdd.opsconsole.team.domain;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -11,17 +12,35 @@ public interface TeamCommissionRepository {
 
     List<Map<String, Object>> vRankRows();
 
+    Map<String, Object> lockVRankPolicy(String rank);
+
     boolean updateVRankThreshold(String rank, String field, Object value);
 
     List<Map<String, Object>> f2Metrics();
+
+    List<Map<String, Object>> f2PayoutStatistics();
 
     List<Map<String, Object>> unilevelRates();
 
     boolean updateUnilevelRule(int layerNo, String field, Object value);
 
+    default List<Long> allUnilevelRuleIds() {
+        throw new UnsupportedOperationException("UNILEVEL_BOOTSTRAP_NOT_IMPLEMENTED");
+    }
+
+    default List<Long> lockAllUnilevelRules() {
+        throw new UnsupportedOperationException("UNILEVEL_BOOTSTRAP_NOT_IMPLEMENTED");
+    }
+
+    default boolean insertUnilevelRule(int layerNo, BigDecimal usdtRate, BigDecimal nexPerUsd) {
+        throw new UnsupportedOperationException("UNILEVEL_BOOTSTRAP_NOT_IMPLEMENTED");
+    }
+
     List<Map<String, Object>> rateTiers();
 
     List<Map<String, Object>> vRankRewards(String rank);
+
+    List<Map<String, Object>> vRankRewardsForUpdate(String rank);
 
     default List<Map<String, Object>> vRankVoucherOptions(long nowMillis) { return List.of(); }
 
@@ -36,6 +55,8 @@ public interface TeamCommissionRepository {
     Map<String, Object> leadershipPoolSummary();
 
     List<Map<String, Object>> leadershipRanks();
+
+    List<Map<String, Object>> leadershipVoterRanks(int minRank);
 
     List<Map<String, Object>> quotaRows();
 
@@ -69,7 +90,13 @@ public interface TeamCommissionRepository {
 
     Map<String, Object> leaderboardSummary();
 
+    default String leaderboardDisqualificationEvidence(long memberUserId) { return null; }
+
     List<Map<String, Object>> commissionEvents(int limit);
+
+    Map<String, Object> commissionEventById(long eventId);
+
+    int countEventUserSuspended(long eventId);
 
     List<Map<String, Object>> commissionKindSummary();
 
@@ -101,9 +128,9 @@ public interface TeamCommissionRepository {
             String period,
             java.time.LocalDateTime fromInclusive,
             java.time.LocalDateTime toExclusive,
-            BigDecimal minVolumeUsd,
+            BigDecimal minComputePoints,
             int limit) {
-        return leaderboardCandidates(minVolumeUsd, limit);
+        return leaderboardCandidates(minComputePoints, limit);
     }
 
     // ============================================================
@@ -258,6 +285,8 @@ public interface TeamCommissionRepository {
         return queryPromotionLog(userId, v, cohort, from, to).size();
     }
 
+    default Long countUpwardPromotions(LocalDateTime from, LocalDateTime until) { return null; }
+
     // ============================================================
     // F1 V-Rank 派发流水查询/补发/撤销(Sprint 6 端点第二组)
     // ============================================================
@@ -290,6 +319,33 @@ public interface TeamCommissionRepository {
      * @return 影响行数(0=事件不存在或已软删,调用方按需处理)
      */
     int reverseCommissionEvent(Long commissionEventId);
+
+    /**
+     * F1 券冲正:按 H7 发放来源定位发放记录并锁定,返回状态与券面额(未实现时返回 null)。
+     */
+    default Map<String, Object> lockVrankVoucherGrant(Long userId, String voucherId, String sourceId) {
+        return null;
+    }
+
+    /** F1 券冲正:锁定该用户该券下最新一轮 VRANK_REWARD 发放记录(未实现时返回 null)。 */
+    default Map<String, Object> lockLatestVrankVoucherGrant(Long userId, String voucherId, String sourcePrefix) {
+        return null;
+    }
+
+    /** F1 券冲正:作废尚未产生已结算抵扣的券，返回受影响行数。 */
+    default int revokeVrankVoucherGrant(Long userId, String voucherId, String sourceId, String expectedStatus) {
+        return 0;
+    }
+
+    /** F1 券冲正:锁定用户钱包 USDT 可用余额;无钱包返回 null。 */
+    default BigDecimal lockVrankWalletUsdt(Long userId) {
+        return null;
+    }
+
+    /** F1 券冲正:已用券扣回余额,允许扣成负数。 */
+    default int debitVrankWalletUsdt(Long userId, BigDecimal amount) {
+        return 0;
+    }
 
     default boolean linkReissuedRewardCommission(String payoutId, Long eventId, String billId) {
         throw new UnsupportedOperationException("PAYOUT_COMMISSION_LINK_NOT_IMPLEMENTED");

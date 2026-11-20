@@ -37,7 +37,7 @@ class AppStakingOpenStatusTest {
     private final MockEnvironment environment = new MockEnvironment().withProperty("unused", "true");
     private final Clock clock = Clock.systemUTC();
     private final AdminIdempotencyService idempotency = new AdminIdempotencyService(
-            new AdminIdempotencyTransactionExecutor(records, new ObjectMapper(), expiry), clock);
+            new AdminIdempotencyTransactionExecutor(records, new ObjectMapper(), expiry, mock(AdminIdempotencyRollbackEvidence.class)), clock);
     private final AppStakingService service = new AppStakingService(
             mapper, disclosure, config, idempotency, outbox, audit, earnings, clock, environment, sandbox, fundAdapter);
 

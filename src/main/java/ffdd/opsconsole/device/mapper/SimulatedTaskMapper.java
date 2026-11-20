@@ -13,12 +13,55 @@ public interface SimulatedTaskMapper {
             String taskTypeId,long taskTypeVersion,long productPolicyVersion,long e3Version,String taskName,String taskClass,
             int durationSeconds,String asset,BigDecimal baseReward,BigDecimal rewardAmount,BigDecimal e3Multiplier,BigDecimal cloudDailyNex,
             long walletId,String walletIncarnation,LocalDateTime startedAt,LocalDateTime dueAt,String status,
-            LocalDateTime completedAt,LocalDateTime postedAt,String cancelReason) { }
+            LocalDateTime completedAt,LocalDateTime postedAt,String cancelReason,LocalDateTime targetCycleStart,String targetSnapshotJson) {
+        @com.fasterxml.jackson.annotation.JsonValue
+        public java.util.Map<String,Object> evidenceProjection() {
+            var result=new java.util.LinkedHashMap<String,Object>();
+            result.put("taskNo",taskNo);
+            result.put("receiptNo",receiptNo);
+            result.put("userId",userId);
+            result.put("deviceId",deviceId);
+            result.put("instanceNo",instanceNo);
+            result.put("generation",generation);
+            result.put("productId",productId);
+            result.put("productCode",productCode);
+            result.put("productTier",productTier);
+            result.put("deviceName",deviceName);
+            result.put("deviceType",deviceType);
+            result.put("gpuModel",gpuModel);
+            result.put("vramTotalGb",vramTotalGb);
+            result.put("taskTypeId",taskTypeId);
+            result.put("taskTypeVersion",taskTypeVersion);
+            result.put("productPolicyVersion",productPolicyVersion);
+            result.put("e3Version",e3Version);
+            result.put("taskName",taskName);
+            result.put("taskClass",taskClass);
+            result.put("durationSeconds",durationSeconds);
+            result.put("asset",asset);
+            result.put("baseReward",baseReward);
+            result.put("rewardAmount",rewardAmount);
+            result.put("e3Multiplier",e3Multiplier);
+            result.put("cloudDailyNex",cloudDailyNex);
+            result.put("walletId",walletId);
+            result.put("walletIncarnation",walletIncarnation);
+            result.put("startedAt",startedAt);
+            result.put("dueAt",dueAt);
+            result.put("status",status);
+            result.put("completedAt",completedAt);
+            result.put("postedAt",postedAt);
+            result.put("cancelReason",cancelReason);
+            if(targetSnapshotJson!=null) {
+                result.put("targetCycleStart",targetCycleStart.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS")));
+                result.put("targetSnapshotJson",targetSnapshotJson);
+            }
+            return result;
+        }
+    }
 
     record DeviceRow(long deviceId,long userId,Long productId,String productCode,String productTier,String instanceNo,
             String deviceName,String deviceType,String gpuModel,Integer vramTotalGb,LocalDateTime purchasedAt,
             LocalDateTime activatedAt,LocalDateTime deactivatedAt,boolean pendingDeactivate,String status,
-            boolean dispatchPaused,String pausedReason,LocalDateTime updatedAt,LocalDateTime runtimeUpdatedAt,LocalDateTime dcUpdatedAt) { }
+            String pausedReason,boolean opsPaused,LocalDateTime updatedAt,LocalDateTime runtimeUpdatedAt,String seriesCode) { }
     record RuntimeRow(long deviceId,long userId,String instanceNo,String productCode,boolean phone,long generation,
             LocalDateTime intervalStartedAt,LocalDateTime phoneValidUntil,LocalDateTime stopAt,boolean stopAfterCurrent,
             LocalDateTime finishAfterAt,LocalDateTime nextStartAt,String currentTaskNo,LocalDateTime nextActionAt,String state,String lastError) { }
@@ -30,13 +73,21 @@ public interface SimulatedTaskMapper {
             SELECT d.id deviceId,d.user_id userId,d.product_id productId,d.product_code productCode,d.product_tier productTier,
               d.instance_no instanceNo,d.name deviceName,d.device_type deviceType,d.gpu_model gpuModel,d.vram_total_gb vramTotalGb,
               d.purchased_at purchasedAt,d.activated_at activatedAt,d.deactivated_at deactivatedAt,
-              d.pending_deactivate pendingDeactivate,d.status,COALESCE(dc.dispatch_paused,0) dispatchPaused,r.paused_reason pausedReason,
-              d.updated_at updatedAt,r.updated_at runtimeUpdatedAt,dc.updated_at dcUpdatedAt
+              d.pending_deactivate pendingDeactivate,d.status,r.paused_reason pausedReason,
+              COALESCE(r.ops_paused,0) opsPaused,
+              d.updated_at updatedAt,r.updated_at runtimeUpdatedAt,d.series_code seriesCode
             FROM nx_user_device d
             LEFT JOIN nx_user_device_runtime r ON r.user_device_id=d.id AND r.is_deleted=0
-            LEFT JOIN nx_compute_dc_ops_state dc ON dc.dc_location=d.dc_location AND dc.is_deleted=0
+
             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
-              AND d.source_environment='PRODUCTION' AND d.run_id='' AND UPPER(d.ownership_status)='OWNED'
+              AND d.source_environment='PRODUCTION' AND d.run_id=''
+            """;
+    String REFUNDED_DEVICE="""
+            (d.ownership_status='REFUNDED' AND d.deactivated_at IS NOT NULL
+             AND d.source_channel<>'PROMOTION_GIFT' AND EXISTS (
+               SELECT 1 FROM nx_order o WHERE o.order_no=d.source_order_no AND o.user_id=d.user_id
+                 AND o.is_deleted=0 AND o.payment_status='REFUNDED' AND o.order_status='REFUNDED'
+                 AND UPPER(o.order_type)<>'TRIAL_CONVERT'))
             """;
     String RUNTIME="""
             SELECT user_device_id deviceId,user_id userId,instance_no instanceNo,product_code productCode,phone,generation,
@@ -51,15 +102,20 @@ public interface SimulatedTaskMapper {
               product_policy_version productPolicyVersion,e3_version e3Version,task_name taskName,task_class taskClass,
               duration_seconds durationSeconds,asset,base_reward baseReward,reward_amount rewardAmount,e3_multiplier e3Multiplier,cloud_daily_nex cloudDailyNex,
               wallet_id walletId,wallet_incarnation walletIncarnation,started_at startedAt,due_at dueAt,status,
-              completed_at completedAt,posted_at postedAt,cancel_reason cancelReason
+              completed_at completedAt,posted_at postedAt,cancel_reason cancelReason,target_cycle_start targetCycleStart,target_snapshot_json targetSnapshotJson
             FROM nx_simulated_task
             """;
 
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND sandbox=0 AND is_deleted=0 FOR UPDATE")
     Long lockUser(@Param("userId")long userId);
-    // Device and runtime changes remain exclusive. Settlement only reads the shared datacenter state.
-    @Select(DEVICE+" FOR UPDATE OF d,r FOR SHARE OF dc")
+    // Device and runtime changes remain exclusive.
+    @Select(DEVICE+" AND UPPER(d.ownership_status)='OWNED' FOR UPDATE OF d,r")
     DeviceRow lockDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);
+    @Select(DEVICE+" AND (d.ownership_status='OWNED' OR "+REFUNDED_DEVICE+") FOR UPDATE OF d,r")
+    DeviceRow lockSettlementDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_user_device d WHERE d.id=#{deviceId} AND d.user_id=#{userId}"
+            +" AND d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id='' AND "+REFUNDED_DEVICE+")")
+    boolean refundedOrderDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);
     @Select("SELECT user_id userId,id deviceId FROM nx_user_device WHERE id=#{deviceId} AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id='' AND UPPER(ownership_status)='OWNED'")
     Candidate subject(@Param("deviceId")long deviceId);
     @Select("SELECT id walletId,fund_incarnation incarnation FROM nx_user_wallet WHERE user_id=#{userId} AND sandbox=0 AND is_deleted=0 FOR UPDATE")
@@ -72,6 +128,14 @@ public interface SimulatedTaskMapper {
     List<RuntimeRow> runtimesByUser(@Param("userId")long userId);
     @Select(TASK+" WHERE task_no=#{taskNo} FOR UPDATE")
     TaskRow lockTask(@Param("taskNo")String taskNo);
+    @Select(TASK+"""
+             t WHERE t.user_device_id=#{deviceId} AND t.user_id=#{userId} AND t.status='RUNNING'
+               AND t.target_snapshot_json IS NOT NULL
+               AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a
+                 WHERE a.user_id=t.user_id AND a.task_no=t.task_no COLLATE utf8mb4_0900_ai_ci)
+             ORDER BY t.task_no FOR UPDATE
+            """)
+    List<TaskRow> lockRunningMonthlyTargetTasks(@Param("userId")long userId,@Param("deviceId")long deviceId);
     @Select("SELECT EXISTS(SELECT 1 FROM nx_simulated_task WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND generation=#{generation})")
     boolean hasGenerationTasks(@Param("userId")long userId,@Param("deviceId")long deviceId,@Param("generation")long generation);
     @Select(TASK+" WHERE task_no=#{taskNo}")
@@ -95,8 +159,9 @@ public interface SimulatedTaskMapper {
             FROM nx_simulated_device_runtime r FORCE INDEX (idx_simulated_due)
             STRAIGHT_JOIN nx_user_device d ON d.id=r.user_device_id AND d.user_id=r.user_id
             STRAIGHT_JOIN nx_user u ON u.id=r.user_id
-            WHERE r.next_action_at<=#{now} AND d.is_deleted=0 AND d.ownership_status='OWNED'
-            """;
+            WHERE r.next_action_at<=#{now} AND d.is_deleted=0
+              AND (d.ownership_status='OWNED' OR (
+            """+REFUNDED_DEVICE+" AND r.stop_after_current=1 AND r.stop_at IS NOT NULL)) ";
     // Take the account lock first, in the same order as device commands and wallet settlement.
     @Select("""
             SELECT r.user_id userId,r.user_device_id deviceId,r.generation,r.current_task_no currentTaskNo,
@@ -161,19 +226,26 @@ public interface SimulatedTaskMapper {
             INSERT INTO nx_simulated_task(task_no,receipt_no,user_id,user_device_id,instance_no,generation,product_id,product_code,
               product_tier,device_name,device_type,gpu_model,vram_total_gb,task_type_id,task_type_version,product_policy_version,e3_version,
               task_name,task_class,duration_seconds,asset,base_reward,reward_amount,e3_multiplier,cloud_daily_nex,wallet_id,wallet_incarnation,
-              started_at,due_at,status,completed_at,posted_at,cancel_reason)
+              started_at,due_at,status,completed_at,posted_at,cancel_reason,target_cycle_start,target_snapshot_json)
             VALUES(#{t.taskNo},#{t.receiptNo},#{t.userId},#{t.deviceId},#{t.instanceNo},#{t.generation},#{t.productId},#{t.productCode},
               #{t.productTier},#{t.deviceName},#{t.deviceType},#{t.gpuModel},#{t.vramTotalGb},#{t.taskTypeId},#{t.taskTypeVersion},
               #{t.productPolicyVersion},#{t.e3Version},#{t.taskName},#{t.taskClass},#{t.durationSeconds},#{t.asset},#{t.baseReward},
               #{t.rewardAmount},#{t.e3Multiplier},#{t.cloudDailyNex},#{t.walletId},#{t.walletIncarnation},#{t.startedAt},#{t.dueAt},#{t.status},
-              #{t.completedAt},#{t.postedAt},#{t.cancelReason})
+              #{t.completedAt},#{t.postedAt},#{t.cancelReason},#{t.targetCycleStart},#{t.targetSnapshotJson})
             """)
     int insertTask(@Param("t")TaskRow task);
-    @Update("UPDATE nx_simulated_task SET status='COMPLETED',completed_at=due_at,posted_at=#{postedAt} WHERE task_no=#{taskNo} AND status='RUNNING'")
-    int completeTask(@Param("taskNo")String taskNo,@Param("postedAt")LocalDateTime postedAt);
+    @Update("""
+        UPDATE nx_simulated_task SET status='COMPLETED',completed_at=due_at,posted_at=#{postedAt},cloud_daily_nex=#{dailyUvt}
+        WHERE task_no=#{taskNo} AND status='RUNNING'
+        """)
+    int completeTask(@Param("taskNo")String taskNo,@Param("postedAt")LocalDateTime postedAt,@Param("dailyUvt")BigDecimal dailyUvt);
     @Update("UPDATE nx_simulated_task SET status='CANCELLED',cancel_reason=#{reason} WHERE task_no=#{taskNo} AND status='RUNNING'")
     int cancelTask(@Param("taskNo")String taskNo,@Param("reason")String reason);
-    @Update("UPDATE nx_simulated_device_runtime SET state='ERROR',last_error=#{error},next_action_at=#{retryAt} WHERE user_device_id=#{deviceId}")
+    @Update("""
+            UPDATE nx_simulated_device_runtime SET state='ERROR',last_error=#{error},next_action_at=#{retryAt}
+            WHERE user_device_id=#{deviceId}
+              AND NOT (state='STOPPED' AND COALESCE(last_error,'') IN ('PROMOTION_REFUND','ORDER_REFUND'))
+            """)
     int recordError(@Param("deviceId")long deviceId,@Param("error")String error,@Param("retryAt")LocalDateTime retryAt);
     @Update("""
             UPDATE nx_simulated_device_runtime SET state='ERROR',last_error=#{error},next_action_at=#{retryAt}

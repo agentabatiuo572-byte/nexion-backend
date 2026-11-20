@@ -49,19 +49,12 @@ public interface LeaderboardPauseSnapshotMapper extends BaseMapper<Object> {
             List<String> parts = new ArrayList<>();
             parts.add("""
                     SELECT 'config' kind, JSON_OBJECT(
-                      'minUsd', MAX(CASE WHEN config_key='team.ui.F.leaderboard.minUsd' THEN config_value END),
+                      'minComputePoints', MAX(CASE WHEN config_key='team.ui.F.leaderboard.minComputePoints' THEN config_value END),
                       'weekPoolUsd', MAX(CASE WHEN config_key='team.ui.F.leaderboard.poolUsd' THEN config_value END),
                       'periodPrize', MAX(CASE WHEN config_key='team.ui.F.pool.periodPrize' THEN config_value END)) payload
                     FROM nx_config_item WHERE status=1 AND is_deleted=0 AND config_key IN
-                      ('team.ui.F.leaderboard.minUsd','team.ui.F.leaderboard.poolUsd','team.ui.F.pool.periodPrize')
+                      ('team.ui.F.leaderboard.minComputePoints','team.ui.F.leaderboard.poolUsd','team.ui.F.pool.periodPrize')
                     """);
-            parts.add("SELECT 'pcSummary' kind, JSON_OBJECT('participantCount',x.participantCount,"
-                    + "'fraudHitCount',x.fraudHitCount,'poolUsd',x.poolUsd,'periodStatus',x.periodStatus) payload FROM ("
-                    + xml(TeamCommissionMapper.LEADERBOARD_SUMMARY_SQL) + ") x");
-            parts.add("SELECT 'pcPodium' kind, JSON_OBJECT('rank',x.`rank`,'memberUserId',x.memberUserId,"
-                    + "'userId',x.userId,'gmvLabel',x.gmvLabel,'volumeUsd',x.volumeUsd,'tip',x.tip,'className',x.className) payload FROM ("
-                    + xml(TeamCommissionMapper.LEADERBOARD_PODIUM_SQL)
-                        .replace("#{limit}", "#{pcLimit}") + ") x");
             for (String period : List.of("today", "week", "month", "all")) {
                 String query = AppTeamInsightsMapper.LEADERBOARD_ELIGIBLE_SQL
                         .replace("<script>", "").replace("</script>", "");
@@ -71,12 +64,10 @@ public interface LeaderboardPauseSnapshotMapper extends BaseMapper<Object> {
                             .replace("test=\"" + parameter + " != null\"", "test=\"" + renamed + " != null\"");
                 }
                 parts.add("SELECT '" + period + "' kind, JSON_OBJECT('rank',x.`rank`,'userId',x.userId,"
-                        + "'nickname',x.nickname,'vRank',x.vRank,'earnedUsdt',x.earnedUsdt,'directs',x.directs,"
+                        + "'nickname',x.nickname,'vRank',x.vRank,'computePoints',x.computePoints,'directs',x.directs,"
                         + "'teamSize',x.teamSize,'hasDevice',x.hasDevice) payload FROM (" + query + ") x");
             }
             return "<script>" + String.join(" UNION ALL ", parts) + "</script>";
         }
-
-        private static String xml(String sql) { return sql.replace("&", "&amp;").replace("<", "&lt;"); }
     }
 }

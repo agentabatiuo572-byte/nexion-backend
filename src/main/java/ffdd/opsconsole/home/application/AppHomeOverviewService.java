@@ -18,6 +18,7 @@ import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.io.IOException;
 import java.io.InputStream;
+import ffdd.opsconsole.shared.capacity.ProductSeries;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -64,7 +65,7 @@ public class AppHomeOverviewService {
             "ffdd/opsconsole/device/mapper/AppTaskAssignmentMapper.class");
     private static final String LEGACY_UNSCOPED_RUN_ID = "LEGACY_UNSCOPED";
     private static final String PRODUCTION_SOURCE =
-            "server:nx_compute_receipt,nx_compute_task,nx_user_device,nx_compute_datacenter,nx_product,nx_growth_promo_banner";
+            "server:nx_compute_receipt,nx_compute_task,nx_user_device.dc_location,nx_product,nx_growth_promo_banner";
     private static final String SANDBOX_SOURCE =
             "server:sandbox-run-projection:nx_config_item,nx_admin_device_task,nx_product";
     private static final List<String> DEVICE_UPGRADE_LADDER = List.of(
@@ -76,6 +77,7 @@ public class AppHomeOverviewService {
     private final HomePurchaseEligibilityProbe purchaseEligibilityProbe;
     private final HomeSharedSnapshotCache sharedSnapshotCache;
     private final Clock clock;
+    private final ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService monthlyTargets;
     private final Environment runtimeEnvironment;
     private final PlatformTransactionManager transactions;
 
@@ -134,9 +136,7 @@ public class AppHomeOverviewService {
                     weekStart, monthStart, now);
             PeriodRow todayEarnings = summary == null ? null : summary.today();
             PeriodRow yesterdaySameTimeEarnings = summary == null ? null : summary.yesterday();
-            earnings.put("today", todayEarnings != null && todayEarnings.jobCount() != null && todayEarnings.jobCount() == 0
-                    ? linked("usdt", BigDecimal.ZERO, "nex", BigDecimal.ZERO, "jobCount", 0L)
-                    : period(todayEarnings));
+            earnings.put("today", period(todayEarnings));
             earnings.put("todayVsYesterdayPct", percentageChange(todayEarnings, yesterdaySameTimeEarnings));
             BigDecimal todayUsdt = todayEarnings == null || todayEarnings.jobCount() == null ? null
                     : todayEarnings.jobCount() == 0 ? BigDecimal.ZERO : nonNegative(todayEarnings.usdt());
@@ -155,22 +155,20 @@ public class AppHomeOverviewService {
             // Preserve response key order; this request-local map is published only by completion.
             result.put("marketBoard", null);
             result.put("doTheMath", doTheMath(
-                    userId, mapper.highestActiveDevice(userId, accountSandbox), marketProducts));
+                    userId, highestCurrentDevice(userId, accountSandbox), marketProducts));
             result.put("weeklyPromo", promo());
             AppHomeOverviewMapper.PaidSummary paid = mapper.cumulativePaid(userId, accountSandbox);
             Long activeDevices = mapper.activeDevices(userId, accountSandbox);
             int reservedSlots = Math.max(0, mapper.reservedDeviceOrderCount(userId));
             int trialSlots = mapper.reservedTrialSlotCount(userId);
-            result.put("onboarding", linked("cumulativePaidUsdt", fact(paid == null ? null : paid.amountUsdt(), paid == null ? null : paid.orderCount()),
+            result.put("onboarding", linked("cumulativePaidUsdt", paid != null && paid.orderCount() != null && paid.orderCount() == 0
+                            ? BigDecimal.ZERO : fact(paid == null ? null : paid.amountUsdt(), paid == null ? null : paid.orderCount()),
                     "activeDevices", activeDevices, "slotsUsed", (long) Math.max(0, mapper.activeSlotCount(userId)) + reservedSlots + trialSlots,
                     "slotCap", Math.max(1, mapper.deviceSlotCap()), "reservedSlotCount", reservedSlots, "trialSlotCount", trialSlots));
             AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid(sourceEnvironment, accountSandbox);
-            Long activeJobs = grid == null ? null : grid.activeJobs();
-            boolean includeSimulatedSlots = activeJobs != null
-                    && runtimeEnvironment.getProperty("nexion.simulated-tasks.enabled", Boolean.class, false);
             Map<String, Object> onGrid = linked("clients", clients(mapper.onGridClients(accountSandbox)),
                     "activeDevices", mapper.globalActiveDevices(accountSandbox),
-                    "activeJobs", activeJobs,
+                    "activeJobs", null,
                     "perSecUsdt", fact(grid == null ? null : grid.perSecUsdt(), grid == null ? null : grid.activeJobs()));
             result.put("onGrid", onGrid);
             result.put("source", PRODUCTION_SOURCE);
@@ -181,14 +179,7 @@ public class AppHomeOverviewService {
                             && snapshot.validUntil() > clock.millis() ? snapshot : null;
                     result.put("marketBoard", marketBoard(marketTasks, safe(historySnapshot == null
                             ? mapper.marketTaskPriceHistory() : historySnapshot.marketTaskPriceHistory()), marketProducts));
-                    if (includeSimulatedSlots) {
-                        HomeSharedSnapshotCache.Snapshot slotsSnapshot = snapshot != null
-                                && snapshot.validUntil() > clock.millis() ? snapshot : null;
-                        LocalDateTime publicNow = LocalDateTime.ofInstant(clock.instant(), SERVER_ZONE);
-                        onGrid.put("activeJobs", activeJobs + (slotsSnapshot == null
-                                ? mapper.activeRuleSlots(sourceEnvironment, accountSandbox, publicNow)
-                                : slotsSnapshot.activeRuleSlotsCount()));
-                    }
+                    onGrid.put("activeJobs", publicStatsService.currentActiveJobsDisplay());
                     return ApiResult.ok(result);
                 } catch (DataAccessException ex) {
                     return ApiResult.fail(503, "APP_HOME_OVERVIEW_UNAVAILABLE");
@@ -243,7 +234,7 @@ public class AppHomeOverviewService {
                 "activeDevices", mapper.sandboxActiveDevices(userId, runId)));
         result.put("onGrid", linked("clients", sandboxClients(tasks, onlineDevices),
                 "activeDevices", onlineDevices,
-                "activeJobs", (long) uniqueTaskCodes(tasks).size(),
+                "activeJobs", whole(values.get("activeJobsBase")),
                 "perSecUsdt", perSecUsdt));
         result.put("source", SANDBOX_SOURCE);
         String candidateId = runtimeCandidateId();
@@ -309,13 +300,22 @@ public class AppHomeOverviewService {
         return linked("workloads", workloads, "deviceRankings", rankings);
     }
 
+    private OwnedDeviceRow highestCurrentDevice(Long userId,boolean sandbox) {
+        var candidates=mapper.activeDeviceCandidates(userId,sandbox);
+        var current=monthlyTargets.projections(candidates.stream().map(OwnedDeviceRow::id).toList());
+        return candidates.stream().map(d->{
+            var p=current.get(d.id());
+            return p==null || p.target()==null ? d : new OwnedDeviceRow(d.name(),d.productCode(),d.productTier(),d.deviceType(),p.daily(),d.id(),d.seriesCode());
+        }).filter(d->d.dailyUsdt()!=null && d.dailyUsdt().signum()>0)
+            .max(java.util.Comparator.comparing(OwnedDeviceRow::dailyUsdt).thenComparing(d->-d.id())).orElse(null);
+    }
+
     private Map<String, Object> doTheMath(Long userId, OwnedDeviceRow base, List<MarketProductRow> products) {
         if (base == null || base.dailyUsdt() == null || base.dailyUsdt().signum() <= 0) return null;
-        String baseKind = productKind(String.join(" ",
-                text(base.productCode()), text(base.productTier()), text(base.deviceType()), text(base.name())));
-        if ("cloud-share".equals(baseKind)) return null;
+        String baseKind = ProductSeries.kind(base.seriesCode(), base.deviceType());
+        if (baseKind == null || "cloud-share".equals(baseKind)) return null;
         int baseIndex = DEVICE_UPGRADE_LADDER.indexOf(baseKind);
-        if (baseIndex == DEVICE_UPGRADE_LADDER.size() - 1) return null;
+        if (baseIndex < 0 || baseIndex == DEVICE_UPGRADE_LADDER.size() - 1) return null;
         List<MarketProductRow> candidates = products.stream()
                 .filter(row -> row != null && row.dailyUsdt() != null && row.dailyUsdt().compareTo(base.dailyUsdt()) > 0)
                 .filter(row -> !"cloud-share".equals(deviceKind(row)))
@@ -325,8 +325,8 @@ public class AppHomeOverviewService {
                         || (row.stock() != null && row.stock() > 0))
                 .filter(row -> !text(row.productNo()).isBlank() && !text(row.name()).isBlank())
                 .filter(row -> {
-                    int targetIndex = DEVICE_UPGRADE_LADDER.indexOf(deviceKind(row));
-                    return targetIndex > baseIndex;
+                    String kind = deviceKind(row);
+                    return kind != null && DEVICE_UPGRADE_LADDER.indexOf(kind) > baseIndex;
                 })
                 .sorted(java.util.Comparator
                         .comparingInt((MarketProductRow row) -> DEVICE_UPGRADE_LADDER.indexOf(deviceKind(row)))
@@ -342,7 +342,7 @@ public class AppHomeOverviewService {
         if (multiplier < 1 || paybackDays < 1) return null;
         return linked(
                 "basis", "OWNED_DEVICE_TO_NEXT_CATALOG_PRODUCT",
-                "base", linked("kind", baseKind, "name", text(base.name()),
+                "base", linked("kind", baseKind, "productNo", text(base.productCode()), "name", text(base.name()),
                         "dailyUsdt", nonNegative(base.dailyUsdt())),
                 "target", linked("productNo", text(target.productNo()), "kind", targetKind,
                         "name", text(target.name()), "dailyUsdt", nonNegative(target.dailyUsdt()),
@@ -471,7 +471,7 @@ public class AppHomeOverviewService {
         return clients;
     }
 
-    private Set<String> uniqueTaskCodes(List<MarketTaskRow> tasks) {
+    static Set<String> uniqueTaskCodes(List<MarketTaskRow> tasks) {
         Set<String> codes = new LinkedHashSet<>();
         for (MarketTaskRow task : tasks) {
             String code = taskCode(task.taskClass());
@@ -490,11 +490,8 @@ public class AppHomeOverviewService {
                 && (row.countdownDays() > 0 || row.countdownHours() > 0)) {
             endAt = row.updatedAt().plusDays(row.countdownDays()).plusHours(row.countdownHours());
         }
-        String targetKind = productKind(row.targetDevice());
-        boolean hasProductType = row.productType() != null && !row.productType().isBlank();
-        boolean share = "SHARE".equalsIgnoreCase(row.productType())
-                || (!hasProductType && "cloud-share".equals(targetKind));
-        if (!share && "cloud-share".equals(targetKind)) targetKind = null;
+        String targetKind = ProductSeries.kind(row.seriesCode(), row.productType());
+        boolean share = "cloud-share".equals(targetKind);
         return linked("status", status, "rewardNex", nonNegative(decimal(row.baseReward())),
                 "multiplier", nonNegative(decimal(row.multiplier())), "endAt", endAt == null ? null : endAt.atZone(SERVER_ZONE).toInstant().toString(),
                 "product", linked("kind", share ? "cloud-share" : targetKind, "name", text(row.targetDevice()),
@@ -508,7 +505,8 @@ public class AppHomeOverviewService {
     }
 
     private Map<String, Object> period(PeriodRow row) {
-        if (row == null || row.jobCount() == null || row.jobCount() == 0) return linked("usdt", null, "nex", null, "jobCount", null);
+        if (row == null || row.jobCount() == null) return linked("usdt", null, "nex", null, "jobCount", null);
+        if (row.jobCount() == 0) return linked("usdt", BigDecimal.ZERO, "nex", BigDecimal.ZERO, "jobCount", 0L);
         return linked("usdt", nonNegative(row.usdt()), "nex", nonNegative(row.nex()), "jobCount", row.jobCount());
     }
 
@@ -553,13 +551,13 @@ public class AppHomeOverviewService {
         return runtimeEnvironment.getProperty("NEXION_ACCEPTANCE_RUN_ID", "").trim();
     }
 
-    private boolean validSandboxRunId(String runId) {
+    static boolean validSandboxRunId(String runId) {
         return RUN_ID.matcher(runId).matches() && !LEGACY_UNSCOPED_RUN_ID.equalsIgnoreCase(runId);
     }
 
     private <T> List<T> safe(List<T> rows) { return rows == null ? List.of() : rows; }
 
-    private String taskCode(String value) {
+    private static String taskCode(String value) {
         if (value == null) return null;
         return switch (value.trim().toUpperCase(Locale.ROOT).replace('-', '_').replace(' ', '_')) {
             case "IG", "IMAGE_GEN", "IMAGE_GENERATION" -> "IG";
@@ -572,19 +570,8 @@ public class AppHomeOverviewService {
         };
     }
 
-    private String deviceKind(MarketProductRow row) { return productKind((row.productType() == null ? "" : row.productType()) + " " + (row.tier() == null ? "" : row.tier()) + " " + (row.productNo() == null ? "" : row.productNo())); }
-    private String productKind(String value) {
-        if (value == null) return null;
-        String s = value.toUpperCase(Locale.ROOT).replace('_', '-');
-        if (s.contains("PHONE")) return "phone";
-        if (s.contains("CLOUD") || s.contains("SHARE")) return "cloud-share";
-        if (s.contains("PRO-V2") || s.contains("PROV2")) return "stellarbox-pro-v2";
-        if (s.contains("PRO")) return "stellarbox-pro";
-        if (s.contains("RACK-P2") || s.contains("RACKP2")) return "stellarrack-p2";
-        if (s.contains("RACK-P1") || s.contains("RACKP1")) return "stellarrack-p1";
-        if (s.contains("S1") || s.contains("STELLARBOX")) return "stellarbox-s1";
-        if (s.contains("GPU") || s.contains("PC")) return "pc-gpu";
-        return null;
+    private String deviceKind(MarketProductRow row) {
+        return ProductSeries.kind(row.seriesCode(), row.productType());
     }
 
     private Map<String, Object> linked(Object... values) { Map<String, Object> result = new LinkedHashMap<>(); for (int i = 0; i + 1 < values.length; i += 2) result.put(String.valueOf(values[i]), values[i + 1]); return result; }

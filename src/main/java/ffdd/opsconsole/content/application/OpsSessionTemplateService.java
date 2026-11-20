@@ -54,7 +54,7 @@ public class OpsSessionTemplateService {
     private static final List<SessionCategorySeed> CATEGORY_SEEDS = List.of(
             new SessionCategorySeed("advisor", "专属客服", "conversations.roleAdvisor", true, "增长 / 客服坐席", false),
             new SessionCategorySeed("support", "专属客服历史兼容", "conversations.roleSupport", false, "历史兼容", true),
-            new SessionCategorySeed("ai", "Nova AI 顾问", "conversations.roleAi", true, "Nova 自动(配置见 I2)", true));
+            new SessionCategorySeed("ai", "Nova AI 顾问（已下线）", "conversations.roleAi", true, "Nova 自动(配置见 I2)", true));
     private static final List<SessionSegmentField> SEGMENT_FIELDS = List.of(
             new SessionSegmentField("vrank", "V 等级", List.of(">=", "<=", "="), List.of("V0", "V1", "V2", "V3", "V4", "V5"), null),
             new SessionSegmentField("balance", "账户余额", List.of(">=", "<="), List.of(), "USDT"),
@@ -66,7 +66,6 @@ public class OpsSessionTemplateService {
     private static final List<SessionCtaOption> CTA_OPTIONS = List.of(
             new SessionCtaOption("无跳转", "—", "content"),
             new SessionCtaOption("设备商城", "/store", "device"),
-            new SessionCtaOption("锁仓 Staking", "/staking", "market"),
             new SessionCtaOption("创世节点", "/genesis", "market"));
     private static final List<String> SCRIPT_GROUPS = List.of("开场", "升级", "锁仓", "复投");
     private static final List<String> SCRIPT_STATUS_OPTIONS = List.of("draft", "published", "archived");
@@ -246,7 +245,7 @@ public class OpsSessionTemplateService {
         String scriptId = uniqueContentId("AS", now);
         SessionScriptView created = templateRepository.createScript(scriptId, normalizeScriptRequest(request), now);
         i18nLearningRepository.saveMessagePair("conversation.script." + created.id().toLowerCase(Locale.ROOT),
-                created.text(), "", "", "draft", now);
+                "", created.text(), "", "draft", now);
         audit("M5_SESSION_SCRIPT_CREATED", created.id(), request.operator(), detail(
                 "scriptGroup", created.scriptGroup(),
                 "ctaPath", created.ctaPath(),
@@ -359,7 +358,7 @@ public class OpsSessionTemplateService {
         String templateId = uniqueContentId("RT", now);
         SessionReplyTemplateView created = templateRepository.createReplyTemplate(templateId, normalizeReplyTemplateRequest(request), now);
         i18nLearningRepository.saveMessagePair("conversation.template." + created.id().toLowerCase(Locale.ROOT),
-                created.text(), "", "", "draft", now);
+                "", created.text(), "", "draft", now);
         audit("M5_SESSION_REPLY_TEMPLATE_CREATED", created.id(), request.operator(), detail(
                 "type", created.type(),
                 "status", created.status(),
@@ -429,15 +428,16 @@ public class OpsSessionTemplateService {
     }
 
     /**
-     * The Chinese source may be published on its own; missing translations fall back to it.
-     * Translations that do exist must still match the source, so a stale one never reaches customers.
+     * The body sent by the workbench is the English original; optional translations must preserve its variables.
      */
-    private String requirePublishedLocalizedCopy(String kind, String contentId, String canonicalZh) {
+    private String requirePublishedLocalizedCopy(String kind, String contentId, String canonicalEn) {
         String messageKey = "conversation." + kind + "." + contentId.toLowerCase(Locale.ROOT);
         I18nMessagePairView localized = i18nLearningRepository.findPublishedMessagePair(messageKey).orElse(null);
-        if (localized == null || !"published".equalsIgnoreCase(localized.status())) return null;
-        Set<String> canonicalPlaceholders = placeholders(canonicalZh);
-        if (StringUtils.hasText(localized.zh()) && !canonicalZh.trim().equals(localized.zh().trim())) {
+        if (localized == null || !"published".equalsIgnoreCase(localized.status())) {
+            return "SESSION_TEMPLATE_I18N_ENGLISH_PUBLICATION_REQUIRED";
+        }
+        Set<String> canonicalPlaceholders = placeholders(canonicalEn);
+        if (!StringUtils.hasText(localized.en()) || !canonicalEn.trim().equals(localized.en().trim())) {
             return "SESSION_TEMPLATE_I18N_MISMATCH";
         }
         for (String copy : new String[] {localized.en(), localized.zh(), localized.vi()}) {
@@ -485,7 +485,8 @@ public class OpsSessionTemplateService {
     }
 
     private SessionCategoryView categoryView(SessionCategorySeed seed) {
-        boolean enabled = !"support".equals(seed.type()) && ConversationCategoryPolicy.enabled(configFacade, seed.type());
+        boolean enabled = !"support".equals(seed.type()) && !"ai".equals(seed.type())
+                && ConversationCategoryPolicy.enabled(configFacade, seed.type());
         return new SessionCategoryView(seed.type(), seed.name(), seed.roleKey(), enabled, seed.managedBy(), seed.readOnly());
     }
 

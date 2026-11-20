@@ -16,7 +16,9 @@ import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -142,7 +144,9 @@ public class CregisReorgResolutionService {
         String no=operationNo(incident,version+1),origin=depositOrigin(row);
         switch(action) {
             case REVERSE -> {
-                BigDecimal extra=money(wallet,"usdtAvailable").min(net.subtract(held));
+                BigDecimal walletAvailable=money(wallet,"usdtAvailable");
+                if(walletAvailable.signum()<0)throw conflict("WALLET_CONFLICT");
+                BigDecimal extra=walletAvailable.min(net.subtract(held));
                 recovered=held.add(extra);debt=net.subtract(recovered);availableDelta=extra.negate();riskDelta=held.negate();cumulativeDelta=net.negate();
                 if(held.signum()>0)events.add(debit(no+":HELD",risk(user,incident),origin,held));
                 if(extra.signum()>0)events.add(debit(no+":AVAILABLE",available(user),origin,extra));
@@ -188,8 +192,10 @@ public class CregisReorgResolutionService {
         }
         if(availableDelta.signum()!=0 || riskDelta.signum()!=0 || cumulativeDelta.signum()!=0) {
             if(db.walletChange(user,id(wallet,"version"),availableDelta,riskDelta,cumulativeDelta)!=1)throw conflict("WALLET_CONFLICT");
-            if(availableDelta.signum()!=0)treasury.postLedgerEntry(no+":AVAILABLE",user,"CREGIS_REORG_"+action,"USDT",
-                    availableDelta.signum()>0?"IN":"OUT",availableDelta.abs(),"SUCCESS","Cregis incident "+incident+" "+action);
+            if(availableDelta.signum()>0)treasury.postLedgerEntryWithActualBalance(no+":AVAILABLE",user,"CREGIS_REORG_"+action,"USDT",
+                    "IN",availableDelta.abs(),"SUCCESS","Cregis incident "+incident+" "+action);
+            else if(availableDelta.signum()<0)treasury.postLedgerEntry(no+":AVAILABLE",user,"CREGIS_REORG_"+action,"USDT",
+                    "OUT",availableDelta.abs(),"SUCCESS","Cregis incident "+incident+" "+action);
         }
         if(db.update(incident,version,state,held,recovered,debt)!=1)throw conflict("VERSION_CHANGED");
         var after=required(db.incident(config.getProjectId(),incident));
@@ -211,9 +217,9 @@ public class CregisReorgResolutionService {
             var trades=router.provider().depositsByTxid(network,text(row,"txid"));
             if(trades.size()!=1 || trades.get(0).cid()!=id(row,"cid") || trades.get(0).status()!=1
                     || !network.chainId().equals(trades.get(0).chainId())
-                    || !network.tokenId().equalsIgnoreCase(trades.get(0).tokenId())
+                    || !network.tokenMatches(trades.get(0).tokenId())
                     || !text(row,"txid").equalsIgnoreCase(trades.get(0).txid())
-                    || !text(row,"address").equalsIgnoreCase(trades.get(0).address())
+                    || !network.addressEquals(text(row,"address"),trades.get(0).address())
                     || trades.get(0).amount().compareTo(money(row,"grossAmount"))!=0)throw conflict("PROVIDER_CONFLICT");
         }
         var wallet=required(db.wallet(id(row,"userId")));
@@ -245,8 +251,15 @@ public class CregisReorgResolutionService {
         long incident=id(row,"id"),user=id(row,"userId");String no=operationNo(incident,version);
         var after=required(db.wallet(user));var raw=journals.journal(text(before.wallet(),"incarnation"),id(before.wallet(),"revision"),id(after,"revision"));
         var traces=new ArrayList<Map<String,Object>>();
-        for(int i=0;i<raw.size();i++)traces.add(Map.of("sourceId","nx_cregis_reorg_operation:"+no,"eventIds",i==0?events.stream().map(Event::id).toList():List.of(),"journal",raw.get(i)));
-        var snapshot=new LinkedHashMap<String,Object>();snapshot.put("schemaVersion","CREGIS_REORG_V1");snapshot.put("row",row);snapshot.put("phase",phase);snapshot.put("operationNo",no);
+        for(int i=0;i<raw.size();i++) {
+            var journal=new LinkedHashMap<>(raw.get(i));
+            journal.replaceAll((key,value)->exactTime(value));
+            traces.add(Map.of("sourceId","nx_cregis_reorg_operation:"+no,"eventIds",i==0?events.stream().map(Event::id).toList():List.of(),"journal",journal));
+        }
+        var snapshotRow=new LinkedHashMap<>(row);
+        snapshotRow.put("cid",Long.toString(id(row,"cid")));
+        snapshotRow.put("projectId",Long.toString(id(row,"projectId")));
+        var snapshot=new LinkedHashMap<String,Object>();snapshot.put("schemaVersion","CREGIS_REORG_V1");snapshot.put("row",snapshotRow);snapshot.put("phase",phase);snapshot.put("operationNo",no);
         var proof=new LinkedHashMap<String,Object>();proof.put("schemaVersion","CREGIS_REORG_V1");proof.put("cashBefore",cashSnapshot(before.wallet()));proof.put("cashAfter",cashSnapshot(after));proof.put("cashTrace",traces);proof.put("evidence",evidence);
         var operation=new LinkedHashMap<String,Object>();operation.put("no",no);operation.put("incident",incident);operation.put("version",version);operation.put("phase",phase);
         operation.put("fact","DEPOSIT:"+id(row,"ledgerId"));operation.put("effect",effect);operation.put("snapshot",encode(snapshot));operation.put("proof",encode(proof));operation.put("events",encode(events));
@@ -310,8 +323,15 @@ public class CregisReorgResolutionService {
     }
     private static Map<String,Object> cashSnapshot(Map<String,Object> wallet) {
         var snapshot=new LinkedHashMap<String,Object>();
-        for(String key:List.of("id","userId","usdtAvailable","nexAvailable","pendingWithdraw","cregisRiskHeld","version","sandbox","isDeleted","createdAt","incarnation","revision"))snapshot.put(key,wallet.get(key));
+        for(String key:List.of("id","userId","usdtAvailable","nexAvailable","pendingWithdraw","cregisRiskHeld","version","sandbox","isDeleted","createdAt","incarnation","revision"))
+            snapshot.put(key,exactTime(wallet.get(key)));
         return snapshot;
+    }
+    // Cash trace replay compares the original database timestamps, including fractional seconds.
+    private static Object exactTime(Object value) {
+        if(value instanceof LocalDateTime time)return time.toString();
+        if(value instanceof Timestamp time)return time.toLocalDateTime().toString();
+        return value;
     }
     private static String fingerprint(Map<String,Object> row){return List.of("id","eventId","projectId","cid","userId","netAmount","heldAmount","recoveredAmount","outstandingDebt","status","version","txid","logIndex","address","grossAmount","blockNumber","blockHash","ledgerId","eventStatus","originalLogIndex","transferFrom","userStatus","freezeSource","freezeRef").stream().map(key->key+"="+row.get(key)).collect(java.util.stream.Collectors.joining("|"));}
     private static String walletFingerprint(Map<String,Object> wallet){return wallet.get("incarnation")+"|"+wallet.get("revision")+"|"+wallet.get("version")+"|"+wallet.get("usdtAvailable")+"|"+wallet.get("cregisRiskHeld")+"|"+wallet.get("cumulativeDeposit");}
@@ -322,7 +342,10 @@ public class CregisReorgResolutionService {
     private void audit(String action,long incident,long actor,Map<String,Object> detail){audit.recordRequired(AuditLogWriteRequest.builder().action("CREGIS_REORG_"+action).resourceType("CREGIS_INCIDENT").resourceId(String.valueOf(incident)).actorType(actor==0?"SYSTEM":"ADMIN").actorId(actor==0?null:actor).actorUsername(actor==0?"cregis-reconciler":"admin:"+actor).riskLevel("CRITICAL").result("SUCCESS").detail(detail).build());}
     private String encode(Object value){try{return json.writeValueAsString(value);}catch(Exception bad){throw new IllegalStateException("CREGIS_REORG_SERIALIZATION_FAILED",bad);}}
     private static Map<String,Object> required(Map<String,Object> row){if(row==null || row.isEmpty())throw new BizException(404,"CREGIS_REORG_NOT_FOUND");return row;}
-    private static long id(Map<String,Object> row,String field){return ((Number)row.get(field)).longValue();}
+    private static long id(Map<String,Object> row,String field){
+        Object value=row.get(field);
+        return value instanceof String text?Long.parseLong(text):((Number)value).longValue();
+    }
     private static String text(Map<String,Object> row,String field){return String.valueOf(row.get(field));}
     private static BigDecimal money(Map<String,Object> row,String field){return new BigDecimal(String.valueOf(row.get(field)));}
     private static BizException conflict(String reason){return new BizException(409,"CREGIS_REORG_"+reason);}

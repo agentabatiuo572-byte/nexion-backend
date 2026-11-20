@@ -44,7 +44,9 @@ public interface K4WithdrawalAlertMapper {
     int countReceipt(@Param("eventId") String eventId, @Param("recipientAdminId") Long recipientAdminId);
 
     @Select("""
-            SELECT id,event_id eventId,withdrawal_no withdrawalNo,
+            SELECT id,event_id eventId,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.user_no')),'') userNo,
+                   withdrawal_no withdrawalNo,
                    CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.risk_score')) AS SIGNED) riskScore,
                    JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.priority')) priority,
                    JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.model_version')) modelVersion,
@@ -63,7 +65,14 @@ public interface K4WithdrawalAlertMapper {
             """)
     int markRead(@Param("eventId") String eventId, @Param("recipientAdminId") Long recipientAdminId);
 
-    record AlertRow(Long id, String eventId, String withdrawalNo, Integer riskScore,
+    record AlertRow(Long id, String eventId, String userNo, String withdrawalNo, Integer riskScore,
                     String priority, String modelVersion, String scoreAsOf,
-                    LocalDateTime readAt, LocalDateTime createdAt) { }
+                    LocalDateTime readAt, LocalDateTime createdAt) {
+        /** Source-compatible constructor for callers without attribution; missing stays null. */
+        public AlertRow(Long id, String eventId, String withdrawalNo, Integer riskScore,
+                 String priority, String modelVersion, String scoreAsOf,
+                 LocalDateTime readAt, LocalDateTime createdAt) {
+            this(id, eventId, null, withdrawalNo, riskScore, priority, modelVersion, scoreAsOf, readAt, createdAt);
+        }
+    }
 }

@@ -5,11 +5,12 @@ import ffdd.opsconsole.content.domain.ConversationCustomerProfile;
 import ffdd.opsconsole.content.domain.CustomerProfileRepository;
 import ffdd.opsconsole.content.mapper.SupportCustomerProfileMapper;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
+import ffdd.opsconsole.content.mapper.SupportUnboundReceiptMapper;
 import ffdd.opsconsole.device.application.OpsDeviceService;
-import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.facade.SupportDeviceReadFacade;
 import ffdd.opsconsole.finance.application.FinanceSupportReadService;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.risk.application.OpsRiskService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -38,16 +39,28 @@ public class SupportCustomerProfileService {
     private final SupportFundsReadFacade funds;
     private final SupportDeviceReadFacade currentDevices;
     private final SupportAnalyticsService analytics;
+    private final SupportUnboundReceiptMapper customerLanguages;
+    private final PlatformExperienceConfigService experience;
     public SupportCustomerProfileService(SupportOwnershipService ownership,SupportBindingMapper bindings,SupportCustomerProfileMapper mapper,
             OpsUserService users,FinanceSupportReadService finance,OpsDeviceService devices,OpsRiskService risk,CustomerProfileRepository annotations,
             SupportMaintenanceService maintenance,ffdd.opsconsole.content.mapper.SupportWorkbenchMapper workbench,ffdd.opsconsole.shared.storage.ObjectStorageService storage) {
-        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,null,null,null);
+        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,null,null,null,null,null);
     }
     public SupportCustomerProfileService(SupportOwnershipService ownership,SupportBindingMapper bindings,SupportCustomerProfileMapper mapper,
             OpsUserService users,FinanceSupportReadService finance,OpsDeviceService devices,OpsRiskService risk,CustomerProfileRepository annotations,
             SupportMaintenanceService maintenance,ffdd.opsconsole.content.mapper.SupportWorkbenchMapper workbench,ffdd.opsconsole.shared.storage.ObjectStorageService storage,
             SupportFundsReadFacade funds,SupportDeviceReadFacade currentDevices) {
-        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,funds,currentDevices,null);
+        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,funds,currentDevices,null,null,null);
+    }
+    public SupportCustomerProfileService(SupportOwnershipService ownership,SupportBindingMapper bindings,SupportCustomerProfileMapper mapper,
+            OpsUserService users,FinanceSupportReadService finance,OpsDeviceService devices,OpsRiskService risk,CustomerProfileRepository annotations,
+            SupportMaintenanceService maintenance,ffdd.opsconsole.content.mapper.SupportWorkbenchMapper workbench,ffdd.opsconsole.shared.storage.ObjectStorageService storage,
+            SupportFundsReadFacade funds,SupportDeviceReadFacade currentDevices,SupportAnalyticsService analytics) {
+        this(ownership,bindings,mapper,users,finance,devices,risk,annotations,maintenance,workbench,storage,funds,currentDevices,analytics,null,null);
+    }
+
+    String effectiveLanguage(Long customer) {
+        return SupportSystemMessage.effectiveLanguageTag(customerLanguages.userLanguage(customer),experience::interfaceLanguages);
     }
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
@@ -166,7 +179,7 @@ public class SupportCustomerProfileService {
     public Map<String,Object> devices(Long customer,long page,int size) {
         SupportWorkbenchService.requireSafeId(customer);SupportWorkbenchService.validatePage(page,size);ownership.requireRead(customer);
         return group(()-> {
-            var response=devices.devices(new DeviceOpsQueryRequest(null,null,null,page,(long)size,customer,null,null));
+            var response=devices.userDevicePage(customer,page,size);
             if(response.getCode()!=0)throw new BizException(response.getCode(),"SUPPORT_DEVICES_UNAVAILABLE");
             var rows=response.getData();if(rows==null)return null;
             var data=new LinkedHashMap<String,Object>();data.put("records",rows.getRecords().stream().map(row->{

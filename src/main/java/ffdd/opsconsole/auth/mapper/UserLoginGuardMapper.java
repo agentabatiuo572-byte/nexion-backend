@@ -24,6 +24,7 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
               login_key CHAR(64) PRIMARY KEY,
               user_id BIGINT DEFAULT NULL,
               failed_count INT NOT NULL DEFAULT 0,
+              lock_kind VARCHAR(16) DEFAULT NULL,
               window_started_at DATETIME(3) NOT NULL,
               locked_until DATETIME(3) DEFAULT NULL,
               updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -121,6 +122,12 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
     @Update("ALTER TABLE nx_user_login_guard ADD COLUMN user_id BIGINT NULL AFTER login_key, ADD KEY idx_user_login_guard_user (user_id, locked_until)")
     void addUserIdColumn();
 
+    @Select("SELECT COUNT(1) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_login_guard' AND COLUMN_NAME='lock_kind'")
+    int countLockKindColumn();
+
+    @Update("ALTER TABLE nx_user_login_guard ADD COLUMN lock_kind VARCHAR(16) NULL AFTER failed_count")
+    void addLockKindColumn();
+
     @Select("SELECT COUNT(1) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user_login_guard' AND INDEX_NAME='idx_user_login_guard_updated'")
     int countUpdatedAtIndex();
 
@@ -138,19 +145,22 @@ public interface UserLoginGuardMapper extends BaseMapper<UserLoginGuardRecord> {
     int bindUser(@Param("loginKey") String loginKey, @Param("userId") Long userId);
 
     @Select("""
-            SELECT failed_count AS failedCount,window_started_at AS windowStartedAt,locked_until AS lockedUntil
+            SELECT failed_count AS failedCount,window_started_at AS windowStartedAt,locked_until AS lockedUntil,
+                   lock_kind AS lockKind
             FROM nx_user_login_guard WHERE login_key=#{loginKey} FOR UPDATE
             """)
     UserLoginGuardRecord lock(@Param("loginKey") String loginKey);
 
     @Update("""
             UPDATE nx_user_login_guard
-            SET failed_count=#{failedCount},window_started_at=#{windowStartedAt},locked_until=#{lockedUntil}
+            SET failed_count=#{failedCount},window_started_at=#{windowStartedAt},locked_until=#{lockedUntil},
+                lock_kind=#{lockKind}
             WHERE login_key=#{loginKey}
             """)
     void recordFailure(@Param("loginKey") String loginKey, @Param("failedCount") int failedCount,
                        @Param("windowStartedAt") LocalDateTime windowStartedAt,
-                       @Param("lockedUntil") LocalDateTime lockedUntil);
+                       @Param("lockedUntil") LocalDateTime lockedUntil,
+                       @Param("lockKind") String lockKind);
 
     @Delete("DELETE FROM nx_user_login_guard WHERE login_key=#{loginKey}")
     void clear(@Param("loginKey") String loginKey);

@@ -3,6 +3,7 @@ package ffdd.opsconsole.bi.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.infrastructure.BiReportEntity;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -166,7 +167,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             """)
     long countA4FamilyEvents(@Param("familyKey") String familyKey);
 
-    @Select("""
+    String L1_FACT_PROJECTION = """
             SELECT event_id AS eventId,
                    event_name AS eventName,
                    COALESCE(event_ts, created_at) AS eventTs,
@@ -195,6 +196,9 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                    ) AS refCode,
                    JSON_UNQUOTE(JSON_EXTRACT(payload, '$.latency_sec')) AS latencySec,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.quantity')), '1') AS quantity
+            """;
+
+    String L1_FACT_FILTER = """
               FROM nx_event_outbox
              WHERE is_deleted = 0
                AND analytics_event = 1
@@ -202,24 +206,84 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                AND event_name IN (
                  'auth.register_completed', 'device.first_yield_received', 'app.dau',
                  'store.viewed', 'checkout.completed', 'device.purchase_completed',
-                 'referral.invite_sent', 'nova.push_sent', 'nova.push_clicked',
+                 'referral.invite_sent',
                  'referral.bound', 'commission.paid', 'genesis.purchased'
                )
                AND (
                  is_server_authoritative = 1
-                 OR event_name IN ('store.viewed', 'nova.push_clicked')
+                 OR event_name = 'store.viewed'
                )
+            """;
+
+    @Select(L1_FACT_PROJECTION + L1_FACT_FILTER + """
                AND COALESCE(event_ts, created_at) >= DATE_SUB(NOW(), INTERVAL 13 MONTH)
              ORDER BY COALESCE(event_ts, created_at) ASC, id ASC
             """)
     List<Map<String, Object>> selectL1EventFacts();
 
     @Select("""
+            SELECT MIN(event_ts) FROM nx_event_outbox
+             WHERE event_name='app.dau' AND is_deleted=0 AND analytics_event=1
+               AND schema_registered=1 AND is_server_authoritative=1
+            """)
+    LocalDateTime selectFirstDauEventAt();
+
+    String L1_REGISTRATION_WINDOW = """
+             WHERE sandbox = 0 AND created_at >= #{registrationFrom} AND created_at < #{registrationToExclusive}
+            """;
+
+    @Select("SELECT id AS userId, created_at AS registeredAt FROM nx_user " + L1_REGISTRATION_WINDOW)
+    List<Map<String, Object>> selectL1Registrations(
+            @Param("registrationFrom") LocalDateTime registrationFrom,
+            @Param("registrationToExclusive") LocalDateTime registrationToExclusive);
+
+    @Select("""
+            WITH members AS (
+                SELECT id FROM nx_user
+            """ + L1_REGISTRATION_WINDOW + """
+            ), facts AS (
+            """ + L1_FACT_PROJECTION + """
+                   , id AS factOrder,
+                   COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')), ''),
+                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.userId')), '')) AS registeredActorId
+            """ + L1_FACT_FILTER + """
+               AND event_name <> 'genesis.purchased'
+               AND (
+                 event_ts BETWEEN #{registrationFrom} AND #{observationEnd}
+                 OR (event_ts IS NULL AND created_at BETWEEN #{registrationFrom} AND #{observationEnd})
+               )
+            )
+            SELECT f.* FROM facts f
+              LEFT JOIN members actor ON actor.id =
+                CASE WHEN f.registeredActorId REGEXP '^[1-9][0-9]{0,18}$' THEN CAST(f.registeredActorId AS UNSIGNED) END
+              LEFT JOIN members related ON f.eventName = 'commission.paid' AND related.id =
+                CASE WHEN f.sourceActorId REGEXP '^[1-9][0-9]{0,18}$' THEN CAST(f.sourceActorId AS UNSIGNED) END
+             WHERE actor.id IS NOT NULL OR related.id IS NOT NULL
+             ORDER BY f.eventTs, f.factOrder
+            """)
+    List<Map<String, Object>> selectL1RegistrationEventFacts(
+            @Param("registrationFrom") LocalDateTime registrationFrom,
+            @Param("registrationToExclusive") LocalDateTime registrationToExclusive,
+            @Param("observationEnd") LocalDateTime observationEnd);
+
+    String EVENT_PHASE_WITH_REGISTRATION_SNAPSHOT = """
+            CASE
+              WHEN event_name='auth.register_completed'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.registration_phase')) REGEXP '^P[1-6]$'
+              THEN JSON_UNQUOTE(JSON_EXTRACT(payload, '$.registration_phase'))
+              ELSE COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase')))
+            END
+            """;
+
+    @Select("""
             SELECT event_name AS eventName,
                    event_ts AS eventTs,
                    JSON_UNQUOTE(JSON_EXTRACT(payload, '$.user_id')) AS actorId,
+                   aggregate_type AS trialAggregateType,
+                   aggregate_id AS trialId,
                    COALESCE(NULLIF(cohort, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.cohort'))) AS cohort,
-                   COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase'))) AS phase,
+                   """ + EVENT_PHASE_WITH_REGISTRATION_SNAPSHOT + """
+                   AS phase,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.locale')), 'und') AS locale,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.ref')), 'direct') AS refCode
               FROM nx_event_outbox
@@ -231,7 +295,7 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                AND event_name IN (
                  'auth.register_completed', 'checkout.completed',
                  'wallet.reinvest', 'withdraw.submitted', 'app.dau',
-                 'trial.claim_sheet_shown', 'trial.started', 'trial.redeemed'
+                 'trial.started', 'trial.redeemed'
                )
                AND is_server_authoritative = 1
              ORDER BY event_ts ASC, id ASC
@@ -283,7 +347,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.source_user_id')), ''),
                      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.sourceUserId')), '')
                    ) AS sourceActorId,
-                   COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase'))) AS phase,
+                   """ + EVENT_PHASE_WITH_REGISTRATION_SNAPSHOT + """
+                   AS phase,
                    COALESCE(NULLIF(cohort, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.cohort'))) AS cohort,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.locale')), 'und') AS locale,
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.ref')), ''),
@@ -345,6 +410,30 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
              ORDER BY COALESCE(event_ts, created_at) ASC, id ASC
             """)
     List<Map<String, Object>> selectL4EventFacts();
+
+    /**
+     * 产品 2026-11-19 L4 任务承接率分母改用真实任务派发表 nx_user_event_quest:
+     * 每行代表一次派发给真实用户的任务实例(JOINED),eventTs 取 created_at。
+     * phase 不取查询时全站当前阶段(L4-BE-10):派发记录自身无可证阶段,缺值进「未归属」,非 sandbox 用户。
+     */
+    @Select("""
+            SELECT CONCAT('QUEST_DISPATCH:EVENT:', ue.id) AS eventId,
+                   'quest.dispatched' AS eventName,
+                   COALESCE(ue.created_at, ue.updated_at) AS eventTs,
+                   ue.user_id AS actorId,
+                   NULL AS phase,
+                   ue.quest_code AS questKey,
+                   '0' AS amountUsdt,
+                   '0' AS amountNex,
+                   '0' AS baselineUsdt
+              FROM nx_user_event_quest ue
+              JOIN nx_user u ON u.id = ue.user_id AND u.is_deleted = 0 AND COALESCE(u.sandbox,0)=0
+             WHERE ue.is_deleted = 0
+               AND COALESCE(ue.created_at, ue.updated_at) >= DATE_SUB(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.Legacy.DAY_START + """
+               , INTERVAL 400 DAY)
+             ORDER BY COALESCE(ue.created_at, ue.updated_at) ASC, ue.id ASC
+            """)
+    List<Map<String, Object>> selectL4QuestDispatchFacts();
 
     @Select("""
             WITH RECURSIVE tree_edges AS (
@@ -563,7 +652,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                    last_action AS lastAction,
                    last_action_at AS lastActionAt,
                    reason,
-                   CASE WHEN snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0 THEN TRUE ELSE FALSE END AS snapshotAvailable
+                   CASE WHEN snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0 THEN TRUE ELSE FALSE END AS snapshotAvailable,
+                   created_at AS requestedAt
               FROM nx_admin_fourth_batch_report
              WHERE module_code = 'L5'
                AND is_deleted = 0
@@ -619,7 +709,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                    last_action AS lastAction,
                    last_action_at AS lastActionAt,
                    reason,
-                   CASE WHEN snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0 THEN TRUE ELSE FALSE END AS snapshotAvailable
+                   CASE WHEN snapshot_csv IS NOT NULL AND LENGTH(snapshot_csv) > 0 THEN TRUE ELSE FALSE END AS snapshotAvailable,
+                   created_at AS requestedAt
               FROM nx_admin_fourth_batch_report
              WHERE module_code = 'L5'
                AND report_id = #{reportId}

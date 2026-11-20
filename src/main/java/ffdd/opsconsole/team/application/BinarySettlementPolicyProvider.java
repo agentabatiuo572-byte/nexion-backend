@@ -9,16 +9,23 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 /** Locks and validates every money-amplifying input used by one F3 settlement. */
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class BinarySettlementPolicyProvider {
     static final String THRESHOLD_KEY = "team.ui.F.binary.threshold";
     static final String MATCH_RATE_KEY = "team.ui.F.binary.matchRate";
     static final String PAUSED_KEY = "team.ui.F.binary.paused";
+    static final String AUTO_SETTLE_KEY = "team.ui.F.binary.autoSettle";
+    static final String AUTO_ENABLED_AT_UTC_KEY = "team.binary.autoEnabledAtUtc";
+    static final String PLATFORM_CAP_PCT_KEY = "team.ui.F.binary.platformCapPct";
+    static final String DEFAULT_PLATFORM_CAP_PCT = "2%";
     static final String SPILLOVER_KEY = "team.ui.F.binary.spillover";
     static final String SETTLE_PERIOD_KEY = "team.ui.F.binary.settlePeriod";
     static final String RESIDUAL_POLICY_KEY = "team.ui.F.binary.residualPolicy";
@@ -32,8 +39,20 @@ public class BinarySettlementPolicyProvider {
     private final TreasuryCoverageFacade coverageFacade;
 
     public BinarySettlementPolicy lockPolicy() {
-        BigDecimal threshold = positiveMoney(require(THRESHOLD_KEY, "F3_THRESHOLD_MISSING"),
-                "F3_THRESHOLD_INVALID");
+        return lockPolicy(true);
+    }
+
+    BinarySettlementPolicy lockPolicyForApproval() {
+        return lockPolicy(false);
+    }
+
+    private BinarySettlementPolicy lockPolicy(boolean checkCurrentCoverage) {
+        BigDecimal threshold;
+        try {
+            threshold = normalizeThreshold(require(THRESHOLD_KEY, "F3_THRESHOLD_MISSING"));
+        } catch (IllegalArgumentException invalid) {
+            throw new PolicyBlocked("F3_THRESHOLD_INVALID");
+        }
         BigDecimal matchRate = rate(require(MATCH_RATE_KEY, "F3_MATCH_RATE_MISSING"));
         boolean paused = strictBoolean(require(PAUSED_KEY, "F3_PAUSED_CONFIG_MISSING"));
         boolean spilloverEnabled = strictEnabled(require(SPILLOVER_KEY, "F3_SPILLOVER_CONFIG_MISSING"));
@@ -63,18 +82,61 @@ public class BinarySettlementPolicyProvider {
             throw new PolicyBlocked("H1_GROWTH_RHYTHM_UNAVAILABLE");
         }
 
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (coverage == null || !coverage.reliable()
-                || coverage.coverageRatio() == null || coverage.redlinePct() == null) {
-            throw new PolicyBlocked("B1_COVERAGE_UNRELIABLE");
-        }
-        if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
-            throw new PolicyBlocked("COVERAGE_BELOW_REDLINE");
+        TreasuryCoverageSnapshot coverage = null;
+        if (checkCurrentCoverage) {
+            coverage = settlementCoverage();
+            String block = currentCoverageBlock(coverage);
+            if (block != null) throw new PolicyBlocked(block);
         }
         return new BinarySettlementPolicy(
                 threshold, matchRate, rhythm.binaryDailyCap(), paused,
                 spilloverEnabled, settlePeriod, residualPolicy, gvResetCron,
-                coverage.coverageRatio(), coverage.redlinePct());
+                coverage == null ? null : coverage.coverageRatio(),
+                coverage == null ? null : coverage.redlinePct());
+    }
+
+    BigDecimal platformCapPctForUpdate() {
+        BigDecimal cap = parsePlatformCapPct(configFacade.activeValueForUpdate(PLATFORM_CAP_PCT_KEY)
+                .orElse(DEFAULT_PLATFORM_CAP_PCT));
+        if (cap == null) throw new PolicyBlocked("F3_PLATFORM_CAP_PCT_INVALID");
+        return cap;
+    }
+
+    String currentCoverageBlock() {
+        return currentCoverageBlock(settlementCoverage());
+    }
+
+    static String currentCoverageBlock(TreasuryCoverageSnapshot coverage) {
+        if (coverage == null || !coverage.reliable()
+                || coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.redlinePct().signum() <= 0) {
+            return "B1_COVERAGE_UNRELIABLE";
+        }
+        return coverage.redlineBreached() || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0
+                ? "COVERAGE_BELOW_REDLINE" : null;
+    }
+
+    String projectedCoverageBlock(BigDecimal amountUsdt) {
+        TreasuryCoverageSnapshot coverage = settlementCoverage();
+        if (coverage == null || !coverage.reliable() || coverage.redlinePct() == null
+                || coverage.redlinePct().signum() <= 0
+                || coverage.ratioReserveUsd() == null || coverage.ratioLiabilitiesUsd() == null) {
+            return "B1_COVERAGE_UNRELIABLE";
+        }
+        // B1 already sums pending commission ledger rows. This payout has yet to post.
+        BigDecimal projectedLiabilities = coverage.ratioLiabilitiesUsd().add(amountUsdt);
+        return coverage.ratioReserveUsd().multiply(BigDecimal.valueOf(100))
+                .compareTo(projectedLiabilities.multiply(coverage.redlinePct())) < 0
+                ? "COVERAGE_BELOW_REDLINE" : null;
+    }
+
+    private TreasuryCoverageSnapshot settlementCoverage() {
+        try {
+            return coverageFacade.snapshot();
+        } catch (DataAccessException failure) {
+            log.debug("F3 could not read treasury coverage", failure);
+            return null;
+        }
     }
 
     private String require(String key, String code) {
@@ -98,21 +160,49 @@ public class BinarySettlementPolicyProvider {
 
     private BigDecimal rate(String raw) {
         try {
-            String value = raw.trim();
-            boolean percent = value.endsWith("%");
-            if (percent) value = value.substring(0, value.length() - 1).trim();
-            BigDecimal parsed = new BigDecimal(value);
-            if (percent || parsed.compareTo(BigDecimal.ONE) > 0) {
-                parsed = parsed.divide(new BigDecimal("100"), 12, RoundingMode.HALF_UP);
-            }
-            if (parsed.signum() <= 0 || parsed.compareTo(BigDecimal.ONE) > 0) {
-                throw new PolicyBlocked("F3_MATCH_RATE_INVALID");
-            }
-            return parsed.stripTrailingZeros();
-        } catch (PolicyBlocked ex) {
-            throw ex;
-        } catch (RuntimeException ex) {
+            return normalizeMatchRate(raw);
+        } catch (IllegalArgumentException ex) {
             throw new PolicyBlocked("F3_MATCH_RATE_INVALID");
+        }
+    }
+
+    public static BigDecimal normalizeThreshold(String raw) {
+        try {
+            BigDecimal value = new BigDecimal(raw.trim());
+            if (value.signum() <= 0 || value.compareTo(new BigDecimal("5000")) > 0 || value.scale() > 6) {
+                throw new IllegalArgumentException("F3_THRESHOLD_INVALID");
+            }
+            return value;
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("F3_THRESHOLD_INVALID");
+        }
+    }
+
+    public static BigDecimal normalizeMatchRate(String raw) {
+        String value = raw.trim();
+        if (value.endsWith("%")) value = value.substring(0, value.length() - 1).trim();
+        try {
+            BigDecimal percent = new BigDecimal(value);
+            if (percent.signum() <= 0 || percent.compareTo(new BigDecimal("20")) > 0 || percent.scale() > 10) {
+                throw new IllegalArgumentException("F3_MATCH_RATE_INVALID");
+            }
+            return percent.movePointLeft(2).stripTrailingZeros();
+        } catch (NumberFormatException ex) {
+            throw new IllegalArgumentException("F3_MATCH_RATE_INVALID");
+        }
+    }
+
+    static BigDecimal parsePlatformCapPct(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
+        String value = raw.trim();
+        if (value.endsWith("%")) value = value.substring(0, value.length() - 1).trim();
+        try {
+            BigDecimal percent = new BigDecimal(value);
+            if (percent.signum() < 0 || percent.compareTo(BigDecimal.valueOf(100)) > 0) return null;
+            BigDecimal exactPercent = percent.stripTrailingZeros();
+            return exactPercent.scale() <= 10 ? exactPercent : null;
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 
@@ -128,12 +218,23 @@ public class BinarySettlementPolicyProvider {
         }
     }
 
-    private boolean strictBoolean(String raw) {
+    /**
+     * The one F3 pause parser used by settlement, admin reads and writes.
+     * Unknown/missing input stays null; callers decide whether that is an error.
+     */
+    public static Boolean parsePaused(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
         return switch (raw.trim().toLowerCase(Locale.ROOT)) {
             case "true", "1", "on" -> true;
             case "false", "0", "off" -> false;
-            default -> throw new PolicyBlocked("F3_PAUSED_CONFIG_INVALID");
+            default -> null;
         };
+    }
+
+    private boolean strictBoolean(String raw) {
+        Boolean parsed = parsePaused(raw);
+        if (parsed == null) throw new PolicyBlocked("F3_PAUSED_CONFIG_INVALID");
+        return parsed;
     }
 
     private boolean strictEnabled(String raw) {

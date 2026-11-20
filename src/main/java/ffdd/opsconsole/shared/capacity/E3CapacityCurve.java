@@ -58,6 +58,12 @@ public final class E3CapacityCurve {
         });
     }
 
+    /** Includes age zero and the same future horizon used by amplification admission. */
+    public static BigDecimal maxCapacityPct(Map<String, String> before, Map<String, String> candidate) {
+        return futureProbeMonths(before, candidate).stream().map(month -> capacityPct(month, candidate))
+                .reduce(ONE_HUNDRED, BigDecimal::max);
+    }
+
     private static Set<Integer> futureProbeMonths(
             Map<String, String> before, Map<String, String> candidate) {
         Set<Integer> probes = new TreeSet<>();

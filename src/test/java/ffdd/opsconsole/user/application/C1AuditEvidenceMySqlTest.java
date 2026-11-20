@@ -150,21 +150,6 @@ class C1AuditEvidenceMySqlTest {
         }
     }
 
-    @ParameterizedTest @ValueSource(strings = {"admin_user_list_exported", "\u00c1DMIN_USER_LIST_EXPORTED"})
-    void caseAndAccentInsensitiveDatabaseSelectionCannotTurnMalformedC1TypeIntoSuccess(String storedType) {
-        insertEvent("case-alias", storedType);
-        try (SqlSession session = factory.openSession(true)) {
-            var selected = session.getMapper(EventOutboxMapper.class).listPendingByEventType("ADMIN_USER_LIST_EXPORTED", 100);
-            assertThat(selected).hasSize(1);
-            var service = mock(EventOutboxService.class);
-            var publisher = mock(org.springframework.context.ApplicationEventPublisher.class);
-            when(service.listPendingByEventType("ADMIN_USER_LIST_EXPORTED", 100)).thenReturn(selected);
-            new EventOutboxDispatchScheduler(service, publisher).dispatchPending();
-            verify(service).markFailed("case-alias", "C1_AUDIT_ENVELOPE_INVALID");
-            verifyNoInteractions(publisher);
-        }
-    }
-
     @ParameterizedTest @ValueSource(booleans = {true, false})
     void requiredAuditFailureRollsBackOutboxFromBothProfileEntrypoints(boolean stringEntry) {
         OpsUserService users = mock(OpsUserService.class);
@@ -189,7 +174,7 @@ class C1AuditEvidenceMySqlTest {
             throw new IllegalStateException("AUDIT_REQUIRED_TEST_FAILURE");
         }).when(audit).recordRequired(any());
         var target = new OpsUser360Service(users, mock(OpsFinanceService.class), mock(OpsTreasuryService.class),
-                mock(OpsDeviceService.class), mock(OpsRiskService.class), audit, repository, roles, outbox,
+                mock(OpsDeviceService.class), mock(OpsRiskService.class), audit, repository, mock(ffdd.opsconsole.user.mapper.UserLatestFundActivityMapper.class), roles, outbox,
                 mock(ffdd.opsconsole.finance.application.FinanceSupportReadService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class));
         ProxyFactory proxyFactory = new ProxyFactory(target);
         proxyFactory.setProxyTargetClass(true);

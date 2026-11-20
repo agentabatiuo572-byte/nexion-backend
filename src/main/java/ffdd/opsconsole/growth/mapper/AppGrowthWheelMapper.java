@@ -95,10 +95,13 @@ public interface AppGrowthWheelMapper {
             @Param("eventCode") String eventCode,
             @Param("spinDate") LocalDate spinDate);
 
+    // Legacy seed rows still use reward_kind='nex'. The published App accepts only UVT/USDT/coupon/points,
+    // so normalize this one asset alias in the read projection; never rewrite stored history.
     @Select("""
             SELECT id tierId,tier_name tierName,reward_name rewardName,
                    probability_pct probabilityPct,real_outflow realOutflow,
-                   LOWER(reward_kind) rewardKind,reward_amount rewardAmount,
+                   CASE WHEN LOWER(reward_kind)='nex' THEN 'uvt' ELSE LOWER(reward_kind) END rewardKind,
+                   reward_amount rewardAmount,
                    voucher_id voucherId,daily_stock dailyStock
               FROM nx_growth_wheel_tier
              WHERE status=1 AND is_deleted=0
@@ -109,7 +112,8 @@ public interface AppGrowthWheelMapper {
     @Select("""
             SELECT id tierId,tier_name tierName,reward_name rewardName,
                    probability_pct probabilityPct,real_outflow realOutflow,
-                   LOWER(reward_kind) rewardKind,reward_amount rewardAmount,
+                   CASE WHEN LOWER(reward_kind)='nex' THEN 'uvt' ELSE LOWER(reward_kind) END rewardKind,
+                   reward_amount rewardAmount,
                    voucher_id voucherId,daily_stock dailyStock
               FROM nx_growth_wheel_tier
              WHERE status=1 AND is_deleted=0
@@ -119,7 +123,8 @@ public interface AppGrowthWheelMapper {
 
     @Select("""
             SELECT spin_no spinId,spin_date spinDate,source_type sourceType,
-                   tier_id tierId,tier_name tierName,UPPER(reward_kind) rewardType,
+                   tier_id tierId,tier_name tierName,
+                   CASE WHEN LOWER(reward_kind)='nex' THEN 'UVT' ELSE UPPER(reward_kind) END rewardType,
                    reward_amount rewardAmount,tier_name rewardName,
                     downgraded,downgrade_reason downgradeReason,
                     DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s+08:00') awardedAt
@@ -151,6 +156,32 @@ public interface AppGrowthWheelMapper {
              WHERE spin_date=#{spinDate} AND tier_id=#{tierId} AND is_deleted=0
             """)
     int currentTierDailyAwards(@Param("spinDate") LocalDate spinDate, @Param("tierId") Long tierId);
+
+    @Select("""
+            SELECT COUNT(1) FROM nx_growth_wheel_spin
+             WHERE spin_date=#{spinDate} AND is_deleted=0
+            """)
+    long countDailySpins(@Param("spinDate") LocalDate spinDate);
+
+    @Select("""
+            SELECT tier_id tierId, COUNT(1) usedToday
+              FROM nx_growth_wheel_spin
+             WHERE spin_date=#{spinDate} AND is_deleted=0
+             GROUP BY tier_id
+            """)
+    List<TierDailyUsage> currentDailyTierUsage(@Param("spinDate") LocalDate spinDate);
+
+    /** Today's real spins whose tier no longer has an active configuration; name is the frozen spin value. */
+    @Select("""
+            SELECT s.tier_id tierId, MAX(s.tier_name) tierName, COUNT(1) usedToday
+              FROM nx_growth_wheel_spin s
+              LEFT JOIN nx_growth_wheel_tier t ON t.id=s.tier_id AND t.status=1 AND t.is_deleted=0
+             WHERE s.spin_date=#{spinDate} AND s.is_deleted=0 AND s.tier_id IS NOT NULL
+               AND t.id IS NULL
+             GROUP BY s.tier_id
+             ORDER BY s.tier_id
+            """)
+    List<RetiredTierDailyUsage> retiredTierDailyUsage(@Param("spinDate") LocalDate spinDate);
 
     @Insert("""
             INSERT IGNORE INTO nx_growth_wheel_spin
@@ -248,6 +279,10 @@ public interface AppGrowthWheelMapper {
             String voucherId,
             Integer dailyStock) {
     }
+
+    record TierDailyUsage(Long tierId, long usedToday) { }
+
+    record RetiredTierDailyUsage(Long tierId, String tierName, long usedToday) { }
 
     record Attribution(String phase, Integer accountAgeMonths, String cohort) {
     }

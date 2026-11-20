@@ -34,11 +34,7 @@ public class TreasuryL3FinanceFacadeAdapter implements TreasuryL3FinanceFacade {
         Map<String, Object> section = required(result);
         requireKeys(section, Set.of(
                 "reserveTotalUsdt", "liabilityTotalUsdt", "coverageRatio", "netExposureUsdt",
-                "redLine", "yellowLine", "series", "breaches", "source"));
-        if (!(section.get("series") instanceof List<?> series) || series.size() < 2
-                || !(section.get("breaches") instanceof List<?>)) {
-            invalidSource();
-        }
+                "redLine", "yellowLine", "source"));
         return section;
     }
 

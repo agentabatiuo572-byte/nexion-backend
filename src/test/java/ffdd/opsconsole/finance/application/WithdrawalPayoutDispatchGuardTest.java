@@ -17,7 +17,7 @@ class WithdrawalPayoutDispatchGuardTest {
     final WithdrawalPayoutMapper mapper=mock(WithdrawalPayoutMapper.class);
     final CregisDepositMapper deposits=mock(CregisDepositMapper.class);
     final CregisPayoutControl control=mock(CregisPayoutControl.class);
-    final WithdrawalPayoutDispatchGuard guard=new WithdrawalPayoutDispatchGuard(mapper,deposits,control);
+    final WithdrawalPayoutDispatchGuard guard=new WithdrawalPayoutDispatchGuard(mapper,deposits,control,mock(ffdd.opsconsole.growth.facade.GrowthRhythmFacade.class),mock(ffdd.opsconsole.shared.audit.AuditLogService.class));
     final LocalDateTime now=LocalDateTime.of(2026,10,22,0,0);
     @BeforeEach void setup(){
         when(deposits.lockProvisionGate()).thenReturn(Map.of("state","IDLE","payoutEnabled",1));

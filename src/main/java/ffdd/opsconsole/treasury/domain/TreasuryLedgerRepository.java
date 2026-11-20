@@ -53,6 +53,11 @@ public interface TreasuryLedgerRepository {
 
     BigDecimal sumPendingCommissionUsdt();
 
+    /** Available funds and pending commissions from the same committed view. */
+    CommissionCoverageAmounts commissionCoverageAmounts();
+
+    record CommissionCoverageAmounts(BigDecimal withdrawableUsdt, BigDecimal coolingUsdt) { }
+
     BigDecimal sumNetUsdtFlowBetween(LocalDateTime startAt, LocalDateTime endAt);
 
     default List<Map<String, Object>> liquidityFlowWindows(LocalDateTime startAt, LocalDateTime endAt) {
@@ -191,6 +196,12 @@ public interface TreasuryLedgerRepository {
 
     List<TreasuryLedgerBillView> userLedgerRows(Long userId, int limit);
 
+    record LedgerBalance(String asset, BigDecimal balanceAfter) { }
+
+    default List<LedgerBalance> settledBalancesBefore(Long userId, LocalDateTime before) {
+        throw new UnsupportedOperationException("SETTLED_OPENING_BALANCE_READER_NOT_IMPLEMENTED");
+    }
+
     Optional<BigDecimal> currentUserBalance(Long userId, String asset);
 
     default Optional<BigDecimal> actualUserBalance(Long userId, String asset) {
@@ -203,4 +214,20 @@ public interface TreasuryLedgerRepository {
 
     void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
                          BigDecimal amount, String status, String remark);
+
+    /**
+     * F1 已用券扣回等场景:余额后由调用方在同一事务内锁定真实钱包后计算,允许为负数。
+     * 幂等与指纹校验同 postLedgerEntry,但不再用最后一条账单推算余额。
+     */
+    void postLedgerEntryWithBalanceAfter(String bizNo, Long userId, String bizType, String asset, String direction,
+                                         BigDecimal amount, BigDecimal balanceAfter, String status, String remark);
+
+    /**
+     * F1-BE-18: the caller already credited the real wallet in this transaction; read that
+     * locked post-credit balance and use it as balanceAfter without adding the amount again.
+     */
+    default void postLedgerEntryWithActualBalance(String bizNo, Long userId, String bizType, String asset,
+                                                  String direction, BigDecimal amount, String status, String remark) {
+        throw new UnsupportedOperationException("LEDGER_ACTUAL_BALANCE_NOT_IMPLEMENTED");
+    }
 }

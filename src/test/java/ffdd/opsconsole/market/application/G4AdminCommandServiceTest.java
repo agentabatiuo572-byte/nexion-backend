@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
 import ffdd.opsconsole.market.mapper.AppGenesisMapper;
+import ffdd.opsconsole.market.application.G4DividendPolicy;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -44,7 +45,7 @@ class G4AdminCommandServiceTest {
     private final Environment environment = mock(Environment.class);
     private final G4AdminCommandService service = new G4AdminCommandService(
             market, mapper, config, idempotency, outbox, audit,
-            Clock.fixed(Instant.parse("2026-07-22T05:00:00Z"), ZoneOffset.UTC), earningsRelease, environment);
+            Clock.fixed(Instant.parse("2026-07-22T05:00:00Z"), ZoneOffset.UTC), earningsRelease, environment, mock(G4DividendPolicy.class));
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -91,13 +92,10 @@ class G4AdminCommandServiceTest {
         when(mapper.lockActiveSeries()).thenReturn(new AppGenesisMapper.SeriesRow(
                 1L, "genesis-main", "Genesis Node", 1000, new BigDecimal("9999"),
                 250, new BigDecimal("0.1"), "ACTIVE"));
-        when(mapper.lockEmissionHoldings()).thenReturn(List.of(new AppGenesisMapper.HoldingRow(
-                10L, "GN-0001", 42L, "ORDER-SECONDARY", "genesis-main",
-                new BigDecimal("25000"), "ACTIVE", null, null, null)));
+        when(mapper.lockEmissionHoldings()).thenReturn(List.of(new AppGenesisMapper.EmissionHoldingRow(10L, "GN-0001", 42L, "genesis-main", 1L, new BigDecimal("25000"), new BigDecimal("0.1"), new BigDecimal("2500"))));
         when(mapper.insertEmissionBatch(any())).thenReturn(1);
         when(mapper.lockPendingEmissionItems("20260722")).thenReturn(List.of(
-                new AppGenesisMapper.EmissionItemRow(100L, "20260722", "GN-0001", 42L,
-                        new BigDecimal("9.999000"), "PENDING")));
+                new AppGenesisMapper.EmissionItemRow(100L, "20260722", "GN-0001", 42L, new BigDecimal("9.999000"), "PENDING", new BigDecimal("0.1"), new BigDecimal("0.1"))));
         when(mapper.lockWallet(42L)).thenReturn(new BigDecimal("100"));
         when(mapper.insertLedger(any())).thenReturn(1);
         when(mapper.markEmissionPaid(eq(100L), any())).thenReturn(1);

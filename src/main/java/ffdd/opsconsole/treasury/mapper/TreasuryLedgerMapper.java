@@ -1,7 +1,10 @@
 package ffdd.opsconsole.treasury.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.shared.canonical.mapper.GenesisEmissionSql;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.CommissionCoverageAmounts;
+import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.LedgerBalance;
 import ffdd.opsconsole.treasury.infrastructure.WalletLedgerEntity;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -83,7 +86,9 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     long countLedgers(@Param("since") LocalDateTime since, @Param("direction") String direction);
 
-    @Select("SELECT COALESCE(SUM(usdt_available), 0) FROM nx_user_wallet WHERE is_deleted = 0")
+    String SUM_USDT_AVAILABLE = "SELECT COALESCE(SUM(usdt_available), 0) FROM nx_user_wallet WHERE is_deleted = 0";
+
+    @Select(SUM_USDT_AVAILABLE)
     BigDecimal sumUsdtAvailable();
 
     @Select("SELECT COALESCE(SUM(pending_withdraw), 0) FROM nx_user_wallet WHERE is_deleted = 0")
@@ -169,7 +174,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     BigDecimal avgActiveWithdrawalQueueRiskScore();
 
-    @Select("""
+    String SUM_PENDING_COMMISSION_USDT = """
             SELECT COALESCE(SUM(amount), 0)
               FROM nx_wallet_ledger
              WHERE is_deleted = 0
@@ -177,8 +182,14 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                AND direction = 'IN'
                AND status = 'PENDING'
                AND biz_type IN ('REFERRAL_COMMISSION', 'COMMISSION', 'TEAM_COMMISSION')
-            """)
+            """;
+
+    @Select(SUM_PENDING_COMMISSION_USDT)
     BigDecimal sumPendingCommissionUsdt();
+
+    @Select("SELECT (" + SUM_USDT_AVAILABLE + ") AS withdrawableUsdt, ("
+            + SUM_PENDING_COMMISSION_USDT + ") AS coolingUsdt")
+    CommissionCoverageAmounts commissionCoverageAmounts();
 
     @Select("""
             <script>
@@ -572,15 +583,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     BigDecimal injectedCumulativeUsd();
 
-    @Select("""
-            SELECT COALESCE(SUM(h.acquired_price_usdt * s.daily_dividend_rate_pct / 100), 0)
-              FROM nx_genesis_holding h
-              JOIN nx_genesis_series s
-                ON s.series_code = h.series_code
-               AND s.is_deleted = 0
-             WHERE h.is_deleted = 0
-               AND UPPER(h.status) IN ('ACTIVE', 'HELD', 'LISTED')
-            """)
+    @Select(GenesisEmissionSql.CURRENT_TOTAL)
     BigDecimal genesisDailyLiabilityUsd();
 
     @Select("""
@@ -819,6 +822,21 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     List<TreasuryLedgerBillView> userLedgerRows(@Param("userId") Long userId, @Param("limit") int limit);
 
+    @Select("""
+            SELECT asset, balance_after AS balanceAfter
+              FROM (
+                SELECT asset, balance_after,
+                       ROW_NUMBER() OVER (PARTITION BY asset ORDER BY created_at DESC, id DESC) AS row_num
+                  FROM nx_wallet_ledger
+                 WHERE user_id=#{userId} AND is_deleted=0 AND created_at < #{before}
+                   AND UPPER(TRIM(status)) IN ('SUCCESS','POSTED','COMPLETED','CONFIRMED')
+              ) settled
+             WHERE row_num=1
+             ORDER BY asset
+            """)
+    List<LedgerBalance> settledBalancesBefore(@Param("userId") Long userId,
+                                             @Param("before") LocalDateTime before);
+
     // Posting holds the account/asset ledger mutex. A locking read sees the last committed
     // posting even when the outer transaction opened a repeatable-read snapshot earlier.
     @Select("""
@@ -886,8 +904,9 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
                    nex_available=nex_available+CASE WHEN #{asset}='UVT' THEN #{delta} ELSE 0 END,
                    version=version+1, updated_at=NOW(6)
              WHERE user_id=#{userId} AND is_deleted=0
-               AND CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'UVT' THEN nex_available END
-                   + #{delta} >= 0
+               AND (#{delta} >= 0 AND #{asset}='USDT'
+                    OR CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'UVT' THEN nex_available END
+                       + #{delta} >= 0)
             """)
     int adjustCommissionWallet(@Param("userId") Long userId, @Param("asset") String asset,
                                @Param("delta") BigDecimal delta);

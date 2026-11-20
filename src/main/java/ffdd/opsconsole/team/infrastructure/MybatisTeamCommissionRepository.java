@@ -6,6 +6,7 @@ import ffdd.opsconsole.team.domain.VRankRewardPayout;
 import ffdd.opsconsole.team.domain.VRankRewardRuleRow;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,6 +45,12 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public Map<String, Object> lockVRankPolicy(String rank) {
+        Map<String, Object> row = mapper.lockVRankPolicy(rank);
+        return row == null ? Map.of() : row;
+    }
+
+    @Override
     public boolean updateVRankThreshold(String rank, String field, Object value) {
         return switch (field) {
             case "selfBuy" -> mapper.updateVRankSelfBuy(rank, value) > 0;
@@ -61,6 +68,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public List<Map<String, Object>> f2PayoutStatistics() {
+        return mapper.f2PayoutStatistics();
+    }
+
+    @Override
     public List<Map<String, Object>> unilevelRates() {
         return mapper.unilevelRates();
     }
@@ -75,6 +87,21 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public List<Long> allUnilevelRuleIds() {
+        return mapper.allUnilevelRuleIds();
+    }
+
+    @Override
+    public List<Long> lockAllUnilevelRules() {
+        return mapper.lockAllUnilevelRuleIds();
+    }
+
+    @Override
+    public boolean insertUnilevelRule(int layerNo, BigDecimal usdtRate, BigDecimal nexPerUsd) {
+        return mapper.insertUnilevelRule(layerNo, usdtRate, nexPerUsd) > 0;
+    }
+
+    @Override
     public List<Map<String, Object>> rateTiers() {
         return mapper.rateTiers();
     }
@@ -82,6 +109,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     @Override
     public List<Map<String, Object>> vRankRewards(String rank) {
         return mapper.vRankRewards(rank);
+    }
+
+    @Override
+    public List<Map<String, Object>> vRankRewardsForUpdate(String rank) {
+        return mapper.vRankRewardsForUpdate(rank);
     }
 
     @Override
@@ -122,6 +154,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     @Override
     public List<Map<String, Object>> leadershipRanks() {
         return mapper.leadershipRanks();
+    }
+
+    @Override
+    public List<Map<String, Object>> leadershipVoterRanks(int minRank) {
+        return mapper.leadershipVoterRanks(minRank);
     }
 
     @Override
@@ -179,7 +216,7 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
 
     @Override
     public boolean insertAmbassadorBudgetGrants(Long applicationId, String operator) {
-        return mapper.insertAmbassadorBudgetGrants(applicationId, operator) == 4;
+        return mapper.insertAmbassadorBudgetGrants(applicationId, operator) == 1;
     }
 
     @Override
@@ -198,6 +235,16 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     @Override
     public List<Map<String, Object>> commissionEvents(int limit) {
         return mapper.commissionEvents(Math.max(1, Math.min(limit, 200)));
+    }
+
+    @Override
+    public Map<String, Object> commissionEventById(long eventId) {
+        return mapper.commissionEventById(eventId);
+    }
+
+    @Override
+    public int countEventUserSuspended(long eventId) {
+        return mapper.countEventUserSuspended(eventId);
     }
 
     @Override
@@ -246,6 +293,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public String leaderboardDisqualificationEvidence(long memberUserId) {
+        return mapper.leaderboardDisqualificationEvidence(memberUserId);
+    }
+
+    @Override
     public boolean insertLeaderboardMemberAction(String period, Long memberUserId, String actionType, String reason, String operator) {
         return mapper.insertLeaderboardMemberAction(period, memberUserId, actionType, reason, operator) > 0;
     }
@@ -260,10 +312,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
             String period,
             java.time.LocalDateTime fromInclusive,
             java.time.LocalDateTime toExclusive,
-            BigDecimal minVolumeUsd,
+            BigDecimal minComputePoints,
             int limit) {
         return mapper.leaderboardCandidatesByPeriod(
-                period, fromInclusive, toExclusive, minVolumeUsd, Math.max(1, Math.min(limit, 100)));
+                period, fromInclusive, toExclusive, minComputePoints, Math.max(1, Math.min(limit, 100)), 0,
+                java.time.LocalDateTime.now(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE));
     }
 
     // ============================================================
@@ -474,6 +527,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
         return mapper.countPromotionLog(userId, v, cohort, from, to);
     }
 
+    @Override
+    public Long countUpwardPromotions(LocalDateTime from, LocalDateTime until) {
+        return mapper.countUpwardPromotions(from, until);
+    }
+
     // ============================================================
     // F1 V-Rank 派发流水查询/补发/撤销(Sprint 6 端点第二组)
     // ============================================================
@@ -505,6 +563,33 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
             return 0;
         }
         return mapper.reverseCommissionEvent(commissionEventId);
+    }
+
+    @Override
+    public Map<String, Object> lockVrankVoucherGrant(Long userId, String voucherId, String sourceId) {
+        return mapper.lockVrankVoucherGrant(userId, voucherId, sourceId);
+    }
+
+    @Override
+    public Map<String, Object> lockLatestVrankVoucherGrant(Long userId, String voucherId, String sourcePrefix) {
+        // 下单、支付和订单关闭都先锁买家，再读取订单和券。
+        mapper.lockVrankVoucherBuyer(userId);
+        return mapper.lockLatestVrankVoucherGrant(userId, voucherId, sourcePrefix);
+    }
+
+    @Override
+    public int revokeVrankVoucherGrant(Long userId, String voucherId, String sourceId, String expectedStatus) {
+        return mapper.revokeVrankVoucherGrant(userId, voucherId, sourceId, expectedStatus);
+    }
+
+    @Override
+    public BigDecimal lockVrankWalletUsdt(Long userId) {
+        return mapper.lockVrankWalletUsdt(userId);
+    }
+
+    @Override
+    public int debitVrankWalletUsdt(Long userId, BigDecimal amount) {
+        return mapper.debitVrankWalletUsdt(userId, amount);
     }
 
     @Override

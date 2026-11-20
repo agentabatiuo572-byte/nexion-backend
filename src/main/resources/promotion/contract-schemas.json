@@ -273,9 +273,322 @@
           "en",
           "vi"
         ],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Stored and delivered copy has all three base language values."
+      },
+      "AuthoredLocalizedText": {
+        "type": "object",
+        "properties": {
+          "zh": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4000
+          },
+          "en": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "vi": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 4000
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "ms": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "fil": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "ru": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "kk": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "uz": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          }
+        },
+        "required": [
+          "en"
+        ],
+        "additionalProperties": false,
+        "description": "Policy version input. English and configured operating languages are required. An entirely blank optional language uses English."
+      },
+      "StoredPolicyContent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/NonLocalizedPolicyContent"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "DEVICE_RIGHTS"
+              },
+              "executorCode": {
+                "const": "COMMERCE_GIFT_FROM_PRODUCT_V1"
+              },
+              "productNo": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "productContract": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "taskEligibility": {
+                "type": "string",
+                "enum": [
+                  "EXISTING_PRODUCT_RULES",
+                  "DISABLED"
+                ]
+              },
+              "rightsDescription": {
+                "$ref": "#/components/schemas/LocalizedText"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "productNo",
+              "productContract",
+              "taskEligibility",
+              "rightsDescription"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "ASSET"
+              },
+              "executorCode": {
+                "const": "EXISTING_EARNINGS_RELEASE_V1"
+              },
+              "asset": {
+                "type": "string",
+                "enum": [
+                  "USDT",
+                  "UVT"
+                ]
+              },
+              "nativeContract": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "riskBucketRouting": {
+                "const": true
+              },
+              "availabilityDescription": {
+                "$ref": "#/components/schemas/LocalizedText"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "asset",
+              "nativeContract",
+              "riskBucketRouting",
+              "availabilityDescription"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "REFUND"
+              },
+              "executorCode": {
+                "const": "PROMOTION_WALLET_REFUND_V1"
+              },
+              "principalChannel": {
+                "const": "WALLET"
+              },
+              "scope": {
+                "const": "WHOLE_ORDER"
+              },
+              "insufficientRecovery": {
+                "const": "MANUAL_REVIEW"
+              },
+              "negativeBalance": {
+                "const": false
+              },
+              "crossAssetDeduction": {
+                "const": false
+              },
+              "deviceRecoveryPolicy": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "lossOwner": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "terms": {
+                "$ref": "#/components/schemas/LocalizedText"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "principalChannel",
+              "scope",
+              "insufficientRecovery",
+              "negativeBalance",
+              "crossAssetDeduction",
+              "deviceRecoveryPolicy",
+              "lossOwner",
+              "terms"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "AuthoredPolicyContent": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/NonLocalizedPolicyContent"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "DEVICE_RIGHTS"
+              },
+              "executorCode": {
+                "const": "COMMERCE_GIFT_FROM_PRODUCT_V1"
+              },
+              "productNo": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "productContract": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "taskEligibility": {
+                "type": "string",
+                "enum": [
+                  "EXISTING_PRODUCT_RULES",
+                  "DISABLED"
+                ]
+              },
+              "rightsDescription": {
+                "$ref": "#/components/schemas/AuthoredLocalizedText"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "productNo",
+              "productContract",
+              "taskEligibility",
+              "rightsDescription"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "ASSET"
+              },
+              "executorCode": {
+                "const": "EXISTING_EARNINGS_RELEASE_V1"
+              },
+              "asset": {
+                "type": "string",
+                "enum": [
+                  "USDT",
+                  "UVT"
+                ]
+              },
+              "nativeContract": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "riskBucketRouting": {
+                "const": true
+              },
+              "availabilityDescription": {
+                "$ref": "#/components/schemas/AuthoredLocalizedText"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "asset",
+              "nativeContract",
+              "riskBucketRouting",
+              "availabilityDescription"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "const": "REFUND"
+              },
+              "executorCode": {
+                "const": "PROMOTION_WALLET_REFUND_V1"
+              },
+              "principalChannel": {
+                "const": "WALLET"
+              },
+              "scope": {
+                "const": "WHOLE_ORDER"
+              },
+              "insufficientRecovery": {
+                "const": "MANUAL_REVIEW"
+              },
+              "negativeBalance": {
+                "const": false
+              },
+              "crossAssetDeduction": {
+                "const": false
+              },
+              "deviceRecoveryPolicy": {
+                "$ref": "#/components/schemas/NativeRef"
+              },
+              "lossOwner": {
+                "$ref": "#/components/schemas/Id"
+              },
+              "terms": {
+                "$ref": "#/components/schemas/AuthoredLocalizedText"
+              }
+            },
+            "required": [
+              "kind",
+              "executorCode",
+              "principalChannel",
+              "scope",
+              "insufficientRecovery",
+              "negativeBalance",
+              "crossAssetDeduction",
+              "deviceRecoveryPolicy",
+              "lossOwner",
+              "terms"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
       "PolicyContent": {
+        "$ref": "#/components/schemas/StoredPolicyContent"
+      },
+      "NonLocalizedPolicyContent": {
         "oneOf": [
           {
             "type": "object",
@@ -352,78 +665,6 @@
               "states",
               "excludeExpired",
               "excludePhoneAndTrial"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "const": "DEVICE_RIGHTS"
-              },
-              "executorCode": {
-                "const": "COMMERCE_GIFT_FROM_PRODUCT_V1"
-              },
-              "productNo": {
-                "$ref": "#/components/schemas/Id"
-              },
-              "productContract": {
-                "$ref": "#/components/schemas/NativeRef"
-              },
-              "taskEligibility": {
-                "type": "string",
-                "enum": [
-                  "EXISTING_PRODUCT_RULES",
-                  "DISABLED"
-                ]
-              },
-              "rightsDescription": {
-                "$ref": "#/components/schemas/LocalizedText"
-              }
-            },
-            "required": [
-              "kind",
-              "executorCode",
-              "productNo",
-              "productContract",
-              "taskEligibility",
-              "rightsDescription"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "const": "ASSET"
-              },
-              "executorCode": {
-                "const": "EXISTING_EARNINGS_RELEASE_V1"
-              },
-              "asset": {
-                "type": "string",
-                "enum": [
-                  "USDT",
-                  "UVT"
-                ]
-              },
-              "nativeContract": {
-                "$ref": "#/components/schemas/NativeRef"
-              },
-              "riskBucketRouting": {
-                "const": true
-              },
-              "availabilityDescription": {
-                "$ref": "#/components/schemas/LocalizedText"
-              }
-            },
-            "required": [
-              "kind",
-              "executorCode",
-              "asset",
-              "nativeContract",
-              "riskBucketRouting",
-              "availabilityDescription"
             ],
             "additionalProperties": false
           },
@@ -515,54 +756,6 @@
             "type": "object",
             "properties": {
               "kind": {
-                "const": "REFUND"
-              },
-              "executorCode": {
-                "const": "PROMOTION_WALLET_REFUND_V1"
-              },
-              "principalChannel": {
-                "const": "WALLET"
-              },
-              "scope": {
-                "const": "WHOLE_ORDER"
-              },
-              "insufficientRecovery": {
-                "const": "MANUAL_REVIEW"
-              },
-              "negativeBalance": {
-                "const": false
-              },
-              "crossAssetDeduction": {
-                "const": false
-              },
-              "deviceRecoveryPolicy": {
-                "$ref": "#/components/schemas/NativeRef"
-              },
-              "lossOwner": {
-                "$ref": "#/components/schemas/Id"
-              },
-              "terms": {
-                "$ref": "#/components/schemas/LocalizedText"
-              }
-            },
-            "required": [
-              "kind",
-              "executorCode",
-              "principalChannel",
-              "scope",
-              "insufficientRecovery",
-              "negativeBalance",
-              "crossAssetDeduction",
-              "deviceRecoveryPolicy",
-              "lossOwner",
-              "terms"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "kind": {
                 "const": "QUOTE"
               },
               "executorCode": {
@@ -626,7 +819,7 @@
         "type": "object",
         "properties": {
           "content": {
-            "$ref": "#/components/schemas/PolicyContent"
+            "$ref": "#/components/schemas/AuthoredPolicyContent"
           },
           "reason": {
             "type": "string",
@@ -672,7 +865,7 @@
             ]
           },
           "content": {
-            "$ref": "#/components/schemas/PolicyContent"
+            "$ref": "#/components/schemas/StoredPolicyContent"
           },
           "approvalRef": {
             "anyOf": [
@@ -727,6 +920,22 @@
               }
             ],
             "description": "Required non-null for approved DEVICE_RIGHTS policies. Server-resolved immutable materialization, not accepted in PolicyDraft input."
+          },
+          "execution": {
+            "type": "object",
+            "description": "Read-only execution facts for the approved refund policy; absent for other policies.",
+            "properties": {
+              "basis": { "type": "string" },
+              "walletRecovery": { "type": "string" },
+              "deviceRecovery": { "type": "string" },
+              "insufficientRecovery": { "type": "string" },
+              "negativeBalance": { "type": "boolean" },
+              "crossAssetDeduction": { "type": "boolean" },
+              "terminalState": { "type": "string" },
+              "manualReviewAppliesTo": { "type": "string" },
+              "unknownEvidence": { "type": "string" }
+            },
+            "additionalProperties": false
           }
         },
         "required": [
@@ -1363,6 +1572,9 @@
           "expectedRevision": {
             "$ref": "#/components/schemas/Revision"
           },
+          "expectedVersion": {
+            "$ref": "#/components/schemas/Revision"
+          },
           "reason": {
             "type": "string",
             "minLength": 1,
@@ -1401,6 +1613,12 @@
         "type": "object",
         "properties": {
           "expectedRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "expectedSourceVersion": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "expectedSourceRevision": {
             "$ref": "#/components/schemas/Revision"
           },
           "reason": {
@@ -2863,6 +3081,16 @@
           "beneficiaryId": {
             "$ref": "#/components/schemas/Id"
           },
+          "platformLoss": {
+            "description": "Finalized D06 platform loss in the original currency or in DEVICE units. Posted gift earnings are reported by currency. An empty object means no recorded platform loss.",
+            "type": "object",
+            "properties": {
+              "USDT": { "$ref": "#/components/schemas/Amount" },
+              "UVT": { "$ref": "#/components/schemas/Amount" },
+              "DEVICE": { "$ref": "#/components/schemas/Amount" }
+            },
+            "additionalProperties": false
+          },
           "qualificationSnapshotHash": {
             "$ref": "#/components/schemas/Hash"
           },
@@ -2946,6 +3174,7 @@
           "qualificationSnapshotHash",
           "attempts",
           "disclosure",
+          "platformLoss",
           "dispositionOptions"
         ],
         "additionalProperties": false
@@ -3245,6 +3474,7 @@
             "minimum": 0
           },
           "giftCostUsdt": {
+            "description": "Original payable USDT at placement, counted once per distinct order with an issued device gift in the report cohort. Refunds do not change this basis. Null indicates unavailable order evidence.",
             "anyOf": [
               {
                 "$ref": "#/components/schemas/AggregateAmount"
@@ -4164,7 +4394,7 @@
         "type": "object",
         "properties": {
           "content": {
-            "$ref": "#/components/schemas/PolicyContent"
+            "$ref": "#/components/schemas/AuthoredPolicyContent"
           },
           "reason": {
             "type": "string",
@@ -4774,7 +5004,8 @@
           }
         },
         "required": [],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "description": "Ordinary drafts preserve the supplied language keys and values. A language can be omitted; a supplied value must be nonempty."
       },
       "DraftAudience": {
         "type": "object",
@@ -6561,7 +6792,15 @@
             "const": false
           },
           "giftCostUsdt": {
-            "type": "null"
+            "description": "Estimated order payable USDT from pricing.amountUsdt for a determined device gift. Null indicates no matched device gift or unavailable facts.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Amount"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "acquisitionCostUsdt": {
             "type": "null"

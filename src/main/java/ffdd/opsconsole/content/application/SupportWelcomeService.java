@@ -6,6 +6,7 @@ import ffdd.opsconsole.content.mapper.ConversationMapper;
 import ffdd.opsconsole.content.mapper.ConversationMessageMapper;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportReceptionMapper;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -13,6 +14,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Propagation;
@@ -29,6 +31,7 @@ public class SupportWelcomeService {
     private final SupportOwnershipService ownership;
     private final AuditLogService audit;
     private final AdminIdempotencyService commands;
+    private final PlatformExperienceConfigService experienceConfig;
 
     public record Texts(String zh,String en,String vi) {}
     public record Config(long version,Texts texts,String updatedAt,String updatedBy,String reason) {}
@@ -49,10 +52,18 @@ public class SupportWelcomeService {
         if(request==null || request.expectedVersion()==null || request.expectedVersion()<1 || request.texts()==null)
             throw new BizException(422,"SUPPORT_WELCOME_INVALID");
         SupportBindingService.validateCommand(key,request.reason());
-        var texts=new Texts(text(request.texts().zh()),text(request.texts().en()),text(request.texts().vi()));
-        var data=new Update(request.expectedVersion(),texts,request.reason().strip());
+        var submitted=new Texts(trimText(request.texts().zh()),trimText(request.texts().en()),trimText(request.texts().vi()));
+        var data=new Update(request.expectedVersion(),submitted,request.reason().strip());
         String hash=SupportHumanMessageService.sha(SupportMessagePayload.encode(data));
         return (ApiResult<Config>)commands.executeRetained("SUPPORT_WELCOME:"+actor,key,hash,ApiResult.class,()->{
+            List<String> required=experienceConfig.operatingLanguages();
+            var texts=new Texts(
+                    !required.contains("zh") && submitted.zh().isEmpty() ? submitted.en() : submitted.zh(),
+                    submitted.en(),
+                    !required.contains("vi") && submitted.vi().isEmpty() ? submitted.en() : submitted.vi());
+            validateText(texts.zh());
+            validateText(texts.en());
+            validateText(texts.vi());
             ownership.lockAgent(actor);
             ownership.requireSuperAdmin();
             if(bindings.rulesWriteGrant(actor).isEmpty()) throw new BizException(403,"SUPPORT_RULES_FORBIDDEN");
@@ -67,10 +78,12 @@ public class SupportWelcomeService {
         });
     }
 
-    private String text(String value) {
-        String clean=value==null?"":value.strip();
-        if(clean.isEmpty() || clean.codePointCount(0,clean.length())>500) throw new BizException(422,"SUPPORT_WELCOME_TEXT_INVALID");
-        return clean;
+    private String trimText(String value) {
+        return value==null?"":value.replaceAll("^[\\s\\p{Z}\\uFEFF]+|[\\s\\p{Z}\\uFEFF]+$", "");
+    }
+
+    private void validateText(String value) {
+        if(value.matches("[\\p{javaWhitespace}\\p{Z}\\uFEFF]*") || value.codePointCount(0,value.length())>500) throw new BizException(422,"SUPPORT_WELCOME_TEXT_INVALID");
     }
 
     @Transactional(propagation=Propagation.MANDATORY)

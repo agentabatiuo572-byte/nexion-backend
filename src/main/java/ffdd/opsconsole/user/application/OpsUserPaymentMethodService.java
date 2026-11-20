@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -59,9 +60,10 @@ public class OpsUserPaymentMethodService {
         requireUser(userId);
         requireScopedRuntime();
         String sourceEnvironment = sandboxGuard.sourceEnvironment();
-        return idempotency.execute("USER_PAYMENT_METHOD_UNBIND:" + sourceEnvironment, key,
+        return idempotency.executeBound("USER_PAYMENT_METHOD_UNBIND:" + sourceEnvironment, key,
                 hash(sourceEnvironment + ":" + userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
-                Map.class, () -> doUnbind(userId, methodId, key, request));
+                Map.class, "user_c1hub_read", String.valueOf(methodId),
+                () -> doUnbind(userId, methodId, key, request));
     }
 
     @Transactional
@@ -70,9 +72,10 @@ public class OpsUserPaymentMethodService {
         requireUser(userId);
         requireScopedRuntime();
         String sourceEnvironment = sandboxGuard.sourceEnvironment();
-        return idempotency.execute("USER_PAYMENT_METHOD_REBIND_NOTICE:" + sourceEnvironment, key,
+        return idempotency.executeBound("USER_PAYMENT_METHOD_REBIND_NOTICE:" + sourceEnvironment, key,
                 hash(sourceEnvironment + ":" + userId + ":" + methodId + ":" + request.expectedVersion() + ":" + request.reason()),
-                Map.class, () -> doNotifyRebind(userId, methodId, key, request));
+                Map.class, "user_c1hub_read", String.valueOf(methodId),
+                () -> doNotifyRebind(userId, methodId, key, request));
     }
 
     @Transactional
@@ -81,14 +84,24 @@ public class OpsUserPaymentMethodService {
         if (!StringUtils.hasText(request.expectedValue())) {
             throw new BizException(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "EXPECTED_NICKNAME_REQUIRED");
         }
-        return idempotency.execute("USER_NICKNAME_RESET", key, hash(userId + ":" + request.reason()), Map.class, () -> {
+        return idempotency.executeBound("USER_NICKNAME_RESET", key, hash(userId + ":" + request.reason()), Map.class,
+                "user_c1hub_read", String.valueOf(userId), () -> {
             requireUser(userId);
             String before = mapper.currentNickname(userId);
             if (!request.expectedValue().trim().equals(before)) {
                 throw new BizException(409, "NICKNAME_VERSION_CONFLICT");
             }
-            String nickname = "UVEL-" + hash(userId + ":" + key).substring(0, 8).toUpperCase();
-            if (mapper.resetNickname(userId, nickname, request.expectedValue().trim()) != 1) {
+            String nickname = UserNicknames.next(mapper::nicknameTaken);
+            int updated;
+            try {
+                updated = mapper.resetNickname(userId, nickname, request.expectedValue().trim());
+            } catch (DuplicateKeyException collision) {
+                if (UserUniqueConstraints.isNicknameCollision(collision)) {
+                    throw new BizException(409, "USER_NICKNAME_TAKEN");
+                }
+                throw collision;
+            }
+            if (updated != 1) {
                 throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "NICKNAME_RESET_CONFLICT");
             }
             audit("USER_NICKNAME_RESET", "USER", String.valueOf(userId), userId, request, key,

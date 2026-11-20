@@ -53,6 +53,7 @@ class OpsUser360ServiceTest {
     private final UserOpsRepository userRepository = mock(UserOpsRepository.class);
     private final AdminOperatorRoleResolver roleResolver = mock(AdminOperatorRoleResolver.class);
     private final EventOutboxService outboxService = mock(EventOutboxService.class);
+    private final ffdd.opsconsole.user.mapper.UserLatestFundActivityMapper latestFundActivityMapper = mock(ffdd.opsconsole.user.mapper.UserLatestFundActivityMapper.class);
     private final ffdd.opsconsole.finance.application.FinanceSupportReadService financeRead = mock(ffdd.opsconsole.finance.application.FinanceSupportReadService.class);
     private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership = mock(ffdd.opsconsole.content.application.SupportOwnershipService.class);
     private final OpsUser360Service service = service();
@@ -76,6 +77,7 @@ class OpsUser360ServiceTest {
                 riskService,
                 auditLogService,
                 userRepository,
+                latestFundActivityMapper,
                 roleResolver,
                 outboxService, financeRead, supportOwnership);
     }

@@ -127,38 +127,52 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
                              @Param("phone") String phone);
 
     /**
-     * App leaderboard read projection. Its eligibility predicates deliberately
-     * mirror F4's settlement candidates: unlocked commission facts only,
-     * configured minimum, and member-level risk/disqualification exclusions.
-     * Time bounds are supplied by the service's UTC settlement calendar rather
-     * than being re-derived from the MySQL session clock.
+     * Shared App/F4 ranking and settlement projection: paid order point snapshots
+     * of L1-L7 sponsored members, excluding the owner. Dates use the versioned
+     * business calendar supplied by the caller, in storage-local timestamps.
+     * Legacy paid orders without paid_at retain the existing created_at fallback.
      */
     String LEADERBOARD_ELIGIBLE_SQL = """
             <script>
-            WITH earned AS (
-              SELECT ce.user_id,SUM(ce.amount_usdt) earned_usdt
-                FROM nx_commission_event ce JOIN nx_user u ON u.id=ce.user_id
-               WHERE ce.is_deleted=0 AND u.is_deleted=0 AND u.status='ACTIVE' AND u.sandbox=#{sandbox}
-                 AND UPPER(ce.status)='UNLOCKED'
-                 AND ce.created_at &lt;= #{snapshotAt}
-                 AND LOWER(ce.commission_type) IN
-                   ('unilevel','network','binary','peer','cultivation','leadership','genesis','direct_purchase','direct_device_earning')
-                 <if test="fromInclusive != null">AND ce.created_at &gt;= #{fromInclusive}</if>
-                 <if test="toExclusive != null">AND ce.created_at &lt; #{toExclusive}</if>
+            WITH RECURSIVE network AS (
+              SELECT owner.id owner_id,owner.sandbox,child.id member_user_id,1 depth,
+                     CAST(CONCAT(',',owner.id,',',child.id,',') AS CHAR(2048)) path
+                FROM nx_user owner JOIN nx_user child
+                  ON child.sponsor_user_id=owner.id AND child.sandbox=owner.sandbox
+               WHERE owner.is_deleted=0 AND owner.status='ACTIVE' AND owner.sandbox=#{sandbox}
+                 AND child.is_deleted=0 AND child.status='ACTIVE' AND child.id&lt;&gt;owner.id
+                 AND owner.created_at&lt;=#{snapshotAt} AND child.created_at&lt;=#{snapshotAt}
                  AND NOT EXISTS (
                     SELECT 1 FROM nx_team_leaderboard_action a
                      WHERE a.is_deleted=0 AND LOWER(a.period)=LOWER(#{actionPeriod})
-                       AND a.member_user_id=ce.user_id
+                       AND a.member_user_id=owner.id
                        AND UPPER(a.action_type) IN ('FRAUD','DISQUALIFIED','RISK')
+                       <if test="actionPeriod != null and actionPeriod.equalsIgnoreCase('week') and fromInclusive != null">AND a.created_at&gt;=#{fromInclusive}</if>
+                       <if test="actionPeriod != null and actionPeriod.equalsIgnoreCase('week') and toExclusive != null">AND a.created_at&lt;#{toExclusive}</if>
                  )
-               GROUP BY ce.user_id
-              HAVING SUM(ce.amount_usdt) &gt;= #{minVolumeUsd}
+              UNION ALL
+              SELECT n.owner_id,n.sandbox,child.id,n.depth+1,CONCAT(n.path,child.id,',')
+                FROM network n JOIN nx_user child
+                  ON child.sponsor_user_id=n.member_user_id AND child.sandbox=n.sandbox
+               WHERE n.depth&lt;7 AND child.status='ACTIVE' AND child.is_deleted=0
+                 AND child.created_at&lt;=#{snapshotAt}
+                 AND LOCATE(CONCAT(',',child.id,','),n.path)=0
+            ), scored AS (
+              SELECT n.owner_id user_id,SUM(o.compute_points) compute_points
+                FROM network n JOIN nx_order o ON o.user_id=n.member_user_id
+               WHERE o.is_deleted=0 AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
+                 AND o.order_status NOT IN ('REFUNDED','CHARGEBACK') AND o.compute_points&gt;0
+                 AND o.created_at&lt;=#{snapshotAt} AND COALESCE(o.paid_at,o.created_at)&lt;=#{snapshotAt}
+                 <if test="fromInclusive != null">AND COALESCE(o.paid_at,o.created_at)&gt;=#{fromInclusive}</if>
+                 <if test="toExclusive != null">AND COALESCE(o.paid_at,o.created_at)&lt;#{toExclusive}</if>
+               GROUP BY n.owner_id
+              HAVING SUM(o.compute_points)&gt;=#{minComputePoints}
             ), ranked AS (
-              SELECT e.user_id,e.earned_usdt,
-                     ROW_NUMBER() OVER (ORDER BY e.earned_usdt DESC,e.user_id ASC) rank_no
-                FROM earned e
+              SELECT s.user_id,s.compute_points,
+                     ROW_NUMBER() OVER (ORDER BY s.compute_points DESC,s.user_id ASC) rank_no
+                FROM scored s
             )
-            SELECT r.rank_no `rank`,u.id userId,u.nickname,u.v_rank vRank,r.earned_usdt earnedUsdt,
+            SELECT r.rank_no `rank`,u.id userId,u.nickname,u.v_rank vRank,r.compute_points computePoints,
                    (SELECT COUNT(*) FROM nx_user c WHERE c.sponsor_user_id=u.id AND c.sandbox=u.sandbox
                      AND c.status='ACTIVE' AND c.is_deleted=0) directs,
                    (SELECT COUNT(*) FROM nx_team_member tm WHERE tm.user_id=u.id AND tm.is_deleted=0) teamSize,
@@ -173,7 +187,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
                                              @Param("sandbox") Integer sandbox,
                                              @Param("fromInclusive") LocalDateTime fromInclusive,
                                              @Param("toExclusive") LocalDateTime toExclusive,
-                                             @Param("minVolumeUsd") BigDecimal minVolumeUsd,
+                                             @Param("minComputePoints") BigDecimal minComputePoints,
                                              @Param("limit") int limit,
                                              @Param("snapshotAt") LocalDateTime snapshotAt);
 
@@ -342,7 +356,7 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
             String statusUsdt,String statusNex) { }
     record PurchaseSummaryRow(String rewardScope,long rewardCount,BigDecimal amountUsdt,BigDecimal amountNex,
             BigDecimal creditedUsdt,BigDecimal creditedNex,BigDecimal pendingUsdt,BigDecimal pendingNex) { }
-    record LeaderboardRow(Integer rank, Long userId, String nickname, String vRank, BigDecimal earnedUsdt,
+    record LeaderboardRow(Integer rank, Long userId, String nickname, String vRank, BigDecimal computePoints,
                           Integer directs, Integer teamSize, Integer hasDevice) { }
     record CommissionRow(Long id, String commissionType, Long sourceUserId, String sourceUserName,
                          Integer layerNo, String orderNo, BigDecimal orderAmountUsd, BigDecimal amountUsdt,

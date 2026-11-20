@@ -67,7 +67,10 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
             "withdrawVelocity", 15, "accountAge", 10, "anomalyBehavior", 10);
     private static final Set<String> LEGACY_K4_MAPPING_KEYS = Set.of(
             "kyc.reviewScore", "kyc.pendingScore", "kyc.rejectedScore", "kyc.sanctionedScore");
-    private static final List<RiskArbitrageParamView> RHYTHM_ARBITRAGE_PARAMS = List.of(
+    private static final List<RiskArbitrageParamView> ARBITRAGE_PARAMS = List.of(
+            new RiskArbitrageParamView("trialCycleThreshold", "试用循环异常线", ">= 3 次 / 30 天", "同一实体在统计周期内反复开启试用的次数阈值", "范围 2-10 次，统计周期 7-60 天；K2 检测时读取"),
+            new RiskArbitrageParamView("welcomeGiftAnomalyThreshold", "新人礼异常发放线", ">= 2 笔 / 实体", "同一实体重复领取新人礼的异常笔数阈值", "范围 1-5 笔；K2 检测时读取"),
+            new RiskArbitrageParamView("leaderboardVelocityMultiplier", "刷榜增速异常倍数", "> 5x 基线", "佣金增速超过基线倍数时产生刷榜信号", "范围 2x-20x；下一次检测采用"),
             new RiskArbitrageParamView("otpGate.resendSeconds", "验证码重发冷却", "60", "同一手机号两次发送的最小间隔", "单位:秒"),
             new RiskArbitrageParamView("otpGate.dayLimit", "验证码 24h 发送上限", "10", "注册、登录与找回密码共同执行", "单位:次/24h"),
             new RiskArbitrageParamView("otpGate.otpTtlSeconds", "验证码有效期", "300", "验证码签发后的有效时长", "单位:秒"),
@@ -91,6 +94,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         ensureArbitrageParamVersionColumn();
         mapper.createArbitrageRowTable();
         ensureArbitrageRowVersionColumn();
+        ensureArbitrageRowBlockedCountColumn();
         mapper.retireObsoleteArbitrageParam("minHoldingMonths");
         ensureK4Schema();
         mapper.createRiskParamTable();
@@ -232,6 +236,14 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     private void ensureArbitrageRowVersionColumn() {
         try {
             mapper.addArbitrageRowVersionColumn();
+        } catch (RuntimeException ignored) {
+            // Existing deployments may already have this column.
+        }
+    }
+
+    private void ensureArbitrageRowBlockedCountColumn() {
+        try {
+            mapper.addArbitrageRowBlockedCountColumn();
         } catch (RuntimeException ignored) {
             // Existing deployments may already have this column.
         }
@@ -405,7 +417,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public List<RiskArbitrageParamView> arbitrageParams() {
         Map<String, RiskArbitrageParamView> merged = new LinkedHashMap<>();
-        RHYTHM_ARBITRAGE_PARAMS.forEach(row -> merged.put(row.key(), row));
+        ARBITRAGE_PARAMS.forEach(row -> merged.put(row.key(), row));
         mapper.arbitrageParams().stream()
                 .filter(row -> !row.key().startsWith("rewardRisk."))
                 .forEach(row -> merged.put(row.key(), row));
@@ -417,7 +429,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         int updated = mapper.updateArbitrageParam(key, expectedVersion, value);
         if (updated == 0) {
             if (mapper.findArbitrageParam(key) != null || expectedVersion != 0L) return Optional.empty();
-            RiskArbitrageParamView definition = RHYTHM_ARBITRAGE_PARAMS.stream()
+            RiskArbitrageParamView definition = ARBITRAGE_PARAMS.stream()
                     .filter(row -> row.key().equals(key))
                     .findFirst()
                     .orElse(null);
@@ -437,8 +449,9 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public void refreshE3TradeinArbitrageProjection() {
+        var rows = mapper.e3TradeinArbitrageProjection();
         mapper.retireE3TradeinArbitrageRows();
-        for (var row : mapper.e3TradeinArbitrageProjection()) {
+        for (var row : rows) {
             mapper.upsertE3TradeinArbitrageRows(row);
         }
     }
@@ -656,6 +669,11 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         }
         Optional<RiskScoreOverrideView> override = Optional.ofNullable(mapper.activeScoreOverride(row.userNo()));
         int effectiveScore = override.map(RiskScoreOverrideView::overrideScore).orElse(row.modelScore());
+        Map<String, Map<String, Object>> captured = new java.util.HashMap<>();
+        for (RiskScoreContributionView contribution : parseMap(row.capturedContributionsJson(),
+                new TypeReference<List<RiskScoreContributionView>>() {}, List.<RiskScoreContributionView>of())) {
+            if (contribution.structured() != null) captured.put(contribution.dimKey(), contribution.structured());
+        }
         return Optional.of(new RiskScoreUserView(
                 row.userNo(),
                 row.modelScore(),
@@ -670,7 +688,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 mapper.scoreContributions(row.userNo()).stream()
                         .map(c -> new RiskScoreContributionView(
                                 c.dimKey(), c.name(), c.hit(), c.evidence(),
-                                c.subScore(), c.weightPct(), c.points()))
+                                c.subScore(), c.weightPct(), c.points(), captured.get(c.dimKey())))
                         .toList(),
                 List.of()));
     }
@@ -770,7 +788,8 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                 row.withdrawalCount7d(), row.withdrawalAmount7d(),
                 row.withdrawalBaselineDailyCount(), row.withdrawalBaselineDailyAmount(), row.maxWithdrawal24h(),
                 row.accountAgeDays(),
-                row.anomalySignals(), row.tamperDetected()));
+                row.anomalySignals(), row.tamperDetected(),
+                parseMap(row.withdrawalEvidenceJson(), new TypeReference<Map<String, Object>>() {}, null)));
     }
 
     @Override
@@ -914,6 +933,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("stats", stats);
+        response.put("lastSuccessfulCheckAt", mapper.lastSuccessfulMultiAccountCheckAt());
         response.put("params", mapper.riskParams("k1"));
         response.put("clusters", new PageResult<>(clusterTotal, normalizedClusterPageNum, normalizedClusterPageSize, clusters));
         response.put("whitelist", new PageResult<>(whitelistTotal, normalizedWhitelistPageNum, normalizedWhitelistPageSize, whitelist));
@@ -1027,13 +1047,8 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
-    public void retireMissingDetectedClusters(Set<String> activeClusterIds) {
-        mapper.retireMissingDetectedClusters(activeClusterIds == null ? Set.of() : activeClusterIds);
-    }
-
-    @Override
-    public void clearWhitelistedDetectedClusters(Set<String> clusterIds) {
-        mapper.clearWhitelistedDetectedClusters(clusterIds == null ? Set.of() : clusterIds);
+    public void recordSuccessfulMultiAccountCheck() {
+        mapper.recordSuccessfulMultiAccountCheck();
     }
 
     private List<String> nodeUserNos(String nodesJson) {

@@ -3,24 +3,24 @@ package ffdd.opsconsole.auth.application;
 import ffdd.opsconsole.growth.application.H3DayOneBusinessFactService;
 import ffdd.opsconsole.growth.application.H3DayOneBusinessFactContract;
 import ffdd.opsconsole.auth.mapper.AppUserProfileMapper;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
+import ffdd.opsconsole.user.application.UserNicknames;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -31,15 +31,6 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 @RequiredArgsConstructor
 public class AppUserProfileService {
-    private static final SecureRandom RANDOM = new SecureRandom();
-    private static final List<String> ADJECTIVES = List.of(
-            "Nova", "Swift", "Quantum", "Nebula", "Cosmic", "Prime", "Turbo", "Photon",
-            "Zenith", "Atlas", "Vector", "Ember", "Lunar", "Solar", "Hyper", "Astro");
-    private static final List<String> NOUNS = List.of(
-            "Rover", "Pilot", "Falcon", "Orbit", "Beacon", "Circuit", "Vertex", "Pulse",
-            "Ranger", "Comet", "Relay", "Spark", "Drift", "Core", "Harbor", "Summit");
-    private static final Set<String> ALLOWED_ADJECTIVES = Set.copyOf(ADJECTIVES);
-    private static final Set<String> ALLOWED_NOUNS = Set.copyOf(NOUNS);
     /** A user may change their nickname, and separately their avatar, once per interval. */
     static final java.time.Duration CHANGE_INTERVAL = java.time.Duration.ofDays(7);
 
@@ -49,6 +40,7 @@ public class AppUserProfileService {
     private final ObjectStorageService objectStorage;
     private final H3DayOneBusinessFactService dayOneFacts;
     private final AppUserAvatarImageService avatarImages;
+    private final PlatformExperienceConfigService experienceConfigService;
 
     @Transactional(readOnly = true)
     public Map<String, Object> profile(Long userId) {
@@ -70,19 +62,14 @@ public class AppUserProfileService {
     @Transactional(readOnly = true)
     public List<String> nicknameCandidates(Long userId) {
         requireActiveUser(userId);
-        LinkedHashSet<String> candidates = new LinkedHashSet<>();
-        while (candidates.size() < 6) {
-            candidates.add(ADJECTIVES.get(RANDOM.nextInt(ADJECTIVES.size())) + " "
-                    + NOUNS.get(RANDOM.nextInt(NOUNS.size())) + " " + (10 + RANDOM.nextInt(90)));
-        }
-        return List.copyOf(candidates);
+        return UserNicknames.candidates(6, mapper::nicknameTaken);
     }
 
     public Map<String, Object> updateNickname(
             Long userId, String idempotencyKey, UpdateNicknameRequest request) {
         requireActiveUser(userId);
         if (request == null || !StringUtils.hasText(request.expectedNickname())
-                || !isCurated(request.nickname())) {
+                || !UserNicknames.isGenerated(request.nickname())) {
             throw new BizException(422, "USER_NICKNAME_NOT_CURATED");
         }
         String expected = request.expectedNickname().trim();
@@ -99,7 +86,8 @@ public class AppUserProfileService {
         if (!InterfaceLanguages.CODES.contains(normalized)) {
             throw new BizException(422, "USER_LANGUAGE_INVALID");
         }
-        if (mapper.updateLanguage(userId, normalized) != 1) {
+        String effectiveLanguage = experienceConfigService.interfaceLanguages().contains(normalized) ? normalized : "en";
+        if (mapper.updateLanguage(userId, effectiveLanguage) != 1) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
         audit.recordRequired(AuditLogWriteRequest.builder()
@@ -112,9 +100,9 @@ public class AppUserProfileService {
                 .actorUsername("user:" + userId)
                 .result("SUCCESS")
                 .riskLevel("LOW")
-                .detail(Map.of("language", normalized))
+                .detail(Map.of("language", effectiveLanguage))
                 .build());
-        return Map.of("language", normalized, "status", "UPDATED");
+        return Map.of("language", effectiveLanguage, "status", "UPDATED");
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -126,9 +114,13 @@ public class AppUserProfileService {
         }
         if (!current.equals(expected)) throw new BizException(409, "USER_PROFILE_VERSION_CONFLICT");
         if (nextChangeAt(mapper.nicknameChangedAt(userId)) != null) throw new BizException(409, "USER_NICKNAME_CHANGE_TOO_SOON");
-        if (mapper.updateNickname(userId, nickname, expected) != 1) {
-            throw new BizException(409, "USER_PROFILE_VERSION_CONFLICT");
+        int updated;
+        try {
+            updated = mapper.updateNickname(userId, nickname, expected);
+        } catch (DuplicateKeyException exception) {
+            throw new BizException(409, "USER_NICKNAME_TAKEN");
         }
+        if (updated != 1) throw new BizException(409, "USER_PROFILE_VERSION_CONFLICT");
         audit.recordRequired(AuditLogWriteRequest.builder()
                 .action("USER_NICKNAME_UPDATED")
                 .resourceType("USER_PROFILE")
@@ -203,15 +195,6 @@ public class AppUserProfileService {
         if (userId == null || userId <= 0 || mapper.activeUser(userId) == null) {
             throw new BizException(404, "USER_NOT_FOUND_OR_INACTIVE");
         }
-    }
-
-    private boolean isCurated(String value) {
-        if (!StringUtils.hasText(value) || value.length() > 48) return false;
-        String[] parts = value.trim().split(" ");
-        if (parts.length != 3 || !ALLOWED_ADJECTIVES.contains(parts[0]) || !ALLOWED_NOUNS.contains(parts[1])) {
-            return false;
-        }
-        return parts[2].matches("[1-9][0-9]");
     }
 
     private String hash(String value) {

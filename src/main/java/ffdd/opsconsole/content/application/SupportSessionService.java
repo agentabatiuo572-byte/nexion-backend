@@ -10,6 +10,9 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
+import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.Collection;
@@ -21,6 +24,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @ApplicationService
@@ -35,9 +40,15 @@ public class SupportSessionService {
     private final Clock clock;
     private final PlatformTransactionManager transactions;
     private final ProductionSupportPathGuard production;
+    private final AdminIdempotencyRecordMapper commandRecords;
+    private final ObjectMapper json;
+
+    public static final String SEND_REJECTION_RECEIPT = "M3_SEND_PREFLIGHT_REJECTED_V1";
 
     public record Holder(Long adminId,String name,String role) {}
-    public record State(String state,Holder holder,String lastSentAt,String autoEndAt,int endMinutes) {}
+    /** sessionRef identifies one reception instance, not just "this administrator + this customer". */
+    public record State(String state,Holder holder,String sessionRef,String lastSentAt,String autoEndAt,int endMinutes) {}
+    public record End(String sessionRef) {}
     public static class Busy extends BizException {
         private final State state;
         Busy(State state) { super(409,"SUPPORT_SESSION_BUSY"); this.state=state; }
@@ -66,9 +77,12 @@ public class SupportSessionService {
     }
 
     private Holder holder(Hold row) {return new Holder(row.adminId(),row.name(),row.role());}
+    private static String sessionRef(Hold row) {
+        return row==null?null:row.assignmentId()+":"+row.startedAt();
+    }
     private State view(long viewer,Hold row) {
-        if(row==null) return new State("FREE",null,null,null,sessions.endMinutes());
-        return new State(row.adminId()==viewer?"MINE":"OTHER",holder(row),
+        if(row==null) return new State("FREE",null,null,null,null,sessions.endMinutes());
+        return new State(row.adminId()==viewer?"MINE":"OTHER",holder(row),sessionRef(row),
                 row.lastSentAt().toInstant(java.time.ZoneOffset.UTC).toString(),row.autoEndAt().toInstant(java.time.ZoneOffset.UTC).toString(),row.endMinutes());
     }
 
@@ -85,7 +99,21 @@ public class SupportSessionService {
             throw new BizException(422,"SUPPORT_SESSION_MAINTENANCE_NOT_ALLOWED");
         Hold row=active(assignment.customerId());
         if(row!=null && row.adminId()!=actor) throw new Busy(view(actor,row));
-        if(row!=null && !row.assignmentId().equals(assignment.id())) throw new BizException(409,"SUPPORT_ASSIGNMENT_CHANGED");
+        if(row!=null && !row.assignmentId().equals(assignment.id())) throw new BizException(409,"SUPPORT_RECEPTION_ASSIGNMENT_STALE");
+    }
+
+    @org.springframework.context.event.EventListener
+    public void assignmentChanged(SupportBindingService.SupportAssignmentChanged event) {
+        if (event.current() == null) return;
+        Hold row = active(event.customerId());
+        if (row == null || row.assignmentId().equals(event.current().id())) return;
+        if (row.adminId().equals(event.current().agentAdminId())) {
+            if (sessions.moveToAssignment(event.customerId(), row.assignmentId(), event.current().id(), row.adminId()) != 1) {
+                throw new BizException(409, "SUPPORT_RECEPTION_ASSIGNMENT_STALE");
+            }
+        } else if (sessions.end(event.customerId(), null, "REASSIGNED") == 1) {
+            ended(row, "REASSIGNED");
+        }
     }
 
     public void sent(SupportAssignment assignment,long actor,String name,String role,String no) {
@@ -95,18 +123,28 @@ public class SupportSessionService {
 
     @Transactional
     @SuppressWarnings({"unchecked","rawtypes"})
-    public ApiResult<?> end(long customer,String key) {
+    public ApiResult<?> end(long customer,String key,End body) {
         requireBoundRead(customer);
         long actor=ownership.actorId();
         if(bindings.writerGrant(actor).isEmpty()) throw new BizException(403,"SUPPORT_WRITE_FORBIDDEN");
         SupportAttachmentService.token(key);
-        return commands.executeRetained("M3_SESSION_END:"+actor,key,Long.toString(customer),ApiResult.class,()->{
+        String requestedRef=body==null||body.sessionRef()==null?null:body.sessionRef().trim();
+        String reference=requestedRef==null||requestedRef.isEmpty()?Long.toString(customer):customer+"|"+requestedRef;
+        return commands.executeRetained("M3_SESSION_END:"+actor,key,reference,ApiResult.class,()->{
+            // Instance validation belongs to the first execution only. A successful retry of the original key/body
+            // must return its durable receipt even if a newer reception R2 is now current; it must not change R2.
             Hold row=active(customer);
             if(row==null || row.adminId()!=actor) throw new BizException(409,"SUPPORT_SESSION_NOT_HOLDER");
+            if(requestedRef!=null && !requestedRef.isEmpty() && !requestedRef.equals(sessionRef(row)))
+                throw new BizException(409,"SUPPORT_SESSION_CHANGED");
             sessions.end(customer,null,"MANUAL");
             ended(row,"MANUAL");
             return ApiResult.ok(Map.of("customerId",customer));
         });
+    }
+
+    public ApiResult<?> end(long customer,String key) {
+        return end(customer,key,null);
     }
 
     public void resolve(long customer) {
@@ -132,14 +170,59 @@ public class SupportSessionService {
     }
 
     public void rejected(Long customer,String operation,String error) {
+        audit.recordRequiredInNewTransaction(rejectionAudit(customer,operation,error,Map.of()));
+    }
+
+    /** Only a new, identified preflight rejection may create this retained receipt. */
+    @Transactional(propagation=Propagation.REQUIRES_NEW,rollbackFor=Exception.class)
+    public void rejectedSend(long customer,String operation,String key,String clientMessageId,String requestHash,
+                             BizException failure) {
+        long actor=ownership.actorId();
+        Map<String,Object> detail=sendRejectionDetails(actor,customer,operation,key,clientMessageId,requestHash);
+        AdminIdempotencyRecordEntity record=new AdminIdempotencyRecordEntity();
+        record.setScope(operation+":"+actor);
+        record.setIdempotencyKey(key);
+        record.setRequestHash(requestHash);
+        // SUCCEEDED describes the retained response, whose nonzero business code is an explicit rejection.
+        // The original executeRetained path therefore replays it instead of retrying a FAILED claim.
+        record.setStatus("SUCCEEDED");
+        record.setResponseJson(json.valueToTree(ApiResult.fail(failure.getCode(),failure.getMessage(),detail)).toString());
+        record.setExpiresAt(LocalDateTime.now(clock).truncatedTo(java.time.temporal.ChronoUnit.SECONDS).plusHours(24));
+        record.setIsDeleted(0);
+        try {
+            if(commandRecords.insert(record)!=1) throw new IllegalStateException("SUPPORT_REJECTION_RECEIPT_NOT_SAVED");
+        } catch (DuplicateKeyException priorCommand) {
+            // The same unique scope/key protects normal claims. Never replace even a failed or expired old record.
+            detail.remove("receiptType");
+            detail.remove("sent");
+        }
+        audit.recordRequired(rejectionAudit(customer,operation,failure.getMessage(),detail));
+    }
+
+    public static Map<String,Object> sendRejectionDetails(long actor,long customer,String operation,String key,
+            String clientMessageId,String requestHash) {
+        Map<String,Object> detail=new LinkedHashMap<>();
+        detail.put("receiptType",SEND_REJECTION_RECEIPT);
+        detail.put("actorId",actor);
+        detail.put("customerId",customer);
+        detail.put("operation",operation);
+        detail.put("idempotencyKey",key);
+        detail.put("clientMessageId",clientMessageId);
+        detail.put("requestHash",requestHash);
+        detail.put("sent",false);
+        return detail;
+    }
+
+    private AuditLogWriteRequest rejectionAudit(Long customer,String operation,String error,Map<String,Object> command) {
         Hold hold=customer==null?null:sessions.hold(customer);
         Map<String,Object> detail=new LinkedHashMap<>();
+        detail.putAll(command);
         detail.put("operation",operation);
         detail.put("code",error);
         if(hold!=null && hold.active()) detail.put("holder",holder(hold));
-        audit.recordRequiredInNewTransaction(AuditLogWriteRequest.builder().action("SUPPORT_SESSION_REJECTED")
+        return AuditLogWriteRequest.builder().action("SUPPORT_SESSION_REJECTED")
                 .resourceType("SUPPORT_SESSION").resourceId(String.valueOf(customer)).actorType("ADMIN")
-                .actorUsername("admin:"+ownership.actorId()).result("REJECTED").detail(detail).build());
+                .actorUsername("admin:"+ownership.actorId()).result("REJECTED").detail(detail).build();
     }
 
     @Transactional(readOnly=true)

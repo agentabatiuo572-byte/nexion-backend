@@ -25,6 +25,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -56,9 +57,13 @@ public class AppLearningService {
         requireDevelopmentAccount(userId);
         String sourceEnvironment = rewardEnvironmentForRead(userId);
         Map<String, LearningProgressRow> progress = progressByCourse(userId, sourceEnvironment);
-        List<AppLearningCourseView> courses = publishedCourses(sourceEnvironment).stream()
-                .map(course -> toAppCourse(userId, course, language, progress.get(key(course.id(), course.version())), sourceEnvironment))
-                .toList();
+        List<AppLearningCourseView> courses = new ArrayList<>();
+        for (LearningCourseView course : publishedCourses(sourceEnvironment)) {
+            LocalizedCourse copy = localizedCourse(course, language);
+            if (copy != null) {
+                courses.add(toAppCourse(userId, course, copy, progress.get(key(course.id(), course.version())), sourceEnvironment));
+            }
+        }
         int completed = (int) courses.stream().filter(AppLearningCourseView::completed).count();
         BigDecimal earned = sandbox(sourceEnvironment) ? learningMapper.sumSandboxGrantedReward(sandboxRunId(), userId) : learningMapper.sumGrantedReward(userId);
         return ApiResult.ok(new AppLearningOverview(courses, completed, courses.size(), nz(earned), true,
@@ -106,7 +111,9 @@ public class AppLearningService {
         String sourceEnvironment = rewardEnvironmentForRead(userId);
         LearningCourseView course = publishedCourse(courseId, sourceEnvironment);
         if (course == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
-        return ApiResult.ok(toAppCourse(userId, course, language,
+        LocalizedCourse copy = localizedCourse(course, language);
+        if (copy == null) return ApiResult.fail(404, "LEARNING_COURSE_UNAVAILABLE");
+        return ApiResult.ok(toAppCourse(userId, course, copy,
                 findProgress(sourceEnvironment, userId, course), sourceEnvironment));
     }
 
@@ -124,10 +131,12 @@ public class AppLearningService {
         if (course == null) return ApiResult.fail(404, "LEARNING_COURSE_NOT_FOUND");
         ApiResult<AppLearningCourseView> versionGuard = requireExpectedVersion(course, expectedVersion);
         if (versionGuard != null) return versionGuard;
+        LocalizedCourse copy = localizedCourse(course, language);
+        if (copy == null) return ApiResult.fail(404, "LEARNING_COURSE_UNAVAILABLE");
         if (startCourse(sourceEnvironment, userId, course) == 1) {
             insertLearningEvent(sourceEnvironment, userId, course, "course_started", "{}");
         }
-        return ApiResult.ok(toAppCourse(userId, course, language,
+        return ApiResult.ok(toAppCourse(userId, course, copy,
                 findProgress(sourceEnvironment, userId, course), sourceEnvironment));
     }
 
@@ -403,26 +412,44 @@ public class AppLearningService {
         return locked != null ? locked : findProgress(sourceEnvironment, userId, course);
     }
 
-    private AppLearningCourseView toAppCourse(Long userId, LearningCourseView course, String language,
-                                               LearningProgressRow progress, String sourceEnvironment) {
+    private record LocalizedCourse(String title, String body, List<AppLearningCourseView.Question> questions) {}
+
+    private LocalizedCourse localizedCourse(LearningCourseView course, String language) {
         String locale = normalizeLanguage(language);
-        List<AppLearningCourseView.Question> questions = (course.quizQuestions() == null ? List.<LearningQuizQuestionView>of() : course.quizQuestions())
-                .stream().map(question -> new AppLearningCourseView.Question(
-                        question.questionId(), localized(locale, question.questionZh(), question.questionVi(), question.questionEn(), question.questionTranslations()),
-                        localizedOptions(locale, question))).toList();
+        boolean requireReadableCopy = "en".equals(locale) || "vi".equals(locale) || InterfaceLanguages.isAdditional(locale);
+        String title = localized(locale, course.titleZh(), course.titleVi(), course.titleEn(), course.titleTranslations());
+        String body = localized(locale, course.bodyZh(), course.bodyVi(), course.bodyEn(), course.bodyTranslations());
+        if (requireReadableCopy && (!StringUtils.hasText(title) || !StringUtils.hasText(body))) return null;
+
+        List<AppLearningCourseView.Question> questions = new ArrayList<>();
+        for (LearningQuizQuestionView question : course.quizQuestions() == null ? List.<LearningQuizQuestionView>of() : course.quizQuestions()) {
+            String prompt = localized(locale, question.questionZh(), question.questionVi(), question.questionEn(), question.questionTranslations());
+            List<String> options = localizedOptions(locale, question);
+            if (requireReadableCopy && (!StringUtils.hasText(prompt) || options == null || options.size() < 2
+                    || question.optionsZh() == null || options.size() != question.optionsZh().size()
+                    || options.stream().anyMatch(option -> !StringUtils.hasText(option)))) {
+                return null;
+            }
+            questions.add(new AppLearningCourseView.Question(question.questionId(), prompt, options));
+        }
+        return new LocalizedCourse(title, body, questions);
+    }
+
+    private AppLearningCourseView toAppCourse(Long userId, LearningCourseView course, LocalizedCourse copy,
+                                               LearningProgressRow progress, String sourceEnvironment) {
         int progressPct = progress == null ? 0 : progress.progressPct();
         boolean rewardGranted = progress != null && progress.progressPct() >= 100
                 && countGrantedReward(sandbox(sourceEnvironment), userId, course) > 0;
         return new AppLearningCourseView(course.id(),
-                localized(locale, course.titleZh(), course.titleVi(), course.titleEn(), course.titleTranslations()),
-                localized(locale, course.bodyZh(), course.bodyVi(), course.bodyEn(), course.bodyTranslations()),
-                course.category(), course.format(), course.level(), course.duration(), course.rewardNex(), course.featured(),
+                copy.title(), copy.body(),
+                course.category(), course.format(), course.level(), course.duration(),
+                course.rewardNex() == null ? BigDecimal.ZERO : course.rewardNex(), course.featured(),
                 course.version(), progressPct, progressPct >= 100, progress == null ? 0 : progress.attempts(),
                 progress == null ? 0 : progress.lastScore(), rewardGranted,
                 true, sandbox(sourceEnvironment) ? "mock" : "provider", sourceEnvironment,
                 sandbox(sourceEnvironment) ? sandboxRunId() : "",
                 sandbox(sourceEnvironment) ? "ACCEPTANCE SANDBOX • NON-PRODUCTION" : "PRODUCTION LEARNING FACTS",
-                questions);
+                copy.questions());
     }
 
     private List<String> localizedOptions(String locale, LearningQuizQuestionView question) {
@@ -435,7 +462,7 @@ public class AppLearningService {
             case "en" -> question.optionsEn();
             default -> question.optionsZh();
         };
-        if (values == null || values.isEmpty()) values = question.optionsZh();
+        if ("vi".equals(locale) && (values == null || values.isEmpty())) values = question.optionsEn();
         return values == null ? List.of() : values;
     }
 
@@ -450,7 +477,6 @@ public class AppLearningService {
             default -> zh;
         };
         if (StringUtils.hasText(selected)) return selected;
-        if (StringUtils.hasText(zh)) return zh;
         return StringUtils.hasText(en) ? en : "";
     }
 

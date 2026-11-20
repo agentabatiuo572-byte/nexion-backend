@@ -12,11 +12,12 @@ public record UserLoginResponse(
         RegistrationReceipt registrationReceipt,
         String sessionSyncKey,
         String sessionGroup, String installationId, Long appSessionVersion, String sessionChainId,
-        String loginAttemptId, String sessionEndedReason, Boolean executionSupported, String loginAttemptStatus) {
+        String loginAttemptId, String sessionEndedReason, Boolean executionSupported, String loginAttemptStatus,
+        String lockedUntil) {
     public UserLoginResponse(String accessToken, String tokenType, UserSession user, String challengeNo,
             String deliveryHint, String refreshToken, RegistrationReceipt registrationReceipt, String sessionSyncKey) {
         this(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, registrationReceipt, sessionSyncKey,
-                null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null);
     }
     public UserLoginResponse(String accessToken, String tokenType, UserSession user,
                              String challengeNo, String deliveryHint, String refreshToken,
@@ -36,27 +37,44 @@ public record UserLoginResponse(
         this(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, null);
     }
 
+    /** Existing 16-value callers keep null lockedUntil; only lock failure responses set it. */
+    public UserLoginResponse(String accessToken, String tokenType, UserSession user, String challengeNo,
+                             String deliveryHint, String refreshToken, RegistrationReceipt registrationReceipt,
+                             String sessionSyncKey, String sessionGroup, String installationId, Long appSessionVersion,
+                             String sessionChainId, String loginAttemptId, String sessionEndedReason,
+                             Boolean executionSupported, String loginAttemptStatus) {
+        this(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, registrationReceipt, sessionSyncKey,
+                sessionGroup, installationId, appSessionVersion, sessionChainId, loginAttemptId, sessionEndedReason,
+                executionSupported, loginAttemptStatus, null);
+    }
+
     /** A failed refresh returns only its verified session's termination reason, never credentials or identity. */
     public static UserLoginResponse ended(String reason) {
         return new UserLoginResponse(null, null, null, null, null, null, null, null,
-                null, null, null, null, null, reason, null, null);
+                null, null, null, null, null, reason, null, null, null);
     }
 
     public static UserLoginResponse challenge(UserSession user, String challengeNo, String deliveryHint) {
         return new UserLoginResponse(null, "Challenge", user, challengeNo, deliveryHint, null, null);
     }
 
+    /** Lock failure carries only the persisted deadline; no token, identity or other session data. */
+    public static UserLoginResponse locked(String lockedUntil) {
+        return new UserLoginResponse(null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null, lockedUntil);
+    }
+
     public UserLoginResponse withRegistrationReceipt(RegistrationReceipt receipt) {
         return new UserLoginResponse(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, receipt,
                 sessionSyncKey, sessionGroup, installationId, appSessionVersion, sessionChainId, loginAttemptId,
-                sessionEndedReason, executionSupported, loginAttemptStatus);
+                sessionEndedReason, executionSupported, loginAttemptStatus, lockedUntil);
     }
 
     public UserLoginResponse withContext(ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity session, String status) {
         return new UserLoginResponse(accessToken, tokenType, user, challengeNo, deliveryHint, refreshToken, registrationReceipt,
                 sessionSyncKey, session.getSessionGroup(), session.getInstallationId(), session.getAppSessionVersion(),
                 session.getSessionChainId(), session.getLoginAttemptId(), session.getSessionEndedReason(),
-                session.getExecutionSupported(), status);
+                session.getExecutionSupported(), status, lockedUntil);
     }
 
     public record UserSession(Long userId, String countryCode, String phone, String nickname,

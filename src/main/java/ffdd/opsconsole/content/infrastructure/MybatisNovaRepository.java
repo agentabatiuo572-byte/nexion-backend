@@ -56,6 +56,11 @@ public class MybatisNovaRepository implements NovaRepository {
     }
 
     @Override
+    public List<Map<String, Object>> channelPushSentCounts(LocalDateTime fromAt, LocalDateTime toAt) {
+        return mapper.channelPushSentCounts(fromAt, toAt);
+    }
+
+    @Override
     public int nextChannelOrder() {
         return mapper.maxChannelOrder() + 10;
     }
@@ -140,7 +145,7 @@ public class MybatisNovaRepository implements NovaRepository {
         return mapper.updateTemplateIfCurrent(
                 current.channel(), current.version(), current.titleZh(), current.bodyZh(),
                 current.titleVi(), current.bodyVi(), text(current.titleEn()), text(current.bodyEn()),
-                name, cta, version, titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn,
+                current.name(), current.cta(), current.translationsJson(), name, cta, version, titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn,
                 operator, reason) == 1;
     }
 
@@ -214,12 +219,23 @@ public class MybatisNovaRepository implements NovaRepository {
 
     @Override
     public List<NovaSocialEventView> socialEvents(String eventType, String status, int limit, int offset) {
-        return mapper.socialEventsFiltered(eventType, status, Math.min(Math.max(1, limit), 100), Math.max(0, offset));
+        return mapper.socialEventsFiltered(eventType, status, LocalDateTime.now(), Math.min(Math.max(1, limit), 100), Math.max(0, offset));
+    }
+
+    @Override
+    public List<NovaSocialEventView> socialEvents(String eventType, String status, LocalDateTime asOf,
+                                                  int limit, int offset) {
+        return mapper.socialEventsFiltered(eventType, status, asOf, Math.min(Math.max(1, limit), 100), Math.max(0, offset));
     }
 
     @Override
     public long countSocialEvents(String eventType, String status) {
-        return mapper.countSocialEventsFiltered(eventType, status);
+        return mapper.countSocialEventsFiltered(eventType, status, LocalDateTime.now());
+    }
+
+    @Override
+    public long countSocialEvents(String eventType, String status, LocalDateTime asOf) {
+        return mapper.countSocialEventsFiltered(eventType, status, asOf);
     }
 
     @Override

@@ -477,7 +477,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                AND UPPER(d.ownership_status) = 'OWNED' AND UPPER(d.status) = 'ACTIVE'
                AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
                AND UPPER(COALESCE(d.device_type,'')) NOT IN ('PHONE','MOBILE')
-               AND BINARY r.paused_reason = BINARY 'USER_DEACTIVATED'
+               AND (BINARY r.paused_reason = BINARY 'USER_DEACTIVATED'
+                    OR BINARY r.paused_reason = BINARY 'deactivate')
             """)
     int resumeUserDeactivatedRuntime(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
@@ -570,7 +571,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                    d.activated_at AS activatedAt,
                    d.deactivated_at AS deactivatedAt,
                    d.purchased_at AS purchasedAt,
-                   d.daily_usdt AS dailyUsdt,
+                   CASE WHEN p.monthly_target_usdt IS NOT NULL THEN ROUND(p.monthly_target_usdt/30,6) ELSE d.daily_usdt END AS dailyUsdt,
                    d.daily_nex AS dailyNex,
                    d.gpu_model AS gpuModel,
                    d.vram_total_gb AS vramTotalGb,
@@ -586,7 +587,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                                 AND COALESCE(r.source_environment, 'PRODUCTION') = 'PRODUCTION'
                                 AND UPPER(r.earning_status) IN
                                     ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')), 0) AS cumulativeOutputUsdt,
-                   d.hashrate AS hashrate,d.source_channel AS sourceChannel,d.product_tier AS productTier
+                   d.hashrate AS hashrate,d.source_channel AS sourceChannel,d.product_tier AS productTier,p.monthly_target_usdt AS monthlyTargetUsdt,d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id = d.user_id
                             AND u.sandbox = 1
@@ -595,7 +596,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
               LEFT JOIN nx_user_device_runtime runtime
                 ON runtime.user_device_id = d.id AND runtime.is_deleted = 0
               LEFT JOIN nx_product p
-                ON p.id = d.product_id AND p.is_deleted = 0
+                ON p.id = d.product_id
               LEFT JOIN nx_order o
                 ON o.order_no = d.source_order_no AND o.user_id = d.user_id
                AND o.payment_status = 'PAID' AND o.is_deleted = 0
@@ -660,7 +661,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                    d.activated_at AS activatedAt,
                    d.deactivated_at AS deactivatedAt,
                    d.purchased_at AS purchasedAt,
-                   d.daily_usdt AS dailyUsdt,
+                   CASE WHEN p.monthly_target_usdt IS NOT NULL THEN ROUND(p.monthly_target_usdt/30,6) ELSE d.daily_usdt END AS dailyUsdt,
                    d.daily_nex AS dailyNex,
                    d.gpu_model AS gpuModel,
                    d.vram_total_gb AS vramTotalGb,
@@ -671,7 +672,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                                       NULLIF(d.price_usdt_snapshot, 0), p.price_usdt, 0)
                    END AS actualPaidUsdt,
                    COALESCE(output.totalUsdt, 0) AS cumulativeOutputUsdt,
-                   d.hashrate AS hashrate,d.source_channel AS sourceChannel,d.product_tier AS productTier
+                   d.hashrate AS hashrate,d.source_channel AS sourceChannel,d.product_tier AS productTier,p.monthly_target_usdt AS monthlyTargetUsdt,d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND COALESCE(u.sandbox,0)=0
               LEFT JOIN nx_user_device_runtime runtime
@@ -687,7 +688,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                  GROUP BY r.user_device_id
               ) output ON output.user_device_id = d.id
               LEFT JOIN nx_product p
-                ON p.id = d.product_id AND p.is_deleted = 0
+                ON p.id = d.product_id
               LEFT JOIN nx_order o
                 ON o.order_no = d.source_order_no AND o.user_id = d.user_id
                AND o.payment_status = 'PAID' AND o.is_deleted = 0
@@ -710,12 +711,14 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                    d.product_code AS productCode,d.status,'UNKNOWN' AS runtimeStatus,d.row_version AS rowVersion,
                    d.pending_deactivate AS pendingDeactivate,d.activated_at AS activatedAt,
                    d.deactivated_at AS deactivatedAt,
-                   d.purchased_at AS purchasedAt,d.daily_usdt AS dailyUsdt,d.daily_nex AS dailyNex,
+                   d.purchased_at AS purchasedAt,CASE WHEN p.monthly_target_usdt IS NOT NULL THEN ROUND(p.monthly_target_usdt/30,6) ELSE d.daily_usdt END AS dailyUsdt,
+                   d.daily_nex AS dailyNex,
                    d.gpu_model AS gpuModel,d.vram_total_gb AS vramTotalGb,d.base_power_w AS basePowerW,
                    d.dc_location AS location,0 AS actualPaidUsdt,0 AS cumulativeOutputUsdt,
-                   d.hashrate AS hashrate,d.source_channel AS sourceChannel,d.product_tier AS productTier
+                   d.hashrate AS hashrate,d.source_channel AS sourceChannel,d.product_tier AS productTier,p.monthly_target_usdt AS monthlyTargetUsdt,d.series_code AS seriesCode
               FROM nx_user_device d
               JOIN nx_user u ON u.id=d.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
+              LEFT JOIN nx_commerce_sandbox_catalog p ON p.product_no=d.product_code AND p.run_id=#{runId} AND p.is_deleted=0
              WHERE d.user_id=#{userId} AND d.source_environment='SANDBOX' AND d.run_id=#{runId}
                AND d.is_deleted=0 AND UPPER(d.ownership_status)='OWNED'
              ORDER BY d.purchased_at,d.id
@@ -978,13 +981,13 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                        AND wb.type = 'ORDER_REFUND' AND wb.token = 'USDT'
                        AND wb.direction = 'IN' AND wb.amount > 0
                      ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundedAt,
-                   (SELECT wb.amount
+                   COALESCE(o.refund_amount_usdt,(SELECT wb.amount
                      FROM nx_wallet_bill wb
                      WHERE wb.user_id = o.user_id AND wb.deleted = 0
                        AND wb.bill_no = CONCAT('E4-BILL-', o.order_no)
                        AND wb.type = 'ORDER_REFUND' AND wb.token = 'USDT'
                        AND wb.direction = 'IN' AND wb.amount > 0
-                     ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1) AS refundAmountUsdt,
+                     ORDER BY wb.occurred_at DESC, wb.id DESC LIMIT 1)) AS refundAmountUsdt,
                    CASE WHEN EXISTS (
                        SELECT 1 FROM nx_wallet_bill wb
                         WHERE wb.user_id = o.user_id AND wb.deleted = 0
@@ -1023,6 +1026,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                       WHERE ordinary_device.user_id = o.user_id
                         AND ordinary_device.source_order_no = o.order_no
                         AND ordinary_device.is_deleted = 0
+                        AND ordinary_device.source_channel IN ('ORDER','TRIAL')
                    ))
                AND ud.user_id = o.user_id AND ud.is_deleted = 0
              WHERE o.user_id = #{userId} AND o.is_deleted = 0
@@ -1168,7 +1172,34 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             BigDecimal cumulativeOutputUsdt,
             BigDecimal hashrate,
             String sourceChannel,
+            String productTier, BigDecimal monthlyTargetUsdt, String seriesCode) {
+    public OwnedDevice(
+            Long id,
+            String instanceNo,
+            String name,
+            String deviceType,
+            String productCode,
+            String status,
+            String runtimeStatus,
+            Long rowVersion,
+            boolean pendingDeactivate,
+            LocalDateTime activatedAt,
+            LocalDateTime deactivatedAt,
+            LocalDateTime purchasedAt,
+            BigDecimal dailyUsdt,
+            BigDecimal dailyNex,
+            String gpuModel,
+            Integer vramTotalGb,
+            BigDecimal basePowerW,
+            String location,
+            BigDecimal actualPaidUsdt,
+            BigDecimal cumulativeOutputUsdt,
+            BigDecimal hashrate,
+            String sourceChannel,
             String productTier) {
+        this(id,instanceNo,name,deviceType,productCode,status,runtimeStatus,rowVersion,pendingDeactivate,activatedAt,deactivatedAt,purchasedAt,dailyUsdt,dailyNex,gpuModel,vramTotalGb,basePowerW,location,actualPaidUsdt,cumulativeOutputUsdt,hashrate,sourceChannel,productTier,null,null);
+    }
+
         public OwnedDevice(
                 Long id, String instanceNo, String name, String deviceType, String productCode, String status,
                 String runtimeStatus, Long rowVersion, boolean pendingDeactivate, LocalDateTime activatedAt,
@@ -1177,7 +1208,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                 BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
             this(id, instanceNo, name, deviceType, productCode, status, runtimeStatus, rowVersion, pendingDeactivate,
                     activatedAt, deactivatedAt, purchasedAt, dailyUsdt, dailyNex, gpuModel, vramTotalGb,
-                    basePowerW, location, actualPaidUsdt, cumulativeOutputUsdt, null, null, null);
+                    basePowerW, location, actualPaidUsdt, cumulativeOutputUsdt, null, null, null, null, null);
         }
         public OwnedDevice(
                 Long id, String instanceNo, String name, String deviceType, String productCode, String status,
@@ -1187,7 +1218,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                 BigDecimal cumulativeOutputUsdt) {
             this(id, instanceNo, name, deviceType, productCode, status, runtimeStatus, rowVersion, pendingDeactivate,
                     activatedAt, null, purchasedAt, dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
-                    actualPaidUsdt, cumulativeOutputUsdt, null, null, null);
+                    actualPaidUsdt, cumulativeOutputUsdt, null, null, null, null, null);
         }
 
         public OwnedDevice(
@@ -1197,7 +1228,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                 BigDecimal basePowerW, String location, BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
             this(id, instanceNo, name, deviceType, productCode, status, "UNKNOWN", rowVersion, pendingDeactivate,
                     activatedAt, null, purchasedAt, dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
-                    actualPaidUsdt, cumulativeOutputUsdt, null, null, null);
+                    actualPaidUsdt, cumulativeOutputUsdt, null, null, null, null, null);
         }
 
         public OwnedDevice(
@@ -1207,7 +1238,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                 BigDecimal basePowerW, String location, BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
             this(id, instanceNo, name, deviceType, productCode, status, "UNKNOWN", rowVersion, false, activatedAt, null, purchasedAt,
                     dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
-                    actualPaidUsdt, cumulativeOutputUsdt, null, null, null);
+                    actualPaidUsdt, cumulativeOutputUsdt, null, null, null, null, null);
         }
 
         public OwnedDevice(
@@ -1217,7 +1248,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                 BigDecimal actualPaidUsdt, BigDecimal cumulativeOutputUsdt) {
             this(id, instanceNo, name, deviceType, productCode, status, "UNKNOWN", 0L, false, activatedAt, null, purchasedAt,
                     dailyUsdt, dailyNex, gpuModel, vramTotalGb, basePowerW, location,
-                    actualPaidUsdt, cumulativeOutputUsdt, null, null, null);
+                    actualPaidUsdt, cumulativeOutputUsdt, null, null, null, null, null);
         }
     }
 

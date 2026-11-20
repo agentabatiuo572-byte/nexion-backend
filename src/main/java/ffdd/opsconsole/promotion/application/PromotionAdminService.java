@@ -61,7 +61,8 @@ public class PromotionAdminService {
             banners.validateEvidenceRefs(request.get("evidenceRefs"));
             String command=id("PC");Instant now=Instant.now();var before=before(target);
             attempted.set(true);var resource=action.get();var after=before(text(resource.get("id")));
-            String auditedTarget="PROMOTION".equals(resource.get("type"))?text(resource.get("id")):target;
+            String auditedTarget="PROMOTION".equals(resource.get("type"))||"POLICY".equals(resource.get("type"))
+                ?text(resource.get("id")):target;
             audit.recordRequired(AuditLogWriteRequest.builder().action(operation).resourceType("PROMOTION").resourceId(auditedTarget)
                 .actorId(actor).actorType("ADMIN").method("POST").path("/api/admin/growth").result("SUCCESS").riskLevel("HIGH")
                 .detail(values("commandId",command,"idempotencyKey",key,"reason",request.get("reason"),"evidenceRefs",request.get("evidenceRefs"),"requestHash",hash(request),"beforeHash",hash(before),"afterHash",hash(after),"resource",resource)).build());
@@ -91,12 +92,16 @@ public class PromotionAdminService {
         return db.list("SELECT * FROM nx_promotion_policy WHERE policy_id=? ORDER BY version",target);
     }
     public Map<String,Object> recover(String key,String operation,String target){
-        long actor=actor();permission(operation);validator.validate("CommandKey",key);
+        long actor=actor();
+        // Recovery is a read of the caller's own retained receipt; page read is enough.
+        if(!has("growth_promotion_read"))throw new BizException(403,"PROMOTION_PERMISSION_DENIED");
+        permissionFor(operation);
+        validator.validate("CommandKey",key);
         String scope=scope(actor,operation,target);var record=db.one("SELECT request_hash,created_at,updated_at FROM nx_admin_idempotency_record WHERE scope=? AND idempotency_key=? AND is_deleted=0",scope,key);
         if(record==null)return receipt("missing-"+sha256(key).substring(0,24),operation,target,key,"NOT_FOUND",null,null,Instant.now());
         var result=idempotency.recoveryResult(scope,key,text(record.get("request_hash")),Map.class);
         if(result.response()!=null)return map(result.response());
-        String state=switch(result.status()){case SUCCEEDED,UNKNOWN,MISMATCH->"OUTCOME_UNKNOWN";case PROCESSING->"PROCESSING";case FAILED->"FAILED";case NOT_FOUND->"NOT_FOUND";};
+        String state=switch(result.status()){case SUCCEEDED,UNKNOWN,MISMATCH,CONFIRMED_SUCCEEDED,CONFIRMED_NOT_EXECUTED->"OUTCOME_UNKNOWN";case PROCESSING->"PROCESSING";case FAILED->"FAILED";case NOT_FOUND->"NOT_FOUND";};
         return receipt("recovery-"+sha256(key).substring(0,24),operation,target,key,state,null,
             "FAILED".equals(state)?values("code",409,"message","PROMOTION_COMMAND_FAILED","data",null):null,instant(record.get("created_at")));
     }
@@ -143,7 +148,8 @@ public class PromotionAdminService {
     public Map<String,Object> simulate(String id,Map<String,Object> request){
         if(request.get("sampleAccountId")!=null&&!has("user_c1_read"))throw new BizException(403,"PROMOTION_ACCOUNT_SAMPLE_FORBIDDEN");
         if(request.get("sampleAccountId")!=null)accountSamples.requireReadable(number(request.get("sampleAccountId")));
-        validator.validate("SimulateInput",request);var p=visibleActivity(id,false);var c=map(request.get("draft"));
+        validator.validate("SimulateInput",request);var p=visibleActivity(id,false);
+        var c=validator.completeAuthoredCopy(map(request.get("draft")),"title","terms");
         validator.validate("PromotionContract",c);validateWindow(c);validateConfiguration(c);
         if(request.get("sampleAccountId")!=null&&("DIRECT_REFERRAL".equals(c.get("template"))||c.get("inviterAudience")!=null)){
             var buyer=db.user(number(request.get("sampleAccountId")),false);
@@ -220,8 +226,11 @@ public class PromotionAdminService {
     public Map<String,Object> save(String id,Map<String,Object> request){
         validator.validate("DraftWrite",request);var p=visibleActivity(id,true);require(!Set.of("ENDED","ARCHIVED").contains(commandState(p)),"PROMOTION_READ_ONLY");
         require(p.get("draft_version")!=null,"PROMOTION_DRAFT_MISSING");var v=db.version(id,number(p.get("draft_version")),true);
+        require(request.get("expectedVersion")!=null,"PROMOTION_CONCURRENT_CHANGE");
+        require(number(v.get("version"))==number(request.get("expectedVersion")),"PROMOTION_CONCURRENT_CHANGE");
         require(number(v.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_CONCURRENT_CHANGE");require("DRAFT".equals(v.get("status")),"PROMOTION_VERSION_READ_ONLY");
-        var draft=mergeDraft(parse(v.get("contract_json")),map(request.get("draft")));validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));identities(id,draft,false);
+        var draft=mergeDraft(parse(v.get("contract_json")),map(request.get("draft")));
+        validator.validate("Draft",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));identities(id,draft,false);
         changed(db.write("UPDATE nx_promotion_version SET contract_json=?,content_hash=?,starts_at=?,ends_at=?,status='DRAFT',approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=? AND revision=?",
             json(draft),hash(draft),ts(draft.get("startsAt")),ts(draft.get("endsAt")),id,v.get("version"),v.get("revision")));
         changed(db.write("UPDATE nx_promotion SET updated_at=NOW(6) WHERE activity_id=?",id));return resource("VERSION",id+":"+v.get("version"),number(v.get("revision"))+1);
@@ -238,7 +247,17 @@ public class PromotionAdminService {
     }
     public Map<String,Object> newVersion(String id,Map<String,Object> request,boolean copy){
         validator.validate("Action",request);var p=visibleActivity(id,true);require(number(p.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_CONCURRENT_CHANGE");
-        Object source=p.get("draft_version")!=null?p.get("draft_version"):p.get("active_version");require(source!=null,"PROMOTION_VERSION_MISSING");var draft=parse(db.version(id,number(source),false).get("contract_json"));
+        Object source=p.get("draft_version")!=null?p.get("draft_version"):p.get("active_version");require(source!=null,"PROMOTION_VERSION_MISSING");
+        if(copy){
+            require(request.get("expectedSourceVersion")!=null,"PROMOTION_CONCURRENT_CHANGE");
+            require(number(source)==number(request.get("expectedSourceVersion")),"PROMOTION_CONCURRENT_CHANGE");
+        }
+        var sourceRow=db.version(id,number(source),false);
+        if(copy){
+            require(request.get("expectedSourceRevision")!=null,"PROMOTION_CONCURRENT_CHANGE");
+            require(number(sourceRow.get("revision"))==number(request.get("expectedSourceRevision")),"PROMOTION_CONCURRENT_CHANGE");
+        }
+        var draft=parse(sourceRow.get("contract_json"));
         if(copy)return createDraft(draft);
         require(!Set.of("ENDED","ARCHIVED").contains(commandState(p))&&p.get("draft_version")==null,"PROMOTION_DRAFT_EXISTS_OR_READ_ONLY");
         long version=db.count("SELECT COALESCE(MAX(version),0)+1 FROM nx_promotion_version WHERE activity_id=?",id);insertVersion(id,version,draft);
@@ -251,7 +270,16 @@ public class PromotionAdminService {
         require(p.get("draft_version")!=null&&number(p.get("draft_version"))==ver&&!Set.of("ENDED","ARCHIVED").contains(lifecycle),"PROMOTION_VERSION_NOT_CURRENT");
         String current=text(v.get("status"));String expected=switch(action){case "submit"->"DRAFT";case "approve","reject"->"PENDING_APPROVAL";case "publish"->"APPROVED";case "withdraw"->current;default->throw new BizException(422,"PROMOTION_ACTION_INVALID");};require(expected.equals(current)&&(!"withdraw".equals(action)||Set.of("PENDING_APPROVAL","APPROVED").contains(current)),"PROMOTION_VERSION_STATE_INVALID");
         var draft=parse(v.get("contract_json"));Map<String,Object> resolved=Map.of();
-        if(!Set.of("reject","withdraw").contains(action)){validator.validate("PromotionContract",draft);validateWindow(draft);banners.validateAsset(draft.get("bannerAssetId"));natives.fixtureAllowed(p.get("fixture_run_id"));resolved=governancePolicies(draft,true);semantic(id,draft,resolved);}
+        if("submit".equals(action))draft=validator.completeAuthoredCopy(draft,"title","terms");
+        if(!Set.of("reject","withdraw").contains(action)){
+            validator.validate("PromotionContract",draft);
+            if("approve".equals(action)||"publish".equals(action))validator.validateRecordedAuthoredCopy(draft,"title","terms");
+            validateWindow(draft);
+            banners.validateAsset(draft.get("bannerAssetId"));
+            natives.fixtureAllowed(p.get("fixture_run_id"));
+            resolved=governancePolicies(draft,true);
+            semantic(id,draft,resolved);
+        }
         long actor=actor();
         if("approve".equals(action)||"publish".equals(action)){
             var auth=PromotionPolicyResolver.content(resolved,"authorization");
@@ -261,12 +289,19 @@ public class PromotionAdminService {
             }
         }
         if("publish".equals(action)){
-            require(instant(draft.get("endsAt")).isAfter(Instant.now()),"PROMOTION_ALREADY_ENDED");identities(id,draft,true);budgets(id,draft);
+            if("PAUSED".equals(lifecycle))require(instant(draft.get("endsAt")).isAfter(Instant.now()),"PROMOTION_ALREADY_ENDED");
+            else requireExclusivePublication(id,draft,resolved);
+            identities(id,draft,true);budgets(id,draft);
             lifecycle=commandState(p);require(!Set.of("ENDED","ARCHIVED").contains(lifecycle),"PROMOTION_VERSION_NOT_CURRENT");
             changed(db.write("UPDATE nx_promotion_version SET status='PUBLISHED',published_by=?,published_at=NOW(6),resolved_policies_json=?,revision=revision+1 WHERE activity_id=? AND version=?",actor,json(resolved),id,ver));
             changed(db.write("UPDATE nx_promotion SET category=?,template=?,active_version=?,draft_version=NULL,status=?,revision=revision+1,updated_at=NOW(6) WHERE activity_id=?",draft.get("category"),draft.get("template"),ver,publicationState(lifecycle,instant(draft.get("startsAt"))),id));
         }else if("approve".equals(action))changed(db.write("UPDATE nx_promotion_version SET status='APPROVED',approved_by=?,approved_at=NOW(6),approval_ref=?,revision=revision+1 WHERE activity_id=? AND version=?",actor,id("PA"),id,ver));
-        else changed(db.write("UPDATE nx_promotion_version SET status=?,approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=?","submit".equals(action)?"PENDING_APPROVAL":"DRAFT",id,ver));
+        else if("submit".equals(action))changed(db.write("""
+            UPDATE nx_promotion_version SET contract_json=?,content_hash=?,status='PENDING_APPROVAL',
+                approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1
+            WHERE activity_id=? AND version=? AND revision=?
+            """,json(draft),hash(draft),id,ver,v.get("revision")));
+        else changed(db.write("UPDATE nx_promotion_version SET status='DRAFT',approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=?",id,ver));
         return resource("VERSION",id+":"+ver,number(v.get("revision"))+1);
     }
     public static String publicationState(String old,Instant starts){return "PAUSED".equals(old)?"PAUSED":starts.isAfter(Instant.now())?"SCHEDULED":"ACTIVE";}
@@ -294,12 +329,57 @@ public class PromotionAdminService {
         validator.validate("Action",request);var p=visibleActivity(id,true);require(number(p.get("revision"))==number(request.get("expectedRevision")),"PROMOTION_CONCURRENT_CHANGE");String old=commandState(p),next;
         switch(action){
             case "pause"->{require(Set.of("ACTIVE","SCHEDULED").contains(old),"PROMOTION_STATE_INVALID");next="PAUSED";}
-            case "resume"->{require("PAUSED".equals(old),"PROMOTION_STATE_INVALID");var v=db.version(id,number(p.get("active_version")),true);var c=parse(v.get("contract_json"));validator.validate("PromotionContract",c);semantic(id,c,governancePolicies(c,true));require(instant(c.get("endsAt")).isAfter(Instant.now()),"PROMOTION_ALREADY_ENDED");resumeResources(id,c);next=publicationState("DRAFT",instant(c.get("startsAt")));}
+            case "resume"->{
+                require("PAUSED".equals(old),"PROMOTION_STATE_INVALID");
+                var v=db.version(id,number(p.get("active_version")),true);
+                var c=parse(v.get("contract_json"));
+                validator.validate("PromotionContract",c);
+                var resolved=governancePolicies(c,true);
+                semantic(id,c,resolved);
+                requireExclusivePublication(id,c,resolved);
+                resumeResources(id,c);
+                next=publicationState("DRAFT",instant(c.get("startsAt")));
+            }
             case "end"->{require(Set.of("ACTIVE","SCHEDULED","PAUSED").contains(old),"PROMOTION_STATE_INVALID");next="ENDED";}
             case "archive"->{require("ENDED".equals(old),"PROMOTION_STATE_INVALID");require(db.count("SELECT COUNT(*) FROM nx_promotion_reservation WHERE activity_id=? AND status='RESERVED'",id)==0&&db.count("SELECT COUNT(*) FROM nx_promotion_reward WHERE activity_id=? AND status NOT IN ('ISSUED','CANCELLED','REVERSED')",id)==0,"PROMOTION_OBLIGATIONS_OPEN");next="ARCHIVED";}
             default->throw new BizException(422,"PROMOTION_ACTION_INVALID");
         }
         changed(db.write("UPDATE nx_promotion SET status=?,revision=revision+1,updated_at=NOW(6) WHERE activity_id=?",next,id));return resource("PROMOTION",id,number(p.get("revision"))+1);
+    }
+    private void requireExclusivePublication(String id,Map<String,Object> contract,Map<String,Object> resolved) {
+        var products=new TreeSet<String>();
+        for(var rule:maps(contract.get("rules")))products.add(text(rule.get("productNo")));
+        // Serialize enablement for a shared SKU. The READ_COMMITTED command then sees the winner's version.
+        for(String product:products)db.product(product,true);
+        Instant now=Instant.now(),starts=instant(contract.get("startsAt")),ends=instant(contract.get("endsAt"));
+        require(ends.isAfter(now),"PROMOTION_ALREADY_ENDED");
+        var buyer=map(contract.get("buyerAudience"));
+        var candidates=db.list("""
+            SELECT v.contract_json,v.resolved_policies_json
+            FROM nx_promotion p JOIN nx_promotion_version v ON v.activity_id=p.activity_id AND v.version=p.active_version
+            WHERE p.activity_id<>? AND p.deleted_at IS NULL AND p.status IN ('ACTIVE','SCHEDULED') AND v.status='PUBLISHED'
+              AND v.starts_at<? AND v.ends_at>?
+            """,id,timestamp(ends),timestamp(starts.isAfter(now)?starts:now));
+        for(var candidate:candidates) {
+            var existing=parse(candidate.get("contract_json"));
+            if(maps(existing.get("rules")).stream().noneMatch(rule->products.contains(text(rule.get("productNo")))))continue;
+            var other=map(existing.get("buyerAudience"));
+            boolean referral="DIRECT_REFERRAL".equals(contract.get("template"))||"DIRECT_REFERRAL".equals(existing.get("template"));
+            if(!PromotionRules.buyerAudiencesMayOverlap(buyer,other,referral))continue;
+
+            String presence=text(buyer.get("devicePresence")),otherPresence=text(other.get("devicePresence"));
+            if(!presence.equals(otherPresence)&&!"ANY".equals(presence)&&!"ANY".equals(otherPresence)) {
+                var policy=map(PromotionPolicyResolver.resolveReference(resolved,map(buyer.get("deviceAudiencePolicy"))).get("content"));
+                var otherPolicy=map(PromotionPolicyResolver.resolveReference(parse(candidate.get("resolved_policies_json")),
+                    map(other.get("deviceAudiencePolicy"))).get("content"));
+                var none="NONE".equals(presence)?policy:otherPolicy;
+                var has="NONE".equals(presence)?otherPolicy:policy;
+                // Having a qualifying device excludes NONE only if that policy also counts it.
+                if(((List<?>)none.get("sources")).containsAll((List<?>)has.get("sources"))
+                    &&((List<?>)none.get("states")).containsAll((List<?>)has.get("states")))continue;
+            }
+            throw new BizException(409,"PROMOTION_EXCLUSIVE_ACTIVITY_CONFLICT");
+        }
     }
     private void semantic(String id,Map<String,Object> c,Map<String,Object> resolved){
         validateConfiguration(c);

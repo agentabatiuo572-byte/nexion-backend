@@ -16,16 +16,46 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
     @Select("SELECT config_value FROM nx_config_item WHERE config_key=#{key} AND is_deleted=0 AND status=1 FOR SHARE")
     String lockNetworkPayoutEnabled(@Param("key") String key);
 
+    @Select("SELECT CASE WHEN is_deleted=0 THEN setting_value END FROM nx_emergency_control_setting WHERE setting_key=#{key} FOR SHARE")
+    String lockWithdrawalSwitch(@Param("key") String key);
+
     @Select("SELECT id FROM nx_user WHERE id=#{userId} FOR UPDATE")
     @org.apache.ibatis.annotations.Options(useCache=false, flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
     Long lockCashCustomer(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT status,d2_lifecycle_owner lifecycleOwner,created_at createdAt,d2_hold_until holdUntil,
+                   d5_payout_source payoutSource,d5_provider_cid providerCid
+              FROM nx_withdrawal_order
+             WHERE withdrawal_no=#{withdrawalNo} AND is_deleted=0 FOR UPDATE
+            """)
+    @org.apache.ibatis.annotations.Options(useCache=false, flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
+    ComplianceDispatchState lockComplianceDispatchState(@Param("withdrawalNo") String withdrawalNo);
+
+    @Update("""
+            UPDATE nx_withdrawal_order
+               SET status=CASE WHEN #{holdUntil}>#{now} THEN 'EXTENDED_HOLD' ELSE 'REVIEW_PENDING' END,
+                   d2_hold_until=CASE WHEN #{holdUntil}>#{now} THEN #{holdUntil} ELSE NULL END,
+                   d2_lifecycle_owner=CASE WHEN #{holdUntil}>#{now} THEN 'H1_COMPLIANCE_HOLD' ELSE NULL END,
+                   d2_previous_status=CASE WHEN #{holdUntil}>#{now} THEN 'REVIEW_PENDING' ELSE NULL END,
+                   d2_freeze_period=NULL,d2_version=d2_version+1,
+                   failure_reason='H1_COMPLIANCE_REVIEW_REQUIRED',next_broadcast_at=NULL,
+                   d5_payout_lease_until=NULL,updated_at=#{now}
+             WHERE withdrawal_no=#{withdrawalNo} AND status='REVIEW_PASSED' AND is_deleted=0
+               AND chain IN ('USDT-BEP20','USDT-ERC20','USDT-TRC20') AND d5_payout_source IS NULL AND d5_provider_cid IS NULL
+            """)
+    int returnToComplianceReview(@Param("withdrawalNo") String withdrawalNo,
+                                 @Param("holdUntil") LocalDateTime holdUntil, @Param("now") LocalDateTime now);
+
+    record ComplianceDispatchState(String status, String lifecycleOwner, LocalDateTime createdAt,LocalDateTime holdUntil,
+                                   String payoutSource, Long providerCid) { }
 
     @Select("""
             SELECT o.id,o.withdrawal_no withdrawalNo,o.user_id userId,o.asset,o.chain,o.amount,
                    o.d2_net_receive netReceive,o.d2_actual_fee actualFee,o.d2_network_fee networkFee,
                    o.d2_nex_burned nexBurned,o.d2_idempotency_key idempotencyKey,o.status,
                    o.chain_tx_hash chainTxHash,o.created_at createdAt,o.completed_at completedAt,
-                   o.failed_at failedAt,o.d5_provider_cid providerCid,o.d5_payout_source payoutSource,
+                   o.failed_at failedAt,CAST(o.d5_provider_cid AS CHAR) providerCid,o.d5_payout_source payoutSource,
                    u.sandbox userSandbox,u.is_deleted userDeleted,
                    a.user_id attemptUserId,a.idempotency_key attemptKey,a.request_hash attemptHash,
                    a.status attemptStatus,a.withdrawal_no attemptWithdrawalNo,a.created_at attemptCreatedAt
@@ -199,7 +229,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
               FROM nx_withdrawal_order
              WHERE (status='PROCESSING' OR (status='FROZEN' AND c2_frozen_by_user_status=1
                     AND c2_previous_status='PROCESSING')) AND d5_payout_lease_until<=#{now} AND is_deleted=0
-               AND chain IN ('USDT-BEP20','USDT-ERC20') AND (d5_payout_source IS NULL OR d5_payout_source='provider')
+               AND chain IN ('USDT-BEP20','USDT-ERC20','USDT-TRC20') AND (d5_payout_source IS NULL OR d5_payout_source='provider')
              ORDER BY id LIMIT #{limit}
             """)
     List<PayoutRow> expiredProviderAttempts(@Param("now") LocalDateTime now, @Param("limit") int limit);

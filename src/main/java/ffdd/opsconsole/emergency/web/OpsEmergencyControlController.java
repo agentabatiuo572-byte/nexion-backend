@@ -15,6 +15,7 @@ import ffdd.opsconsole.emergency.dto.SopPlaybookUpdateRequest;
 import ffdd.opsconsole.emergency.dto.TamperAlertConfigRequest;
 import ffdd.opsconsole.emergency.dto.TamperReportRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.api.PageResult;
 import java.util.Map;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -38,6 +39,22 @@ public class OpsEmergencyControlController {
     @PreAuthorize("hasAuthority('emergency_j2_read')")
     public ApiResult<Map<String, Object>> geoBlockOverview() {
         return emergencyControlService.geoBlockOverview();
+    }
+
+    @GetMapping("/geo-block/hit-summary")
+    @PreAuthorize("hasAuthority('emergency_j2_read')")
+    public ApiResult<Map<String, Object>> geoBlockHitSummary() {
+        return emergencyControlService.geoBlockHitSummary();
+    }
+
+    @GetMapping("/geo-block/hits")
+    @PreAuthorize("hasAuthority('emergency_j2_read')")
+    public ApiResult<PageResult<Map<String, Object>>> geoBlockHitDetail(
+            @RequestParam(required = false) String countryCode,
+            @RequestParam(required = false) String endpointKey,
+            @RequestParam(required = false) Integer pageNum,
+            @RequestParam(required = false) Integer pageSize) {
+        return emergencyControlService.geoBlockHitDetail(countryCode, endpointKey, pageNum, pageSize);
     }
 
     @GetMapping("/geo-block/alerts")

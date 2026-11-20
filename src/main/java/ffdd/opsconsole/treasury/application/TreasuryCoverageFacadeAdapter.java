@@ -15,7 +15,15 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
 
     @Override
     public TreasuryCoverageSnapshot snapshot() {
-        Map<String, Object> dualLedger = treasuryService.decisionCoverage().getData();
+        return readSnapshot(treasuryService.dualLedgerCoverageSnapshot(null));
+    }
+
+    @Override
+    public TreasuryCoverageSnapshot snapshotAtNexPrice(BigDecimal proposedPrice) {
+        return readSnapshot(treasuryService.dualLedgerCoverageSnapshot(proposedPrice));
+    }
+
+    private TreasuryCoverageSnapshot readSnapshot(Map<String, Object> dualLedger) {
         if (dualLedger == null) {
             return new TreasuryCoverageSnapshot(BigDecimal.ZERO, BigDecimal.ZERO, false);
         }
@@ -25,6 +33,7 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
         }
         BigDecimal coverageRatio = decimal(values.get("coverageRatio"));
         BigDecimal redlinePct = decimal(values.get("redlinePct"));
+        BigDecimal healthyPct = decimal(values.get("healthyPct"));
         BigDecimal reserveUsd = decimal(values.get("reserveUsd"));
         BigDecimal liabilitiesUsd = decimal(values.get("liabilitiesUsd"));
         BigDecimal ratioReserveUsd = decimal(values.get("ratioReserveUsd"));
@@ -40,7 +49,9 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
                 liabilitiesUsd == null ? BigDecimal.ZERO : liabilitiesUsd,
                 nexUsdRate == null ? BigDecimal.ZERO : nexUsdRate,
                 ratioReserveUsd == null ? (reserveUsd == null ? BigDecimal.ZERO : reserveUsd) : ratioReserveUsd,
-                ratioLiabilitiesUsd == null ? (liabilitiesUsd == null ? BigDecimal.ZERO : liabilitiesUsd) : ratioLiabilitiesUsd);
+                ratioLiabilitiesUsd == null ? (liabilitiesUsd == null ? BigDecimal.ZERO : liabilitiesUsd) : ratioLiabilitiesUsd,
+                healthyPct,
+                Boolean.TRUE.equals(values.get("redlineBreached")));
     }
 
     private BigDecimal decimal(Object value) {

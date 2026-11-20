@@ -3,14 +3,12 @@ package ffdd.opsconsole.platform.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.platform.application.OpsEventCenterService;
 import ffdd.opsconsole.platform.application.A4OutboxDiagnosticsService;
+import ffdd.opsconsole.platform.dto.OutboxDeadLetterView;
 import ffdd.opsconsole.platform.dto.OutboxDiagnosticsView;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.application.A4EventRetentionService;
 import ffdd.opsconsole.platform.dto.EventCenterMutationRequest;
 import ffdd.opsconsole.platform.dto.EventCenterOverview;
-import ffdd.opsconsole.platform.dto.EventDomainExtensionRequest;
-import ffdd.opsconsole.platform.dto.EventSchemaRegistrationRequest;
-import ffdd.opsconsole.platform.dto.ExistingSchemaPropertyRequest;
 import ffdd.opsconsole.platform.dto.EventLifecycleTransitionRequest;
 import ffdd.opsconsole.platform.dto.RetentionExecutionRequest;
 import ffdd.opsconsole.platform.dto.RetentionExecutionView;
@@ -67,6 +65,11 @@ public class OpsEventCenterController {
         return ApiResult.ok(outboxDiagnosticsService.read(eventType, status, unresolvedOnly, afterId, pageSize));
     }
 
+    @GetMapping("/outbox-dead-letters")
+    public ApiResult<OutboxDeadLetterView> outboxDeadLetters() {
+        return ApiResult.ok(outboxDiagnosticsService.deadLetters());
+    }
+
     @GetMapping("/overview")
     public ApiResult<EventCenterOverview> overview() {
         return eventCenterService.overview();
@@ -98,28 +101,10 @@ public class OpsEventCenterController {
         return eventCenterService.updateParam(idempotencyKey, paramKey, request);
     }
 
-    @PostMapping("/schema-registrations")
+    @PostMapping({"/schema-registrations", "/schema-registrations/properties", "/domain-extension-batches"})
     @PreAuthorize("hasAuthority('platform_a4_write')")
-    public ApiResult<EventCenterOverview> registerSchema(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) EventSchemaRegistrationRequest request) {
-        return eventCenterService.registerSchema(idempotencyKey, request);
-    }
-
-    @PostMapping("/schema-registrations/properties")
-    @PreAuthorize("hasAuthority('platform_a4_write')")
-    public ApiResult<EventCenterOverview> addSchemaProperty(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) ExistingSchemaPropertyRequest request) {
-        return eventCenterService.addSchemaProperty(idempotencyKey, request);
-    }
-
-    @PostMapping("/domain-extension-batches")
-    @PreAuthorize("hasAuthority('platform_a4_write')")
-    public ApiResult<EventCenterOverview.EventDomainExtensionBatch> registerDomainExtension(
-            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
-            @RequestBody(required = false) EventDomainExtensionRequest request) {
-        return eventCenterService.registerDomainExtension(idempotencyKey, request);
+    public ApiResult<Void> requireRegistrationApproval() {
+        return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
     }
 
     @PostMapping("/retention-runs")
@@ -129,12 +114,11 @@ public class OpsEventCenterController {
             @RequestBody(required = false) RetentionExecutionRequest request) {
         if (!StringUtils.hasText(idempotencyKey)) throw new BizException(400, "IDEMPOTENCY_KEY_REQUIRED");
         if (request == null) throw new BizException(422, "REASON_REQUIRED");
-        a2RuntimePolicy.validateReason(request.reason());
         String actor = StringUtils.hasText(AdminActorResolver.resolve(null)) ? AdminActorResolver.resolve(null) : "unknown";
         String key = idempotencyKey.trim();
         return ApiResult.ok(idempotencyService.execute("A4_EVENT_RETENTION_RUN", key,
-                retentionHash(actor, request.reason()), RetentionExecutionView.class,
-                () -> executeRetention(actor, key, request.reason())));
+                retentionHash(actor, request.reason(), request.expectedRetentionMonths()), RetentionExecutionView.class,
+                () -> executeRetention(actor, key, request.reason(), request.expectedRetentionMonths())));
     }
 
     /** Retries one audited, governed H3 source event after ordinary delivery is DEAD. */
@@ -148,14 +132,16 @@ public class OpsEventCenterController {
     }
 
     @GetMapping("/outbox/{eventId}/redrive-preview")
-    @PreAuthorize("hasAuthority('platform_a4_write') && hasAuthority('platform_a2_write')")
+    @PreAuthorize("hasAuthority('platform_a4_read') || (hasAuthority('platform_a4_write') && hasAuthority('platform_a2_write'))")
     public ApiResult<H3OutboxRedriveView> h3DeadLetterRedrivePreview(@PathVariable String eventId) {
         return ApiResult.ok(h3DeadLetterRedriveService.preview(eventId));
     }
 
-    private RetentionExecutionView executeRetention(String actor, String idempotencyKey, String reason) {
-        A4EventRetentionService.RetentionRun run = eventRetentionService.runNow();
-        RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.cutoff(), run.lockAcquired(),
+    private RetentionExecutionView executeRetention(
+            String actor, String idempotencyKey, String reason, Integer expectedRetentionMonths) {
+        a2RuntimePolicy.validateReason(reason);
+        A4EventRetentionService.RetentionRun run = eventRetentionService.runNow(expectedRetentionMonths);
+        RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.evaluatedAt(), run.lockAcquired(),
                 0, 0, run.outboxRows(), run.behaviorFactRows());
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("A4_EVENT_RETENTION_MANUAL_EXECUTED").resourceType("A4_EVENT_RETENTION")
@@ -163,6 +149,7 @@ public class OpsEventCenterController {
                 .result(run.lockAcquired() ? "SUCCESS" : "LOCKED").riskLevel("HIGH")
                 .detail(Map.ofEntries(Map.entry("reason", reason.trim()), Map.entry("idempotencyKey", idempotencyKey),
                         Map.entry("retentionMonths", view.retentionMonths()), Map.entry("evaluatedAt", view.evaluatedAt().toString()),
+                        Map.entry("cutoff", run.cutoff().toString()),
                         Map.entry("lockAcquired", view.lockAcquired()), Map.entry("archivedRows", 0), Map.entry("deletedRows", 0),
                         Map.entry("outboxRows", view.outboxRows()), Map.entry("behaviorFactRows", view.behaviorFactRows()),
                         Map.entry("idempotent", true), Map.entry("terminalOutboxOnly", true)))
@@ -170,10 +157,16 @@ public class OpsEventCenterController {
         return view;
     }
 
-    private String retentionHash(String actor, String reason) {
+    private String retentionHash(String actor, String reason, Integer expectedRetentionMonths) {
         try {
+            // Sorted locally so the serialised bytes, and therefore the request hash, do not depend on
+            // this JVM's Map.of iteration order. Fields are unchanged.
+            var command = expectedRetentionMonths == null
+                    ? new java.util.TreeMap<String, Object>(Map.of("actor", actor, "operation", "A4_EVENT_RETENTION_RUN", "reason", reason.trim()))
+                    : new java.util.TreeMap<String, Object>(Map.of("actor", actor, "operation", "A4_EVENT_RETENTION_RUN", "reason", reason.trim(),
+                            "expectedRetentionMonths", expectedRetentionMonths));
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(
-                    objectMapper.writeValueAsBytes(Map.of("actor", actor, "operation", "A4_EVENT_RETENTION_RUN", "reason", reason.trim()))));
+                    objectMapper.writeValueAsBytes(command)));
         } catch (Exception ex) {
             throw new BizException(422, "A4_RETENTION_HASH_FAILED");
         }
@@ -182,13 +175,21 @@ public class OpsEventCenterController {
     private RetentionExecutionView retentionView(AuditLogRecord record) {
         try {
             Map<?, ?> detail = objectMapper.readValue(record.getDetailJson(), Map.class);
+            java.time.LocalDateTime evaluatedAt = java.time.LocalDateTime.parse(String.valueOf(detail.get("evaluatedAt")));
+            if (!detail.containsKey("cutoff") && !Boolean.FALSE.equals(detail.get("lockAcquired"))) {
+                // Historical successful manual rows put the cutoff in evaluatedAt. The audit row's own
+                // creation time is the remaining real execution-record time; never use the read clock.
+                evaluatedAt = record.getCreatedAt();
+            }
+            if (evaluatedAt == null) throw new IllegalArgumentException("A4_RETENTION_EXECUTION_TIME_MISSING");
             return new RetentionExecutionView(number(detail.get("retentionMonths")),
-                    java.time.LocalDateTime.parse(String.valueOf(detail.get("evaluatedAt"))),
+                    evaluatedAt,
                     Boolean.TRUE.equals(detail.get("lockAcquired")), number(detail.get("archivedRows")),
                     number(detail.get("deletedRows")), number(detail.get("outboxRows")),
                     number(detail.get("behaviorFactRows")));
         } catch (Exception ex) {
-            return null;
+            // A present but unreadable row is not the same as no manual run at all.
+            throw new BizException(500, "A4_RETENTION_RUN_UNREADABLE");
         }
     }
 

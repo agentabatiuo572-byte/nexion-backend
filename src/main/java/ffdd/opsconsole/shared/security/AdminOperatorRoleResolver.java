@@ -35,6 +35,7 @@ public class AdminOperatorRoleResolver {
         return switch (roleCode) {
             case "CONFIG_ADMIN" -> "配置管理员";
             case "FINANCE" -> "财务";
+            case "FINANCE_LEAD" -> "财务主管";
             case "RISK" -> "风控";
             case "CONTENT" -> "内容";
             case "GROWTH" -> "增长";

@@ -80,6 +80,15 @@ public interface AppWithdrawalMapper {
             SELECT withdrawal_no
               FROM nx_withdrawal_order
              WHERE user_id=#{userId} AND d2_idempotency_key=#{idempotencyKey} AND is_deleted=0
+             ORDER BY id ASC LIMIT 1
+            """)
+    String readWithdrawalNoByIdempotencyKey(@Param("userId") Long userId,
+                                           @Param("idempotencyKey") String idempotencyKey);
+
+    @Select("""
+            SELECT withdrawal_no
+              FROM nx_withdrawal_order
+             WHERE user_id=#{userId} AND d2_idempotency_key=#{idempotencyKey} AND is_deleted=0
              LIMIT 1 FOR UPDATE
             """)
     String findWithdrawalNoByIdempotencyKey(@Param("userId") Long userId,
@@ -255,7 +264,7 @@ public interface AppWithdrawalMapper {
                d2_lifecycle_owner,d2_freeze_period,d2_routing_priority,d2_k3_risk_route,
                d2_k4_risk_score,d2_k4_model_version,d2_k4_as_of,
                d2_k4_band_low_max,d2_k4_band_high_min,d2_k4_auto_escalate_score,
-               failure_reason,d2_previous_status,
+               failure_reason,d2_previous_status,d2_submission_risk_route,
                created_at,updated_at,is_deleted)
             VALUES
                (#{userId},#{withdrawalNo},'USDT',#{chain},#{amount},#{actualFee},#{targetAddress},#{status},#{idempotencyKey},
@@ -265,23 +274,24 @@ public interface AppWithdrawalMapper {
                #{policyVersion},#{useNexFeeOffset},
                #{lifecycleOwner},#{freezePeriod},#{routingPriority},#{k3RiskRoute},
                #{k4RiskScore},#{k4ModelVersion},#{k4AsOf},#{k4BandLowMax},#{k4BandHighMin},#{k4AutoEscalateScore},
-               #{failureReason},#{previousStatus},NOW(),NOW(),0)
+               #{failureReason},#{previousStatus},#{submissionRiskRoute},NOW(),NOW(),0)
             """)
     int insertWithdrawal(WithdrawalWrite write);
 
     @Select("""
             SELECT w.withdrawal_no withdrawalNo,w.amount,w.fee,w.chain,w.target_address targetAddress,
-                   w.status,w.d2_hold_until holdUntil,w.d2_penalty_fee_rate penaltyFeeRate,
+                   w.status,w.d2_hold_until holdUntil,w.d5_payout_due_at payoutDueAt,w.d2_penalty_fee_rate penaltyFeeRate,
                    w.d2_network_fee_rate networkFeeRate,w.d2_network_fee_min networkFeeMin,
                    w.d2_network_fee_max networkFeeMax,w.d2_network_fee networkFee,
                    w.d2_gross_fee grossFee,w.d2_nex_burned nexBurned,w.d2_fee_waived feeWaived,
                    w.d2_network_fee networkConfirmUsd,0 penaltyFee,
-                   w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,
+                   w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,w.completed_at confirmedAt,
                    w.d5_policy_version policyVersion,w.d5_use_nex_fee_offset useNexFeeOffset,
+                   COALESCE(w.d2_submission_risk_route,
                    CASE WHEN UPPER(COALESCE(w.failure_reason,''))='A3_STRONG_REVIEW_THRESHOLD' THEN 'manual'
                         WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='PASS' THEN 'fast-pass'
                         WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='MANUAL' THEN 'manual'
-                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END riskRoute,
+                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END) riskRoute,
                    'server' idSource,
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
                         THEN COALESCE(w.terminal_reason,w.failure_reason) ELSE NULL END terminalReason,
@@ -327,17 +337,18 @@ public interface AppWithdrawalMapper {
 
     @Select("""
             SELECT w.withdrawal_no withdrawalNo,w.amount,w.fee,w.chain,w.target_address targetAddress,
-                   w.status,w.d2_hold_until holdUntil,w.d2_penalty_fee_rate penaltyFeeRate,
+                   w.status,w.d2_hold_until holdUntil,w.d5_payout_due_at payoutDueAt,w.d2_penalty_fee_rate penaltyFeeRate,
                    w.d2_network_fee_rate networkFeeRate,w.d2_network_fee_min networkFeeMin,
                    w.d2_network_fee_max networkFeeMax,w.d2_network_fee networkFee,
                    w.d2_network_fee networkConfirmUsd,0 penaltyFee,
                    w.d2_gross_fee grossFee,w.d2_nex_burned nexBurned,w.d2_fee_waived feeWaived,
-                   w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,
+                   w.d2_actual_fee actualFee,w.d2_net_receive netReceive,w.created_at createdAt,w.completed_at confirmedAt,
                    w.d5_policy_version policyVersion,w.d5_use_nex_fee_offset useNexFeeOffset,
+                   COALESCE(w.d2_submission_risk_route,
                    CASE WHEN UPPER(COALESCE(w.failure_reason,''))='A3_STRONG_REVIEW_THRESHOLD' THEN 'manual'
                         WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='PASS' THEN 'fast-pass'
                         WHEN UPPER(COALESCE(w.d2_k3_risk_route,''))='MANUAL' THEN 'manual'
-                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END riskRoute,
+                        ELSE LOWER(COALESCE(w.d2_k3_risk_route,'manual')) END) riskRoute,
                    'server' idSource,
                    CASE WHEN UPPER(w.status) IN ('REFUNDED','REVIEW_REJECTED','REJECTED','FAILED','TX_FAILED','TX_ORPHANED','DEAD','ADDRESS_INVALID')
                         THEN COALESCE(w.terminal_reason,w.failure_reason) ELSE NULL END terminalReason,
@@ -361,6 +372,44 @@ public interface AppWithdrawalMapper {
     Map<String, Object> userWithdrawal(@Param("userId") Long userId,
                                        @Param("withdrawalNo") String withdrawalNo);
 
+    /** Submission audit is immutable; do not reinterpret a historical order using today's H1 dials. */
+    @Select("""
+            <script>
+            SELECT snapshot.withdrawalNo,
+                   CASE WHEN JSON_EXTRACT(snapshot.detailJson,'$.compliance_review_required') IS NULL THEN NULL
+                        ELSE JSON_UNQUOTE(JSON_EXTRACT(snapshot.detailJson,'$.compliance_review_required'))='true'
+                        END complianceReviewRequired,
+                   CASE WHEN JSON_EXTRACT(snapshot.detailJson,'$.compliance_hold_applies') IS NULL THEN NULL
+                        ELSE JSON_UNQUOTE(JSON_EXTRACT(snapshot.detailJson,'$.compliance_hold_applies'))='true'
+                        END complianceHoldApplies,
+                   CAST(JSON_UNQUOTE(JSON_EXTRACT(snapshot.detailJson,'$.compliance_hold_days')) AS UNSIGNED) complianceHoldDays
+              FROM (
+                SELECT resource_id withdrawalNo,detail_json detailJson
+                  FROM nx_audit_log
+                 WHERE action='D2_WITHDRAWAL_SUBMITTED' AND resource_type='WITHDRAWAL'
+                   AND user_id=#{userId} AND result='SUCCESS' AND is_deleted=0
+                   AND resource_id IN
+                   <foreach collection='withdrawalNos' item='withdrawalNo' open='(' separator=',' close=')'>
+                     #{withdrawalNo}
+                   </foreach>
+                UNION ALL
+                SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) withdrawalNo,
+                       JSON_EXTRACT(cold_payload,'$.detail') detailJson
+                  FROM nx_audit_log_archive
+                 WHERE JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='D2_WITHDRAWAL_SUBMITTED'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='WITHDRAWAL'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.userId'))=CAST(#{userId} AS CHAR)
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) IN
+                   <foreach collection='withdrawalNos' item='withdrawalNo' open='(' separator=',' close=')'>
+                     #{withdrawalNo}
+                   </foreach>
+              ) snapshot
+            </script>
+            """)
+    List<WithdrawalComplianceSnapshot> withdrawalComplianceSnapshots(
+            @Param("userId") Long userId, @Param("withdrawalNos") List<String> withdrawalNos);
+
     @Select("""
             SELECT COALESCE((SELECT config_value FROM nx_config_item
                               WHERE config_key='growth.phase.current' AND status=1 AND is_deleted=0 LIMIT 1),'P1') phase,
@@ -379,6 +428,9 @@ public interface AppWithdrawalMapper {
     record WithdrawalAttemptRow(Long userId, String idempotencyKey, String requestHash,
                                 String status, String withdrawalNo) { }
 
+    record WithdrawalComplianceSnapshot(String withdrawalNo, Boolean complianceReviewRequired,
+                                        Boolean complianceHoldApplies, Integer complianceHoldDays) { }
+
     record WithdrawalWrite(
             Long userId, String withdrawalNo, String chain, BigDecimal amount, String targetAddress,
             LocalDateTime holdUntil, LocalDateTime payoutDueAt,
@@ -391,7 +443,7 @@ public interface AppWithdrawalMapper {
             String routingPriority, String k3RiskRoute,
             Integer k4RiskScore, String k4ModelVersion, LocalDateTime k4AsOf,
             Integer k4BandLowMax, Integer k4BandHighMin, Integer k4AutoEscalateScore,
-            String status, String failureReason, String previousStatus) { }
+            String status, String failureReason, String previousStatus, String submissionRiskRoute) { }
 
     record WithdrawalRiskFacts(
             String userNo,

@@ -46,22 +46,25 @@ class CregisAutoForwardServiceTest {
         config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(42);config.setApiKey("offline-test-key");config.setCallbackSourceIps("127.0.0.1");
         policy.put("collectionEnabled",false);policy.put("paymentEnabled",false);policy.put("startEventId",null);policy.put("version",0L);policy.put("makerId",null);
         event.putAll(Map.of("id",100L,"address",source,"status","CREDITED","grossAmount",new BigDecimal("5"),"netAmount",new BigDecimal("4"),"feeAmount",BigDecimal.ONE,"txid",depositTx,"logIndex",2,"blockNumber",90L));
+        event.put("chainId",CregisConstants.BSC_CHAIN_ID);
         task.putAll(Map.of("id","1","eventId","100","sourceAddress",source,"platformAddress",CregisFundsPreparationService.PLATFORM,"counterpartyAddress",CregisFundsPreparationService.COUNTERPARTY,"grossAmount","5.000000","netAmount","4.000000","feeAmount","1.000000","paymentKey","CA-P-42-100"));
+        task.put("chainId",CregisConstants.BSC_CHAIN_ID);
         task.put("state","WAIT_COLLECTION");task.put("version",0L);
-        when(db.policy(42)).thenAnswer(c->new HashMap<>(policy));when(db.lockPolicy(42)).thenAnswer(c->new HashMap<>(policy));
-        when(db.lock(42,1)).thenAnswer(c->new HashMap<>(task));when(db.lockEvent(42,100)).thenAnswer(c->new HashMap<>(event));
-        when(db.work(eq(42L),anyLong())).thenAnswer(c->((Long)c.getArgument(1))<1&&!Set.of("COMPLETED","COLLECTION_FAILED","PAYMENT_FAILED").contains(task.get("state"))?List.of(new HashMap<>(task)):List.of());
+        when(db.policy(eq(42L),any())).thenAnswer(c->new HashMap<>(policy));when(db.lockPolicy(eq(42L),any())).thenAnswer(c->new HashMap<>(policy));
+        when(db.lock(eq(42L),any(),eq(1L))).thenAnswer(c->new HashMap<>(task));when(db.lockEvent(eq(42L),any(),eq(100L))).thenAnswer(c->new HashMap<>(event));
+        when(db.work(eq(42L),any(),anyLong())).thenAnswer(c->c.getArgument(1)==CregisNetwork.BEP20&&((Long)c.getArgument(2))<1&&!Set.of("COMPLETED","COLLECTION_FAILED","PAYMENT_FAILED").contains(task.get("state"))?List.of(new HashMap<>(task)):List.of());
+        doReturn(List.of()).when(db).candidates(anyLong(),any(),anyLong());
         when(db.save(eq(42L),anyMap(),anyString(),nullable(String.class))).thenAnswer(c->{Map<String,Object> row=c.getArgument(1);
             if(!Objects.equals(row.get("version"),task.get("version")))return 0;
             task.putAll(row);task.put("state",c.getArgument(2));task.put("lastError",c.getArgument(3));task.put("version",((Number)task.get("version")).longValue()+1);return 1;});
-        when(deposits.lockProvisionGate()).thenReturn(Map.of("state","IDLE"));when(payout.enabled()).thenReturn(true);when(payout.requiredConfirmations()).thenReturn(15);
+        when(deposits.lockProvisionGate()).thenReturn(Map.of("state","IDLE"));when(payout.enabled(any())).thenReturn(true);when(payout.requiredConfirmations()).thenReturn(15);
         when(addresses.config(42)).thenReturn(Map.of("platformAddress",CregisFundsPreparationService.PLATFORM,"counterpartyAddress",CregisFundsPreparationService.COUNTERPARTY,"network","BSC","asset","USDT"));
         when(router.provider()).thenReturn(vendor);when(router.payoutCallbackUrl()).thenReturn("https://example.invalid/cregis/payout");
         when(vendor.addressBelongs(CregisConstants.BSC_CHAIN_ID,source)).thenReturn(true);
         when(chain.preparationBalance(anyString())).thenReturn(new BscDepositProof.PreparationBalance("100","1",100,"0x"+"e".repeat(64)));
         when(chain.verifyExact(eq(depositTx),eq(2),eq(source),any(),eq(90L))).thenReturn(new BscDepositProof.TransferProof(2,90,"0x"+"e".repeat(64),15,source,source,new BigDecimal("5"),true));
-        when(chain.verifyPayout(eq(collectTx),eq(CregisFundsPreparationService.PLATFORM),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,110,"0x"+"e".repeat(64),15,source)));
-        when(chain.verifyPayout(eq(paymentTx),eq(CregisFundsPreparationService.COUNTERPARTY),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,120,"0x"+"e".repeat(64),15,CregisFundsPreparationService.PLATFORM)));
+        when(chain.verifyPayout(eq(CregisNetwork.BEP20),eq(collectTx),eq(CregisFundsPreparationService.PLATFORM),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,110,"0x"+"e".repeat(64),15,source)));
+        when(chain.verifyPayout(eq(CregisNetwork.BEP20),eq(paymentTx),eq(CregisFundsPreparationService.COUNTERPARTY),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,120,"0x"+"e".repeat(64),15,CregisFundsPreparationService.PLATFORM)));
         when(vendor.createCollection(any())).thenAnswer(c->{assertThat(task.get("state")).isEqualTo("COLLECTION_SUBMITTING");assertThat(commits).isPositive();return 123L;});
         when(vendor.queryCollection(eq(123L),any())).thenReturn(Optional.of(new CregisGateway.CollectionOrder(123,1,collectTx)));
         when(vendor.createAutoForwardPayout(any())).thenReturn(new CregisGateway.PayoutSubmission(456,"CA-P-42-100"));
@@ -75,8 +78,8 @@ class CregisAutoForwardServiceTest {
     void enable(){config.setAutoForwardEnabled(true);policy.put("collectionEnabled",true);policy.put("paymentEnabled",true);policy.put("startEventId","0");}
     void ticks(int n){for(int i=0;i<n;i++)service.tick();}
     @Test void allDefaultsClosedAndNeitherScanningNorSendingCanBeTriggered(){
-        assertThat(service.status()).containsEntry("runtimeApproved",false).containsEntry("collectionEnabled",false).containsEntry("paymentEnabled",false).containsEntry("executionEnabled",false);
-        ticks(3);verify(db,never()).candidates(anyLong(),anyLong());verifyNoInteractions(vendor,chain);
+        assertThat(service.status(CregisNetwork.BEP20)).containsEntry("runtimeApproved",false).containsEntry("collectionEnabled",false).containsEntry("paymentEnabled",false).containsEntry("executionEnabled",false);
+        ticks(3);verify(db,never()).candidates(anyLong(),any(),anyLong());verifyNoInteractions(vendor,chain);
         policy.put("collectionEnabled",true);policy.put("paymentEnabled",true);ticks(2);verifyNoInteractions(vendor,chain);
         config.setAutoForwardEnabled(true);policy.put("collectionEnabled",false);policy.put("paymentEnabled",false);ticks(2);verifyNoInteractions(vendor,chain);
     }
@@ -95,7 +98,7 @@ class CregisAutoForwardServiceTest {
     @Test void timeoutAndRestartIntentNeverResendAndRaiseExistingRiskHold(){enable();
         doThrow(new CregisGatewayException(CregisGatewayException.Kind.SUBMISSION_UNKNOWN,"CREGIS_SUBMISSION_UNKNOWN")).when(vendor).createCollection(any());
         ticks(5);assertThat(task.get("state")).isEqualTo("COLLECTION_UNKNOWN");verify(vendor,times(1)).createCollection(any());verify(db).holdUnknown(eq(42L),eq(1L),anyString());
-        assertThatThrownBy(()->service.recover("x",1,((Number)task.get("version")).longValue(),"COLLECTION",null,true,reason)).hasMessage("CREGIS_AUTO_STATE_CONFLICT");
+        assertThatThrownBy(()->service.recover(CregisNetwork.BEP20,"x",1,((Number)task.get("version")).longValue(),"COLLECTION",null,true,reason)).hasMessage("CREGIS_AUTO_STATE_CONFLICT");
         reset(vendor);task.put("state","COLLECTION_SUBMITTING");task.put("intentAt",LocalDateTime.now().minusMinutes(3));ticks(3);verifyNoInteractions(vendor);
     }
     @Test void pauseStopsNewPaymentButAlreadySentCollectionStillGetsObserved(){enable();service.tick();config.setAutoForwardEnabled(false);policy.put("collectionEnabled",false);policy.put("paymentEnabled",false);
@@ -109,22 +112,22 @@ class CregisAutoForwardServiceTest {
     @Test void explicitCreateRejectionCanBeRetriedButUnknownCannot(){enable();
         doThrow(new CregisGatewayException(CregisGatewayException.Kind.REJECTED,"CREGIS_PROVIDER_REJECTED")).when(vendor).createCollection(any());service.tick();
         assertThat(task.get("state")).isEqualTo("COLLECTION_FAILED");config.setAutoForwardEnabled(false);
-        service.recover("retry",1,((Number)task.get("version")).longValue(),"COLLECTION",null,true,reason);
+        service.recover(CregisNetwork.BEP20,"retry",1,((Number)task.get("version")).longValue(),"COLLECTION",null,true,reason);
         assertThat(task.get("state")).isEqualTo("WAIT_COLLECTION");ticks(2);verify(vendor,times(1)).createCollection(any());}
     @Test void originalCidRecoveryIsReadOnlyAndMustMatchVersionAndProviderIdentity(){enable();task.put("state","COLLECTION_UNKNOWN");task.put("intentAt",LocalDateTime.now());task.put("collectionFloor",100L);
         when(vendor.queryCollection(eq(999L),any())).thenThrow(new CregisGatewayException(CregisGatewayException.Kind.INVALID_RESPONSE,"CREGIS_RESPONSE_INVALID"));
-        assertThatThrownBy(()->service.recover("wrong",1,0,"COLLECTION","999",false,reason)).hasMessage("CREGIS_RESPONSE_INVALID");
-        service.recover("right",1,0,"COLLECTION","123",false,reason);assertThat(task).containsEntry("state","COLLECTION_PENDING");verify(vendor,never()).createCollection(any());
-        assertThatThrownBy(()->service.recover("stale",1,0,"COLLECTION","123",false,reason)).hasMessage("CREGIS_AUTO_STATE_CONFLICT");}
+        assertThatThrownBy(()->service.recover(CregisNetwork.BEP20,"wrong",1,0,"COLLECTION","999",false,reason)).hasMessage("CREGIS_RESPONSE_INVALID");
+        service.recover(CregisNetwork.BEP20,"right",1,0,"COLLECTION","123",false,reason);assertThat(task).containsEntry("state","COLLECTION_PENDING");verify(vendor,never()).createCollection(any());
+        assertThatThrownBy(()->service.recover(CregisNetwork.BEP20,"stale",1,0,"COLLECTION","123",false,reason)).hasMessage("CREGIS_AUTO_STATE_CONFLICT");}
     @Test void policyNeedsRuntimeApprovalDifferentActiveAdminAndVersion(){
-        assertThatThrownBy(()->service.policy("off", "PROPOSE",0,true,true,reason)).hasMessage("CREGIS_AUTO_ACTIVATION_NOT_APPROVED");
+        assertThatThrownBy(()->service.policy(CregisNetwork.BEP20,"off", "PROPOSE",0,true,true,reason)).hasMessage("CREGIS_AUTO_ACTIVATION_NOT_APPROVED");
         policy.put("makerId","7");policy.put("pendingCollection",true);policy.put("pendingPayment",true);
-        assertThatThrownBy(()->service.policy("self","APPROVE",0,null,null,reason)).hasMessage("CREGIS_AUTO_DIFFERENT_CHECKER_REQUIRED");
-        policy.put("makerId","8");enable();when(db.apply(42,0,1,1,reason)).thenReturn(1);service.policy("other","APPROVE",0,null,null,reason);verify(admins).requireActive(8);
-        assertThatThrownBy(()->service.policy("stale","APPROVE",9,null,null,reason)).hasMessage("CREGIS_AUTO_STATE_CONFLICT");}
+        assertThatThrownBy(()->service.policy(CregisNetwork.BEP20,"self","APPROVE",0,null,null,reason)).hasMessage("CREGIS_AUTO_DIFFERENT_CHECKER_REQUIRED");
+        policy.put("makerId","8");enable();when(db.apply(eq(42L),eq(CregisNetwork.BEP20),eq(0L),eq(1),eq(1),eq(reason))).thenReturn(1);service.policy(CregisNetwork.BEP20,"other","APPROVE",0,null,null,reason);verify(admins).requireActive(8);
+        assertThatThrownBy(()->service.policy(CregisNetwork.BEP20,"stale","APPROVE",9,null,null,reason)).hasMessage("CREGIS_AUTO_STATE_CONFLICT");}
     @Test void makerLosingFinancialPermissionsInvalidatesPendingProposal(){enable();policy.put("makerId","8");policy.put("pendingCollection",true);policy.put("pendingPayment",true);
         when(permissions.getPermissionCodes(8L)).thenReturn(Set.of("finance_d1_read"));
-        assertThatThrownBy(()->service.policy("lost","APPROVE",0,null,null,reason)).hasMessage("ADMIN_FINANCE_AUTH_REQUIRED");verify(db,never()).apply(anyLong(),anyLong(),anyInt(),anyInt(),anyString());}
+        assertThatThrownBy(()->service.policy(CregisNetwork.BEP20,"lost","APPROVE",0,null,null,reason)).hasMessage("ADMIN_FINANCE_AUTH_REQUIRED");verify(db,never()).apply(anyLong(),any(),anyLong(),anyInt(),anyInt(),anyString());}
     @Test void collectionReorgAfterIntentCommitCannotDispatchSupplierPayment(){enable();task.put("state","WAIT_PAYMENT");task.put("collectionCid",123L);task.put("collectionTxid",collectTx);task.put("collectionFloor",100L);
         afterCommit=()->{if(task.get("state").equals("PAYMENT_SUBMITTING"))doThrow(new IllegalStateException("SIMULATED_REORG_AFTER_INTENT")).when(chain).verifyPayout(eq(collectTx),anyString(),any());};
         service.tick();assertThat(task.get("state")).isEqualTo("WAIT_PAYMENT");verify(vendor,never()).createAutoForwardPayout(any());}

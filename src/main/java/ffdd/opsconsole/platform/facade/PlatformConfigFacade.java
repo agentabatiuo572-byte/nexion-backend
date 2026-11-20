@@ -7,6 +7,11 @@ import java.util.Optional;
 public interface PlatformConfigFacade extends DomainFacade {
     Optional<String> activeValue(String configKey);
 
+    /** Reads a stored value for compatibility with an existing snapshot. */
+    default Optional<String> storedValue(String configKey) {
+        return activeValue(configKey);
+    }
+
     default Map<String, String> activeValuesByKeys(java.util.Collection<String> keys) {
         Map<String, String> values = new java.util.LinkedHashMap<>();
         for (String key : keys) activeValue(key).ifPresent(value -> values.put(key, value));
@@ -55,6 +60,12 @@ public interface PlatformConfigFacade extends DomainFacade {
     default boolean insertAdminValueIfMissing(
             String configKey, String configValue, String valueType, String configGroup, String remark) {
         return false;
+    }
+
+    /** Inserts or reactivates a value only while there is no active row for the key. */
+    default boolean upsertAdminValueIfUnconfigured(
+            String configKey, String configValue, String valueType, String configGroup, String remark) {
+        return insertAdminValueIfMissing(configKey, configValue, valueType, configGroup, remark);
     }
 
     default Map<String, String> activeValuesByGroup(String configGroup) {

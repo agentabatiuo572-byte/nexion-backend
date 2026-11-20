@@ -24,6 +24,14 @@ public interface CopyAbRepository {
         return findCopy(copyKey);
     }
 
+    /**
+     * True when another copy that is live for public position reads already occupies this position:
+     * PUBLISHED or DRAFT_SAVED with a current PUBLISHED version. The default keeps test/legacy implementations source-compatible.
+     */
+    default boolean hasOtherPublishedCopyAtPosition(String copyKey, String positionKey) {
+        return false;
+    }
+
     List<CopyVersionRow> listVersions(String copyKey);
 
     Optional<CopyVersionRow> findVersion(String copyKey, String version);

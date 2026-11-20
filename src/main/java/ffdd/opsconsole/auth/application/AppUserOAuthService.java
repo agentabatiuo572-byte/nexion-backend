@@ -7,8 +7,12 @@ import ffdd.opsconsole.auth.dto.UserOAuthExchangeResponse;
 import ffdd.opsconsole.auth.infrastructure.UserOAuthIdentityEntity;
 import ffdd.opsconsole.auth.mapper.UserOAuthIdentityMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
+import ffdd.opsconsole.user.application.UserIds;
+import ffdd.opsconsole.user.application.UserNicknames;
+import ffdd.opsconsole.user.application.UserUniqueConstraints;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import ffdd.opsconsole.user.mapper.UserOpsMapper;
 import java.nio.charset.StandardCharsets;
@@ -121,8 +125,15 @@ public class AppUserOAuthService {
             user = userMapper.selectById(identity.getUserId());
             if (!isActiveInEnvironment(user, authEnvironment)) return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
         } else {
-            user = createSandboxUser(provider, subject, request.displayName(), clientAddress);
-            userMapper.insert(user);
+            user = createSandboxUser(provider, subject, clientAddress);
+            try {
+                userMapper.insert(user);
+            } catch (DuplicateKeyException collision) {
+                if (UserUniqueConstraints.isGeneratedIdentityCollision(collision)) {
+                    throw new BizException(422, "USER_REGISTRATION_GENERATED_IDENTITY_CONFLICT");
+                }
+                throw collision;
+            }
             if (user.getId() == null) throw new IllegalStateException("OAUTH_SANDBOX_USER_ID_MISSING");
             userMapper.ensureRegisteredUserWallet(user.getId(), 1);
             identity = new UserOAuthIdentityEntity();
@@ -233,16 +244,17 @@ public class AppUserOAuthService {
                 && environment.containsProperty("oauth." + prefix + ".client-secret");
     }
 
-    private UserEntity createSandboxUser(String provider, String subject, String requestedName, String clientAddress) {
+    private UserEntity createSandboxUser(String provider, String subject, String clientAddress) {
         String key = provider + ":" + subject;
         String digits = hashSubject(key).replaceAll("[^0-9]", "");
         String phone = "139" + (digits + "00000000").substring(0, 8);
         UserEntity user = new UserEntity();
+        user.setId(UserIds.next(userMapper::userIdTaken));
         user.setCountryCode("+86");
         user.setPhone(phone);
         user.setClientIp(StringUtils.hasText(clientAddress) ? clientAddress.trim() : null);
         user.setPasswordHash(passwordEncoder.encode(UUID.randomUUID().toString()));
-        user.setNickname(displayName(provider, requestedName));
+        user.setNickname(UserNicknames.next(userMapper::nicknameTaken));
         user.setReferralCode("OAUTH-" + hashSubject(key).substring(0, 12).toUpperCase(Locale.ROOT));
         user.setUserLevel("L0");
         user.setVRank("V0");

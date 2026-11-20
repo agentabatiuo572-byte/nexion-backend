@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS nx_user_login_guard (
   login_key CHAR(64) PRIMARY KEY,
   user_id BIGINT NULL,
   failed_count INT NOT NULL DEFAULT 0,
+  lock_kind VARCHAR(16) DEFAULT NULL,
   window_started_at DATETIME(3) NOT NULL,
   locked_until DATETIME(3) DEFAULT NULL,
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -592,13 +593,13 @@ CREATE TABLE IF NOT EXISTS nx_admin_permission (
 
 INSERT INTO nx_admin_role (role_code, role_name, remark, status, is_deleted) VALUES
 ('SUPER_ADMIN', '超级管理员', '平台全域管理员', 1, 0),
-('CONFIG_ADMIN', '配置运营', '平台配置与系统参数管理员', 1, 0),
+('CONFIG_ADMIN', '配置运营', '查看运营总览的部分页面', 1, 0),
 ('FINANCE', '财务', '资金、账务与提现审核', 1, 0),
 ('RISK', '风控', '风控与紧急处置', 1, 0),
 ('CONTENT', '内容运营', '内容、公告与披露管理', 1, 0),
 ('GROWTH', '增长运营', '增长、设备与网络运营', 1, 0),
 ('SUPPORT', '客服', '客服中心全局后台角色', 1, 0),
-('AUDITOR', '只读审计', '审计与合规只读观察', 1, 0)
+('AUDITOR', '只读审计', '全域只读，可导出脱敏文件', 1, 0)
 ON DUPLICATE KEY UPDATE role_name=VALUES(role_name), remark=VALUES(remark),
  status=1, is_deleted=0, updated_at=NOW();
 
@@ -789,8 +790,7 @@ CREATE TABLE IF NOT EXISTS nx_user_wallet (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_wallet_user (user_id),
   CONSTRAINT chk_user_wallet_non_negative CHECK (
-    usdt_available >= 0
-    AND nex_available >= 0
+    nex_available >= 0
     AND pending_withdraw >= 0
     AND lifetime_earned >= 0
     AND cumulative_deposit_usdt >= 0
@@ -808,7 +808,9 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_user_wallet_non_negative') = 0,
-  'ALTER TABLE nx_user_wallet ADD CONSTRAINT chk_user_wallet_non_negative CHECK (usdt_available >= 0 AND nex_available >= 0 AND pending_withdraw >= 0 AND lifetime_earned >= 0)',
+  IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_user_wallet' AND COLUMN_NAME = 'cumulative_deposit_usdt') = 0,
+    'ALTER TABLE nx_user_wallet ADD CONSTRAINT chk_user_wallet_non_negative CHECK (nex_available >= 0 AND pending_withdraw >= 0 AND lifetime_earned >= 0)',
+    'ALTER TABLE nx_user_wallet ADD CONSTRAINT chk_user_wallet_non_negative CHECK (nex_available >= 0 AND pending_withdraw >= 0 AND lifetime_earned >= 0 AND cumulative_deposit_usdt >= 0)'),
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
@@ -1289,6 +1291,8 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS WHERE C
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 CREATE TABLE IF NOT EXISTS nx_product (
+  monthly_target_usdt DECIMAL(12,2) NULL,
+  monthly_target_band_pct DECIMAL(4,1) NULL,
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   product_no VARCHAR(64) NOT NULL,
   name VARCHAR(128) NOT NULL,
@@ -1321,8 +1325,8 @@ CREATE TABLE IF NOT EXISTS nx_product (
   trust_json TEXT NULL,
   faq_json TEXT NULL,
   phone_compare_json TEXT NULL,
-  share_yield_min DECIMAL(10,4) NULL,
-  share_yield_max DECIMAL(10,4) NULL,
+  share_yield_min DECIMAL(24,4) NULL,
+  share_yield_max DECIMAL(24,4) NULL,
   superseded_by_product_no VARCHAR(64) NULL,
   unlock_phase VARCHAR(32) NULL,
   sold_count INT NOT NULL DEFAULT 0,
@@ -1412,11 +1416,11 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'share_yield_min') = 0,
-  'ALTER TABLE nx_product ADD COLUMN share_yield_min DECIMAL(10,4) NULL AFTER phone_compare_json',
+  'ALTER TABLE nx_product ADD COLUMN share_yield_min DECIMAL(24,4) NULL AFTER phone_compare_json',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'share_yield_max') = 0,
-  'ALTER TABLE nx_product ADD COLUMN share_yield_max DECIMAL(10,4) NULL AFTER share_yield_min',
+  'ALTER TABLE nx_product ADD COLUMN share_yield_max DECIMAL(24,4) NULL AFTER share_yield_min',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'superseded_by_product_no') = 0,
@@ -1952,7 +1956,7 @@ CREATE TABLE IF NOT EXISTS nx_genesis_emission_batch (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   batch_no VARCHAR(64) NOT NULL,
   snapshot_at DATETIME NOT NULL,
-  daily_rate_pct DECIMAL(10,6) NOT NULL,
+  daily_rate_pct DECIMAL(10,6) NULL DEFAULT NULL,
   holder_count INT NOT NULL DEFAULT 0,
   total_amount_usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
   status VARCHAR(24) NOT NULL DEFAULT 'PROCESSING',
@@ -1971,6 +1975,7 @@ CREATE TABLE IF NOT EXISTS nx_genesis_emission_item (
   holding_no VARCHAR(128) NOT NULL,
   user_id BIGINT NOT NULL,
   amount_usdt DECIMAL(18,6) NOT NULL,
+  rate_applied_pct DECIMAL(10,6) NULL DEFAULT NULL,
   status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
   wallet_ledger_id BIGINT NULL,
   paid_at DATETIME NULL,
@@ -2334,6 +2339,13 @@ CREATE TABLE IF NOT EXISTS nx_admin_idempotency_record (
   idempotency_key VARCHAR(128) NOT NULL,
   request_hash CHAR(64) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING',
+  origin_admin_id BIGINT NULL,
+  origin_method VARCHAR(12) NULL,
+  origin_path VARCHAR(512) NULL,
+  origin_target VARCHAR(512) NULL,
+  origin_targets JSON NULL,
+  origin_read_authority VARCHAR(96) NULL,
+  rollback_confirmed TINYINT NOT NULL DEFAULT 0,
   response_json JSON NULL,
   error_message VARCHAR(512) NULL,
   expires_at DATETIME NOT NULL,
@@ -2341,10 +2353,37 @@ CREATE TABLE IF NOT EXISTS nx_admin_idempotency_record (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_admin_idem_scope_key (scope, idempotency_key),
+  KEY idx_admin_idem_origin_state (scope, origin_method, origin_path(128), status, is_deleted),
   KEY idx_admin_idem_expires (expires_at),
   KEY idx_admin_idem_status (status, updated_at),
   KEY idx_admin_idem_status_expires_deleted (status, expires_at, is_deleted),
   KEY idx_admin_idem_expiry_claim (status, is_deleted, expires_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_admin_command_investigation (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  original_record_id BIGINT NOT NULL,
+  scope VARCHAR(96) NOT NULL,
+  command_key VARCHAR(128) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  original_method VARCHAR(12) NOT NULL,
+  original_path VARCHAR(512) NOT NULL,
+  original_target VARCHAR(512) NULL,
+  original_targets JSON NULL,
+  original_admin_id BIGINT NOT NULL,
+  investigator_id BIGINT NOT NULL,
+  investigated_at DATETIME NOT NULL,
+  requested_conclusion VARCHAR(32) NOT NULL,
+  conclusion VARCHAR(32) NOT NULL,
+  evidence_reference VARCHAR(512) NOT NULL,
+  evidence_type VARCHAR(96) NOT NULL,
+  fact_type VARCHAR(96) NULL,
+  fact_id VARCHAR(255) NULL,
+  fact_action VARCHAR(160) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT NOT NULL DEFAULT 0,
+  KEY idx_command_investigation_original (original_record_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_audit_log (
@@ -2411,7 +2450,7 @@ CREATE TABLE IF NOT EXISTS nx_audit_operation_ticket (
   status VARCHAR(32) NOT NULL DEFAULT 'pending',
   decision_reason VARCHAR(512) NULL,
   decided_at DATETIME NULL,
-  command_json TEXT NULL COMMENT '结构化回放指令 {domain,op,params}',
+  command_json MEDIUMTEXT NULL COMMENT '结构化回放指令 {domain,op,params}',
   source_domain VARCHAR(8) NOT NULL DEFAULT 'A' COMMENT 'A2 row-level visibility domain',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -2879,37 +2918,6 @@ CREATE TABLE IF NOT EXISTS nx_user_device_runtime (
   KEY idx_device_runtime_heartbeat (heartbeat_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS nx_compute_datacenter (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  dc_location VARCHAR(128) NOT NULL,
-  region_label VARCHAR(128) NOT NULL,
-  location VARCHAR(128) NOT NULL DEFAULT '',
-  display_name VARCHAR(128) NOT NULL DEFAULT '',
-  status VARCHAR(24) NOT NULL DEFAULT 'active',
-  sort_order INT NOT NULL DEFAULT 100,
-  updated_by VARCHAR(96) NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_compute_datacenter_location (dc_location),
-  KEY idx_compute_datacenter_status_sort (is_deleted, status, sort_order)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS nx_compute_dc_ops_state (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  dc_location VARCHAR(128) NOT NULL,
-  dispatch_paused TINYINT NOT NULL DEFAULT 0,
-  paused_reason VARCHAR(160) NULL,
-  paused_at DATETIME NULL,
-  resumed_at DATETIME NULL,
-  updated_by VARCHAR(96) NULL,
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  is_deleted TINYINT NOT NULL DEFAULT 0,
-  UNIQUE KEY uk_compute_dc_ops_state_dc (dc_location),
-  KEY idx_compute_dc_ops_paused (dispatch_paused, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
 CREATE TABLE IF NOT EXISTS nx_device_lifecycle_rule (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   scope_type VARCHAR(32) NOT NULL,
@@ -3259,27 +3267,9 @@ CREATE TABLE IF NOT EXISTS nx_team_ambassador_application (
   KEY idx_ambassador_user_scope (user_id, source_environment, run_id, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Canonical E5 metadata for phone/onboarding devices. The App reads these
--- database fields through /api/app/home/overview; it never embeds display data.
-INSERT INTO nx_compute_datacenter(
-  dc_location, region_label, location, display_name, status, sort_order, updated_by, is_deleted
-) VALUES(
-  'User device', 'Global Mobile Compute', 'Global', 'UVEL Mobile Network',
-  'active', 10, 'system:home-grid-metadata', 0
-)
-ON DUPLICATE KEY UPDATE
-  updated_at = IF(is_deleted = 0 AND (
-    region_label IS NULL OR TRIM(region_label)='' OR
-    location IS NULL OR TRIM(location)='' OR
-    display_name IS NULL OR TRIM(display_name)='' OR
-    status IS NULL OR TRIM(status)=''
-  ), NOW(), updated_at),
-  region_label = IF(is_deleted = 0 AND (region_label IS NULL OR TRIM(region_label)=''), VALUES(region_label), region_label),
-  location = IF(is_deleted = 0 AND (location IS NULL OR TRIM(location)=''), VALUES(location), location),
-  display_name = IF(is_deleted = 0 AND (display_name IS NULL OR TRIM(display_name)=''), VALUES(display_name), display_name),
-  status = IF(is_deleted = 0 AND (status IS NULL OR TRIM(status)=''), VALUES(status), status);
-
 CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
+  monthly_target_usdt DECIMAL(12,2) NULL,
+  monthly_target_band_pct DECIMAL(4,1) NULL,
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   sku_id VARCHAR(64) NOT NULL,
   name VARCHAR(128) NOT NULL,
@@ -3296,10 +3286,10 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   phone_daily_earn DECIMAL(18,6) NULL,
   phone_daily_earn_nex DECIMAL(18,6) NULL,
   price DECIMAL(18,4) NOT NULL DEFAULT 0,
-  daily_earn DECIMAL(18,4) NOT NULL DEFAULT 0,
+  daily_earn DECIMAL(18,6) NOT NULL DEFAULT 0,
   daily_earn_nex DECIMAL(18,4) NOT NULL DEFAULT 0,
-  share_yield_min DECIMAL(9,4) NULL,
-  share_yield_max DECIMAL(9,4) NULL,
+  share_yield_min DECIMAL(24,4) NULL,
+  share_yield_max DECIMAL(24,4) NULL,
   base_rate VARCHAR(128) NULL,
   sold BIGINT NULL,
   stock_text VARCHAR(32) NOT NULL DEFAULT '0',
@@ -4301,15 +4291,6 @@ CREATE TABLE IF NOT EXISTS nx_user_payout_address_sandbox_otp (
   CONSTRAINT chk_user_payout_address_sandbox_otp_no CHECK (challenge_no LIKE 'PAYOUT-%'),
   CONSTRAINT chk_user_payout_address_sandbox_otp_source CHECK (source='mock' AND source_environment='SANDBOX')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'location') = 0,
-  'ALTER TABLE nx_compute_datacenter ADD COLUMN location VARCHAR(128) NOT NULL DEFAULT '''' AFTER region_label', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_compute_datacenter' AND COLUMN_NAME = 'display_name') = 0,
-  'ALTER TABLE nx_compute_datacenter ADD COLUMN display_name VARCHAR(128) NOT NULL DEFAULT '''' AFTER location', 'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-UPDATE nx_compute_datacenter SET location=region_label WHERE location='' OR location IS NULL;
-UPDATE nx_compute_datacenter SET display_name=region_label WHERE display_name='' OR display_name IS NULL;
 
 CREATE TABLE IF NOT EXISTS nx_risk_decision (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -5702,6 +5683,7 @@ CREATE TABLE IF NOT EXISTS nx_emergency_sop_execution (
   playbook_name VARCHAR(128) NOT NULL,
   trigger_reason VARCHAR(500) NOT NULL,
   execution_mode VARCHAR(32) NOT NULL,
+  execution_generation BIGINT NOT NULL DEFAULT 0,
   step_status_json JSON NULL,
   operator VARCHAR(64) NULL,
   role_gate VARCHAR(64) NULL,
@@ -6265,6 +6247,15 @@ ON DUPLICATE KEY UPDATE
   tone=VALUES(tone),active=VALUES(active),sort_order=VALUES(sort_order),
   last_operator=VALUES(last_operator),is_deleted=0;
 
+-- I5-BE-03: exchange is a live disclosure-gate action, not a retired one.
+-- New databases start unrestricted; an existing exchange row keeps its state.
+INSERT INTO nx_disclosure_gate_action
+  (action_key,action_name,description,status_label,tone,active,sort_order,last_operator,is_deleted)
+VALUES
+  ('exchange','兑换','兑换（App 新兑换与 G2 排队处理）的风险披露确认范围','REMOVED','dim',0,60,'schema:i5-exchange-disclosure',0)
+ON DUPLICATE KEY UPDATE
+  is_deleted=0;
+
 INSERT INTO nx_config_item
   (config_key,config_value,value_type,config_group,visibility,remark,status,created_at,updated_at,is_deleted)
 VALUES
@@ -6519,6 +6510,8 @@ CREATE TABLE IF NOT EXISTS nx_behavior_sandbox_fact (
 -- Commerce callback state is isolated; money movements reuse the authoritative
 -- nx_funds_sandbox_wallet and nx_funds_sandbox_ledger tables above.
 CREATE TABLE IF NOT EXISTS nx_commerce_sandbox_catalog (
+  monthly_target_usdt DECIMAL(12,2) NULL,
+  monthly_target_band_pct DECIMAL(4,1) NULL,
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   product_id BIGINT NOT NULL,
   product_no VARCHAR(96) NOT NULL,
@@ -7042,7 +7035,7 @@ CREATE TABLE IF NOT EXISTS nx_onboarding_yield_comparison_config (
 INSERT INTO nx_onboarding_yield_comparison_config
   (config_key,label,daily_usdt,daily_nex,sort_order,revision,active,is_deleted)
 VALUES
-  ('phone','手机',0.060000,10.000000,1,1,1,0),
+  ('phone','Phone',0.060000,10.000000,1,1,1,0),
   ('s1','UVELBox S1',1.200000,65.000000,2,1,1,0),
   ('pro','UVELBox Pro',4.800000,260.000000,3,1,1,0),
   ('rack','UVELRack',18.000000,980.000000,4,1,1,0)
@@ -7524,6 +7517,8 @@ CREATE TABLE IF NOT EXISTS nx_sim_task_type_version (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS nx_sim_product_task_policy_version (
+  monthly_target_usdt DECIMAL(12,2) NULL,
+  monthly_target_band_pct DECIMAL(4,1) NULL,
   product_key VARCHAR(64) NOT NULL,
   version BIGINT NOT NULL,
   effective_at DATETIME(6) NOT NULL,
@@ -7564,6 +7559,8 @@ CREATE TABLE IF NOT EXISTS nx_simulated_device_runtime (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS nx_simulated_task (
+  target_cycle_start DATETIME(6) NULL,
+  target_snapshot_json JSON NULL,
   task_no VARCHAR(64) NOT NULL PRIMARY KEY,
   receipt_no VARCHAR(64) NOT NULL,
   user_id BIGINT NOT NULL,
@@ -7606,3 +7603,159 @@ CREATE TABLE IF NOT EXISTS nx_simulated_task (
   CONSTRAINT chk_simulated_reward CHECK(base_reward>=0 AND reward_amount>=0),
   CONSTRAINT chk_simulated_status CHECK(status IN ('RUNNING','COMPLETED','CANCELLED'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS nx_sim_device_target_cycle (
+  user_device_id BIGINT NOT NULL,
+  cycle_start DATETIME(6) NOT NULL,
+  cycle_end DATETIME(6) NOT NULL,
+  cycle_index INT NOT NULL,
+  user_id BIGINT NOT NULL,
+  instance_no VARCHAR(96) NOT NULL,
+  algorithm VARCHAR(32) NOT NULL,
+  u DECIMAL(30,24) NOT NULL,
+  weights_json JSON NOT NULL,
+  p DECIMAL(50,24) NOT NULL DEFAULT 0,
+  lo DECIMAL(50,24) NOT NULL DEFAULT 0,
+  hi DECIMAL(50,24) NOT NULL DEFAULT 0,
+  allocated_usdt DECIMAL(24,6) NOT NULL DEFAULT 0,
+  credited_usdt DECIMAL(24,6) NOT NULL DEFAULT 0,
+  first_product_version BIGINT NOT NULL,
+  first_e3_version BIGINT NOT NULL,
+  first_monthly_target_usdt DECIMAL(12,2) NOT NULL,
+  first_monthly_target_band_pct DECIMAL(4,1) NOT NULL,
+  first_capacity_pct DECIMAL(18,6) NOT NULL,
+  config_changed TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY(user_device_id,cycle_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Append-only histories invalidate all instances atomically with the publication transaction.
+CREATE TABLE IF NOT EXISTS nx_sim_policy_epoch (
+  id TINYINT NOT NULL PRIMARY KEY,
+  epoch BIGINT NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO nx_sim_policy_epoch(id,epoch) VALUES(1,0);
+DROP TRIGGER IF EXISTS nx_sim_policy_type_epoch_ai;
+DROP TRIGGER IF EXISTS nx_sim_policy_product_epoch_ai;
+DROP TRIGGER IF EXISTS nx_sim_policy_e3_epoch_ai;
+DELIMITER $$
+CREATE TRIGGER nx_sim_policy_type_epoch_ai AFTER INSERT ON nx_sim_task_type_version FOR EACH ROW
+BEGIN
+  UPDATE nx_sim_policy_epoch SET epoch=epoch+1 WHERE id=1;
+END$$
+CREATE TRIGGER nx_sim_policy_product_epoch_ai AFTER INSERT ON nx_sim_product_task_policy_version FOR EACH ROW
+BEGIN
+  UPDATE nx_sim_policy_epoch SET epoch=epoch+1 WHERE id=1;
+END$$
+CREATE TRIGGER nx_sim_policy_e3_epoch_ai AFTER INSERT ON nx_sim_e3_version FOR EACH ROW
+BEGIN
+  UPDATE nx_sim_policy_epoch SET epoch=epoch+1 WHERE id=1;
+END$$
+DELIMITER ;
+
+-- Task pool schema and one-time cutover (same migration as startup/fresh post).
+-- PLAN-v3.1: stop application, migrate once, then start new code.
+-- Versions remain append-only; pool labels never touch epoch or wallet triggers.
+CREATE TABLE IF NOT EXISTS nx_sim_task_pool (
+  code VARCHAR(32) NOT NULL PRIMARY KEY,
+  kind VARCHAR(8) NOT NULL,
+  level INT NULL,
+  name VARCHAR(128) NOT NULL,
+  sort_order INT NOT NULL,
+  CHECK(kind IN ('DEVICE','PHONE')),
+  UNIQUE KEY uk_sim_pool_level(level)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE TABLE IF NOT EXISTS nx_sim_task_pool_cutover (
+  id TINYINT NOT NULL PRIMARY KEY,
+  effective_at DATETIME(6) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SET @pool_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+  AND table_name='nx_sim_task_type_version' AND column_name='pool_code'), 'SELECT 1',
+  'ALTER TABLE nx_sim_task_type_version ADD COLUMN pool_code VARCHAR(32) NULL');
+PREPARE pool_stmt FROM @pool_ddl;
+EXECUTE pool_stmt;
+DEALLOCATE PREPARE pool_stmt;
+SET @pool_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+  AND table_name='nx_sim_product_task_policy_version' AND column_name='allowed_pool_codes'), 'SELECT 1',
+  'ALTER TABLE nx_sim_product_task_policy_version ADD COLUMN allowed_pool_codes JSON NULL');
+PREPARE pool_stmt FROM @pool_ddl;
+EXECUTE pool_stmt;
+DEALLOCATE PREPARE pool_stmt;
+SET @pool_ddl = IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=DATABASE()
+  AND table_name='nx_admin_device_sku' AND column_name='allowed_pool_codes_json'), 'SELECT 1',
+  'ALTER TABLE nx_admin_device_sku ADD COLUMN allowed_pool_codes_json JSON NULL');
+PREPARE pool_stmt FROM @pool_ddl;
+EXECUTE pool_stmt;
+DEALLOCATE PREPARE pool_stmt;
+SET @pool_ddl = IF(EXISTS(SELECT 1 FROM information_schema.statistics WHERE table_schema=DATABASE()
+  AND table_name='nx_simulated_device_runtime' AND index_name='idx_sim_runtime_product_state'), 'SELECT 1',
+  'ALTER TABLE nx_simulated_device_runtime ADD KEY idx_sim_runtime_product_state(product_code,state)');
+PREPARE pool_stmt FROM @pool_ddl;
+EXECUTE pool_stmt;
+DEALLOCATE PREPARE pool_stmt;
+
+DROP PROCEDURE IF EXISTS cutover_sim_task_pools;
+DELIMITER $$
+CREATE PROCEDURE cutover_sim_task_pools()
+BEGIN
+  DECLARE cutover_at DATETIME(6);
+  IF NOT EXISTS(SELECT 1 FROM nx_sim_task_pool_cutover WHERE id=1) THEN
+    SET cutover_at=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00');
+    START TRANSACTION;
+    INSERT INTO nx_sim_task_pool_cutover VALUES(1,cutover_at);
+    INSERT INTO nx_sim_task_pool(code,kind,level,name,sort_order) VALUES
+      ('L1','DEVICE',1,'初级',10),('L2','DEVICE',2,'中级',20),
+      ('L3','DEVICE',3,'高级',30),('L4','DEVICE',4,'旗舰',40),('PHONE','PHONE',NULL,'手机任务池',0);
+
+    -- Resolve the phone's published concrete candidates BEFORE appending any version.
+    CREATE TEMPORARY TABLE sim_pool_phone_candidates AS
+    SELECT t.* FROM (
+      SELECT v.*, ROW_NUMBER() OVER(PARTITION BY task_type_id ORDER BY effective_at DESC,version DESC) rn
+      FROM nx_sim_task_type_version v WHERE effective_at<=cutover_at
+    ) t JOIN (
+      SELECT * FROM nx_sim_product_task_policy_version WHERE product_key='phone' AND effective_at<=cutover_at
+      ORDER BY effective_at DESC,version DESC LIMIT 1
+    ) p ON IF(p.allowed_task_classes IS NULL,
+      JSON_CONTAINS(p.allowed_task_type_ids,JSON_QUOTE(t.task_type_id)),
+      JSON_CONTAINS(p.allowed_task_classes,JSON_QUOTE(t.task_class)))
+    WHERE t.rn=1;
+    INSERT INTO nx_sim_task_type_version(task_type_id,version,effective_at,name,task_class,duration_seconds,base_reward,asset,enabled,pool_code)
+      SELECT t.task_type_id,(SELECT MAX(v.version)+1 FROM nx_sim_task_type_version v WHERE v.task_type_id=t.task_type_id),
+        cutover_at,t.name,t.task_class,t.duration_seconds,t.base_reward,t.asset,t.enabled,'PHONE'
+      FROM sim_pool_phone_candidates t ORDER BY t.task_type_id;
+    DROP TEMPORARY TABLE sim_pool_phone_candidates;
+
+    -- All published non-phone keys, including delisted/deleted keys, retain their published T/b.
+    CREATE TEMPORARY TABLE sim_pool_published AS
+      SELECT p.*, (SELECT MAX(n.version) FROM nx_sim_product_task_policy_version n WHERE n.product_key=p.product_key) max_version
+      FROM (SELECT v.*,ROW_NUMBER() OVER(PARTITION BY product_key ORDER BY effective_at DESC,version DESC) rn
+        FROM nx_sim_product_task_policy_version v WHERE effective_at<=cutover_at) p WHERE p.rn=1;
+    INSERT INTO nx_sim_product_task_policy_version(product_key,version,effective_at,allowed_task_type_ids,allowed_task_classes,
+      allowed_pool_codes,monthly_target_usdt,monthly_target_band_pct)
+      SELECT product_key,max_version+1,cutover_at,JSON_ARRAY(),NULL,
+        IF(product_key='phone',JSON_ARRAY('PHONE'),JSON_ARRAY()),monthly_target_usdt,monthly_target_band_pct
+      FROM sim_pool_published ORDER BY product_key;
+    IF NOT EXISTS(SELECT 1 FROM sim_pool_published WHERE product_key='phone') THEN
+      INSERT INTO nx_sim_product_task_policy_version(product_key,version,effective_at,allowed_task_type_ids,allowed_pool_codes)
+        VALUES('phone',1,cutover_at,JSON_ARRAY(),JSON_ARRAY('PHONE'));
+    END IF;
+    DROP TEMPORARY TABLE sim_pool_published;
+    -- Drafts get no published history. The old columns are no longer writable by the application.
+    UPDATE nx_admin_device_sku SET allowed_task_type_ids_json=NULL,allowed_task_classes_json=NULL,allowed_pool_codes_json=JSON_ARRAY();
+
+    -- Only old task/scope tickets; datacenter retirement is owned by the separate migration.
+    CREATE TEMPORARY TABLE sim_pool_old_tickets AS
+      SELECT operation_id FROM nx_audit_operation_ticket WHERE status='pending' AND is_deleted=0
+        AND JSON_VALID(command_json)
+        AND JSON_UNQUOTE(JSON_EXTRACT(command_json,'$.domain'))='E'
+        AND JSON_UNQUOTE(JSON_EXTRACT(command_json,'$.op')) IN
+          ('e1_sku_create','e1_sku_update','e1_sku_status','e1_phone_task_policy','e2_task_create','e2_task_update','e2_task_status');
+    UPDATE nx_audit_operation_ticket t JOIN sim_pool_old_tickets o ON o.operation_id=t.operation_id
+      SET t.status='rejected',t.decision_reason='TASK_POOL_FORMAT_RETIRED',t.decided_at=cutover_at;
+    DELETE l FROM nx_audit_object_lock l JOIN sim_pool_old_tickets o ON o.operation_id=l.ticket_id;
+    DROP TEMPORARY TABLE sim_pool_old_tickets;
+    COMMIT;
+  END IF;
+END$$
+DELIMITER ;
+CALL cutover_sim_task_pools();
+DROP PROCEDURE cutover_sim_task_pools;

@@ -54,7 +54,8 @@ class OpsNovaServiceTest {
     private final OpsNovaService service = new OpsNovaService(
             novaRepository,
             auditLogService,
-            currentPhase::get, TEST_CLOCK);
+            currentPhase::get, TEST_CLOCK,
+                    new ffdd.opsconsole.platform.application.PlatformExperienceConfigService(mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), new com.fasterxml.jackson.databind.ObjectMapper(), null, null, null));
 
     @AfterEach
     void clearSecurityContext() {
@@ -68,7 +69,8 @@ class OpsNovaServiceTest {
         try {
             TimeZone.setDefault(TimeZone.getTimeZone(hostZone));
             FakeNovaRepository repository = spy(new FakeNovaRepository());
-            OpsNovaService fixed = new OpsNovaService(repository, auditLogService, currentPhase::get, TEST_CLOCK);
+            OpsNovaService fixed = new OpsNovaService(repository, auditLogService, currentPhase::get, TEST_CLOCK,
+                    new ffdd.opsconsole.platform.application.PlatformExperienceConfigService(mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), new com.fasterxml.jackson.databind.ObjectMapper(), null, null, null));
 
             var result = fixed.syncSocialEvents("idem-clock-sync", new NovaSocialEventSyncRequest(
                     List.of("withdrawal", "newUsers"), 24, 12, "system", "验证业务时间窗口"));
@@ -90,7 +92,8 @@ class OpsNovaServiceTest {
         try {
             TimeZone.setDefault(TimeZone.getTimeZone(hostZone));
             FakeNovaRepository repository = spy(new FakeNovaRepository());
-            OpsNovaService fixed = new OpsNovaService(repository, auditLogService, currentPhase::get, TEST_CLOCK);
+            OpsNovaService fixed = new OpsNovaService(repository, auditLogService, currentPhase::get, TEST_CLOCK,
+                    new ffdd.opsconsole.platform.application.PlatformExperienceConfigService(mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class), new com.fasterxml.jackson.databind.ObjectMapper(), null, null, null));
             LocalDateTime now = LocalDateTime.of(2026, 9, 18, 11, 38);
             repository.channels.put("social", new NovaChannelView(
                     "social", "真实动态", "真实事件", "20 min", "30 min", "", BigDecimal.ZERO, true));
@@ -709,6 +712,11 @@ class OpsNovaServiceTest {
     }
 
     private static final class FakeNovaRepository implements NovaRepository {
+        @Override
+        public List<Map<String, Object>> channelPushSentCounts(LocalDateTime fromAt, LocalDateTime toAt) {
+            return List.of();
+        }
+
         private final Map<String, NovaChannelView> channels = new LinkedHashMap<>();
         private final Map<String, NovaTemplateView> templates = new LinkedHashMap<>();
         private final List<NovaSocialDistributionItem> distribution = new ArrayList<>();

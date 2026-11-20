@@ -37,6 +37,10 @@ public interface DepositOpsRepository {
         return 0L;
     }
 
+    default boolean historicalBackfillRunRecorded() {
+        return false;
+    }
+
     TopupChargebackRecoveryResult recoverChargeback(TopupChargebackRecoveryCommand command);
 
     void syncAutomaticRiskLocks(int threshold, int lockHours);

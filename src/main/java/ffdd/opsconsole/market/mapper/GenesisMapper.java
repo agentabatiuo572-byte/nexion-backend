@@ -6,6 +6,7 @@ import ffdd.opsconsole.market.domain.GenesisPolicyView;
 import ffdd.opsconsole.market.domain.GenesisSecondaryStatsView;
 import ffdd.opsconsole.market.domain.GenesisSeriesView;
 import ffdd.opsconsole.market.infrastructure.GenesisSeriesEntity;
+import ffdd.opsconsole.shared.canonical.mapper.GenesisEmissionSql;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -78,17 +79,6 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
              LIMIT 1
             """)
     GenesisPolicyView activePolicy();
-
-    @Update("""
-            UPDATE nx_genesis_series
-               SET total_supply = #{totalSupply},
-                   updated_at = NOW()
-             WHERE is_deleted = 0
-               AND UPPER(status) = 'ACTIVE'
-             ORDER BY id DESC
-             LIMIT 1
-            """)
-    int updateActiveTotalSupply(@Param("totalSupply") int totalSupply);
 
     @Update("""
             UPDATE nx_genesis_series
@@ -169,6 +159,18 @@ public interface GenesisMapper extends BaseMapper<GenesisSeriesEntity> {
                AND ledger.biz_type IN ('GENESIS_DIVIDEND','GENESIS_EMISSION')
             """)
     BigDecimal genesisAccrualUsd();
+
+    @Select(GenesisEmissionSql.CURRENT_TOTAL)
+    BigDecimal genesisDailyPayableUsd();
+
+    @Select("""
+            SELECT COUNT(*) AS count, COALESCE(SUM(i.amount_usdt), 0) AS amountUsdt
+              FROM nx_genesis_emission_batch b
+              JOIN nx_genesis_emission_item i ON i.batch_no = b.batch_no
+             WHERE b.batch_no = #{batchNo} AND b.is_deleted = 0
+               AND i.is_deleted = 0 AND i.status = 'PAID'
+            """)
+    ffdd.opsconsole.market.domain.NexMarketRepository.GenesisPaidEmission paidEmission(@Param("batchNo") String batchNo);
 
     @Select("""
             SELECT ledger.biz_no

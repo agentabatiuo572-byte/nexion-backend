@@ -51,7 +51,6 @@ public class AppWithdrawalService {
     private static final BigDecimal MIN_WITHDRAWAL = new BigDecimal("20.000000");
     private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
-    private static final String STRONG_REVIEW_THRESHOLD_KEY = "withdrawal.strong_review_threshold_usdt";
 
     private final AppWithdrawalMapper mapper;
     private final PlatformConfigFacade config;
@@ -68,6 +67,7 @@ public class AppWithdrawalService {
     private final ffdd.opsconsole.finance.mapper.BankWithdrawalMapper bankWithdrawalMapper;
     private final WithdrawalRiskTimePolicy riskTimePolicy;
     private final ffdd.opsconsole.finance.cregis.CregisPayoutControl providerPayout;
+    private final WithdrawalNetworkPolicy networkPolicy;
 
     public ApiResult<Map<String, Object>> list(Long userId) {
         return list(userId, 1, 50);
@@ -94,8 +94,10 @@ public class AppWithdrawalService {
         long offset = (long) (pageNum - 1) * pageSize;
         Map<String, Object> page = linked("total", total, "pageNum", pageNum, "pageSize", pageSize);
         if (snapshotId != null) page.put("snapshotId", snapshotId.toString());
-        return ApiResult.ok(linked("withdrawals", snapshotId == null ? mapper.userWithdrawals(userId, offset, pageSize)
-                        : mapper.userWithdrawalsAt(userId, offset, pageSize, snapshotId),
+        List<Map<String, Object>> withdrawals = snapshotId == null ? mapper.userWithdrawals(userId, offset, pageSize)
+                : mapper.userWithdrawalsAt(userId, offset, pageSize, snapshotId);
+        addComplianceSnapshots(userId, withdrawals);
+        return ApiResult.ok(linked("withdrawals", withdrawals,
                 "page", page,
                 "source", "nx_withdrawal_order", "sourceEnvironment", "PRODUCTION"));
     }
@@ -107,6 +109,7 @@ public class AppWithdrawalService {
         if (!StringUtils.hasText(withdrawalNo)) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
         Map<String, Object> row = mapper.userWithdrawal(userId, withdrawalNo.trim());
         if (row == null) throw new BizException(404, "WITHDRAWAL_NOT_FOUND");
+        addComplianceSnapshots(userId, List.of(row));
         return ApiResult.ok(linked("withdrawal", row,
                 "source", "nx_withdrawal_order", "sourceEnvironment", "PRODUCTION"));
     }
@@ -124,24 +127,16 @@ public class AppWithdrawalService {
                     "withdrawal.nex_fee_offset_rate", "withdrawal.small_amount_threshold_usd",
                     "withdrawal.payout_sla_hours", "withdrawal.trc20.enabled",
                     "withdrawal.bep20.enabled", "withdrawal.erc20.enabled",
-                    "withdrawal.daily_count_limit", "withdrawal.max_balance_pct", STRONG_REVIEW_THRESHOLD_KEY));
+                    "withdrawal.daily_count_limit", "withdrawal.max_balance_pct", "withdrawal.strong_review_threshold_usdt"));
         } catch (RuntimeException ex) {
             throw new BizException(503, "D5_POLICY_VERSION_UNAVAILABLE");
         }
-        PolicySnapshot policy = currentPolicy(
-                () -> Boolean.TRUE.equals(providerCapability.get("enabled")),
-                network -> networkCapabilities.stream().anyMatch(capability ->
-                        network.network().equals(capability.get("network"))
-                                && Boolean.TRUE.equals(capability.get("enabled"))), policyValues);
+        PolicySnapshot policy = currentPolicy(policyValues, () -> networkPolicy.enabledNetworks(policyValues, networkCapabilities));
         int dailyLimit = validatedDailyLimit(() -> requiredDecimal("withdrawal.daily_count_limit", policyValues));
         BigDecimal balanceMaxRatio = validatedBalanceMaxRatio(() -> requiredDecimal("withdrawal.max_balance_pct", policyValues));
-        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
-        if (rhythm == null || !rhythm.reliable() || !StringUtils.hasText(rhythm.currentPhase()) || rhythm.currentMonth() < 1
-                || rhythm.withdrawCooldownDays() < 0) {
-            throw new BizException(503, "WITHDRAWAL_POLICY_UNAVAILABLE");
-        }
+        GrowthRhythmSnapshot rhythm = policy.rhythm();
         boolean withdrawalEnabled = withdrawGateEnabled();
-        BigDecimal strongReviewThreshold = strongReviewThreshold(policyValues.get(STRONG_REVIEW_THRESHOLD_KEY));
+        BigDecimal strongReviewThreshold = D2WithdrawalReviewThreshold.require(policyValues.get("withdrawal.strong_review_threshold_usdt"));
         return ApiResult.ok(linked(
                 "minAmount", MIN_WITHDRAWAL, "dailyLimitCount", dailyLimit,
                 "balanceMaxRatio", balanceMaxRatio,
@@ -153,11 +148,51 @@ public class AppWithdrawalService {
                 "policyVersion", policy.policyVersion(),
                 "cooldownDays", rhythm.withdrawCooldownDays(),
                 "complianceHoldEnabled", rhythm.complianceHoldEnabled(),
+                "complianceReviewThresholdUsdt", WithdrawalCompliancePolicy.REVIEW_THRESHOLD_USDT,
                 "enabledNetworks", policy.enabledNetworks(), "providerPayout", providerCapability,
                 "networkCapabilities", networkCapabilities,
                 "currentPhase", rhythm.currentPhase(),
                 "currentMonth", rhythm.currentMonth(), "withdrawalEnabled", withdrawalEnabled,
                 "gateSource", "J1", "source", "D5+H1"));
+    }
+
+    /** Parameter preview only: no risk decision, address approval, reservation or payout. */
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> testPreview(Long userId, BigDecimal amount) {
+        if (!FundsSandboxProfileGuard.isStrictDevelopmentProfile(environment.getActiveProfiles())
+                || !environment.getProperty("nexion.withdrawal.test-preview.enabled", Boolean.class, false)) {
+            return ApiResult.fail(404, "WITHDRAWAL_TEST_PREVIEW_DISABLED");
+        }
+        requireProductionWithdrawalSubject(userId);
+        if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        WalletRow wallet = mapper.walletForEligibility(userId);
+        if (wallet == null || wallet.usdtAvailable() == null || wallet.usdtAvailable().signum() < 0)
+            throw new BizException(503, "WITHDRAWAL_WALLET_UNAVAILABLE");
+        BigDecimal fee = requiredDecimal("withdrawal.network_confirm_fee_usd.bep20");
+        if (fee.signum() < 0 || fee.compareTo(new BigDecimal("25")) > 0
+                || fee.multiply(new BigDecimal("2")).stripTrailingZeros().scale() > 0)
+            throw new BizException(503, "D5_NETWORK_FEE_INVALID");
+        int dailyLimit = validatedDailyLimit();
+        BigDecimal ratio = validatedBalanceMaxRatio();
+        WithdrawalDayWindow day = WithdrawalDayWindow.at(clock);
+        int dailyCount = mapper.countBusinessDay(userId, day.fromInclusive(), day.toExclusive());
+        BigDecimal requested = amount == null ? null : money(amount);
+        if (requested != null && requested.signum() <= 0) throw new BizException(422, "WITHDRAWAL_AMOUNT_INVALID");
+        List<String> reasons = new java.util.ArrayList<>();
+        if (requested != null) {
+            if (requested.compareTo(MIN_WITHDRAWAL) < 0) reasons.add("BELOW_MINIMUM");
+            if (requested.compareTo(wallet.usdtAvailable()) > 0) reasons.add("INSUFFICIENT_BALANCE");
+            else if (requested.compareTo(wallet.usdtAvailable().multiply(ratio)) > 0) reasons.add("BALANCE_RATIO_LIMIT");
+            if (dailyCount >= dailyLimit) reasons.add("DAILY_LIMIT_REACHED");
+            if (requested.compareTo(fee) <= 0) reasons.add("NET_RECEIVE_NON_POSITIVE");
+        }
+        return ApiResult.ok(linked("testPreview", true, "readOnly", true, "canSubmit", false,
+                "validationScope", "amount-fee-balance-limits-only", "network", "USDT-BEP20",
+                "walletUsdt", wallet.usdtAvailable(), "minAmount", MIN_WITHDRAWAL,
+                "networkFeeUsdt", fee, "dailyLimitCount", dailyLimit, "dailyCount", dailyCount,
+                "balanceMaxRatio", ratio, "amount", requested,
+                "netReceiveUsdt", requested == null ? null : requested.subtract(fee).max(BigDecimal.ZERO),
+                "validationPassed", requested == null ? null : reasons.isEmpty(), "reasons", reasons));
     }
 
     /** Read-only server risk/policy snapshot. It never reserves funds or records a decision. */
@@ -171,6 +206,10 @@ public class AppWithdrawalService {
         String normalizedChain = normalizeChain(chain);
         String normalizedAddress = normalizeAddress(address);
         PolicySnapshot policy = currentPolicy();
+        WithdrawalCompliancePolicy compliance = WithdrawalCompliancePolicy.require(policy.rhythm());
+        boolean complianceReviewRequired = compliance.reviewRequired(normalizedChain);
+        boolean complianceHoldApplies = compliance.holdApplies(normalizedChain, requested);
+        int complianceHoldDays = compliance.holdDays(normalizedChain, requested);
         if (!StringUtils.hasText(requestedPolicyVersion)
                 || !policy.policyVersion().equals(requestedPolicyVersion.trim())) {
             return ApiResult.fail(409, "WITHDRAWAL_POLICY_VERSION_CONFLICT",
@@ -182,6 +221,8 @@ public class AppWithdrawalService {
             return ApiResult.ok(linked("canSubmit", false, "maxWithdrawableUsdt", BigDecimal.ZERO,
                     "route", "reject", "riskReasons", List.of("network-disabled"),
                     "fastLaneApplied", false, "waivedGates", List.of(), "dailyLimitReached", false,
+                    "complianceReviewRequired", complianceReviewRequired,
+                    "complianceHoldApplies", complianceHoldApplies, "complianceHoldDays", complianceHoldDays,
                     "dailyCountResetAt", day.resetAt(), "configVersion", policy.policyVersion()));
         }
         WalletRow wallet = mapper.walletForEligibility(userId);
@@ -210,17 +251,20 @@ public class AppWithdrawalService {
             throw new BizException(503, "K3_WITHDRAWAL_DECISION_UNAVAILABLE");
         }
         int score = facts.k4RiskScore();
-        BigDecimal strongThreshold = strongReviewThreshold();
-        boolean strong = requested.compareTo(strongThreshold) >= 0;
+        BigDecimal strongThreshold = D2WithdrawalReviewThreshold.require(config);
+        boolean strong = D2WithdrawalReviewThreshold.applies(strongThreshold, requested);
         boolean small = requested.compareTo(policy.smallAmountThresholdUsd()) <= 0;
-        boolean fast = small && !strong && score < facts.k4BandLowMax() && "pass".equals(decision.action());
-        String route = strong ? "manual" : toClientRiskRoute(finalRiskRoute(score, facts, decision));
+        boolean fast = small && !strong && !complianceReviewRequired
+                && score < facts.k4BandLowMax() && "pass".equals(decision.action());
+        String route = strong && !Set.of("freeze", "delay").contains(decision.action()) ? "manual"
+                : toClientRiskRoute(finalRiskRoute(score, facts, decision, fast));
         List<String> reasons = new java.util.ArrayList<>();
         if (decision.held()) reasons.add("K3_ROUTE:" + decision.action());
         if (score >= facts.k4AutoEscalateScore()) reasons.add("K4_ESCALATED:" + score);
         else if (score >= facts.k4BandHighMin()) reasons.add("K4_HIGH_PRIORITY:" + score);
         else if (score >= facts.k4BandLowMax()) reasons.add("K4_MANUAL:" + score);
         if (strong) reasons.add("A3_STRONG_REVIEW_THRESHOLD");
+        if (complianceReviewRequired) reasons.add(WithdrawalCompliancePolicy.REVIEW_REQUIRED);
         if (payoutAddress == null || !StringUtils.hasText(payoutAddress.address())) {
             reasons.add("PAYOUT_ADDRESS_REQUIRED");
         } else if (payoutAddress.effectiveAt() == null || payoutAddress.effectiveAt().isAfter(businessNow)) {
@@ -234,6 +278,8 @@ public class AppWithdrawalService {
         return ApiResult.ok(linked("canSubmit", canSubmit, "maxWithdrawableUsdt", max, "route", route,
                 "riskReasons", reasons, "fastLaneApplied", fast, "waivedGates", waived,
                 "dailyLimitReached", dailyLimitReached, "dailyCountResetAt", day.resetAt(),
+                "complianceReviewRequired", complianceReviewRequired,
+                "complianceHoldApplies", complianceHoldApplies, "complianceHoldDays", complianceHoldDays,
                 "configVersion", policy.policyVersion()));
     }
 
@@ -283,6 +329,7 @@ public class AppWithdrawalService {
             Long userId, BigDecimal amount, String chain, String address, String policyVersion,
             boolean useNexFeeOffset, String idempotencyKey) {
         requireProductionWithdrawalSubject(userId);
+        networkPolicy.lockBeforeUser();
         if (userId == null || mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         BigDecimal normalizedAmount = money(amount);
         String normalizedChain = normalizeChain(chain);
@@ -312,6 +359,51 @@ public class AppWithdrawalService {
         return result;
     }
 
+    /** Shares the submit/abandon user mutex; never claims a key, repairs a fence, or writes business data. */
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public ApiResult<Map<String, Object>> readAttempt(Long userId, String idempotencyKey) {
+        requireProductionWithdrawalSubject(userId);
+        if (userId == null || mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
+        String key = requireKey(idempotencyKey);
+        AppWithdrawalMapper.WithdrawalAttemptRow attempt = mapper.lockWithdrawalAttempt(userId, key);
+        String withdrawalNo = mapper.readWithdrawalNoByIdempotencyKey(userId, key);
+        // Canonical ownership and the original key must both match, even if an old fence is incomplete.
+        if (StringUtils.hasText(withdrawalNo)) {
+            Map<String, Object> withdrawal = mapper.userWithdrawal(userId, withdrawalNo);
+            if (withdrawal != null) {
+                addComplianceSnapshots(userId, List.of(withdrawal));
+                return ApiResult.ok(linked("state", "COMMITTED", "withdrawalNo", withdrawalNo,
+                        "withdrawal", withdrawal, "canRetrySameKey", false));
+            }
+            return ApiResult.ok(linked("state", "UNKNOWN", "canRetrySameKey", false));
+        }
+        if (attempt == null) {
+            // A foreign key and an unseen key have exactly the same response. Do not inspect a foreign receipt.
+            return ApiResult.fail(404, "WITHDRAWAL_ATTEMPT_NOT_FOUND",
+                    linked("state", "NOT_SEEN", "canRetrySameKey", true));
+        }
+        if ("ABANDONED".equals(attempt.status())) {
+            return ApiResult.ok(linked("state", "REJECTED", "reasonCode", 409,
+                    "reason", "WITHDRAWAL_ATTEMPT_ABANDONED", "canRetrySameKey", false));
+        }
+        if ("ACTIVE".equals(attempt.status())) {
+            var recovery = idempotency.recoveryResult("USER_WITHDRAWAL_SUBMIT", key,
+                    attempt.requestHash(), ApiResult.class);
+            if (recovery.status() == AdminIdempotencyService.RecoveryStatus.PROCESSING) {
+                return ApiResult.ok(linked("state", "PROCESSING", "canRetrySameKey", false));
+            }
+            ApiResult<?> receipt = recovery.response();
+            if (recovery.status() == AdminIdempotencyService.RecoveryStatus.SUCCEEDED && receipt != null
+                    && receipt.getCode() != 0 && StringUtils.hasText(receipt.getMessage())) {
+                return ApiResult.ok(linked("state", "REJECTED", "reasonCode", receipt.getCode(),
+                        "reason", receipt.getMessage(), "canRetrySameKey", false));
+            }
+        }
+        // FAILED only retains an exception class, not a business refusal. Missing/corrupt/conflicting
+        // receipts or a COMMITTED fence without its owned order never authorize retiring the local attempt.
+        return ApiResult.ok(linked("state", "UNKNOWN", "canRetrySameKey", false));
+    }
+
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> abandonAttempt(
             Long userId, String idempotencyKey, BigDecimal amount, String chain, String address,
@@ -339,6 +431,7 @@ public class AppWithdrawalService {
             if (withdrawal == null || mapper.commitWithdrawalAttempt(userId, key, authoritativeWithdrawalNo) != 1) {
                 throw new BizException(503, "WITHDRAWAL_ATTEMPT_READBACK_UNAVAILABLE");
             }
+            addComplianceSnapshots(userId, List.of(withdrawal));
             return ApiResult.ok(linked("state", "COMMITTED", "withdrawalNo", authoritativeWithdrawalNo,
                     "withdrawal", withdrawal));
         }
@@ -348,6 +441,7 @@ public class AppWithdrawalService {
             }
             Map<String, Object> withdrawal = mapper.userWithdrawal(userId, attempt.withdrawalNo());
             if (withdrawal == null) throw new BizException(503, "WITHDRAWAL_ATTEMPT_READBACK_UNAVAILABLE");
+            addComplianceSnapshots(userId, List.of(withdrawal));
             return ApiResult.ok(linked("state", "COMMITTED", "withdrawalNo", attempt.withdrawalNo(),
                     "withdrawal", withdrawal));
         }
@@ -391,11 +485,13 @@ public class AppWithdrawalService {
         if (!withdrawGateEnabled()) {
             return ApiResult.fail(409, "WITHDRAWAL_KILL_SWITCH_DISABLED");
         }
+        if(bankQuote==null)networkPolicy.requireEnabledForWrite(chain);
         PolicySnapshot policy = currentPolicy();
+        String acceptedPolicyVersion = bankQuote == null ? policy.policyVersion() : policy.bankPolicyVersion();
         if (!StringUtils.hasText(requestedPolicyVersion)
-                || !policy.policyVersion().equals(requestedPolicyVersion.trim())) {
+                || !acceptedPolicyVersion.equals(requestedPolicyVersion.trim())) {
             return ApiResult.fail(409, "WITHDRAWAL_POLICY_VERSION_CONFLICT",
-                    Map.of("policyVersion", policy.policyVersion()));
+                    Map.of("policyVersion", acceptedPolicyVersion));
         }
         LocalDateTime businessNow = LocalDateTime.now(clock);
         if (bankQuote == null && BankWithdrawalEligibility.hasUnresolvedIntent(bankWithdrawalMapper, userId, businessNow))
@@ -435,10 +531,11 @@ public class AppWithdrawalService {
             earningsReleaseService.assertWithdrawable(userId, safe(wallet.usdtAvailable()), amount);
         }
 
-        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
-        if (rhythm == null || !rhythm.reliable() || rhythm.currentMonth() <= 0 || rhythm.withdrawCooldownDays() < 0) {
-            throw new BizException(503, "H1_WITHDRAWAL_DIAL_UNAVAILABLE");
-        }
+        GrowthRhythmSnapshot rhythm = policy.rhythm();
+        WithdrawalCompliancePolicy compliance = WithdrawalCompliancePolicy.require(rhythm);
+        boolean complianceReviewRequired = bankQuote == null && compliance.reviewRequired(chain);
+        boolean complianceHoldApplies = bankQuote == null && compliance.holdApplies(chain, amount);
+        int complianceHoldDays = bankQuote == null ? compliance.holdDays(chain, amount) : 0;
         // Legacy D2 fee snapshot columns also carry the bank channel fee; posting uses a distinct BANK_FEE type.
         BigDecimal networkFee = (bankQuote == null ? policy.networkConfirmFeeUsd().get(networkKey(chain)) : bankQuote.feeUsdt())
                 .setScale(6, RoundingMode.UNNECESSARY);
@@ -467,7 +564,8 @@ public class AppWithdrawalService {
         if (netReceive.signum() <= 0) return ApiResult.fail(422, "WITHDRAWAL_NET_AMOUNT_INVALID");
 
         String withdrawalNo = "WD-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        LocalDateTime holdUntil = LocalDateTime.now(clock).plusDays(rhythm.withdrawCooldownDays());
+        LocalDateTime holdUntil = WithdrawalCompliancePolicy.supports(chain)
+                ? compliance.holdUntil(chain, amount, businessNow) : businessNow.plusDays(rhythm.withdrawCooldownDays());
         boolean validateRiskTime = riskTimePolicy.enabled();
         WithdrawalRiskFacts riskFacts = mapper.withdrawalRiskFacts(userId, address, validateRiskTime);
         if (riskFacts == null || !StringUtils.hasText(riskFacts.userNo())
@@ -503,20 +601,23 @@ public class AppWithdrawalService {
         String k4Priority = k4Priority(k4Score, riskFacts);
         boolean frozen = "freeze".equals(riskDecision.action());
         boolean delayed = "delay".equals(riskDecision.action());
-        BigDecimal strongReviewThreshold = strongReviewThreshold();
-        boolean strongReview = amount.compareTo(strongReviewThreshold) >= 0;
+        // K3 owns its existing delay/freeze deadline independently of the H1 compliance switch.
+        if (frozen || delayed) holdUntil = businessNow.plusDays(rhythm.withdrawCooldownDays());
+        BigDecimal strongReviewThreshold = D2WithdrawalReviewThreshold.require(config);
+        boolean strongReview = D2WithdrawalReviewThreshold.applies(strongReviewThreshold, amount);
         boolean smallAmountEligible = amount.compareTo(policy.smallAmountThresholdUsd()) <= 0;
-        boolean zeroDayAutoReview = rhythm.withdrawCooldownDays() == 0
-                && amount.compareTo(new BigDecimal("1000")) < 0;
-        boolean fastTrack = ((bankQuote == null && smallAmountEligible) || zeroDayAutoReview)
-                && !strongReview && k4Score < riskFacts.k4BandLowMax()
+        boolean zeroDayAutoReview = rhythm.withdrawCooldownDays() == 0;
+        boolean fastTrack = (bankQuote == null || zeroDayAutoReview) && smallAmountEligible
+                && !strongReview && !complianceReviewRequired && k4Score < riskFacts.k4BandLowMax()
                 && "pass".equals(riskDecision.action());
-        String riskRoute = strongReview ? "strong-review" : finalRiskRoute(k4Score, riskFacts, riskDecision);
-        // H1 cooldown remains authoritative: low-risk fast-track is auto-reviewed only after the hold expires.
+        String riskRoute = strongReview && !frozen && !delayed ? "strong-review"
+                : finalRiskRoute(k4Score, riskFacts, riskDecision, fastTrack);
+        boolean complianceWaiting = WithdrawalCompliancePolicy.supports(chain) && complianceHoldDays > 0;
         String status = frozen ? "FROZEN" : fastTrack ? "EXTENDED_HOLD"
-                : bankQuote != null ? (delayed ? "EXTENDED_HOLD" : "REVIEW_PENDING") : strongReview ? "REVIEW_PENDING"
-                : (fastTrack || delayed || "fast-pass".equals(riskRoute)) ? "EXTENDED_HOLD" : "REVIEW_PENDING";
-        String failureReason = strongReview ? "A3_STRONG_REVIEW_THRESHOLD"
+                : delayed || complianceWaiting ? "EXTENDED_HOLD" : "REVIEW_PENDING";
+        String failureReason = frozen || delayed ? riskRouteEvidence(k4Score, riskFacts, riskDecision)
+                : strongReview ? "A3_STRONG_REVIEW_THRESHOLD"
+                : complianceReviewRequired ? WithdrawalCompliancePolicy.REVIEW_REQUIRED
                 : fastTrack ? "H1_COOLDOWN_FAST_TRACK"
                 : riskRouteEvidence(k4Score, riskFacts, riskDecision);
         LocalDateTime payoutDueAt = holdUntil.plusHours(policy.payoutSlaHours());
@@ -529,16 +630,17 @@ public class AppWithdrawalService {
                 BigDecimal.ZERO, networkFee, networkFee, networkFee,
                 penaltyPct, grossFee,
                 nexBurned, nexOffsetRate, feeWaived, actualFee, netReceive,
-                policy.policyVersion(), useNexFeeOffset, idempotencyKey,
+                acceptedPolicyVersion, useNexFeeOffset, idempotencyKey,
                 frozen ? "K3_RULE_FREEZE"
                         : delayed ? "K3_RULE_DELAY" : fastTrack
-                            ? (zeroDayAutoReview ? "H1_ZERO_DAY_AUTO_REVIEW" : "H1_PHASE_COOLDOWN") : null,
+                            ? (holdUntil.equals(businessNow) ? "H1_ZERO_DAY_AUTO_REVIEW" : "H1_PHASE_COOLDOWN")
+                            : complianceWaiting ? WithdrawalCompliancePolicy.HOLD_OWNER : null,
                 "H1:M" + rhythm.currentMonth() + ":" + rhythm.currentPhase(),
                 k4Priority, riskDecision.action(), k4Score, riskFacts.k4ModelVersion(), riskFacts.k4AsOf(),
                 riskFacts.k4BandLowMax(), riskFacts.k4BandHighMin(), riskFacts.k4AutoEscalateScore(),
                 status, failureReason,
-                fastTrack ? "REVIEW_PASSED" : (bankQuote != null || frozen || delayed) ? "REVIEW_PENDING"
-                        : "fast-pass".equals(riskRoute) ? "REVIEW_PASSED" : null);
+                fastTrack ? "REVIEW_PASSED" : (bankQuote != null || frozen || delayed || complianceWaiting) ? "REVIEW_PENDING"
+                        : "fast-pass".equals(riskRoute) ? "REVIEW_PASSED" : null, riskRoute);
         if (mapper.insertWithdrawal(write) != 1) throw new BizException(409, "WITHDRAWAL_CREATE_CONFLICT");
         if (riskDecision.held()) {
             withdrawalRiskRuleFacade.recordDecision(riskContext, riskDecision);
@@ -565,7 +667,7 @@ public class AppWithdrawalService {
         Map<String, Object> detail = linked(
                 "withdrawal_id", withdrawalNo, "amount_usdt", amount, "chain", chain,
                 "network_confirm_usd", networkFee, "network_fee", networkFee,
-                "policy_version", policy.policyVersion(), "use_nex_fee_offset", useNexFeeOffset,
+                "policy_version", acceptedPolicyVersion, "use_nex_fee_offset", useNexFeeOffset,
                 "penalty_fee_rate", penaltyPct, "penalty_fee", penaltyFee,
                 "gross_fee", grossFee, "nex_burned", nexBurned,
                 "fee_waived", feeWaived,
@@ -573,6 +675,8 @@ public class AppWithdrawalService {
                 "actual_penalty_fee", actualPenaltyFee, "actual_network_fee", actualNetworkFee,
                 "actual_fee", actualFee, "net_receive", netReceive,
                 "cooldown_days", rhythm.withdrawCooldownDays(), "hold_until", holdUntil,
+                "compliance_review_required", complianceReviewRequired,
+                "compliance_hold_applies", complianceHoldApplies, "compliance_hold_days", complianceHoldDays,
                 "small_amount_auto_review", fastTrack,
                 "small_amount_threshold_usd", policy.smallAmountThresholdUsd(),
                 "payout_sla_hours", policy.payoutSlaHours(), "payout_due_at", payoutDueAt,
@@ -616,7 +720,9 @@ public class AppWithdrawalService {
                 "penaltyFeeWaived", penaltyFeeWaived, "networkFeeWaived", networkFeeWaived,
                 "actualPenaltyFee", actualPenaltyFee, "actualNetworkFee", actualNetworkFee,
                 "actualFee", actualFee,
-                "netReceive", netReceive, "policyVersion", policy.policyVersion(),
+                "netReceive", netReceive, "policyVersion", acceptedPolicyVersion,
+                "complianceReviewRequired", complianceReviewRequired,
+                "complianceHoldApplies", complianceHoldApplies, "complianceHoldDays", complianceHoldDays,
                 "useNexFeeOffset", useNexFeeOffset,
                 "riskRoute", riskRoute, "k3RiskRoute", riskDecision.action(),
                 "strongReview", strongReview, "strongReviewRequired", strongReview,
@@ -645,22 +751,6 @@ public class AppWithdrawalService {
 
     private boolean isProductionOrDefaultProfile(String... profiles) {
         return FundsSandboxProfileGuard.isStrictProductionProfile(profiles);
-    }
-
-    private BigDecimal strongReviewThreshold() {
-        return strongReviewThreshold(config.activeValue(STRONG_REVIEW_THRESHOLD_KEY).orElse(null));
-    }
-
-    private BigDecimal strongReviewThreshold(String raw) {
-        try {
-            BigDecimal value = new BigDecimal(raw == null ? "" : raw.trim());
-            if (value.compareTo(MIN_WITHDRAWAL) < 0 || value.compareTo(new BigDecimal("10000000")) > 0) {
-                throw new IllegalArgumentException("range");
-            }
-            return value.setScale(6, RoundingMode.UNNECESSARY);
-        } catch (RuntimeException ex) {
-            throw new BizException(503, "A3_STRONG_REVIEW_THRESHOLD_UNAVAILABLE");
-        }
     }
 
     private int validatedDailyLimit() {
@@ -713,13 +803,14 @@ public class AppWithdrawalService {
 
     private String finalRiskRoute(
             int k4Score, WithdrawalRiskFacts facts,
-            WithdrawalRiskDecision k3Decision) {
+            WithdrawalRiskDecision k3Decision, boolean fastTrack) {
         if ("freeze".equals(k3Decision.action())) return "freeze";
+        if ("delay".equals(k3Decision.action())) return "delay";
         if (k4Score >= facts.k4AutoEscalateScore()) return "escalated-manual";
         if (k4Score >= facts.k4BandHighMin()) return "high-manual";
         if (k3Decision.held()) return k3Decision.action();
         if (k4Score >= facts.k4BandLowMax()) return "manual";
-        return "fast-pass";
+        return fastTrack ? "fast-pass" : "manual";
     }
 
     private String riskRouteEvidence(
@@ -775,12 +866,6 @@ public class AppWithdrawalService {
     }
 
     private PolicySnapshot currentPolicy() {
-        return currentPolicy(providerPayout::enabled, providerPayout::enabled);
-    }
-
-    private PolicySnapshot currentPolicy(
-            java.util.function.BooleanSupplier globalPayoutEnabled,
-            java.util.function.Predicate<CregisNetwork> networkPayoutEnabled) {
         Map<String, String> policyValues;
         try {
             policyValues = config.activeValuesByKeys(List.of(
@@ -792,13 +877,10 @@ public class AppWithdrawalService {
         } catch (RuntimeException ex) {
             throw new BizException(503, "D5_POLICY_VERSION_UNAVAILABLE");
         }
-        return currentPolicy(globalPayoutEnabled, networkPayoutEnabled, policyValues);
+        return currentPolicy(policyValues, () -> networkPolicy.enabledNetworks(policyValues));
     }
 
-    private PolicySnapshot currentPolicy(
-            java.util.function.BooleanSupplier globalPayoutEnabled,
-            java.util.function.Predicate<CregisNetwork> networkPayoutEnabled,
-            Map<String, String> policyValues) {
+    private PolicySnapshot currentPolicy(Map<String, String> policyValues, java.util.function.Supplier<List<String>> enabledNetworks) {
         long version;
         try {
             version = requiredDecimal("withdrawal.d5.version", policyValues).longValueExact();
@@ -828,30 +910,36 @@ public class AppWithdrawalService {
                 || payoutSlaHours < 1 || payoutSlaHours > 168) {
             throw new BizException(503, "D5_WD01_CONFIG_INVALID");
         }
-        boolean payoutAllowed = !providerMode() || globalPayoutEnabled.getAsBoolean();
-        List<String> enabled = payoutAllowed
-                ? CHAINS.stream().sorted().filter(chain -> !providerMode() || ("USDT-BEP20".equals(chain) || "USDT-ERC20".equals(chain))
-                        && networkPayoutEnabled.test(CregisNetwork.fromNetwork(chain.substring(5))))
-                    .filter(chain -> networkEnabled(chain, policyValues)).toList() : List.of();
+        List<String> enabled = enabledNetworks.get();
+        GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
+        WithdrawalCompliancePolicy compliance = WithdrawalCompliancePolicy.require(rhythm);
 
         String versionMaterial = version + "|" + fees + "|" + nexOffsetRate.stripTrailingZeros().toPlainString()
                 + "|" + smallAmountThresholdUsd.stripTrailingZeros().toPlainString()
                 + "|" + payoutSlaHours + "|" + enabled;
         return new PolicySnapshot(version, Map.copyOf(fees), nexOffsetRate, smallAmountThresholdUsd,
-                payoutSlaHours, enabled, hash(versionMaterial));
+                payoutSlaHours, enabled, rhythm, hash(versionMaterial), hash(versionMaterial + "|" + compliance.versionMaterial()));
     }
 
-    private boolean networkEnabled(String chain, Map<String, String> policyValues) {
-        String key = switch (chain) {
-            case "USDT-TRC20" -> "withdrawal.trc20.enabled";
-            case "USDT-BEP20" -> "withdrawal.bep20.enabled";
-            case "USDT-ERC20" -> "withdrawal.erc20.enabled";
-            default -> throw new BizException(422, "WITHDRAWAL_CHAIN_INVALID");
-        };
-        return Optional.ofNullable(policyValues.get(key)).map(String::trim).map(String::toLowerCase)
-                .filter(Set.of("true", "false", "1", "0", "on", "off")::contains)
-                .map(Set.of("true", "1", "on")::contains)
-                .orElseThrow(() -> new BizException(503, "D5_NETWORK_CONFIG_UNAVAILABLE"));
+    /** D7 keeps its existing D5-only quote contract; USDT compliance policy does not change bank routing. */
+    String bankPolicyVersion() {
+        return currentPolicy().bankPolicyVersion();
+    }
+
+    private void addComplianceSnapshots(Long userId, List<Map<String, Object>> withdrawals) {
+        if (withdrawals.isEmpty()) return;
+        List<String> numbers = withdrawals.stream().map(row -> String.valueOf(row.get("withdrawalNo"))).toList();
+        Map<String, AppWithdrawalMapper.WithdrawalComplianceSnapshot> snapshots = new LinkedHashMap<>();
+        for (var snapshot : mapper.withdrawalComplianceSnapshots(userId, numbers)) {
+            snapshots.put(snapshot.withdrawalNo(), snapshot);
+        }
+        for (var row : withdrawals) {
+            var snapshot = snapshots.get(String.valueOf(row.get("withdrawalNo")));
+            if (snapshot == null || snapshot.complianceReviewRequired() == null) continue;
+            row.put("complianceReviewRequired", snapshot.complianceReviewRequired());
+            row.put("complianceHoldApplies", snapshot.complianceHoldApplies());
+            row.put("complianceHoldDays", snapshot.complianceHoldDays());
+        }
     }
 
     private boolean cryptoPayoutAllowed() {
@@ -919,6 +1007,8 @@ public class AppWithdrawalService {
     private boolean payoutAddressMatches(String chain, String submitted, String configured) {
         if (!StringUtils.hasText(submitted) || !StringUtils.hasText(configured)) return false;
         String expected = configured.trim();
+        if("USDT-TRC20".equals(chain))return ffdd.opsconsole.finance.cregis.CregisNetwork.TRC20.validAddress(submitted)
+                && submitted.equals(expected);
         // TRON Base58 is case-sensitive. Only EVM hexadecimal addresses may be
         // compared case-insensitively after their format was validated when saved.
         return "USDT-ERC20".equals(chain)
@@ -972,5 +1062,7 @@ public class AppWithdrawalService {
             BigDecimal smallAmountThresholdUsd,
             int payoutSlaHours,
             List<String> enabledNetworks,
+            GrowthRhythmSnapshot rhythm,
+            String bankPolicyVersion,
             String policyVersion) { }
 }

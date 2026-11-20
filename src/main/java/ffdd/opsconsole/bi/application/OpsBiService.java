@@ -6,16 +6,21 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.bi.domain.BiReportCreateCommand;
+import ffdd.opsconsole.bi.domain.BiReportPage;
+import ffdd.opsconsole.bi.domain.BiReportPage.ApprovalEligibility;
 import ffdd.opsconsole.bi.domain.BiReportDownloadFile;
 import ffdd.opsconsole.bi.domain.BiReportRepository;
 import ffdd.opsconsole.bi.domain.BiReportSnapshot;
 import ffdd.opsconsole.bi.domain.BiReportStreamDownload;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.domain.L1ExportSelection;
+import ffdd.opsconsole.bi.domain.L1KpiAnalytics;
+import ffdd.opsconsole.bi.domain.L1RegistrationCohortQuery;
 import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
 import ffdd.opsconsole.bi.dto.BiRegulatoryTemplateRequest;
 import ffdd.opsconsole.bi.dto.BiReportActionRequest;
@@ -41,6 +46,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -128,7 +134,8 @@ public class OpsBiService implements AuditReplayable {
 
     public ApiResult<Map<String, Object>> kpiDrilldown(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
-        if (kpiId < 1 || kpiId > 8) {
+        if (kpiId == 6) return retiredKpi();
+        if (!L1KpiAnalytics.KPI_IDS.contains(kpiId)) {
             return ApiResult.fail(400, "L1_KPI_ID_INVALID");
         }
         return ApiResult.ok(reportRepository.kpiDrilldown(kpiId, window, cohort, phase, locale, ref));
@@ -136,10 +143,54 @@ public class OpsBiService implements AuditReplayable {
 
     public ApiResult<Map<String, Object>> kpiTrend(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
-        if (kpiId < 1 || kpiId > 8) {
+        if (kpiId == 6) return retiredKpi();
+        if (!L1KpiAnalytics.KPI_IDS.contains(kpiId)) {
             return ApiResult.fail(400, "L1_KPI_ID_INVALID");
         }
         return ApiResult.ok(reportRepository.kpiTrend(kpiId, window, cohort, phase, locale, ref));
+    }
+
+    public ApiResult<Map<String, Object>> registrationKpis(Integer kpiId, String bucketKey,
+            String window, String from, String to, String cohort, String phase, String locale, String ref,
+            String granularity, String asOf) {
+        if (Integer.valueOf(6).equals(kpiId)) return retiredKpi();
+        if (kpiId != null && !L1KpiAnalytics.KPI_IDS.contains(kpiId)) {
+            return ApiResult.fail(400, "L1_KPI_ID_INVALID");
+        }
+        L1RegistrationCohortQuery query;
+        try {
+            query = L1RegistrationCohortQuery.parse(window, from, to, cohort, phase, locale, ref,
+                    granularity, asOf, Instant.now());
+            query.requireBucket(bucketKey);
+        } catch (IllegalArgumentException invalid) {
+            return ApiResult.fail(422, invalid.getMessage());
+        }
+
+        Map<String, Object> response = l1ReadResponse(reportRepository.registrationKpis(query));
+        response.put("query", query.auditFields());
+        if (kpiId != null) {
+            List<?> kpis = (List<?>) response.remove("kpis");
+            Map<String, Object> selected = kpis.stream()
+                    .map(this::mutableObjectMap)
+                    .filter(item -> String.valueOf(kpiId).equals(item.get("kpiId")))
+                    .findFirst().orElseThrow();
+            List<?> points = (List<?>) selected.get("points");
+            response.put("kpiId", kpiId);
+            response.put("selected", selected);
+            response.put("points", points);
+            if (bucketKey != null) {
+                Object point = points.stream()
+                        .filter(item -> item instanceof Map<?, ?> row && bucketKey.equals(row.get("bucketKey")))
+                        .findFirst().orElseThrow();
+                response.put("bucketKey", bucketKey);
+                response.put("selectedPoint", point);
+            }
+        }
+        return ApiResult.ok(response);
+    }
+
+    private ApiResult<Map<String, Object>> retiredKpi() {
+        return ApiResult.fail(410, "L1_KPI_RETIRED", Map.of("reason", "站内通知点击率已下线"));
     }
 
     public ApiResult<Map<String, Object>> funnelOverview() {
@@ -214,10 +265,19 @@ public class OpsBiService implements AuditReplayable {
                 normalizedCohort, normalizedPhase, normalizedLocale, normalizedRef);
         Map<String, Object> response = l2ReadResponse(dashboard, null, cohort, phase, locale, ref);
         Map<String, Object> curves = mutableObjectMap(dashboard.get("curves"));
+        String rowsKey = "cohorts";
         if (normalizedCohort.matches("\\d{4}-\\d{2}")) {
             curves = mutableObjectMap(dashboard.get("monthlyCurves"));
+            rowsKey = "monthlyCohorts";
         }
         response.put("curve", curves.getOrDefault(normalizedCohort, List.of()));
+        if (dashboard.get(rowsKey) instanceof List<?> rows) {
+            rows.stream().map(this::mutableObjectMap).filter(row -> normalizedCohort.equals(row.get("w")))
+                    .findFirst().ifPresent(row -> {
+                        response.put("retentionUnavailableReasons", row.get("retentionUnavailableReasons"));
+                        if (Boolean.TRUE.equals(row.get("suppressed"))) response.put("suppressed", true);
+                    });
+        }
         response.put("retentionEvent", "app.dau");
         return ApiResult.ok(response);
     }
@@ -276,6 +336,7 @@ public class OpsBiService implements AuditReplayable {
             String ref) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("module", "L2");
+        response.put("retentionCollectionFrom", dashboard.get("retentionCollectionFrom"));
         response.put("available", dashboard.containsKey("funnel"));
         response.put("filters", linked(
                 "stage", trimOrDefault(stage, ""),
@@ -390,8 +451,8 @@ public class OpsBiService implements AuditReplayable {
                 (long) rows.size(),
                 true,
                 "PARTIAL",
-                "READY",
-                "已确认；下载链接 24 小时内有效"));
+                "PENDING_CONFIRM",
+                "待另一管理员审批放行；下载链接 24 小时内有效"));
         reportRepository.saveSnapshotCsv(created.reportId(), networkTreeCsv(rows));
         Map<String, Object> auditDetail = linked(
                 "reportId", created.reportId(),
@@ -404,24 +465,17 @@ public class OpsBiService implements AuditReplayable {
                 "reason", reason,
                 "format", created.format(),
                 "idempotencyKey", idempotencyKey,
-                "alertRecipients", List.of("SUPER_ADMIN", "GROWTH_LEAD"));
-        audit("admin.report_exported", created, currentActorUsername(), auditDetail);
+                // Nothing is delivered to these roles for this export: record that plainly instead of
+                // naming recipients that never receive a notification.
+                "alertRecipients", List.of(),
+                "notificationDelivery", "AUDIT_ONLY");
+        audit("L_BI_REPORT_CREATE", created, currentActorUsername(), auditDetail);
         auditResource("admin.sensitive_export_alerted", "BI_EXPORT_ALERT", created.reportId(),
                 currentActorUsername(), "HIGH", linked(
                         "reportId", created.reportId(),
-                        "recipients", List.of("SUPER_ADMIN", "GROWTH_LEAD"),
-                        "delivery", "REAL_TIME_A2_HIGH_RISK_LANE",
+                        "recipients", List.of(),
+                        "delivery", "AUDIT_ONLY",
                         "reason", reason));
-        reportRepository.publishReportExported(created.reportId(), linked(
-                "reportId", created.reportId(),
-                "exportType", created.type(),
-                "scope", created.scope(),
-                "rowCount", created.rowCount(),
-                "containsPii", created.containsPii(),
-                "maskingPolicy", created.maskingPolicy(),
-                "operator", trimOrDefault(currentActorUsername(), "unknown"),
-                "reason", reason,
-                "format", created.format()));
         return ApiResult.ok(linked(
                 "reportId", created.reportId(),
                 "status", created.status(),
@@ -429,9 +483,11 @@ public class OpsBiService implements AuditReplayable {
                 "scope", created.scope(),
                 "maskingPolicy", created.maskingPolicy(),
                 "containsPii", true,
+                "approvalRequired", true,
                 "downloadTtlHours", 24,
                 "downloadTokenPath", "/api/admin/bi/exports/" + created.reportId() + "/download-token",
-                "alertedRoles", List.of("SUPER_ADMIN", "GROWTH_LEAD")));
+                // Nothing is delivered to these roles for this export; keep the field with no recipients.
+                "alertedRoles", List.of()));
     }
 
     private ApiResult<Map<String, Object>> operationsSection(
@@ -508,14 +564,37 @@ public class OpsBiService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
-    public ApiResult<PageResult<BiReportView>> reports(BiReportQueryRequest request) {
+    public ApiResult<BiReportPage> reports(BiReportQueryRequest request) {
         int pageNum = normalizePageNum(request == null ? null : request.pageNum());
         int pageSize = normalizePageSize(request == null ? null : request.pageSize(), request == null ? null : request.limit());
-        return ApiResult.ok(reportRepository.reports(
+        PageResult<BiReportView> page = reportRepository.reports(
                 request == null ? null : request.type(),
                 normalizeStatuses(request == null ? null : request.status()),
                 pageNum,
-                pageSize));
+                pageSize);
+        Map<String, ApprovalEligibility> eligibility = new LinkedHashMap<>();
+        Map<String, String> requesterDisplayNames = new LinkedHashMap<>();
+        Long adminId = parseAdminIdFromContext();
+        java.util.Set<String> callerPermissions = adminId == null
+                ? java.util.Set.of() : permissionCache.getPermissionCodes(adminId);
+        // L4-BE-11: 申请人资格按报表真实放行权限返回;网络树看 bi_l4_export_tree,其余看 bi_l5_task_approve。
+        List<String> pendingIds = page.getRecords().stream()
+                .filter(report -> nextStatus(report, "APPROVE") != null)
+                .filter(report -> callerPermissions.contains(reportApprovePermission(report)))
+                .map(BiReportView::reportId)
+                .toList();
+        if (adminId != null && !pendingIds.isEmpty()) {
+            Map<String, AuditLogService.BiReportMakerIdentity> makers =
+                    auditLogService.findBiReportMakerIdentities(pendingIds);
+            pendingIds.forEach(id -> {
+                AuditLogService.BiReportMakerIdentity maker = makers.get(id);
+                Long makerId = maker == null ? null : maker.makerId();
+                eligibility.put(id, ApprovalEligibility.forActor(makerId, adminId));
+                requesterDisplayNames.put(id, maker == null ? null : maker.displayName());
+            });
+        }
+        return ApiResult.ok(new BiReportPage(page.getTotal(), page.getPageNum(), page.getPageSize(),
+                page.getRecords(), eligibility, requesterDisplayNames));
     }
 
     public ApiResult<Map<String, Object>> regulatoryTemplates() {
@@ -541,15 +620,17 @@ public class OpsBiService implements AuditReplayable {
         if (!AGGREGATE_EXPORT_TYPES.contains(reportType)) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "L5_EXPORT_TYPE_NOT_AVAILABLE");
         }
-        if ("KPI_SERIES".equals(reportType)) {
-            try {
-                l1ExportSelection(request);
-            } catch (IllegalArgumentException invalid) {
-                return ApiResult.fail(400, invalid.getMessage());
-            }
-        } else if (StringUtils.hasText(request.window()) || StringUtils.hasText(request.from()) || StringUtils.hasText(request.to())) {
+        L1ReportSelection l1Selection;
+        try {
+            l1Selection = "KPI_SERIES".equals(reportType) ? l1ReportSelection(request) : null;
+        } catch (IllegalArgumentException invalid) {
+            return ApiResult.fail(hasRegistrationCohortParameters(request) ? 422 : 400, invalid.getMessage());
+        }
+        if (l1Selection == null && (hasRegistrationCohortParameters(request)
+                || StringUtils.hasText(request.window()) || StringUtils.hasText(request.from()) || StringUtils.hasText(request.to()))) {
             return ApiResult.fail(400, "BI_REPORT_WINDOW_NOT_SUPPORTED");
-        } else if ("FUNNEL_COHORT".equals(reportType)) {
+        }
+        if ("FUNNEL_COHORT".equals(reportType)) {
             String invalid = validateL2Filters(
                     trimOrDefault(request.cohort(), ""),
                     trimOrDefault(request.phase(), ""),
@@ -565,10 +646,10 @@ public class OpsBiService implements AuditReplayable {
             if (query.error() != null) {
                 return ApiResult.fail(400, query.error());
             }
-        } else if (StringUtils.hasText(request.cohort())
+        } else if (l1Selection == null && (StringUtils.hasText(request.cohort())
                 || StringUtils.hasText(request.phase())
                 || StringUtils.hasText(request.locale())
-                || StringUtils.hasText(request.ref())) {
+                || StringUtils.hasText(request.ref()))) {
             return ApiResult.fail(400, "BI_REPORT_FILTER_NOT_SUPPORTED");
         }
         boolean containsPii = containsSensitiveFields(request);
@@ -594,15 +675,24 @@ public class OpsBiService implements AuditReplayable {
                     OpsErrorCode.RETIRED_FEATURE.httpStatus(),
                     "NETWORK_TREE_EXPORT_NOT_AVAILABLE");
         }
+        if (l1Selection != null) {
+            String selectionTarget = l1Selection.grouped() == null ? l1Selection.legacy().toString()
+                    : L1RegistrationCohortQuery.CONTRACT_VERSION + ":" + l1Selection.auditFields();
+            String target = sha256(reportType + ":" + adminId + ":" + selectionTarget);
+            return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBound(
+                    "L_BI_REPORT_CREATE", idempotencyKey.trim(), reportRequestHash(request, l1Selection.grouped()), ApiResult.class,
+                    "bi_l1_read", target, () -> createReportOnce(idempotencyKey.trim(), request, l1Selection));
+        }
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 "L_BI_REPORT_CREATE",
                 idempotencyKey.trim(),
-                reportRequestHash(request),
+                reportRequestHash(request, null),
                 ApiResult.class,
-                () -> createReportOnce(idempotencyKey.trim(), request));
+                () -> createReportOnce(idempotencyKey.trim(), request, null));
     }
 
-    private ApiResult<Map<String, Object>> createReportOnce(String idempotencyKey, BiReportCreateRequest request) {
+    private ApiResult<Map<String, Object>> createReportOnce(
+            String idempotencyKey, BiReportCreateRequest request, L1ReportSelection l1Selection) {
         String reportName = trimOrDefault(request.exportType(), "后台导出报表");
         String reportType = normalizeReportType(reportName);
         String maskingPolicy = normalizeMaskingPolicy(request.maskPolicy());
@@ -616,10 +706,17 @@ public class OpsBiService implements AuditReplayable {
         if (preparedL2Snapshot != null && preparedL2Snapshot.rowCount() == 0L) {
             return ApiResult.fail(422, "L2_EXPORT_EMPTY");
         }
-        PreparedReportSnapshot preparedL1Snapshot;
+        PreparedReportSnapshot preparedL1Snapshot = null;
         try {
-            preparedL1Snapshot = "KPI_SERIES".equals(reportType) ? prepareL1ReportSnapshot(request) : null;
+            if (l1Selection != null) {
+                preparedL1Snapshot = l1Selection.grouped() == null
+                        ? prepareL1ReportSnapshot(l1Selection.legacy())
+                        : prepareRegistrationCohortSnapshot(l1Selection.grouped());
+            }
         } catch (L1ExportDataException invalid) {
+            if (l1Selection.grouped() != null) {
+                throw new BizException(502, "L1_EXPORT_DATA_INVALID");
+            }
             return ApiResult.fail(502, "L1_EXPORT_DATA_INVALID");
         }
         if (preparedL1Snapshot != null && preparedL1Snapshot.rowCount() == 0L) {
@@ -633,7 +730,7 @@ public class OpsBiService implements AuditReplayable {
                 reportType,
                 trimOrDefault(request.timeRange(), "ON_DEMAND"),
                 "REGULATORY".equals(reportType) ? "PDF" : "CSV",
-                reportScope(request),
+                reportScope(request, l1Selection),
                 trimOrDefault(request.fields(), "聚合指标"),
                 preparedSnapshot == null ? estimateRowCount(request) : preparedSnapshot.rowCount(),
                 containsPii,
@@ -652,7 +749,7 @@ public class OpsBiService implements AuditReplayable {
                 "containsPii", created.containsPii(),
                 "maskingPolicy", created.maskingPolicy(),
                 "scope", created.scope(),
-                "filters", "KPI_SERIES".equals(reportType) ? l1ExportSelection(request).auditFields() : l2FilterAudit(request),
+                "filters", l1Selection == null ? l2FilterAudit(request) : l1Selection.auditFields(),
                 "fields", created.fields(),
                 "rowCount", created.rowCount(),
                 "format", created.format(),
@@ -725,6 +822,25 @@ public class OpsBiService implements AuditReplayable {
         if (normalizedAction == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNSUPPORTED_L_REPORT_ACTION");
         }
+        BiReportView originReport = StringUtils.hasText(reportId) ? reportRepository.findReport(reportId.trim()).orElse(null) : null;
+        String originDomain = originReport == null ? null : switch (normalizeText(originReport.type())) {
+            case "KPI_SERIES" -> "L1";
+            case "FUNNEL_COHORT" -> "L2";
+            case "FINANCE_AGG" -> "L3";
+            case "OPERATIONS_AGG" -> "L4";
+            case "NETWORK_TREE" -> "L4";
+            case "REGULATORY" -> "L5";
+            default -> null;
+        };
+        if (originDomain != null) {
+            return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBoundTargets(
+                    "L_BI_REPORT_ACTION_" + normalizedAction, idempotencyKey.trim(),
+                    reportActionRequestHash(reportId, normalizedAction, request), ApiResult.class,
+                    "bi_" + originDomain.toLowerCase(Locale.ROOT) + "_read",
+                    List.of(new ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.Target(
+                            normalizedAction, originDomain, "report", originReport.reportId())),
+                    () -> reportActionOnce(reportId, normalizedAction, idempotencyKey.trim(), request));
+        }
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 "L_BI_REPORT_ACTION_" + normalizedAction,
                 idempotencyKey.trim(),
@@ -753,7 +869,9 @@ public class OpsBiService implements AuditReplayable {
         if (report == null) {
             return ApiResult.fail(404, "BI_REPORT_NOT_FOUND");
         }
-        if (!isSupportedAggregateReport(report) && !"REGULATORY".equals(normalizeText(report.type()))) {
+        if (!isSupportedAggregateReport(report)
+                && !"REGULATORY".equals(normalizeText(report.type()))
+                && !"NETWORK_TREE".equals(normalizeText(report.type()))) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), "L5_EXPORT_TYPE_NOT_AVAILABLE");
         }
         if (Set.of("GENERATE", "RERUN", "APPROVE", "DOWNLOAD").contains(normalizedAction)
@@ -761,14 +879,17 @@ public class OpsBiService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REPORT_SNAPSHOT_NOT_AVAILABLE");
         }
         String requiredCode = "APPROVE".equals(normalizedAction)
-                ? "bi_l5_task_approve"
+                ? reportApprovePermission(report)
                 : reportAccessPermission(report);
-        if (!permissionCache.getPermissionCodes(adminId).contains(requiredCode)) {
-            return ApiResult.fail(403, "PERMISSION_DENIED");
-        }
+        var permission = reportActionPermission(adminId, requiredCode);
+        if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());
         String nextStatus = nextStatus(report, normalizedAction);
         if (nextStatus == null) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+        }
+        if ("APPROVE".equals(normalizedAction)) {
+            var identity = reportApprovalIdentity(report.reportId(), adminId);
+            if (identity.getCode() != 0) return ApiResult.fail(identity.getCode(), identity.getMessage());
         }
         if (!reportRepository.updateActionIfStatus(
                 report.reportId(), normalizedAction, normalizeText(report.status()), nextStatus, request.reason().trim())) {
@@ -960,7 +1081,6 @@ public class OpsBiService implements AuditReplayable {
 
     private String reportCsv(BiReportView report, BiReportCreateRequest request) {
         return switch (normalizeText(report.type())) {
-            case "KPI_SERIES" -> kpiReportCsv(l1ExportDashboard(request));
             case "FUNNEL_COHORT" -> funnelReportCsv(request);
             case "FINANCE_AGG" -> Boolean.TRUE.equals(report.containsPii())
                     ? financeDetailReportCsv(request)
@@ -989,12 +1109,14 @@ public class OpsBiService implements AuditReplayable {
                         stringValue(row.get("cohort")),
                         stringValue(row.getOrDefault("vis", row.get("maturity"))),
                         stringValue(row.get("available")),
-                        stringValue(row.get("unavailableReason")),
+                        Boolean.TRUE.equals(row.get("suppressed")) ? "样本过小" : stringValue(row.get("unavailableReason")),
                         stringValue(row.get("numerator")),
                         stringValue(row.get("denominator"))));
                 List<?> spark = (List<?>) row.get("spark");
+                List<?> suppressedPoints = row.get("sparkSuppressed") instanceof List<?> points ? points : List.of();
                 for (int index = 0; index < weeks.size(); index++) {
-                    values.add(index < spark.size() ? stringValue(spark.get(index)) : "");
+                    values.add(index < suppressedPoints.size() && Boolean.TRUE.equals(suppressedPoints.get(index))
+                            ? "样本过小" : index < spark.size() ? stringValue(spark.get(index)) : "");
                 }
                 csv.append(csvRow(values));
             }
@@ -1015,7 +1137,7 @@ public class OpsBiService implements AuditReplayable {
         if (funnel instanceof List<?> rows && !rows.isEmpty()) {
             StringBuilder csv = new StringBuilder(csvRow(List.of(
                     "记录类型", "阶段或同期群", "去重人数", "转化率", "Day1", "Day7",
-                    "Day14", "Day30", "Day60", "业务事件", "数据来源")));
+                    "Day14", "Day30", "Day60", "业务事件", "数据来源", "样本状态")));
             for (Object item : rows) {
                 Map<String, Object> row = mutableObjectMap(item);
                 csv.append(csvRow(List.of(
@@ -1025,7 +1147,7 @@ public class OpsBiService implements AuditReplayable {
                         stringValue(row.getOrDefault("cvr", row.get("conversionRate"))),
                         "", "", "", "", "",
                         stringValue(row.getOrDefault("ev", row.get("event"))),
-                        businessSourceLabel(stringValue(row.get("source"))))));
+                        businessSourceLabel(stringValue(row.get("source"))), sampleStatus(row))));
             }
             Object cohorts = dashboard.get("cohorts");
             if (cohorts instanceof List<?> cohortRows) {
@@ -1033,21 +1155,21 @@ public class OpsBiService implements AuditReplayable {
                     Map<String, Object> row = mutableObjectMap(item);
                     csv.append(csvRow(List.of(
                             "留存",
-                            stringValue(row.get("cohort")),
+                            trimOrDefault(stringValue(row.get("w")), stringValue(row.get("cohort"))),
                             stringValue(row.get("size")),
                             "",
-                            stringValue(row.get("d1")),
-                            stringValue(row.get("d7")),
-                            stringValue(row.get("d14")),
-                            stringValue(row.get("d30")),
-                            stringValue(row.get("d60")),
+                            retentionCsvValue(row, "d1"),
+                            retentionCsvValue(row, "d7"),
+                            retentionCsvValue(row, "d14"),
+                            retentionCsvValue(row, "d30"),
+                            retentionCsvValue(row, "d60"),
                             "app.dau",
-                            "事件事实")));
+                            "事件事实", sampleStatus(row))));
                 }
             }
             return csv.toString();
         }
-        StringBuilder csv = new StringBuilder(csvRow(List.of("生命周期阶段", "数量", "数据来源")));
+        StringBuilder csv = new StringBuilder(csvRow(List.of("生命周期阶段", "数量", "数据来源", "样本状态")));
         Object stages = dashboard.get("stages");
         if (stages instanceof List<?> rows) {
             for (Object item : rows) {
@@ -1055,10 +1177,19 @@ public class OpsBiService implements AuditReplayable {
                 csv.append(csvRow(List.of(
                         lifecycleStageLabel(stringValue(row.get("key"))),
                         stringValue(row.get("count")),
-                        businessSourceLabel(stringValue(row.get("source"))))));
+                        businessSourceLabel(stringValue(row.get("source"))), sampleStatus(row))));
             }
         }
         return csv.toString();
+    }
+
+    private String retentionCsvValue(Map<String, Object> row, String key) {
+        return "DAU_NOT_COLLECTED".equals(mutableObjectMap(row.get("retentionUnavailableReasons")).get(key))
+                ? "未采集" : stringValue(row.get(key));
+    }
+
+    private String sampleStatus(Map<String, Object> row) {
+        return Boolean.TRUE.equals(row.get("suppressed")) ? "样本过小" : "";
     }
 
     private Map<String, Object> l2ExportDashboard(BiReportCreateRequest request) {
@@ -1091,7 +1222,21 @@ public class OpsBiService implements AuditReplayable {
         return prepareReportSnapshot(funnelReportCsv(dashboard), rowCount);
     }
 
-    private L1ExportSelection l1ExportSelection(BiReportCreateRequest request) {
+    private boolean hasRegistrationCohortParameters(BiReportCreateRequest request) {
+        return request.granularity() != null || request.asOf() != null;
+    }
+
+    private L1ReportSelection l1ReportSelection(BiReportCreateRequest request) {
+        Instant now = Instant.now();
+        if (hasRegistrationCohortParameters(request)) {
+            L1RegistrationCohortQuery query = L1RegistrationCohortQuery.parse(request.window(), request.from(),
+                    request.to(), request.cohort(), request.phase(), request.locale(), request.ref(),
+                    request.granularity(), request.asOf(), now);
+            if (request.asOf() == null) {
+                throw new IllegalArgumentException("L1_AS_OF_INVALID");
+            }
+            return new L1ReportSelection(null, query);
+        }
         // Legacy L1 buttons used these default-window labels. A user-supplied
         // month/week/date range is not a 7-day query and must never silently become one.
         if (!StringUtils.hasText(request.window())
@@ -1099,20 +1244,20 @@ public class OpsBiService implements AuditReplayable {
                         .contains(trimOrDefault(request.timeRange(), ""))) {
             throw new IllegalArgumentException("L1_EXPORT_WINDOW_REQUIRED");
         }
-        return L1ExportSelection.parse(request.window(), request.from(), request.to(),
-                request.cohort(), request.phase(), request.locale(), request.ref(),
-                java.time.Instant.now());
+        return new L1ReportSelection(L1ExportSelection.parse(request.window(), request.from(), request.to(),
+                request.cohort(), request.phase(), request.locale(), request.ref(), now), null);
     }
 
-    private Map<String, Object> l1ExportDashboard(BiReportCreateRequest request) {
-        L1ExportSelection selection = l1ExportSelection(request);
-        return reportRepository.kpiDashboard(selection.analyticsWindow(), selection.cohort(),
-                selection.phase(), selection.locale(), selection.ref());
+    private record L1ReportSelection(L1ExportSelection legacy, L1RegistrationCohortQuery grouped) {
+        Map<String, Object> auditFields() {
+            return grouped == null ? legacy.auditFields() : grouped.auditFields();
+        }
     }
 
-    private PreparedReportSnapshot prepareL1ReportSnapshot(BiReportCreateRequest request) {
+    private PreparedReportSnapshot prepareL1ReportSnapshot(L1ExportSelection selection) {
         // Read once: row count, CSV bytes, hash and stored artifact describe the same selection.
-        Map<String, Object> dashboard = l1ExportDashboard(request);
+        Map<String, Object> dashboard = reportRepository.kpiDashboard(selection.analyticsWindow(), selection.cohort(),
+                selection.phase(), selection.locale(), selection.ref());
         if (Boolean.FALSE.equals(dashboard.get("available"))) return prepareReportSnapshot("", 0L);
         Object raw = dashboard.get("kpis");
         if (raw != null && !(raw instanceof List<?>)
@@ -1120,23 +1265,30 @@ public class OpsBiService implements AuditReplayable {
             throw new L1ExportDataException();
         }
         if (raw instanceof List<?> rows && !rows.isEmpty()) {
-            if (rows.size() != 8 || !"L1".equals(dashboard.get("module"))
+            if (rows.size() != L1KpiAnalytics.KPI_IDS.size() || !"L1".equals(dashboard.get("module"))
                     || !(dashboard.get("weeks") instanceof List<?> weeks) || weeks.size() != 6
                     || weeks.stream().anyMatch(week -> !(week instanceof String label) || label.isBlank())) {
                 throw new L1ExportDataException();
             }
-            boolean anyAvailable = false;
+            boolean anyExportable = false;
             for (int index = 0; index < rows.size(); index++) {
                 Map<String, Object> row = mutableObjectMap(rows.get(index));
-                if (!(row.get("n") instanceof Number number) || number.doubleValue() != index + 1
-                        || !String.valueOf(index + 1).equals(String.valueOf(row.get("kpiId")))
+                int expectedId = L1KpiAnalytics.KPI_IDS.get(index);
+                if (!(row.get("n") instanceof Number number) || number.doubleValue() != expectedId
+                        || !String.valueOf(expectedId).equals(String.valueOf(row.get("kpiId")))
                         || !(row.get("available") instanceof Boolean available)
                         || !(row.get("name") instanceof String name) || name.isBlank()
                         || !(row.get("target") instanceof Number target) || !Double.isFinite(target.doubleValue())
                         || !List.of("%", "d").contains(row.get("unit"))
-                        || !nonnegativeInteger(row.get("numerator")) || !nonnegativeInteger(row.get("denominator"))
                         || !(row.get("spark") instanceof List<?> spark) || (spark.size() != 0 && spark.size() != 6)
-                        || spark.stream().anyMatch(point -> !(point instanceof Number numeric) || !Double.isFinite(numeric.doubleValue()))) {
+                        || spark.stream().anyMatch(point -> point != null
+                                && (!(point instanceof Number numeric) || !Double.isFinite(numeric.doubleValue())))) {
+                    throw new L1ExportDataException();
+                }
+                boolean suppressed = Boolean.TRUE.equals(row.get("suppressed"));
+                boolean notCollected = "DAU_NOT_COLLECTED".equals(row.get("unavailableReason"));
+                if (suppressed || notCollected ? available || row.get("numerator") != null || row.get("denominator") != null
+                        : !nonnegativeInteger(row.get("numerator")) || !nonnegativeInteger(row.get("denominator"))) {
                     throw new L1ExportDataException();
                 }
                 Object value = row.get("value");
@@ -1147,15 +1299,102 @@ public class OpsBiService implements AuditReplayable {
                     if ("%".equals(row.get("unit")) && (numeric < 0 || numeric > 100)
                             || "d".equals(row.get("unit")) && numeric <= 0) throw new L1ExportDataException();
                 }
-                anyAvailable |= available;
+                anyExportable |= available || suppressed;
             }
-            return anyAvailable ? prepareReportSnapshot(kpiReportCsv(dashboard), (long) rows.size()) : prepareReportSnapshot("", 0L);
+            return anyExportable ? prepareReportSnapshot(kpiReportCsv(dashboard), (long) rows.size()) : prepareReportSnapshot("", 0L);
         }
         // Older authoritative aggregate responses remain a distinct totals export.
         Map<String, Object> totals = mutableObjectMap(dashboard.get("totals"));
         boolean valid = !totals.isEmpty() && totals.values().stream()
                 .allMatch(value -> value instanceof Number number && Double.isFinite(number.doubleValue()) && number.doubleValue() >= 0);
         return valid ? prepareReportSnapshot(kpiReportCsv(dashboard), (long) totals.size()) : prepareReportSnapshot("", 0L);
+    }
+
+    private PreparedReportSnapshot prepareRegistrationCohortSnapshot(L1RegistrationCohortQuery query) {
+        Map<String, Object> dashboard = reportRepository.registrationKpis(query);
+        String asOf = query.asOf().toString();
+        Map<String, Object> calendar = mutableObjectMap(dashboard.get("calendar"));
+        if (!"L1".equals(dashboard.get("module"))
+                || !L1RegistrationCohortQuery.CONTRACT_VERSION.equals(dashboard.get("contractVersion"))
+                || !query.granularity().equals(dashboard.get("granularity"))
+                || !asOf.equals(dashboard.get("observationAsOf"))
+                || !(dashboard.get("kpis") instanceof List<?> kpis) || kpis.size() != L1KpiAnalytics.KPI_IDS.size()
+                || !"LEGACY".equals(calendar.get("track"))
+                || !(calendar.get("versions") instanceof List<?> versions) || versions.isEmpty()) {
+            throw new L1ExportDataException();
+        }
+
+        List<String> calendarVersions = new ArrayList<>();
+        for (Object item : versions) {
+            Map<String, Object> version = mutableObjectMap(item);
+            if (!(version.get("effectiveDate") instanceof String effectiveDate)
+                    || !(version.get("zoneId") instanceof String zoneId)) {
+                throw new L1ExportDataException();
+            }
+            calendarVersions.add(effectiveDate + "=" + zoneId);
+        }
+        String versionText = String.join(" | ", calendarVersions);
+        StringBuilder csv = new StringBuilder(csvRow(List.of(
+                "kpiId", "name", "bucketKey", "startDate", "endDateExclusive", "registrationFrom",
+                "registrationToExclusive", "selectedFrom", "selectedToExclusive", "observationAsOf",
+                "calendarTrack", "calendarVersions", "partial", "value", "target", "unit", "numerator",
+                "denominator", "sampleSize", "maturityStatus", "suppressed", "available", "unavailableReason")));
+        List<L1RegistrationCohortQuery.Bucket> buckets = query.buckets();
+        long rowCount = 0L;
+        for (int index = 0; index < kpis.size(); index++) {
+            Map<String, Object> kpi = mutableObjectMap(kpis.get(index));
+            String kpiId = String.valueOf(L1KpiAnalytics.KPI_IDS.get(index));
+            if (!kpiId.equals(kpi.get("kpiId"))
+                    || !(kpi.get("name") instanceof String name) || name.isBlank()
+                    || !(kpi.get("target") instanceof Number target) || !Double.isFinite(target.doubleValue())
+                    || !(kpi.get("unit") instanceof String unit) || !List.of("%", "d").contains(unit)
+                    || !(kpi.get("points") instanceof List<?> points) || points.size() != buckets.size()) {
+                throw new L1ExportDataException();
+            }
+            for (int pointIndex = 0; pointIndex < points.size(); pointIndex++) {
+                Map<String, Object> point = mutableObjectMap(points.get(pointIndex));
+                requireRegistrationExportPoint(point, buckets.get(pointIndex), asOf);
+                csv.append(csvRow(List.of(
+                        kpiId, name, stringValue(point.get("bucketKey")), stringValue(point.get("startDate")),
+                        stringValue(point.get("endDateExclusive")), stringValue(point.get("registrationFrom")),
+                        stringValue(point.get("registrationToExclusive")), stringValue(point.get("selectedFrom")),
+                        stringValue(point.get("selectedToExclusive")), asOf, "LEGACY", versionText,
+                        stringValue(point.get("partial")), stringValue(point.get("value")), target.toString(), unit,
+                        stringValue(point.get("numerator")), stringValue(point.get("denominator")),
+                        stringValue(point.get("sampleSize")), stringValue(point.get("maturityStatus")),
+                        stringValue(point.get("suppressed")), stringValue(point.get("available")),
+                        stringValue(point.get("unavailableReason")))));
+                rowCount++;
+            }
+        }
+        return prepareReportSnapshot(csv.toString(), rowCount);
+    }
+
+    private void requireRegistrationExportPoint(
+            Map<String, Object> point, L1RegistrationCohortQuery.Bucket bucket, String asOf) {
+        Object value = point.get("value");
+        if (!bucket.key().equals(point.get("bucketKey"))
+                || !bucket.startDate().toString().equals(point.get("startDate"))
+                || !bucket.endDateExclusive().toString().equals(point.get("endDateExclusive"))
+                || !bucket.from().toString().equals(point.get("registrationFrom"))
+                || !bucket.toExclusive().toString().equals(point.get("registrationToExclusive"))
+                || !bucket.selectedFrom().toString().equals(point.get("selectedFrom"))
+                || !bucket.selectedToExclusive().toString().equals(point.get("selectedToExclusive"))
+                || !asOf.equals(point.get("observationAsOf"))
+                || !Boolean.valueOf(bucket.partial()).equals(point.get("partial"))
+                || !(point.get("maturityStatus") instanceof String)
+                || !(point.get("suppressed") instanceof Boolean suppressed)
+                || !(point.get("available") instanceof Boolean available)
+                || (available ? suppressed || !(value instanceof Number number) || !Double.isFinite(number.doubleValue())
+                        : value != null || !(point.get("unavailableReason") instanceof String))) {
+            throw new L1ExportDataException();
+        }
+        for (String key : List.of("cohortSize", "eligibleUsers", "sampleSize", "numerator", "denominator")) {
+            Object count = point.get(key);
+            if (count != null && (!available || !nonnegativeInteger(count))) {
+                throw new L1ExportDataException();
+            }
+        }
     }
 
     private static final class L1ExportDataException extends RuntimeException {}
@@ -1174,10 +1413,16 @@ public class OpsBiService implements AuditReplayable {
                 value.getBytes(StandardCharsets.UTF_8).length);
     }
 
-    private String reportScope(BiReportCreateRequest request) {
+    private String reportScope(BiReportCreateRequest request, L1ReportSelection l1Selection) {
         String base = trimOrDefault(request.timeRange(), "按需导出");
-        if ("KPI_SERIES".equals(normalizeReportType(request.exportType()))) {
-            return "L1 " + l1ExportSelection(request).auditFields();
+        if (l1Selection != null) {
+            L1RegistrationCohortQuery query = l1Selection.grouped();
+            if (query == null) return "L1 " + l1Selection.auditFields();
+            // Scope is stored in VARCHAR(255). Custom dates can share one field.
+            String window = "custom".equals(query.window()) ? query.from() + "/" + query.to() : query.window();
+            return "L1 granularity=" + query.granularity() + " asOf=" + query.asOf()
+                    + " window=" + window + " cohort=" + query.cohort() + " phase=" + query.phase()
+                    + " locale=" + query.locale() + " ref=" + query.ref();
         }
         if (!"FUNNEL_COHORT".equals(normalizeReportType(request.exportType()))) {
             return base;
@@ -1385,7 +1630,7 @@ public class OpsBiService implements AuditReplayable {
 
     private String networkTreeCsv(List<Map<String, Object>> rows) {
         StringBuilder csv = new StringBuilder(csvRow(List.of(
-                "成员用户编码（部分脱敏）", "邀请人用户编码（部分脱敏）", "关系深度", "V-Rank", "团队GMV USDT", "加入时间")));
+                "成员用户编码（部分脱敏）", "根节点用户编码（部分脱敏）", "关系深度", "V-Rank", "关系表累计量 USDT", "加入时间")));
         for (Map<String, Object> row : rows) {
             csv.append(csvRow(List.of(
                     safeNetworkCsvValue(row.get("memberUserIdPartial")),
@@ -1659,12 +1904,12 @@ public class OpsBiService implements AuditReplayable {
         return List.of(
                 linked("k", "汇总数据导出", "v", "关键指标 / 漏斗 / 财务 / 运营", "fixed", true,
                         "s", "导出创建时的汇总数据，之后不再变化"),
-                linked("k", "监管报告", "v", "按当前地区和披露版本生成", "fixed", true,
+                linked("k", "当前披露快照", "v", "按适用地区当前生效的披露版本生成", "fixed", true,
                         "s", "只包含七个章节的完整性、确认进度和汇总指标，不含单个用户明细"),
                 linked("k", "账单明细", "v", "8 类敏感字段强制脱敏", "fixed", true,
                         "s", "导出敏感财务明细要填写 8–200 字用途，最多 10 万行，并记入操作记录"),
-                linked("k", "单任务行数上限", "v", "100 万行", "fixed", true,
-                        "s", "超过上限的明细不能导出"),
+                linked("k", "单任务行数上限", "v", "用户名单 5,000 行；财务资金明细、团队树、账单各 100,000 行", "fixed", true,
+                        "s", "用户名单最多取前 5,000 行。其余三类超过上限时请缩小范围。"),
                 linked("k", "下载链接有效期", "v", "24 小时", "fixed", true,
                         "s", "过期后链接失效"),
                 linked("k", "敏感数据明文导出", "v", "始终禁止", "fixed", true,
@@ -1817,6 +2062,8 @@ public class OpsBiService implements AuditReplayable {
                 || !StringUtils.hasText(request.ticket())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BI_REPORT_REQUIRED_FIELD_MISSING");
         }
+        boolean groupedL1 = hasRegistrationCohortParameters(request)
+                && "KPI_SERIES".equals(normalizeReportType(request.exportType()));
         if (exceeds(request.exportType(), 128)
                 || exceeds(request.timeRange(), 64)
                 || exceeds(request.fields(), 255)
@@ -1824,10 +2071,10 @@ public class OpsBiService implements AuditReplayable {
                 || exceeds(request.maskPolicy(), 64)
                 || exceeds(request.recipient(), 128)
                 || exceeds(request.ticket(), 220)
-                || exceeds(request.cohort(), 10)
-                || exceeds(request.phase(), 8)
-                || exceeds(request.locale(), 32)
-                || exceeds(request.ref(), 96)) {
+                || (!groupedL1 && (exceeds(request.cohort(), 10)
+                        || exceeds(request.phase(), 8)
+                        || exceeds(request.locale(), 32)
+                        || exceeds(request.ref(), 96)))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "BI_REPORT_FIELD_LENGTH_INVALID");
         }
         return null;
@@ -2134,7 +2381,7 @@ public class OpsBiService implements AuditReplayable {
         return StringUtils.hasText(resolved) ? resolved.trim() : "system";
     }
 
-    private String reportRequestHash(BiReportCreateRequest request) {
+    private String reportRequestHash(BiReportCreateRequest request, L1RegistrationCohortQuery query) {
         String canonical = String.join("\u001f",
                 trimOrDefault(request.reason(), ""),
                 trimOrDefault(request.exportType(), ""),
@@ -2153,6 +2400,10 @@ public class OpsBiService implements AuditReplayable {
         if (StringUtils.hasText(request.window()) || StringUtils.hasText(request.from()) || StringUtils.hasText(request.to())) {
             canonical += "\u001f" + String.join("\u001f", trimOrDefault(request.window(), ""),
                     trimOrDefault(request.from(), ""), trimOrDefault(request.to(), ""));
+        }
+        if (query != null) {
+            canonical += "\u001f" + L1RegistrationCohortQuery.CONTRACT_VERSION
+                    + "\u001f" + query.granularity() + "\u001f" + query.asOf();
         }
         return sha256(canonical);
     }
@@ -2179,6 +2430,36 @@ public class OpsBiService implements AuditReplayable {
     @Override
     public String domain() {
         return "L";
+    }
+
+    private String reportApprovePermission(BiReportView report) {
+        return "NETWORK_TREE".equals(normalizeText(report == null ? null : report.type()))
+                ? "bi_l4_export_tree" : "bi_l5_task_approve";
+    }
+
+    private ApiResult<Void> reportActionPermission(Long adminId, String requiredCode) {
+        if (adminId == null) return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
+        return permissionCache.getPermissionCodes(adminId).contains(requiredCode)
+                ? ApiResult.ok() : ApiResult.fail(403, "PERMISSION_DENIED");
+    }
+
+    private ApiResult<Void> reportApprovalIdentity(String reportId, Long adminId) {
+        Long makerId = auditLogService.findBiReportMakers(List.of(reportId)).get(reportId);
+        ApprovalEligibility eligibility = ApprovalEligibility.forActor(makerId, adminId);
+        if (eligibility == ApprovalEligibility.MAKER_UNVERIFIED) return ApiResult.fail(409, "BI_TASK_MAKER_UNVERIFIED");
+        return eligibility == ApprovalEligibility.SELF ? ApiResult.fail(403, "BI_TASK_SELF_APPROVAL_FORBIDDEN") : ApiResult.ok();
+    }
+
+    @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {
+        if (!"l5_task_approve".equals(cmd.op())) return ApiResult.ok();
+        String reportId = str(cmd.params() == null ? Map.of() : cmd.params(), "reportId");
+        if (!StringUtils.hasText(reportId)) return ApiResult.fail(422, "REPORT_ID_REQUIRED");
+        BiReportView report = reportRepository.findReport(reportId.trim()).orElse(null);
+        if (report == null) return ApiResult.fail(404, "BI_REPORT_NOT_FOUND");
+        Long actor = parseAdminIdFromContext();
+        var permission = reportActionPermission(actor, reportApprovePermission(report));
+        return permission.getCode() != 0 ? permission : reportApprovalIdentity(report.reportId(), actor);
     }
 
     @Override

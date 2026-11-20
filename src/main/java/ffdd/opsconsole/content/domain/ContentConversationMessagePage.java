@@ -7,7 +7,7 @@ public record ContentConversationMessagePage(ContentConversationView conversatio
         List<ContentConversationMessageView> messages,boolean hasMore,Long nextBeforeMessageId,
         CustomerIdentity customerIdentity,ReplyContext replyContext,List<ReadContext> readContexts) {
     public ContentConversationMessagePage {messages=List.copyOf(messages);readContexts=List.copyOf(readContexts);}
-    public record CustomerIdentity(long customerId,String userNo,String nickname,String phoneMasked) { }
+    public record CustomerIdentity(long customerId,String userNo,String nickname,String phoneMasked,String effectiveLanguage) { }
     public record ReplyTarget(String conversationNo,long throughMessageId) { }
     public record ReplyContext(boolean ready,List<ReplyTarget> targets) {
         public ReplyContext {targets=List.copyOf(targets);}

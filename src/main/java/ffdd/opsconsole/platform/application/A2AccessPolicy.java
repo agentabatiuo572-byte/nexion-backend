@@ -1,10 +1,36 @@
 package ffdd.opsconsole.platform.application;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
+
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+
+import ffdd.opsconsole.device.application.E2TaskPricingApproval;
+import ffdd.opsconsole.growth.application.H8RewardParamApproval;
+import ffdd.opsconsole.growth.application.H5GrowthApproval;
+import ffdd.opsconsole.growth.application.H3GrowthApproval;
+import ffdd.opsconsole.growth.application.H4GrowthApproval;
+import ffdd.opsconsole.growth.application.H7VoucherDisposition;
+import ffdd.opsconsole.risk.application.K1RiskApproval;
+import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
 import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
+import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
+import ffdd.opsconsole.team.application.TeamFundApproval;
+import ffdd.opsconsole.team.application.HardwareQuotaApproval;
+import ffdd.opsconsole.market.application.G2G7ParamApproval;
+import ffdd.opsconsole.market.application.G3MarketApproval;
+import ffdd.opsconsole.market.application.G4CatalogApproval;
+import ffdd.opsconsole.market.application.G4DividendApproval;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -13,6 +39,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
@@ -45,19 +72,98 @@ public class A2AccessPolicy {
     private final AdminOperatorRoleResolver roleResolver;
     private final AuditOperationTicketMapper ticketMapper;
     private final ffdd.opsconsole.shared.security.AdminPermissionCache permissions;
+    private final ObjectMapper objectMapper;
+    @Autowired
+    private AuditReplayBusinessPermissionGuard replayBusinessPermissionGuard;
 
     /** Rechecks current DB authority even when invoked outside the HTTP filter. */
     public long requireProposalReader() {
+        return requireProposalReader(false);
+    }
+
+    long requireOriginalKeyProposalReader() {
+        return requireProposalReader(true);
+    }
+
+    private long requireProposalReader(boolean originalKeyLookup) {
         var auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || !auth.isAuthenticated() || !(auth.getDetails() instanceof Map<?, ?> details)
                 || !"ADMIN".equals(details.get("subjectType")))
             throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
         try {
             long id = Long.parseLong(auth.getName());
-            if (roleResolver.isActiveAdministrator(id)
-                    && permissions.getPermissionCodes(id).contains("platform_a2_read")) return id;
+            if (roleResolver.isActiveAdministrator(id)) {
+                Set<String> grants = permissions.getPermissionCodes(id);
+                if (grants.contains("platform_a2_read") || grants.contains("platform_a2_proposal_create")
+                        || (originalKeyLookup && grants.contains("platform_a2_write") && (grants.contains("network_f3_match_rate")
+                            || grants.contains("network_f3_engine_pause")))
+                        || (grants.contains("platform_a2_write")
+                            && (grants.contains("user_c2_session_revoke_all") || grants.contains("user_c5_session_revoke_all")))
+                        || (grants.contains("platform_a2_write") && grants.contains("growth_h1_override_revoke"))
+                        || (grants.contains("platform_a2_write") && grants.containsAll(Set.of("device_e1_read", "device_e1_write")))
+                        || grants.stream().anyMatch(AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES::contains)
+                        || grants.contains(A4RegistryApproval.MAKER_AUTHORITY)
+                        || (grants.contains(OpsKillSwitchService.RESTORE_AUTHORITY) && grants.contains("platform_a2_write"))
+                        || grants.contains("overview_b1_redline_write")
+                        || LearningCourseActivationApproval.hasMakerAuthorities(grants)
+                        || canReadOwnCourseRewardProposal(grants)
+                        || grants.contains("overview_b5_threshold_write")
+                        || grants.contains(E2TaskPricingApproval.MAKER_AUTHORITY)
+                        || grants.contains("emergency_j4_playbook_execute")
+                        || grants.contains(H8RewardParamApproval.MAKER_AUTHORITY)
+                        || grants.contains(H5GrowthApproval.MAKER_AUTHORITY)
+                        || grants.contains(H3GrowthApproval.MAKER_AUTHORITY)
+                        || grants.contains(H4GrowthApproval.MAKER_AUTHORITY) || grants.contains(H4GrowthApproval.GUARD_AUTHORITY)
+                        || H7VoucherDisposition.canRecover(grants)
+                        || (grants.contains(K1RiskApproval.MAKER_AUTHORITY)
+                            && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
+                        || (grants.contains(K2OtpInitialApproval.MAKER_AUTHORITY)
+                            && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write")))
+                        || grants.contains("network_f1_write") || grants.contains("network_f3_write") || grants.contains("network_f4_pool_fund")
+                        || (!originalKeyLookup && grants.contains(HardwareQuotaApproval.AUTHORITY))
+                        || grants.contains("finprod_g3_curve_target_price_write") || grants.contains("finprod_g3_curve_pump_prob_write")
+                        || grants.contains("finprod_g3_override_price_write") || grants.contains("finprod_g3_write")
+                        || grants.contains("finprod_g4_dividend_rate_write") || grants.contains("finprod_g4_write")
+                        || grants.contains("finprod_g4_royalty_write") || grants.contains("finprod_g4_airdrop_pct_write")
+                        || grants.contains("finprod_g4_emission_curve_write") || grants.contains("finprod_g4_airdrop_lock_days_write")
+                        || grants.contains(G4CatalogApproval.PRICE_AUTHORITY)
+                        || canReadOwnI3CapProposal(grants)) return id;
+            }
         } catch (NumberFormatException ignored) { }
         throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
+    }
+
+    /**
+     * Command-specific fallback for the original-key lookup. The caller must
+     * verify the ticket maker and match its command to the current grant.
+     */
+    public long requirePageProposalReader() {
+        var auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || !(auth.getDetails() instanceof Map<?, ?> details)
+                || !"ADMIN".equals(details.get("subjectType")))
+            throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
+        try {
+            long id = Long.parseLong(auth.getName());
+            if (roleResolver.isActiveAdministrator(id)) {
+                Set<String> grants = permissions.getPermissionCodes(id);
+                if (grants.contains("growth_h4_read") || grants.contains("platform_a4_read")
+                        || grants.contains(HardwareQuotaApproval.AUTHORITY)) return id;
+            }
+        } catch (NumberFormatException ignored) { }
+        throw new ffdd.opsconsole.shared.exception.BizException(403, "A2_PROPOSAL_READ_FORBIDDEN");
+    }
+
+    /** Only the original-key GET calls this after verifying the original ticket maker. */
+    boolean canReadPageProposal(AuditReplayCommand command, long actorId) {
+        Set<String> grants = permissions.getPermissionCodes(actorId);
+        return H4GrowthApproval.supports(command) && grants.contains("growth_h4_read")
+                || A4RegistryApproval.supports(command) && grants.contains("platform_a4_read")
+                || HardwareQuotaApproval.supports(command) && grants.contains(HardwareQuotaApproval.AUTHORITY);
+    }
+
+    boolean canDecide(Long actorId) {
+        return actorId != null && A2ReplayContext.hasAuthority("platform_a2_operation_approve")
+                && roleResolver.isActiveAdministrator(actorId);
     }
 
     public Scope current() {
@@ -66,10 +172,14 @@ public class A2AccessPolicy {
         return scope(role, actor, authorityDomains());
     }
 
+    String authenticatedOperatorRoleLabel() {
+        return roleResolver.resolve();
+    }
+
     private Scope scope(String role, String actor, List<String> domains) {
         return switch (role == null ? "" : role.toUpperCase(Locale.ROOT)) {
             case "SUPER_ADMIN", "AUDITOR" -> new Scope(role, actor, null, false);
-            case "FINANCE" -> new Scope(role, actor, List.of("D"), false);
+            case "FINANCE", "FINANCE_LEAD" -> new Scope(role, actor, List.of("D"), false);
             case "RISK" -> new Scope(role, actor, List.of("C", "K"), false);
             case "GROWTH" -> new Scope(role, actor, List.of("E", "H"), false);
             case "CONTENT" -> new Scope(role, actor, List.of("I"), false);
@@ -78,13 +188,177 @@ public class A2AccessPolicy {
         };
     }
 
-    public boolean canAccessRecoveredProposal(AuditOperationTicketEntity ticket, long actorId) {
+    public boolean canAccessRecoveredProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command, long actorId) {
         if (ticket == null || !StringUtils.hasText(ticket.getSourceDomain())) return false;
-        var scope = scope(roleResolver.resolveCode(), AdminActorResolver.resolve(null),
-                authorityDomains(permissions.getPermissionCodes(actorId)));
+        Set<String> grants = permissions.getPermissionCodes(actorId);
         String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
         // Exact maker ID was already matched by the durable proposal lookup.
-        return domain.matches("[A-M]") && (scope.ownActorOnly() || scope.canSee(domain, ticket.getOperatorName()));
+        if (!domain.matches("[A-M]")) return false;
+        if ("H".equals(domain) && "h1_phase_override".equalsIgnoreCase(command == null ? "" : command.op())) {
+            // The current revoke authority is the terminal gate for this action. Do not fall back
+            // to platform_a2_read/H-domain visibility after the maker loses it.
+            return canReadOwnH1Override(command, actorId, grants);
+        }
+        if ("C".equals(domain) && AuditReplayBusinessPermissionGuard.isUserSessionRevocation(command)) {
+            return (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"))
+                    && (grants.contains("user_c2_session_revoke_all") || grants.contains("user_c5_session_revoke_all"));
+        }
+        if (H7VoucherDisposition.isOperation(command)) {
+            return "H".equals(domain) && H7VoucherDisposition.canRecover(grants);
+        }
+        if ("J".equals(domain) && OpsKillSwitchService.isRestoreCommand(command)) {
+            return grants.contains(OpsKillSwitchService.RESTORE_AUTHORITY)
+                    && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
+        }
+        if ("E".equals(domain) && AuditReplayBusinessPermissionGuard.isE4Refund(command)
+                && grants.contains("platform_a2_proposal_create")
+                && grants.contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) return true;
+        if ("F".equals(domain) && (replayBusinessPermissionGuard.canRecoverF3Proposal(command, grants)
+                || replayBusinessPermissionGuard.canRecoverF5Proposal(command, grants))) return true;
+        if (HardwareQuotaApproval.supports(command)) return grants.contains(HardwareQuotaApproval.AUTHORITY);
+        if ("K".equals(domain) && K1RiskApproval.supports(command)) {
+            return grants.contains(K1RiskApproval.MAKER_AUTHORITY)
+                    && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
+        }
+        if ("I".equals(domain) && isI3CapAdjust(command) && canReadOwnI3CapProposal(grants)) return true;
+        if (canRecoverOnboardingSku(command, actorId, grants) || canRecoverHostingCenters(command, actorId, grants)) return true;
+        if (!grants.contains("platform_a2_read")) {
+            return grants.contains("platform_a2_proposal_create")
+                    && (!StringUtils.hasText(ticket.getCommandJson()) || ("D".equals(domain)
+                        && replayBusinessPermissionGuard.canReadOwnFinanceProposal(command, actorId, grants)));
+        }
+        var scope = scope(roleResolver.resolveCode(), AdminActorResolver.resolve(null), authorityDomains(grants));
+        return scope.ownActorOnly() || scope.canSee(domain, ticket.getOperatorName());
+    }
+
+    boolean canAccessOwnF3Proposal(AuditReplayCommand command, long actorId) {
+        return TeamFundApproval.isSettlement(command) ? canAccessOwnBusinessProposal(command, actorId)
+                : replayBusinessPermissionGuard.canRecoverF3Proposal(command, permissions.getPermissionCodes(actorId));
+    }
+
+    /** H1 override maker recovery: exact maker, existing revoke authority, no A2 global read grant. */
+    private boolean canReadOwnH1Override(AuditReplayCommand command, long actorId, Set<String> grants) {
+        return command != null
+                && "H".equalsIgnoreCase(command.domain())
+                && "h1_phase_override".equalsIgnoreCase(command.op())
+                && roleResolver.isActiveAdministrator(actorId)
+                && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"))
+                && grants.contains("growth_h1_override_revoke");
+    }
+
+    private boolean canRecoverOnboardingSku(AuditReplayCommand command, long actorId, Set<String> grants) {
+        return command != null && "E".equals(command.domain()) && "e6_onboarding_yield_sku".equals(command.op())
+                && roleResolver.isActiveAdministrator(actorId)
+                && grants.containsAll(Set.of("device_e6_write","device_e1_read"))
+                && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
+    }
+
+    boolean canAccessOwnBusinessProposal(AuditReplayCommand command, long actorId) {
+        Set<String> ownGrants = permissions.getPermissionCodes(actorId);
+        if (canRecoverOnboardingSku(command, actorId, ownGrants) || canRecoverHostingCenters(command, actorId, ownGrants)) return true;
+        if (canReadOwnH1Override(command, actorId, permissions.getPermissionCodes(actorId))) return true;
+        if (isJ4ExecuteProposal(command)) {
+            return roleResolver.isActiveAdministrator(actorId)
+                    && permissions.getPermissionCodes(actorId).contains("emergency_j4_playbook_execute");
+        }
+        if (command != null && "C".equalsIgnoreCase(command.domain())
+                && ("c2_account_freeze".equals(command.op()) || "c2_account_unfreeze".equals(command.op()))) {
+            // Both recovery callers have already verified the original maker's numeric ID.
+            Set<String> grants = permissions.getPermissionCodes(actorId);
+            return roleResolver.isActiveAdministrator(actorId) && grants.contains("platform_a2_proposal_create")
+                    && grants.contains("user_" + command.op());
+        }
+        if (WithdrawalConfigApproval.supports(command)
+                && replayBusinessPermissionGuard.canReadOwnFinanceProposal(command, actorId, permissions.getPermissionCodes(actorId))) {
+            return true;
+        }
+        if (A4RegistryApproval.supports(command)) {
+            return permissions.getPermissionCodes(actorId).contains(A4RegistryApproval.MAKER_AUTHORITY);
+        }
+        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
+            var review = OpsI18nLearningService.CourseRewardReview.fromCommand(command);
+            return review != null && review.makerAdminId() == actorId
+                    && canReadOwnCourseRewardProposal(permissions.getPermissionCodes(actorId));
+        }
+        if (G4CatalogApproval.supports(command)) {
+            return G4CatalogApproval.canReadOwnProposal(command, actorId, permissions.getPermissionCodes(actorId));
+        }
+        if (LearningCourseActivationApproval.supports(command)) {
+            return Long.valueOf(actorId).equals(LearningCourseActivationApproval.makerId(command))
+                    && LearningCourseActivationApproval.hasMakerAuthorities(permissions.getPermissionCodes(actorId));
+        }
+        String authority;
+        if (TreasuryThresholdApproval.supports(command)) {
+            authority = TreasuryThresholdApproval.makerAuthority(command);
+        } else if (E2TaskPricingApproval.supports(command)) {
+            authority = E2TaskPricingApproval.MAKER_AUTHORITY;
+        } else if (H4GrowthApproval.supports(command)) {
+            authority = H4GrowthApproval.makerAuthority(command);
+        } else if (H3GrowthApproval.supports(command)) {
+            authority = H3GrowthApproval.MAKER_AUTHORITY;
+        } else if (H5GrowthApproval.supports(command)) {
+            authority = H5GrowthApproval.MAKER_AUTHORITY;
+        } else if (K1RiskApproval.supports(command)) {
+            authority = K1RiskApproval.MAKER_AUTHORITY;
+        } else if (H8RewardParamApproval.supports(command)) {
+            authority = H8RewardParamApproval.MAKER_AUTHORITY;
+        } else if (K2OtpInitialApproval.supports(command)) {
+            authority = K2OtpInitialApproval.MAKER_AUTHORITY;
+        } else if (TeamFundApproval.supports(command)) {
+            authority = TeamFundApproval.makerAuthority(command);
+        } else if (G4DividendApproval.supports(command)) {
+            authority = G4DividendApproval.makerAuthority(command);
+        } else if (G3MarketApproval.supports(command)) {
+            authority = G3MarketApproval.makerAuthority(command);
+        } else if (G2G7ParamApproval.supports(command)) {
+            authority = G2G7ParamApproval.makerAuthority(command);
+        } else {
+            return false;
+        }
+        if (command.params() == null) return false;
+        Object makerId = command.params().get("makerAdminId");
+        Set<String> grants = permissions.getPermissionCodes(actorId);
+        boolean proposalAuthority = grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write");
+        boolean authorityGranted = grants.contains(authority)
+                || (H4GrowthApproval.supports(command)
+                    && grants.contains("growth_h4_read"));
+        return makerId instanceof Number && Long.toString(actorId).equals(makerId.toString())
+                && authorityGranted
+                && (!K1RiskApproval.supports(command) || proposalAuthority);
+    }
+
+    private boolean canRecoverHostingCenters(AuditReplayCommand command, long actorId, Set<String> grants) {
+        return command != null && "E".equals(command.domain()) && HostingCenterService.OPERATION.equals(command.op())
+                && roleResolver.isActiveAdministrator(actorId) && grants.containsAll(Set.of("device_e1_read", "device_e1_write"))
+                && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
+    }
+
+    /** Only the J4 execution proposal; the exact original maker is checked by the caller. */
+    private static boolean isJ4ExecuteProposal(AuditReplayCommand command) {
+        return command != null
+                && "J".equalsIgnoreCase(command.domain())
+                && "j4_playbook_execute".equalsIgnoreCase(command.op());
+    }
+
+    /**
+     * I3 notification-cap makers: the exact cap authority plus the A2 proposal grant is the same pair
+     * that may create the proposal, so the maker can read back that one command's own result.
+     */
+    private static boolean canReadOwnI3CapProposal(Set<String> grants) {
+        return grants.contains("content_i3_cap_adjust")
+                && (grants.contains("platform_a2_write") || grants.contains("platform_a2_proposal_create"));
+    }
+
+    /** Only the real I3 cap adjustment command, never any other I-domain proposal. */
+    private static boolean isI3CapAdjust(AuditReplayCommand command) {
+        return command != null
+                && "I".equalsIgnoreCase(command.domain())
+                && "i3_cap_adjust".equalsIgnoreCase(command.op());
+    }
+
+    private static boolean canReadOwnCourseRewardProposal(Set<String> grants) {
+        return grants.contains("content_i7_course_reward_adjust")
+                && (grants.contains("platform_a2_write") || grants.contains("platform_a2_proposal_create"));
     }
 
     public AuditLogQueryRequest constrain(AuditLogQueryRequest request) {
@@ -136,6 +410,19 @@ public class A2AccessPolicy {
 
     /** Rechecks the row selected under the decision transaction's lock. */
     public boolean canAccessTicket(AuditOperationTicketEntity ticket) {
+        Scope scope = current();
+        Long makerId = ticket != null && (scope.ownActorOnly() || "FINANCE_LEAD".equals(scope.roleCode()))
+                ? ticketMapper.selectMakerAudits(List.of(ticket.getOperationId())).stream().findFirst()
+                        .map(AuditOperationTicketMapper.MakerAudit::makerId).orElse(null)
+                : null;
+        return canAccessTicket(ticket, makerId, scope);
+    }
+
+    boolean canAccessTicket(AuditOperationTicketEntity ticket, Long makerId) {
+        return canAccessTicket(ticket, makerId, current());
+    }
+
+    private boolean canAccessTicket(AuditOperationTicketEntity ticket, Long makerId, Scope scope) {
         if (ticket == null || !StringUtils.hasText(ticket.getSourceDomain())) {
             return false;
         }
@@ -143,7 +430,19 @@ public class A2AccessPolicy {
         if (first < 'A' || first > 'M') {
             return false;
         }
-        return current().canSee(String.valueOf(first), ticket.getOperatorName());
+        if ("FINANCE_LEAD".equals(scope.roleCode()) && first == 'E' && makerId != null && StringUtils.hasText(ticket.getCommandJson())
+                && makerId.equals(A2ReplayContext.authenticatedAdminId())
+                && permissions.getPermissionCodes(makerId).contains(AuditReplayBusinessPermissionGuard.E4_REFUND_AUTHORITY)) {
+            try {
+                var command = objectMapper.readTree(ticket.getCommandJson());
+                return "E".equals(command.path("domain").asText()) && "e4_order_refund".equals(command.path("op").asText());
+            } catch (JsonProcessingException invalidCommand) {
+                return false;
+            }
+        }
+        return scope.ownActorOnly()
+                ? makerId != null && makerId.equals(A2ReplayContext.authenticatedAdminId())
+                : scope.canSee(String.valueOf(first), ticket.getOperatorName());
     }
 
     private List<String> authorityDomains() {

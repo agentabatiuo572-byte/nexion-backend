@@ -4,6 +4,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.mapper.F5CommissionMapper;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.util.Map;
@@ -15,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class CommissionEventUnlockProcessor {
     private final F5CommissionMapper mapper;
+    private final TeamCommissionRepository commissionRepository;
     private final EventOutboxService eventOutboxService;
     private final AuditLogService auditLogService;
     private final TreasuryLedgerPostingFacade ledgerPostingFacade;
@@ -31,6 +33,11 @@ public class CommissionEventUnlockProcessor {
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
         String group = direct == null ? null : direct.groupForEvent(eventId);
         if (group != null) return direct.releaseEvent(eventId);
+        // A suspended user's ungrouped event keeps cooling instead of being released while the
+        // pause is in force; it unlocks on the first run after the suspension is lifted.
+        if (commissionRepository.countEventUserSuspended(eventId) > 0) {
+            return false;
+        }
         if (direct != null) direct.lockEventSource(eventId, true);
         if (mapper.unlockCoolingEventCas(eventId, expectedVersion) != 1) {
             return false;

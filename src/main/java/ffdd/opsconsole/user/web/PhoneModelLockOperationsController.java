@@ -17,6 +17,13 @@ public class PhoneModelLockOperationsController {
     @PreAuthorize("hasAuthority('user_c5_read')")
     public ApiResult<?> locks(@PathVariable long userId) { return ApiResult.ok(service.locks(userId)); }
 
+    @GetMapping("/users/profiles/{userId}/phone-model-locks/{installationId}/release-receipt")
+    @PreAuthorize("hasAuthority('user_c5_read')")
+    public ApiResult<?> releaseReceipt(@PathVariable long userId, @PathVariable String installationId,
+                                       @RequestParam String commandKey) {
+        return ApiResult.ok(service.releaseReceipt(userId, installationId, commandKey));
+    }
+
     @PostMapping("/users/profiles/{userId}/phone-model-locks/{installationId}/release")
     @PreAuthorize("hasAuthority('user_c5_phone_replacement_exception_grant')")
     public ApiResult<?> release(@PathVariable long userId, @PathVariable String installationId,

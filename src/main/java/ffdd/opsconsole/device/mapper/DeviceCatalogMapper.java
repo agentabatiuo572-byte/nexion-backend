@@ -5,6 +5,7 @@ import ffdd.opsconsole.shared.canonical.mapper.TrialConversionReadSql;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
+import ffdd.opsconsole.device.domain.DeviceOrderDetailView.OrderDevice;
 import ffdd.opsconsole.device.domain.DeviceOrderFundingView;
 import ffdd.opsconsole.device.domain.DeviceOrderHistoryView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
@@ -51,6 +52,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
      * nx_product. nx_admin_device_sku retains E1 extensions, including the
      * server-enforced purchase gate that must round-trip through ordinary edits.
      */
+    String SERIES_LOCKED = """
+            (COALESCE(p.sold_count,0)>0
+             OR EXISTS (SELECT 1 FROM nx_order o WHERE o.product_id=p.id)
+             OR EXISTS (SELECT 1 FROM nx_order_item i WHERE i.product_id=p.id)
+             OR EXISTS (SELECT 1 FROM nx_user_device d WHERE d.product_id=p.id
+                         OR (d.product_id IS NULL AND d.product_code=p.product_no)))
+            """;
+
     String SKU_COLUMNS = """
             p.product_no AS skuId,
             p.name,
@@ -103,7 +112,11 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
              AS publishBlockReason,
             p.created_at AS createdAt,
             p.updated_at AS updatedAt,
-            s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,p.compute_points AS computePoints
+            s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,p.compute_points AS computePoints,
+            p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct,
+            p.series_code AS seriesCode,
+            """ + SERIES_LOCKED + """
+             AS seriesLocked
             """;
 
     String TASK_COLUMNS = """
@@ -175,7 +188,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """ + ORDER_STATE_SQL + """
              AS state,
             (SELECT ud.dc_location FROM nx_user_device ud
-              WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0 ORDER BY ud.id DESC LIMIT 1) AS dcLocation,
+              WHERE ud.source_order_no=o.order_no AND ud.user_id=o.user_id AND ud.is_deleted=0
+                AND ud.source_channel IN ('ORDER','TRIAL') ORDER BY ud.id LIMIT 1) AS dcLocation,
             CASE
               WHEN 60 > TIMESTAMPDIFF(MINUTE,o.created_at,NOW())
                 THEN CONCAT(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),'分钟')
@@ -188,7 +202,11 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                 FLOOR(MOD(TIMESTAMPDIFF(MINUTE,o.created_at,NOW()),1440) / 60),'小时')
             END AS ageText,
             o.created_at AS orderedAt,
-            o.updated_at AS updatedAt
+            o.updated_at AS updatedAt,
+            COALESCE(o.refund_amount_usdt,(SELECT wb.amount FROM nx_wallet_bill wb
+              WHERE wb.user_id=o.user_id AND wb.deleted=0 AND wb.bill_no=CONCAT('E4-BILL-',o.order_no)
+                AND wb.type='ORDER_REFUND' AND wb.token='USDT' AND wb.direction='IN' AND wb.amount>0
+              ORDER BY wb.occurred_at DESC,wb.id DESC LIMIT 1)) AS refundAmountUsdt
             """;
 
     String GENERATION_GATE_COLUMNS = """
@@ -234,10 +252,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               phone_daily_earn DECIMAL(18,6) DEFAULT NULL,
               phone_daily_earn_nex DECIMAL(18,6) DEFAULT NULL,
               price DECIMAL(18,4) NOT NULL DEFAULT 0,
-              daily_earn DECIMAL(18,4) NOT NULL DEFAULT 0,
+              daily_earn DECIMAL(18,6) NOT NULL DEFAULT 0,
+              monthly_target_usdt DECIMAL(12,2) DEFAULT NULL,
+              monthly_target_band_pct DECIMAL(4,1) DEFAULT NULL,
               daily_earn_nex DECIMAL(18,4) NOT NULL DEFAULT 0,
-              share_yield_min DECIMAL(9,4) DEFAULT NULL,
-              share_yield_max DECIMAL(9,4) DEFAULT NULL,
+              share_yield_min DECIMAL(24,4) DEFAULT NULL,
+              share_yield_max DECIMAL(24,4) DEFAULT NULL,
               base_rate VARCHAR(128) DEFAULT NULL,
               sold BIGINT DEFAULT NULL,
               stock_text VARCHAR(32) NOT NULL DEFAULT '0',
@@ -283,41 +303,6 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Update("ALTER TABLE nx_product MODIFY COLUMN updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)")
     void widenProductUpdatedAtPrecision();
-
-    /** One-way compatibility migration: missing legacy E1 rows become canonical products; existing nx_product rows always win. */
-    @Insert("""
-            INSERT INTO nx_product (
-              product_no,name,product_type,tier,status,price_usdt,hashrate,estimated_daily_usdt,daily_nex,stock,
-              badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
-              share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,rating_value,review_count,
-              created_at,updated_at,is_deleted
-            )
-            SELECT s.sku_id,s.name,CASE WHEN s.tier='Share' THEN 'SHARE' ELSE 'DEVICE' END,s.tier,
-                   CASE WHEN LOWER(s.status) IN ('on','active') THEN 'ON_SALE' WHEN LOWER(s.status)='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
-                   s.price,
-                   CASE WHEN TRIM(COALESCE(s.hash_rate,'')) REGEXP '^[0-9]+([.][0-9]+)?$'
-                              AND CHAR_LENGTH(SUBSTRING_INDEX(TRIM(s.hash_rate),'.',1)) <= 11
-                        THEN CAST(s.hash_rate AS DECIMAL(18,6)) ELSE 0 END,
-                   s.daily_earn,s.daily_earn_nex,
-                   CASE WHEN TRIM(COALESCE(s.stock_text,'')) REGEXP '^[0-9]+$'
-                              AND (CHAR_LENGTH(TRIM(s.stock_text)) < 10
-                                   OR (CHAR_LENGTH(TRIM(s.stock_text)) = 10 AND TRIM(s.stock_text) <= '2147483647'))
-                        THEN CAST(s.stock_text AS UNSIGNED) ELSE 0 END,
-                   s.badge,s.tagline,
-                   CASE WHEN LOWER(s.status) IN ('on','active') THEN 'on' ELSE LOWER(s.status) END,
-                   CASE WHEN LOWER(s.status) IN ('on','active') THEN 1 ELSE 0 END,s.id,
-                   COALESCE(s.generation,1),s.gpu,
-                   CASE WHEN TRIM(COALESCE(s.vram,'')) REGEXP '^[0-9]+(GB|gb)?$'
-                              AND CHAR_LENGTH(REGEXP_SUBSTR(TRIM(s.vram),'^[0-9]+')) <= 3
-                        THEN CAST(REGEXP_SUBSTR(s.vram,'^[0-9]+') AS UNSIGNED) ELSE NULL END,
-                   s.share_yield_min,s.share_yield_max,s.superseded_by,
-                   COALESCE(CAST(s.unlock_phase_id AS CHAR),NULLIF(s.unlock_phase,'')),COALESCE(s.sold,0),COALESCE(s.rating,0),COALESCE(s.reviews,0),
-                   s.created_at,s.updated_at,0
-              FROM nx_admin_device_sku s
-             WHERE s.is_deleted=0
-               AND NOT EXISTS (SELECT 1 FROM nx_product p WHERE p.product_no=s.sku_id)
-            """)
-    int backfillProductsFromLegacySkus();
 
     /** Repairs only a missing canonical phase reference; existing nx_product values remain authoritative. */
     @Update("""
@@ -834,7 +819,6 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               FROM nx_product
              WHERE unlock_phase = #{phaseId}
                AND is_deleted = 0
-               AND store_visible = 1
             """)
     int countSkusByUnlockPhase(@Param("phaseId") String phaseId);
 
@@ -1025,14 +1009,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Insert("""
             INSERT INTO nx_product (
-              product_no,name,product_type,tier,status,price_usdt,compute_points,hashrate,estimated_daily_usdt,daily_nex,stock,inventory_mode,trial_eligible,
+              product_no,name,product_type,tier,series_code,status,price_usdt,compute_points,hashrate,estimated_daily_usdt,daily_nex,monthly_target_usdt,monthly_target_band_pct,stock,inventory_mode,trial_eligible,
               badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
               share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,rating_value,review_count,
               created_at,updated_at,is_deleted
             ) VALUES (
-              #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},
+              #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},#{sku.seriesCode},
               CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
-              #{sku.price},COALESCE(#{sku.computePoints},ROUND(#{sku.price}*10)),#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
+              #{sku.price},COALESCE(#{sku.computePoints},ROUND(#{sku.price}*10)),#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.monthlyTargetUsdt},#{sku.monthlyTargetBandPct},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
               #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,0,
               COALESCE(#{sku.generation},1),#{sku.gpu},#{sku.canonicalVramGb},#{sku.shareYieldMin},#{sku.shareYieldMax},
               #{sku.supersededBy},CAST(#{sku.unlockPhaseId} AS CHAR),0,COALESCE(#{sku.rating},0),COALESCE(#{sku.reviews},0),
@@ -1044,7 +1028,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Insert("""
             INSERT INTO nx_admin_device_sku (
               sku_id,name,tier,tagline,badge,gpu,vram,hash_rate,power_text,datacenter,uptime,warranty,phone_daily_earn,phone_daily_earn_nex,price,
-              daily_earn,daily_earn_nex,share_yield_min,share_yield_max,base_rate,sold,stock_text,
+              daily_earn,daily_earn_nex,share_yield_min,share_yield_max,monthly_target_usdt,monthly_target_band_pct,base_rate,sold,stock_text,
               rating,reviews,ai_image_gen_per_min,ai_llm_tokens_per_sec,ai_video_min_per_hour,
               ai_fine_tune_mins,ai_unlocks,spec_document_title,spec_document_url,features_json,generation,lifecycle,superseded_by,
               tradein_discount,unlock_phase,unlock_phase_id,purchase_gate_json,image_asset_id,image_object_key,image_preview_url,tag,status,
@@ -1052,7 +1036,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             ) VALUES (
               #{sku.skuId},#{sku.name},#{sku.tier},#{sku.tagline},#{sku.badge},#{sku.gpu},#{sku.vram},#{sku.hashRate},
               #{sku.power},#{sku.datacenter},#{sku.uptime},#{sku.warranty},#{sku.phoneDailyEarn},#{sku.phoneDailyEarnNex},#{sku.price},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.shareYieldMin},
-              #{sku.shareYieldMax},#{sku.baseRate},0,#{sku.stock},#{sku.rating},#{sku.reviews},
+              #{sku.shareYieldMax},#{sku.monthlyTargetUsdt},#{sku.monthlyTargetBandPct},#{sku.baseRate},0,#{sku.stock},#{sku.rating},#{sku.reviews},
               #{sku.aiImageGenPerMin},#{sku.aiLlmTokensPerSec},#{sku.aiVideoMinPerHour},#{sku.aiFineTuneMins},
               #{sku.aiUnlocks},#{sku.specDocumentTitle},#{sku.specDocumentUrl},#{sku.featuresJson},#{sku.generation},#{sku.lifecycle},#{sku.supersededBy},
               #{sku.tradeinDiscount},'',#{sku.unlockPhaseId},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
@@ -1062,7 +1046,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               name=VALUES(name),tier=VALUES(tier),tagline=VALUES(tagline),badge=VALUES(badge),gpu=VALUES(gpu),vram=VALUES(vram),
               hash_rate=VALUES(hash_rate),power_text=VALUES(power_text),datacenter=VALUES(datacenter),uptime=VALUES(uptime),warranty=VALUES(warranty),phone_daily_earn=VALUES(phone_daily_earn),phone_daily_earn_nex=VALUES(phone_daily_earn_nex),price=VALUES(price),
               daily_earn=VALUES(daily_earn),daily_earn_nex=VALUES(daily_earn_nex),share_yield_min=VALUES(share_yield_min),
-              share_yield_max=VALUES(share_yield_max),base_rate=VALUES(base_rate),stock_text=VALUES(stock_text),
+              share_yield_max=VALUES(share_yield_max),monthly_target_usdt=VALUES(monthly_target_usdt),monthly_target_band_pct=VALUES(monthly_target_band_pct),base_rate=VALUES(base_rate),stock_text=VALUES(stock_text),
               rating=VALUES(rating),reviews=VALUES(reviews),ai_image_gen_per_min=VALUES(ai_image_gen_per_min),
               ai_llm_tokens_per_sec=VALUES(ai_llm_tokens_per_sec),ai_video_min_per_hour=VALUES(ai_video_min_per_hour),
               ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),spec_document_title=VALUES(spec_document_title),spec_document_url=VALUES(spec_document_url),features_json=VALUES(features_json),
@@ -1076,10 +1060,11 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     int upsertSkuMetadata(@Param("sku") SkuWrite sku);
 
     @Update("""
-            UPDATE nx_product
-               SET name=#{sku.name},tier=#{sku.tier},
+            UPDATE nx_product p
+               SET name=#{sku.name},tier=#{sku.tier},series_code=#{sku.seriesCode},
                    status=CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
                    price_usdt=#{sku.price},compute_points=COALESCE(#{sku.computePoints},compute_points),hashrate=#{sku.canonicalHashrate},estimated_daily_usdt=#{sku.dailyEarn},daily_nex=#{sku.dailyEarnNex},
+                   monthly_target_usdt=#{sku.monthlyTargetUsdt},monthly_target_band_pct=#{sku.monthlyTargetBandPct},
                    stock=#{sku.canonicalStock},inventory_mode=#{sku.inventoryMode},trial_eligible=#{sku.trialEligible},badge=#{sku.badge},tagline=#{sku.tagline},store_status=#{sku.status},
                    store_visible=CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,generation=COALESCE(#{sku.generation},1),
                    gpu_model=#{sku.gpu},vram_total_gb=#{sku.canonicalVramGb},share_yield_min=#{sku.shareYieldMin},
@@ -1088,6 +1073,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    rating_value=COALESCE(#{sku.rating},0),review_count=COALESCE(#{sku.reviews},0),
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE product_no=#{sku.skuId} AND is_deleted=0 AND updated_at=#{expectedUpdatedAt}
+               AND (p.series_code <=> #{sku.seriesCode} OR NOT """ + SERIES_LOCKED + """
+                   )
             """)
     int updateSku(@Param("sku") SkuWrite sku, @Param("expectedUpdatedAt") LocalDateTime expectedUpdatedAt);
 
@@ -1260,6 +1247,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                                    @Param("taskClass") String taskClass,
                                    @Param("limit") long limit, @Param("offset") long offset);
 
+    @Select("SELECT " + TASK_COLUMNS + " FROM nx_admin_device_task WHERE is_deleted = 0 ORDER BY id FOR UPDATE")
+    List<DeviceTaskView> lockTaskCatalog();
+
     @Select("""
             SELECT
             """ + TASK_COLUMNS + """
@@ -1331,6 +1321,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     int softDeleteTask(@Param("taskId") String taskId, @Param("now") LocalDateTime now);
 
+    // The legacy ALTER leaves both text columns empty. Saved pricing can have zero rewards.
     @Update("""
             UPDATE nx_admin_device_task
                SET task_class = CASE task_id
@@ -1372,13 +1363,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                      WHEN 'TK-4' THEN '48GB'
                      WHEN 'TK-5' THEN '48GB'
                      WHEN 'TK-6' THEN '8GB'
-                     ELSE min_vram END,
-                   kill_init = '派发中'
+                     ELSE min_vram END
              WHERE is_deleted = 0
                AND task_id IN ('TK-1','TK-2','TK-3','TK-4','TK-5','TK-6')
                AND NOT EXISTS (SELECT 1 FROM nx_sim_task_type_version simulated
                                WHERE simulated.task_type_id=nx_admin_device_task.task_id COLLATE utf8mb4_unicode_ci)
-               AND (model_name = '' OR min_reward = 0 OR max_reward = 0 OR min_vram = '')
+               AND model_name = '' AND min_vram = ''
             """)
     int backfillDefaultTaskExtensions();
 
@@ -1440,37 +1430,44 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
 
     @Select("""
             SELECT c.config_key configKey,
-                   CASE WHEN c.config_key='phone' THEN c.label ELSE p.name END label,
+                   COALESCE(p.name,c.label) label,
                    CASE WHEN c.config_key='phone' THEN t.base_rate_usdt ELSE p.estimated_daily_usdt END dailyUsdt,
                    CASE WHEN c.config_key='phone' THEN t.base_rate_nex ELSE p.daily_nex END dailyNex,
                    c.sort_order sortOrder,
                    GREATEST(c.revision,COALESCE(t.revision,0),
                      COALESCE(CAST(UNIX_TIMESTAMP(p.updated_at)*1000000 AS SIGNED),0)) revision,
-                   CASE WHEN c.config_key='phone' THEN t.updated_at ELSE p.updated_at END updatedAt
+                   CASE WHEN c.config_key='phone' THEN t.updated_at ELSE p.updated_at END updatedAt,
+                   c.product_no AS productNo,c.revision AS bindingRevision,
+                   bp.name AS boundProductName
               FROM nx_onboarding_yield_comparison_config c
               LEFT JOIN nx_onboarding_phone_tier_config t
                 ON c.config_key='phone' AND t.tier=3 AND t.active=1 AND t.is_deleted=0
               LEFT JOIN nx_product p
-                ON p.product_no=CASE c.config_key
-                     WHEN 's1' THEN 'stellarbox-s1'
-                     WHEN 'pro' THEN 'stellarbox-pro'
-                     WHEN 'rack' THEN 'stellarrack-p1' END
+                ON c.config_key<>'phone' AND p.product_no=c.product_no
+               AND p.product_type IN ('DEVICE','SERVER')
                AND p.is_deleted=0 AND p.store_visible=1
                AND p.estimated_daily_usdt>0 AND p.daily_nex>0
                AND (LOWER(COALESCE(NULLIF(p.store_status,''),'')) IN ('on','active','listed','on_sale')
                     OR (COALESCE(p.store_status,'')='' AND UPPER(p.status) IN ('ACTIVE','ON_SALE')))
+               AND
+            """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+              LEFT JOIN nx_product bp
+                ON bp.product_no=c.product_no AND bp.is_deleted=0
+
              WHERE c.active=1 AND c.is_deleted=0
                AND ((c.config_key='phone' AND t.tier IS NOT NULL)
-                    OR (c.config_key IN ('s1','pro','rack') AND p.id IS NOT NULL))
+                    OR c.config_key IN ('s1','pro','rack'))
              ORDER BY c.sort_order,c.config_key
             """)
     List<OnboardingYieldComparisonView> listOnboardingYieldComparisons();
 
     @Select("""
-            SELECT config_key configKey,label,daily_usdt dailyUsdt,daily_nex dailyNex,
-                   sort_order sortOrder,revision,updated_at updatedAt
-              FROM nx_onboarding_yield_comparison_config
-             WHERE config_key=#{configKey} AND active=1 AND is_deleted=0 LIMIT 1
+            SELECT c.config_key configKey,c.label,c.daily_usdt dailyUsdt,c.daily_nex dailyNex,
+                   c.sort_order sortOrder,c.revision,c.updated_at updatedAt,c.product_no productNo,
+                   c.revision bindingRevision,bp.name boundProductName
+              FROM nx_onboarding_yield_comparison_config c
+              LEFT JOIN nx_product bp ON bp.product_no=c.product_no AND bp.is_deleted=0
+             WHERE c.config_key=#{configKey} AND c.active=1 AND c.is_deleted=0 LIMIT 1
             """)
     OnboardingYieldComparisonView findOnboardingYieldComparison(@Param("configKey") String configKey);
 
@@ -1487,6 +1484,27 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                                         @Param("dailyNex") BigDecimal dailyNex,
                                         @Param("expectedRevision") Long expectedRevision,
                                         @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_product p
+             WHERE p.product_no=#{sku} AND p.is_deleted=0 AND p.store_visible=1
+               AND p.product_type IN ('DEVICE','SERVER')
+               AND p.estimated_daily_usdt>0 AND p.daily_nex>0
+               AND (LOWER(COALESCE(NULLIF(p.store_status,''),'')) IN ('on','active','listed','on_sale')
+                    OR (COALESCE(p.store_status,'')='' AND UPPER(p.status) IN ('ACTIVE','ON_SALE')))
+               AND
+            """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+            )
+            """)
+    boolean onboardingYieldSkuAvailable(@Param("sku") String sku);
+
+    @Update("""
+            UPDATE nx_onboarding_yield_comparison_config
+               SET product_no=#{productNo},revision=revision+1,updated_at=#{now}
+             WHERE config_key=#{key} AND active=1 AND is_deleted=0 AND revision=#{version}
+            """)
+    int bindOnboardingYieldSku(@Param("key") String key, @Param("productNo") String productNo,
+                              @Param("version") long version, @Param("now") LocalDateTime now);
 
     @Select("""
             <script>
@@ -1560,22 +1578,29 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    COALESCE((SELECT oi.product_name FROM nx_order_item oi
                               WHERE oi.order_no=o.order_no AND oi.is_deleted=0 ORDER BY oi.sort_order,oi.id LIMIT 1),
                             p.name,o.order_no) AS productName,
-                   (SELECT ud.id FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
-                     ORDER BY ud.id DESC LIMIT 1) AS deviceId,
-                   (SELECT ud.instance_no FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
-                     ORDER BY ud.id DESC LIMIT 1) AS deviceInstanceNo,
-                   (SELECT ud.dc_location FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
-                     ORDER BY ud.id DESC LIMIT 1) AS dcLocation,
+                   ud.id AS deviceId, ud.instance_no AS deviceInstanceNo, ud.dc_location AS dcLocation,
                    o.created_at AS createdAt, o.paid_at AS paidAt,
-                   (SELECT ud.activated_at FROM nx_user_device ud WHERE ud.source_order_no=o.order_no AND ud.is_deleted=0
-                     ORDER BY ud.id DESC LIMIT 1) AS activatedAt,
+                   ud.activated_at AS activatedAt,
                    o.updated_at AS updatedAt
               FROM nx_order o
               LEFT JOIN nx_product p ON p.id=o.product_id AND p.is_deleted=0
+              LEFT JOIN nx_user_device ud ON ud.id=(SELECT MIN(delivered.id) FROM nx_user_device delivered
+                   WHERE delivered.source_order_no=o.order_no AND delivered.user_id=o.user_id AND delivered.is_deleted=0
+                     AND delivered.source_channel IN ('ORDER','TRIAL'))
              WHERE o.order_no=#{orderNo} AND o.is_deleted=0
              LIMIT 1
             """)
     DeviceOrderFacts findOrderFacts(@Param("orderNo") String orderNo);
+
+    @Select("""
+            SELECT id AS deviceId, instance_no AS deviceInstanceNo,
+                   CASE WHEN source_channel='PROMOTION_GIFT' THEN 'PROMOTION_GIFT' ELSE 'PURCHASE' END AS kind,
+                   source_channel AS sourceChannel, status, ownership_status AS ownershipStatus, dc_location AS dcLocation
+              FROM nx_user_device
+             WHERE source_order_no=#{orderNo} AND is_deleted=0
+             ORDER BY (source_channel='PROMOTION_GIFT'), id
+            """)
+    List<OrderDevice> listOrderDevices(@Param("orderNo") String orderNo);
 
     @Select("""
             SELECT from_state AS fromState, to_state AS toState, reason, operator, created_at AS createdAt
@@ -1643,6 +1668,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Update("UPDATE nx_order SET refund_reason_code=#{refundReasonCode} WHERE order_no=#{orderNo} AND is_deleted=0")
     int updateOrderRefundReason(@Param("orderNo") String orderNo, @Param("refundReasonCode") String refundReasonCode);
 
+    @Update("UPDATE nx_order SET refund_amount_usdt=#{refundAmountUsdt} WHERE order_no=#{orderNo} AND is_deleted=0 AND order_status='REFUNDED'")
+    int updateOrderRefundAmount(@Param("orderNo") String orderNo, @Param("refundAmountUsdt") BigDecimal refundAmountUsdt);
+
     @Update("UPDATE nx_order SET close_reason_code=#{closeReasonCode} WHERE order_no=#{orderNo} AND is_deleted=0")
     int updateOrderCloseReason(@Param("orderNo") String orderNo, @Param("closeReasonCode") String closeReasonCode);
 
@@ -1661,14 +1689,50 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                            @Param("now") LocalDateTime now);
 
     @Update("""
-            UPDATE nx_user_device
-               SET ownership_status='REFUNDED',status='DEACTIVATED',pending_deactivate=0,
-                   deactivated_at=COALESCE(deactivated_at,#{now}),updated_at=#{now}
-             WHERE source_order_no=#{orderNo} AND is_deleted=0
-               AND UPPER(COALESCE(source_channel,'')) <> 'PROMOTION_GIFT'
-               AND UPPER(ownership_status) NOT IN ('REFUNDED','RECYCLED')
+            UPDATE nx_user_device d
+              JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
+               SET d.ownership_status='REFUNDED',d.status='DEACTIVATED',d.pending_deactivate=0,
+                   d.deactivated_at=COALESCE(d.deactivated_at,#{now}),d.row_version=d.row_version+1,d.updated_at=#{now}
+             WHERE d.source_order_no=#{orderNo} AND d.is_deleted=0
+               AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
+               AND UPPER(d.ownership_status) NOT IN ('REFUNDED','RECYCLED')
             """)
     int rollbackOrderDevices(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE nx_user_device d
+              JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
+              LEFT JOIN nx_compute_task t ON t.user_device_id=d.id AND t.user_id=d.user_id
+                AND t.source_environment='PRODUCTION' AND t.is_deleted=0
+                AND t.status IN ('CLAIMED','RUNNING','PAUSED') AND t.completed_at IS NULL AND t.proof_consumed_at IS NULL
+                AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.task_id=t.id)
+              LEFT JOIN nx_simulated_device_runtime sr ON sr.user_device_id=d.id AND sr.user_id=d.user_id
+                AND (sr.state NOT IN ('STOPPED','EXPIRED') OR sr.current_task_no IS NOT NULL OR sr.next_action_at IS NOT NULL)
+              LEFT JOIN nx_simulated_task s ON s.user_device_id=d.id AND s.user_id=d.user_id
+                AND s.status='RUNNING' AND s.completed_at IS NULL AND s.posted_at IS NULL
+                AND (UPPER(o.order_type)='TRIAL_CONVERT' OR sr.user_device_id IS NULL
+                     OR NOT (s.task_no <=> sr.current_task_no))
+                AND NOT EXISTS(SELECT 1 FROM nx_compute_retired_task a WHERE a.user_id=s.user_id AND a.task_no=s.task_no COLLATE utf8mb4_0900_ai_ci)
+              LEFT JOIN nx_user_device_runtime r ON r.user_device_id=d.id AND r.is_deleted=0
+                AND (r.online_status<>'OFFLINE' OR r.active_task_no IS NOT NULL)
+               SET t.status='CANCELLED',t.last_error='ORDER_REFUND',t.next_retry_at=NULL,t.updated_at=#{now},
+                   s.status='CANCELLED',s.cancel_reason='ORDER_REFUND',
+                   r.online_status='OFFLINE',r.paused_reason='ORDER_REFUND',r.active_task_no=NULL,r.updated_at=#{now},
+                   sr.state=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' AND sr.current_task_no IS NOT NULL
+                                 THEN 'CLOSING' ELSE 'STOPPED' END,
+                   sr.stop_at=CASE WHEN UPPER(o.order_type)='TRIAL_CONVERT' THEN COALESCE(sr.stop_at,d.deactivated_at,#{now})
+                                   ELSE LEAST(COALESCE(sr.stop_at,#{now}),COALESCE(d.deactivated_at,#{now}),#{now}) END,
+                   sr.stop_after_current=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' THEN 1 ELSE 0 END,
+                   sr.finish_after_at=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' THEN sr.next_start_at ELSE NULL END,
+                   sr.next_action_at=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' AND sr.current_task_no IS NOT NULL
+                                         THEN #{now} ELSE NULL END,
+                   sr.current_task_no=CASE WHEN UPPER(o.order_type)<>'TRIAL_CONVERT' THEN sr.current_task_no ELSE NULL END,
+                   sr.last_error='ORDER_REFUND'
+             WHERE d.source_order_no=#{orderNo} AND d.is_deleted=0 AND d.ownership_status='REFUNDED'
+               AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.source_channel<>'PROMOTION_GIFT'
+               AND o.is_deleted=0 AND o.payment_status='REFUNDED' AND o.order_status='REFUNDED'
+            """)
+    int stopRefundedOrderTasks(@Param("orderNo") String orderNo, @Param("now") LocalDateTime now);
 
     @Select("""
             SELECT UPPER(o.order_type) orderType,
@@ -1880,7 +1944,59 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean publishBlocked,
             String publishBlockReason,
             LocalDateTime createdAt,
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode, boolean seriesLocked) {
+    public SkuRow(
+            String skuId,
+            String name,
+            String tier,
+            String tagline,
+            String badge,
+            String gpu,
+            String vram,
+            String hashRate,
+            String power,
+            String datacenter,
+            String uptime,
+            String warranty,
+            BigDecimal phoneDailyEarn,
+            BigDecimal phoneDailyEarnNex,
+            BigDecimal price,
+            BigDecimal dailyEarn,
+            BigDecimal dailyEarnNex,
+            BigDecimal shareYieldMin,
+            BigDecimal shareYieldMax,
+            String baseRate,
+            Long sold,
+            String stock,
+            String productType,
+            String inventoryMode,
+            Boolean trialEligible,
+            BigDecimal rating,
+            Long reviews,
+            Long aiImageGenPerMin,
+            Long aiLlmTokensPerSec,
+            Long aiVideoMinPerHour,
+            Long aiFineTuneMins,
+            String aiUnlocks,
+            String featuresJson,
+            Integer generation,
+            String lifecycle,
+            String supersededBy,
+            BigDecimal tradeinDiscount,
+            String unlockPhase,
+            String purchaseGateJson,
+            String imageAssetId,
+            String imageObjectKey,
+            String imagePreviewUrl,
+            String tag,
+            String status,
+            Boolean publishBlocked,
+            String publishBlockReason,
+            LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,false);
+    }
+
     /** Callers that do not set computePoints leave it unset. */
     public SkuRow(String skuId, String name, String tier, String tagline, String badge, String gpu, String vram, String hashRate, String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, BigDecimal price, BigDecimal dailyEarn, BigDecimal dailyEarnNex, BigDecimal shareYieldMin, BigDecimal shareYieldMax, String baseRate, Long sold, String stock, String productType, String inventoryMode, Boolean trialEligible, BigDecimal rating, Long reviews, Long aiImageGenPerMin, Long aiLlmTokensPerSec, Long aiVideoMinPerHour, Long aiFineTuneMins, String aiUnlocks, String featuresJson, Integer generation, String lifecycle, String supersededBy, BigDecimal tradeinDiscount, String unlockPhase, String purchaseGateJson, String imageAssetId, String imageObjectKey, String imagePreviewUrl, String tag, String status, Boolean publishBlocked, String publishBlockReason, LocalDateTime createdAt, LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
         this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, productType, inventoryMode, trialEligible, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, featuresJson, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGateJson, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, publishBlocked, publishBlockReason, createdAt, updatedAt, specDocumentTitle, specDocumentUrl, null);
@@ -1989,7 +2105,59 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String inventoryMode,
             Boolean trialEligible,
             LocalDateTime createdAt,
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode) {
+    public SkuWrite(
+            String skuId,
+            String name,
+            String tier,
+            String tagline,
+            String badge,
+            String gpu,
+            String vram,
+            String hashRate,
+            String power,
+            String datacenter,
+            String uptime,
+            String warranty,
+            BigDecimal phoneDailyEarn,
+            BigDecimal phoneDailyEarnNex,
+            BigDecimal price,
+            BigDecimal dailyEarn,
+            BigDecimal dailyEarnNex,
+            BigDecimal shareYieldMin,
+            BigDecimal shareYieldMax,
+            String baseRate,
+            Long sold,
+            String stock,
+            BigDecimal rating,
+            Long reviews,
+            Long aiImageGenPerMin,
+            Long aiLlmTokensPerSec,
+            Long aiVideoMinPerHour,
+            Long aiFineTuneMins,
+            String aiUnlocks,
+            String featuresJson,
+            Integer generation,
+            String lifecycle,
+            String supersededBy,
+            BigDecimal tradeinDiscount,
+            Long unlockPhaseId,
+            String purchaseGateJson,
+            String imageAssetId,
+            String imageObjectKey,
+            String imagePreviewUrl,
+            String tag,
+            String status,
+            BigDecimal canonicalHashrate,
+            Integer canonicalVramGb,
+            Integer canonicalStock,
+            String inventoryMode,
+            Boolean trialEligible,
+            LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhaseId,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,canonicalHashrate,canonicalVramGb,canonicalStock,inventoryMode,trialEligible,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null);
+    }
+
     /** Callers that do not set computePoints leave it unset. */
     public SkuWrite(String skuId, String name, String tier, String tagline, String badge, String gpu, String vram, String hashRate, String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, BigDecimal price, BigDecimal dailyEarn, BigDecimal dailyEarnNex, BigDecimal shareYieldMin, BigDecimal shareYieldMax, String baseRate, Long sold, String stock, BigDecimal rating, Long reviews, Long aiImageGenPerMin, Long aiLlmTokensPerSec, Long aiVideoMinPerHour, Long aiFineTuneMins, String aiUnlocks, String featuresJson, Integer generation, String lifecycle, String supersededBy, BigDecimal tradeinDiscount, Long unlockPhaseId, String purchaseGateJson, String imageAssetId, String imageObjectKey, String imagePreviewUrl, String tag, String status, BigDecimal canonicalHashrate, Integer canonicalVramGb, Integer canonicalStock, String inventoryMode, Boolean trialEligible, LocalDateTime createdAt, LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl) {
         this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, featuresJson, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhaseId, purchaseGateJson, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, canonicalHashrate, canonicalVramGb, canonicalStock, inventoryMode, trialEligible, createdAt, updatedAt, specDocumentTitle, specDocumentUrl, null);

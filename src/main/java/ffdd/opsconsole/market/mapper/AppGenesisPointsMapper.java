@@ -21,7 +21,7 @@ public interface AppGenesisPointsMapper extends BaseMapper<Object> {
              WHERE h.is_deleted=0
                AND UPPER(h.status) IN ('ACTIVE','LISTED')
              GROUP BY u.id, u.nickname
-             ORDER BY COUNT(h.id) DESC, u.id ASC
+             ORDER BY COUNT(h.id) DESC, u.created_at ASC, u.id ASC
              LIMIT 100
             """)
     List<PointsRow> leaderboard(@Param("sandbox") Integer sandbox);
@@ -41,21 +41,22 @@ public interface AppGenesisPointsMapper extends BaseMapper<Object> {
     @Select("""
             SELECT COUNT(*) + 1
               FROM (
-                    SELECT u.id, COUNT(h.id) AS holdings
+                    SELECT u.id, u.created_at, COUNT(h.id) AS holdings
                       FROM nx_genesis_holding h
                       JOIN nx_user u ON u.id=h.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=#{sandbox}
                      WHERE h.is_deleted=0 AND UPPER(h.status) IN ('ACTIVE','LISTED')
                      GROUP BY u.id
                    ) ranked
               JOIN (
-                    SELECT COUNT(h.id) AS holdings
+                    SELECT u.id, u.created_at, COUNT(h.id) AS holdings
                       FROM nx_genesis_holding h
                       JOIN nx_user u ON u.id=h.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=#{sandbox}
                      WHERE u.id=#{userId} AND h.is_deleted=0 AND UPPER(h.status) IN ('ACTIVE','LISTED')
                      GROUP BY u.id
                    ) mine
                 ON ranked.holdings > mine.holdings
-                OR (ranked.holdings = mine.holdings AND ranked.id < #{userId})
+                OR (ranked.holdings = mine.holdings
+                    AND (ranked.created_at, ranked.id) < (mine.created_at, mine.id))
             """)
     Integer currentRank(@Param("userId") Long userId, @Param("sandbox") Integer sandbox);
 
@@ -66,7 +67,7 @@ public interface AppGenesisPointsMapper extends BaseMapper<Object> {
               FROM nx_genesis_sandbox_holding h
               JOIN nx_user u ON u.id=h.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
              WHERE h.run_id=#{runId} AND UPPER(h.status) IN ('ACTIVE','LISTED')
-             GROUP BY u.id,u.nickname ORDER BY COUNT(h.id) DESC,u.id ASC LIMIT 100
+             GROUP BY u.id,u.nickname ORDER BY COUNT(h.id) DESC,u.created_at ASC,u.id ASC LIMIT 100
             """)
     List<PointsRow> sandboxLeaderboard(@Param("runId") String runId);
 
@@ -83,13 +84,16 @@ public interface AppGenesisPointsMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT COUNT(*)+1 FROM (
-              SELECT u.id,COUNT(h.id) holdings FROM nx_genesis_sandbox_holding h
+              SELECT u.id,u.created_at,COUNT(h.id) holdings FROM nx_genesis_sandbox_holding h
               JOIN nx_user u ON u.id=h.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
               WHERE h.run_id=#{runId} AND UPPER(h.status) IN ('ACTIVE','LISTED') GROUP BY u.id
             ) ranked JOIN (
-              SELECT COUNT(h.id) holdings FROM nx_genesis_sandbox_holding h
-              WHERE h.run_id=#{runId} AND h.user_id=#{userId} AND UPPER(h.status) IN ('ACTIVE','LISTED')
-            ) mine ON ranked.holdings>mine.holdings OR (ranked.holdings=mine.holdings AND ranked.id<#{userId})
+              SELECT u.id,u.created_at,COUNT(h.id) holdings FROM nx_genesis_sandbox_holding h
+              JOIN nx_user u ON u.id=h.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=1
+              WHERE h.run_id=#{runId} AND u.id=#{userId} AND UPPER(h.status) IN ('ACTIVE','LISTED')
+              GROUP BY u.id
+            ) mine ON ranked.holdings>mine.holdings OR (ranked.holdings=mine.holdings
+                       AND (ranked.created_at, ranked.id) < (mine.created_at, mine.id))
             """)
     Integer sandboxCurrentRank(@Param("userId") Long userId,@Param("runId") String runId);
 

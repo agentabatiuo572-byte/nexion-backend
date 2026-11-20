@@ -8,7 +8,7 @@ import org.apache.ibatis.annotations.*;
 
 @Mapper
 public interface CregisFundsPreparationMapper extends BaseMapper<Object> {
-    String FIELDS = "CAST(id AS CHAR) id,plan_no planNo,kind,source_address sourceAddress,target_address targetAddress,"
+    String FIELDS = "CAST(id AS CHAR) id,plan_no planNo,kind,network,source_address sourceAddress,target_address targetAddress,"
             + "CAST(amount_usdt AS CHAR) amountUsdt,business_reference businessReference,reason,state,"
             + "CAST(maker_id AS CHAR) makerId,CAST(checker_id AS CHAR) checkerId,decision_reason decisionReason,"
             + "version,created_at createdAt,updated_at updatedAt";
@@ -17,17 +17,23 @@ public interface CregisFundsPreparationMapper extends BaseMapper<Object> {
             + "FROM nx_cregis_funds_preparation_config WHERE project_id=#{project}")
     Map<String,Object> config(long project);
 
-    @Select("SELECT address,CAST(user_id AS CHAR) userId FROM nx_cregis_deposit_address "
-            + "WHERE project_id=#{project} AND chain_id='2510' AND state='READY' AND user_id IS NOT NULL ORDER BY id LIMIT 60")
-    List<Map<String,Object>> sources(long project);
+    @Insert("INSERT INTO nx_cregis_funds_preparation_config(project_id,platform_address,counterparty_address,network,asset) "
+            + "VALUES(#{project},#{platform},#{counterparty},'BSC','USDT') ON DUPLICATE KEY UPDATE project_id=project_id")
+    void installBep20Config(@Param("project") long project, @Param("platform") String platform,
+                            @Param("counterparty") String counterparty);
 
-    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{project} AND chain_id='2510' "
+    @Select("SELECT address,CAST(user_id AS CHAR) userId FROM nx_cregis_deposit_address "
+            + "WHERE project_id=#{project} AND chain_id=#{chainId} AND state='READY' AND user_id IS NOT NULL ORDER BY id LIMIT 60")
+    List<Map<String,Object>> sources(@Param("project") long project,@Param("chainId") String chainId);
+
+    @Select("SELECT COUNT(*) FROM nx_cregis_deposit_address WHERE project_id=#{project} AND chain_id=#{chainId} "
             + "AND address=#{address} AND state='READY' AND user_id IS NOT NULL")
-    int sourceExists(@Param("project") long project,@Param("address") String address);
+    int sourceExists(@Param("project") long project,@Param("chainId") String chainId,@Param("address") String address);
 
     @Select("SELECT " + FIELDS + " FROM nx_cregis_funds_preparation_plan WHERE project_id=#{project} "
-            + "AND (#{before}=0 OR id<#{before}) ORDER BY id DESC LIMIT #{limit}")
-    List<Map<String,Object>> plans(@Param("project") long project,@Param("before") long before,@Param("limit") int limit);
+            + "AND network=#{network} AND (#{before}=0 OR id<#{before}) ORDER BY id DESC LIMIT #{limit}")
+    List<Map<String,Object>> plans(@Param("project") long project,@Param("network") String network,
+                                   @Param("before") long before,@Param("limit") int limit);
 
     @Select("SELECT " + FIELDS + " FROM nx_cregis_funds_preparation_plan WHERE project_id=#{project} AND plan_no=#{no} FOR UPDATE")
     Map<String,Object> lock(@Param("project") long project,@Param("no") String no);
@@ -35,9 +41,9 @@ public interface CregisFundsPreparationMapper extends BaseMapper<Object> {
     @Select("SELECT " + FIELDS + " FROM nx_cregis_funds_preparation_plan WHERE project_id=#{project} AND plan_no=#{no}")
     Map<String,Object> plan(@Param("project") long project,@Param("no") String no);
 
-    @Insert("INSERT INTO nx_cregis_funds_preparation_plan(plan_no,project_id,kind,source_address,target_address,amount_usdt,"
-            + "business_reference,reason,maker_id) VALUES(#{no},#{project},#{kind},#{source},#{target},#{amount},#{reference},#{reason},#{actor})")
-    int insert(@Param("no") String no,@Param("project") long project,@Param("kind") String kind,
+    @Insert("INSERT INTO nx_cregis_funds_preparation_plan(plan_no,project_id,kind,network,source_address,target_address,amount_usdt,"
+            + "business_reference,reason,maker_id) VALUES(#{no},#{project},#{kind},#{network},#{source},#{target},#{amount},#{reference},#{reason},#{actor})")
+    int insert(@Param("no") String no,@Param("project") long project,@Param("kind") String kind,@Param("network") String network,
                @Param("source") String source,@Param("target") String target,@Param("amount") BigDecimal amount,
                @Param("reference") String reference,@Param("reason") String reason,@Param("actor") long actor);
 

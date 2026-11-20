@@ -48,7 +48,7 @@ public class CregisExceptionRefundWorker {
         // Persist vendor success before an RPC outage can interrupt chain verification.
         service.observed(id,observed,null);
         if(observed.status()==CregisGateway.PayoutStatus.SUCCEEDED&&observed.txid()!=null) {
-            var proof=chain.verifyPayout(observed.txid(),text(row,"returnAddress"),decimal(row,"netAmount")).orElse(null);
+            var proof=chain.verifyPayout(network(row),observed.txid(),text(row,"returnAddress"),decimal(row,"netAmount")).orElse(null);
             if(proof!=null)service.observed(id,observed,proof);
         }
     }
@@ -56,7 +56,7 @@ public class CregisExceptionRefundWorker {
         long id=number(candidate,"id");
         var row=service.beginDispatch(id,service.fresh(candidate));if(row==null)return;
         try {
-            var submission=router.provider().createPayout(new CregisGateway.PayoutRequest(CregisConstants.USDT_BEP20_CURRENCY,
+            var submission=router.provider().createPayout(new CregisGateway.PayoutRequest(network(row).currency(),
                     text(row,"returnAddress"),decimal(row,"netAmount"),text(row,"businessKey"),
                     config.getCallbackBaseUrl().replaceAll("/+$","")+"/payout","UVEL exception refund "+text(row,"caseNo")));
             if(submission==null||submission.cid()<=0||!text(row,"businessKey").equals(submission.thirdPartyId())) {

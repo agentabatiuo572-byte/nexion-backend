@@ -60,7 +60,8 @@ public class SupportFundEarningsAdapter {
         String no=(String)original.get("entryNo");var source=new LinkedHashMap<String,Object>();
         source.put("beforeEntry",original);source.put("entry",entry(no));source.put("recovery",recovery);
         BigDecimal amount=(BigDecimal)recovery.get("recovered");
-        var events=amount.signum()==0?List.<Event>of():List.of(new Event("EARNINGS_RECOVER:"+recoveryNo,Action.RECOVER,
+        var action="D06_AVAILABLE_BALANCE".equals(recovery.get("evidenceStatus"))?Action.CLAWBACK:Action.RECOVER;
+        var events=amount.signum()==0?List.<Event>of():List.of(new Event("EARNINGS_RECOVER:"+recoveryNo,action,
             new Account(before.customerId(),(String)original.get("asset"),"available"),null,eventId(no),amount,null));
         bind(before,"RECOVER",recoveryNo,"nx_earnings_source_recovery",source,events);
     }

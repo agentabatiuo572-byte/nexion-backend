@@ -47,14 +47,14 @@ public class OAuthProviderFlowService {
     @PostConstruct void ensureSchema() { flows.createTable(); }
 
     private void requireEnvironment() {
-        if (!OAuthProviderClient.enabled(environment))
+        if (!OAuthProviderClient.providerFlowEnabled(environment))
             throw new BizException(503, "OAUTH_DISABLED");
         if (UserAuthEnvironment.resolve(environment).orElse(null) != UserAuthEnvironment.PRODUCTION)
             throw new BizException(503, "OAUTH_PROFILE_FORBIDDEN");
     }
 
     public List<String> available() {
-        return OAuthProviderClient.enabled(environment)
+        return OAuthProviderClient.providerFlowEnabled(environment)
                 && UserAuthEnvironment.resolve(environment).orElse(null) == UserAuthEnvironment.PRODUCTION
                 ? providers.available() : List.of();
     }
@@ -102,8 +102,12 @@ public class OAuthProviderFlowService {
         String browserKey = OAuthProviderClient.random();
         if (flows.openBrowser(flow.getId(), OAuthProviderClient.hash(browserKey)) != 1)
             throw new BizException(401, "OAUTH_FLOW_EXPIRED");
-        return new BrowserStart(providers.authorizationUrl(providers.provider(flow.getProvider()),
-                flow.getState(), flow.getNonce(), flow.getVerifier()), browserKey);
+        var provider = providers.provider(flow.getProvider());
+        String location = providers.authorizationUrl(provider, flow.getState(), flow.getNonce(), flow.getVerifier());
+        if (provider == OAuthProviderClient.Provider.GOOGLE && flow.getLinkUserId() == null) {
+            location += "&prompt=select_account";
+        }
+        return new BrowserStart(location, browserKey);
     }
 
     public Callback callback(String providerName, String state, String browserKey, String code, String error) {

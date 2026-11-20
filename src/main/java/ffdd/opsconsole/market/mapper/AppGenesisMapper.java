@@ -1,5 +1,6 @@
 package ffdd.opsconsole.market.mapper;
 
+import ffdd.opsconsole.shared.canonical.mapper.GenesisEmissionSql;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -14,6 +15,24 @@ import org.apache.ibatis.annotations.Update;
 // Statement-only SQL boundary: Genesis spans series, holdings, orders, wallets and ledgers.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface AppGenesisMapper {
+    @Select("SELECT COUNT(*) FROM nx_genesis_series WHERE is_deleted=0 AND UPPER(status)='ACTIVE'")
+    long activeSeriesCount();
+
+    @Update("UPDATE nx_genesis_series SET daily_dividend_rate_pct=#{value},updated_at=NOW() WHERE id=#{id} AND is_deleted=0 AND UPPER(status)='ACTIVE' AND daily_dividend_rate_pct=#{before}")
+    int updateDividend(@Param("id") Long id,@Param("before") BigDecimal before,@Param("value") BigDecimal value);
+
+    @Select("SELECT COALESCE(SUM(" + GenesisEmissionSql.PROPOSED_AMOUNT + " - " + GenesisEmissionSql.CURRENT_AMOUNT + "),0)"
+            + GenesisEmissionSql.ELIGIBLE_HOLDINGS + " AND s.series_code=#{seriesCode}")
+    BigDecimal genesisLiabilityIncrease(@Param("seriesCode") String seriesCode, @Param("rate") BigDecimal rate);
+
+    /** A02 reprice: the daily dividend delta of every eligible holding of the series, per row then summed. */
+    @Select("SELECT COALESCE(SUM(" + GenesisEmissionSql.PROPOSED_PRICE_AMOUNT + " - "
+            + GenesisEmissionSql.CURRENT_AMOUNT + "),0)"
+            + GenesisEmissionSql.ELIGIBLE_HOLDINGS + " AND s.series_code=#{seriesCode}")
+    BigDecimal genesisPriceLiabilityIncrease(@Param("seriesCode") String seriesCode, @Param("price") BigDecimal price);
+
+    @Select("SELECT CONCAT_WS('|',id,batch_no,snapshot_at,daily_rate_pct,holder_count,total_amount_usdt,status,operator,reason,decision_ref) FROM nx_genesis_emission_batch WHERE batch_no=#{batchNo} AND is_deleted=0")
+    String emissionBatchSnapshot(@Param("batchNo") String batchNo);
     @Select("""
             SELECT id,series_code AS seriesCode,name,total_supply AS totalSupply,
                    price_usdt AS priceUsdt,royalty_bps AS royaltyBps,
@@ -282,21 +301,17 @@ public interface AppGenesisMapper {
     java.util.Map<String, Object> emissionTotals(@Param("userId") Long userId);
 
     @Select("""
-            SELECT h.id,h.holding_no AS holdingNo,h.user_id AS userId,h.order_no AS orderNo,h.series_code AS seriesCode,
-                   h.acquired_price_usdt AS acquiredPriceUsdt,UPPER(h.status) AS status,
-                   h.listing_price_usdt AS listingPriceUsdt,h.acquired_at AS acquiredAt,h.listed_at AS listedAt
-              FROM nx_genesis_holding h
-              JOIN nx_user u ON u.id=h.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0
-             WHERE h.is_deleted=0 AND UPPER(h.status) IN ('ACTIVE','LISTED')
-             ORDER BY h.id FOR UPDATE
-            """)
-    List<HoldingRow> lockEmissionHoldings();
+            SELECT h.id,h.holding_no AS holdingNo,h.user_id AS userId,h.series_code AS seriesCode,
+                   s.id AS seriesId,s.price_usdt AS unitPriceUsdt,s.daily_dividend_rate_pct AS dailyRatePct,
+            """ + GenesisEmissionSql.CURRENT_AMOUNT + " AS amountUsdt"
+            + GenesisEmissionSql.ELIGIBLE_HOLDINGS + " ORDER BY h.id FOR UPDATE")
+    List<EmissionHoldingRow> lockEmissionHoldings();
 
     @Insert("""
             INSERT IGNORE INTO nx_genesis_emission_batch
               (batch_no,snapshot_at,daily_rate_pct,holder_count,total_amount_usdt,status,operator,reason,decision_ref,created_at,updated_at,is_deleted)
             VALUES
-              (#{batchNo},#{snapshotAt},#{dailyRatePct},#{holderCount},#{totalAmountUsdt},'PROCESSING',#{operator},#{reason},#{decisionRef},NOW(),NOW(),0)
+              (#{batchNo},#{snapshotAt},NULL,#{holderCount},#{totalAmountUsdt},'PROCESSING',#{operator},#{reason},#{decisionRef},NOW(),NOW(),0)
             """)
     int insertEmissionBatch(EmissionBatchWrite row);
 
@@ -310,8 +325,8 @@ public interface AppGenesisMapper {
 
     @Insert("""
             INSERT IGNORE INTO nx_genesis_emission_item
-              (batch_no,holding_no,user_id,amount_usdt,status,created_at,updated_at,is_deleted)
-            SELECT #{batchNo},#{holdingNo},#{userId},#{amountUsdt},'PENDING',NOW(),NOW(),0
+              (batch_no,holding_no,user_id,amount_usdt,rate_applied_pct,status,created_at,updated_at,is_deleted)
+            SELECT #{batchNo},#{holdingNo},#{userId},#{amountUsdt},#{rateAppliedPct},'PENDING',NOW(),NOW(),0
              WHERE EXISTS (SELECT 1 FROM nx_user u
                             WHERE u.id=#{userId} AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0)
             """)
@@ -319,8 +334,10 @@ public interface AppGenesisMapper {
 
     @Select("""
             SELECT i.id,i.batch_no AS batchNo,i.holding_no AS holdingNo,i.user_id AS userId,
-                   i.amount_usdt AS amountUsdt,UPPER(i.status) AS status
+                   i.amount_usdt AS amountUsdt,UPPER(i.status) AS status,
+                   i.rate_applied_pct AS snapshotRatePct,COALESCE(i.rate_applied_pct,b.daily_rate_pct) AS rateAppliedPct
               FROM nx_genesis_emission_item i
+              JOIN nx_genesis_emission_batch b ON b.batch_no=i.batch_no AND b.is_deleted=0
               JOIN nx_user u ON u.id=i.user_id AND COALESCE(u.sandbox,0)=0 AND u.is_deleted=0
              WHERE i.batch_no=#{batchNo} AND i.is_deleted=0 AND UPPER(i.status) IN ('PENDING','FAILED')
              ORDER BY i.id FOR UPDATE
@@ -368,11 +385,14 @@ public interface AppGenesisMapper {
     record SecondaryStatsRow(BigDecimal floorUsdt,BigDecimal volume24hUsdt,Long owners,
                              BigDecimal lastSaleUsdt,BigDecimal floor7dUsdt) {}
     record EmissionRow(String batchNo,String holdingNo,BigDecimal amountUsdt,String status,LocalDateTime paidAt) {}
-    record EmissionBatchWrite(String batchNo,LocalDateTime snapshotAt,BigDecimal dailyRatePct,Integer holderCount,
+    record EmissionHoldingRow(Long id,String holdingNo,Long userId,String seriesCode,Long seriesId,
+                              BigDecimal unitPriceUsdt,BigDecimal dailyRatePct,BigDecimal amountUsdt) {}
+    record EmissionBatchWrite(String batchNo,LocalDateTime snapshotAt,Integer holderCount,
                               BigDecimal totalAmountUsdt,String operator,String reason,String decisionRef) {}
     record EmissionBatchRow(String batchNo,String status,Integer holderCount,BigDecimal totalAmountUsdt) {}
-    record EmissionItemWrite(String batchNo,String holdingNo,Long userId,BigDecimal amountUsdt) {}
-    record EmissionItemRow(Long id,String batchNo,String holdingNo,Long userId,BigDecimal amountUsdt,String status) {}
+    record EmissionItemWrite(String batchNo,String holdingNo,Long userId,BigDecimal amountUsdt,BigDecimal rateAppliedPct) {}
+    record EmissionItemRow(Long id,String batchNo,String holdingNo,Long userId,BigDecimal amountUsdt,String status,
+                           BigDecimal snapshotRatePct,BigDecimal rateAppliedPct) {}
     record LedgerWrite(Long userId,String bizNo,String bizType,String direction,BigDecimal amount,
                        BigDecimal balanceAfter,String remark) {}
 }

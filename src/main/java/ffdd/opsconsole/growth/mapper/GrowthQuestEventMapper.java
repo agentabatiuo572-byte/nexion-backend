@@ -193,6 +193,20 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     List<Map<String, Object>> listEvents();
 
     @Select("""
+            SELECT id AS rowId, quest_code AS eventCode, target_type AS targetType, target_value AS targetValue,
+                   CAST(status AS SIGNED) AS status, is_deleted AS deleted, starts_at AS startsAt, ends_at AS endsAt,
+                   reward_name AS rewardName, reward_type AS rewardType, reward_amount AS rewardAmount,
+                   (target_value > 0 AND LOWER(target_type) <> 'wheel'
+                    AND (ends_at IS NULL OR (ends_at > UTC_TIMESTAMP()
+                         AND (starts_at IS NULL OR starts_at < ends_at)))) AS rewardWindow
+              FROM nx_event_quest
+             WHERE quest_code = #{eventId}
+               AND target_type IN ('discount','referral','wheel','regional','boost','seasonal','onboarding')
+             FOR UPDATE
+            """)
+    Map<String, Object> lockEventForMutation(@Param("eventId") String eventId);
+
+    @Select("""
             SELECT policy_key AS `key`,
                    policy_name AS name,
                    COALESCE(description, '') AS sub,
@@ -408,15 +422,26 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                                 @Param("sessionId") String sessionId);
 
     @Select("""
-            SELECT COUNT(1) AS activeSessions,
-                   SUM(CASE WHEN UPPER(status) IN ('CLAIMED', 'ACTIVE') AND expires_at > NOW() THEN 1 ELSE 0 END) AS inTrial,
-                   SUM(CASE WHEN UPPER(status) = 'GRACE'
-                                  OR (UPPER(status) IN ('CLAIMED', 'ACTIVE') AND expires_at <= NOW())
-                            THEN 1 ELSE 0 END) AS inGrace,
-                   SUM(CASE WHEN UPPER(status) = 'EXTENDED' THEN 1 ELSE 0 END) AS inExtended
+            SELECT COUNT(CASE WHEN UPPER(status) IN ('CLAIMED', 'ACTIVE', 'GRACE', 'EXTENDED') THEN 1 END) AS activeSessions,
+                   COUNT(CASE WHEN UPPER(status) IN ('CLAIMED', 'ACTIVE') AND expires_at > NOW() THEN 1 END) AS inTrial,
+                   COUNT(CASE WHEN UPPER(status) = 'GRACE'
+                                   OR (UPPER(status) IN ('CLAIMED', 'ACTIVE') AND expires_at <= NOW())
+                              THEN 1 END) AS inGrace,
+                   COUNT(CASE WHEN UPPER(status) = 'EXTENDED' THEN 1 END) AS inExtended,
+                   COUNT(*) AS started,
+                   COUNT(CASE WHEN UPPER(status) = 'REDEEMED' THEN 1 END) AS redeemed,
+                   COUNT(CASE WHEN UPPER(status) = 'REDEEMED'
+                                   AND LOCATE(',settlementPolicy=FULL_TERM_ON_CONVERSION,', settlement_snapshot) > 0
+                              THEN 1 END) AS earlyRedeemed,
+                   COUNT(CASE WHEN UPPER(status) = 'REDEEMED'
+                                   AND (LOCATE(',settlementPolicy=FULL_TERM_ON_CONVERSION,', settlement_snapshot) > 0
+                                     OR LOCATE(',settlementPolicy=ACCRUED_ON_CONVERSION,', settlement_snapshot) > 0)
+                              THEN 1 END) AS classifiedRedeemed,
+                   (SELECT COUNT(DISTINCT user_id) FROM nx_risk_signal
+                     WHERE signal_type = 'risk.trial_cycle_detected' AND is_deleted = 0) AS k2Blocked
               FROM nx_trial_claim
              WHERE is_deleted = 0
-               AND UPPER(status) IN ('CLAIMED', 'ACTIVE', 'GRACE', 'EXTENDED')
+               AND UPPER(status) IN ('CLAIMED', 'ACTIVE', 'GRACE', 'EXTENDED', 'REDEEMED', 'FAILED', 'CANCELLED')
             """)
     Map<String, Object> trialStats();
 
@@ -438,6 +463,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    mission_name AS cond,
                    CONCAT(reward_points, ' UVT') AS reward,
                    CASE status WHEN 1 THEN 'active' WHEN 2 THEN 'archived' ELSE 'paused' END AS status,
+                   m.content_state AS contentState,
                    CASE WHEN EXISTS(
                          SELECT 1 FROM nx_growth_quest_event_binding b
                           WHERE b.quest_code=m.mission_code AND b.status=1 AND b.is_deleted=0
@@ -470,8 +496,18 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT binding_code bindingCode, producer, event_type eventType, quest_code questCode,
-                   user_id_field userIdField, status
-              FROM nx_growth_quest_event_binding WHERE is_deleted=0 ORDER BY id
+                   user_id_field userIdField, status,
+                   EXISTS (SELECT 1 FROM nx_mission m WHERE m.mission_code=b.quest_code
+                       AND m.status IN (0,1) AND m.is_deleted=0) AS targetInTaskCatalog,
+                   EXISTS (SELECT 1 FROM nx_mission m WHERE m.mission_code=b.quest_code
+                       AND m.status=1 AND m.is_deleted=0) AS targetActiveInTaskCatalog,
+                   CASE WHEN NOT EXISTS (SELECT 1 FROM nx_mission m WHERE m.mission_code=b.quest_code
+                       AND m.is_deleted=0) THEN 'TARGET_MISSING'
+                        WHEN NOT EXISTS (SELECT 1 FROM nx_mission m WHERE m.mission_code=b.quest_code
+                       AND m.status=1 AND m.is_deleted=0) THEN 'TARGET_INACTIVE'
+                        WHEN b.status<>1 THEN 'BINDING_DISABLED'
+                        ELSE 'TARGET_READY' END AS liveTargetState
+              FROM nx_growth_quest_event_binding b WHERE b.is_deleted=0 ORDER BY b.id
             """)
     List<Map<String, Object>> questEventBindings();
 
@@ -537,6 +573,12 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key='H3_CONFIG' FOR UPDATE")
     String lockH3ConfigMutex();
 
+    @Select("SELECT id, mission_type AS kind, status FROM nx_mission WHERE mission_code=#{code} AND is_deleted=0 LIMIT 1 FOR UPDATE")
+    Map<String, Object> lockH3MissionApprovalState(@Param("code") String code);
+
+    @Select("SELECT id, reward_type AS kind, status FROM nx_monthly_challenge WHERE challenge_code=#{code} AND is_deleted=0 LIMIT 1 FOR UPDATE")
+    Map<String, Object> lockH3MonthlyApprovalState(@Param("code") String code);
+
     @Select("""
             SELECT reward_points
               FROM nx_mission
@@ -563,7 +605,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT mission_code AS taskCode, mission_name AS taskName, 'MISSION' AS taskKind, status,
-                   mission_category AS category, action_route AS actionRoute
+                   content_state AS contentState, mission_category AS category, action_route AS actionRoute
               FROM nx_mission
              WHERE mission_code = #{taskCode} AND is_deleted = 0
              LIMIT 1 FOR UPDATE
@@ -594,7 +636,10 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                                      @Param("actionRoute") String actionRoute);
 
     @Update("""
-            UPDATE nx_mission SET status=#{targetStatus}, updated_at=NOW()
+            UPDATE nx_mission
+               SET status=#{targetStatus},
+                   content_state=CASE WHEN #{targetStatus}=1 THEN 'OPENED' ELSE content_state END,
+                   updated_at=NOW()
              WHERE mission_code=#{taskCode} AND status=#{expectedStatus} AND is_deleted=0
             """)
     int transitionMissionStatusCas(@Param("taskCode") String taskCode,
@@ -723,7 +768,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT mission_type AS label,
-                   CONCAT(COUNT(1), ' 个任务定义来自 nx_mission') AS note
+                   CONCAT(COUNT(1), ' 个任务定义') AS note
               FROM nx_mission
              WHERE is_deleted = 0
              GROUP BY mission_type
@@ -745,7 +790,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                        FROM nx_user_mission u
                       WHERE u.is_deleted = 0
                         AND u.mission_id = m.id
-                        AND u.created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+                        AND UPPER(u.mission_status) IN ('COMPLETED', 'CLAIMABLE', 'CLAIMED')
+                        AND u.completed_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+                        AND u.completed_at <= NOW()
                    ) AS sample24h,
                    (
                      SELECT CASE
@@ -767,16 +814,22 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     List<Map<String, Object>> taskContracts();
 
     @Select("""
-            SELECT base_reward AS baseReward,
-                   multiplier,
-                   countdown_days AS countdownDays,
-                   countdown_hours AS countdownHours,
-                   target_device AS targetDevice,
-                   target_daily AS targetDaily,
-                   status
-              FROM nx_growth_promo_banner
-             WHERE is_deleted = 0
-             ORDER BY sort_order ASC, id ASC
+            SELECT b.base_reward AS baseReward,
+                   b.multiplier,
+                   b.countdown_days AS countdownDays,
+                   b.countdown_hours AS countdownHours,
+                   b.target_device AS targetDevice,
+                   b.target_daily AS targetDaily,
+                   b.status,
+                   (SELECT p.product_type
+                      FROM nx_product p
+                     WHERE p.is_deleted = 0
+                       AND (p.product_no = b.target_device OR p.name = b.target_device)
+                     ORDER BY p.id
+                     LIMIT 1) AS productType
+              FROM nx_growth_promo_banner b
+             WHERE b.is_deleted = 0
+             ORDER BY b.sort_order ASC, b.id ASC
              LIMIT 1
             """)
     Map<String, Object> promoBanner();
@@ -802,8 +855,44 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
               FROM nx_growth_wheel_tier
              WHERE is_deleted = 0
                AND status = 1
+             FOR UPDATE
             """)
     BigDecimal activeWheelProbabilitySum();
+
+    @Select("""
+            SELECT EXISTS (
+              SELECT 1 FROM nx_event_quest q
+               WHERE q.is_deleted=0 AND q.status=1 AND LOWER(q.target_type)='wheel'
+                 AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
+                 AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
+                 AND NOT EXISTS (SELECT 1 FROM nx_growth_event_rule r WHERE r.event_code=q.quest_code AND r.enabled=0)
+               FOR SHARE
+            )
+            """)
+    boolean hasOpenWheelEvent();
+
+    /**
+     * Awards persisted by the spin transaction itself, grouped by reward asset. A committed spin row and
+     * its wallet credit / voucher grant share one transaction, so this is an award fact, not an intent.
+     */
+    @Select("""
+            SELECT UPPER(reward_kind) AS asset,
+                   COUNT(1) AS awardedCount,
+                   COALESCE(SUM(CASE WHEN real_outflow = 1 THEN 1 ELSE 0 END), 0) AS realOutflowCount,
+                   COALESCE(SUM(CASE WHEN real_outflow = 1 THEN reward_amount ELSE 0 END), 0) AS realOutflowAmount
+              FROM nx_growth_wheel_spin
+             WHERE spin_date = #{spinDate} AND is_deleted = 0
+             GROUP BY UPPER(reward_kind)
+             ORDER BY UPPER(reward_kind)
+            """)
+    List<Map<String, Object>> wheelAwardsOnDate(@Param("spinDate") java.time.LocalDate spinDate);
+
+    /** Real persisted spins for one wheel day; the same column the wheel itself enforces its daily limits on. */
+    @Select("""
+            SELECT COUNT(1) FROM nx_growth_wheel_spin
+             WHERE spin_date = #{spinDate} AND is_deleted = 0
+            """)
+    long countWheelSpinsOnDate(@Param("spinDate") java.time.LocalDate spinDate);
 
     @Select("SELECT lock_key FROM nx_admin_operation_mutex WHERE lock_key = 'H4_WHEEL' FOR UPDATE")
     String lockWheelMutation();
@@ -993,6 +1082,16 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> streakMilestones();
 
+    @Select("""
+            SELECT id, milestone_day AS day, reward_type AS rewardType, reward_amount AS amount,
+                   reward_name AS reward, badge_achievement_code AS badgeCode, status, is_deleted AS deleted
+              FROM nx_streak_milestone WHERE id=#{milestoneId} FOR UPDATE
+            """)
+    Map<String, Object> lockStreakMilestone(@Param("milestoneId") int milestoneId);
+
+    @Select("SELECT COUNT(*) FROM nx_achievement WHERE achievement_code=#{badgeCode} AND status=1 AND is_deleted=0")
+    int activeStreakBadge(@Param("badgeCode") String badgeCode);
+
     @Update("""
             UPDATE nx_streak_milestone
                SET reward_name = #{rewardName},
@@ -1012,14 +1111,17 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             UPDATE nx_streak_milestone
                SET reward_name=#{rewardName},reward_type=#{rewardType},
                    reward_amount=#{rewardAmount},updated_at=NOW()
-             WHERE id=#{milestoneId} AND reward_name=#{expectedReward} AND is_deleted=0
+             WHERE id=#{milestoneId} AND BINARY reward_name=BINARY #{before.reward}
+               AND BINARY reward_type=BINARY #{before.rewardType} AND reward_amount=#{before.amount}
+               AND badge_achievement_code <=> #{before.badgeCode}
+               AND milestone_day=#{before.day} AND status=#{before.status} AND is_deleted=#{before.deleted}
             """)
     int updateStreakMilestoneRewardCas(
             @Param("milestoneId") int milestoneId,
             @Param("rewardName") String rewardName,
             @Param("rewardType") String rewardType,
             @Param("rewardAmount") BigDecimal rewardAmount,
-            @Param("expectedReward") String expectedReward);
+            @Param("before") Map<String, Object> before);
 
     @Select("""
             SELECT CONCAT(current_streak, ' 天') AS day,
@@ -1039,6 +1141,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    power_up_name AS label,
                    COALESCE(effect_value, target_path) AS sub,
                    COALESCE(effect_value, '') AS note,
+                   effect_type AS effectType,
                    target_path AS downstream
               FROM nx_streak_power_up
              WHERE is_deleted = 0
@@ -1059,7 +1162,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_streak_power_up
                SET unlock_streak_days=#{day},updated_at=NOW()
-             WHERE id=#{powerUpId} AND unlock_streak_days=#{expectedDay} AND is_deleted=0
+             WHERE id=#{powerUpId} AND unlock_streak_days=#{expectedDay} AND status=1 AND is_deleted=0
             """)
     int updatePowerUpDayCas(
             @Param("powerUpId") int powerUpId,
@@ -1078,7 +1181,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Update("""
             UPDATE nx_streak_power_up
                SET effect_value=#{note},updated_at=NOW()
-             WHERE id=#{powerUpId} AND COALESCE(effect_value,'')=#{expectedNote} AND is_deleted=0
+             WHERE id=#{powerUpId} AND COALESCE(effect_value,'')=#{expectedNote} AND status=1 AND is_deleted=0
             """)
     int updatePowerUpNoteCas(
             @Param("powerUpId") int powerUpId,
@@ -1089,7 +1192,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             UPDATE nx_streak_power_up
                SET unlock_streak_days=#{day},effect_value=#{note},updated_at=NOW()
              WHERE id=#{powerUpId} AND unlock_streak_days=#{expectedDay}
-               AND COALESCE(effect_value,'')=#{expectedNote} AND is_deleted=0
+               AND COALESCE(effect_value,'')=#{expectedNote} AND status=1 AND is_deleted=0
             """)
     int updatePowerUpConfigCas(
             @Param("powerUpId") int powerUpId,
@@ -1101,6 +1204,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Select("""
             SELECT r.id - 1 AS id,
                    r.milestone_id AS `key`,
+                   r.label,
+                   r.sort_order AS sortOrder,
                    r.threshold_usdt AS threshold,
                    r.reward_nex AS nex,
                    (
@@ -1117,6 +1222,18 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> earnMilestones();
 
+    @Select("SELECT COUNT(*) FROM nx_earning_milestone_rule WHERE milestone_id = #{milestoneId}")
+    int countReservedEarnMilestoneKey(@Param("milestoneId") String milestoneId);
+
+    @Insert("""
+            INSERT INTO nx_earning_milestone_rule
+              (milestone_id, label, threshold_usdt, reward_nex, sort_order, status)
+            VALUES (#{milestoneId}, #{label}, #{thresholdUsd}, #{rewardNex}, #{sortOrder}, 1)
+            """)
+    int insertEarnMilestoneRule(@Param("milestoneId") String milestoneId, @Param("label") String label,
+            @Param("thresholdUsd") BigDecimal thresholdUsd, @Param("rewardNex") BigDecimal rewardNex,
+            @Param("sortOrder") int sortOrder);
+
     @Update("""
             UPDATE nx_earning_milestone_rule
                SET threshold_usdt = #{thresholdUsd},
@@ -1130,6 +1247,19 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             @Param("thresholdUsd") BigDecimal thresholdUsd,
             @Param("rewardNex") BigDecimal rewardNex);
 
+    @Update("""
+            UPDATE nx_earning_milestone_rule
+               SET threshold_usdt=#{thresholdUsd},reward_nex=#{rewardNex},updated_at=NOW()
+             WHERE milestone_id=#{milestoneId} AND threshold_usdt=#{expectedThreshold}
+               AND reward_nex=#{expectedReward} AND status=1 AND is_deleted=0
+            """)
+    int updateEarnMilestoneRuleCas(
+            @Param("milestoneId") String milestoneId,
+            @Param("thresholdUsd") BigDecimal thresholdUsd,
+            @Param("rewardNex") BigDecimal rewardNex,
+            @Param("expectedThreshold") BigDecimal expectedThreshold,
+            @Param("expectedReward") BigDecimal expectedReward);
+
     @Select("""
             SELECT COUNT(1)
               FROM nx_event_quest
@@ -1137,6 +1267,9 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                AND is_deleted = 0
             """)
     long countById(@Param("eventId") String eventId);
+
+    @Select("SELECT COUNT(1) FROM nx_event_quest WHERE quest_code = #{eventId}")
+    long countReservedEventId(@Param("eventId") String eventId);
 
     @Insert("""
             INSERT INTO nx_event_quest (
@@ -1172,10 +1305,10 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_mission (
                 mission_code, mission_name, mission_type, mission_category, action_route,
-                reward_points, status, created_at, updated_at, is_deleted
+                reward_points, status, content_state, created_at, updated_at, is_deleted
             ) VALUES (
                 #{missionCode}, #{missionName}, #{missionType}, #{category}, #{actionRoute},
-                #{rewardPoints}, #{status}, #{now}, #{now}, 0
+                #{rewardPoints}, #{status}, 'DRAFT', #{now}, #{now}, 0
             )
             """)
     int insertMission(
@@ -1286,6 +1419,14 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     int softDeleteWheelTier(@Param("tierName") String tierName);
 
+    /** Controlled retirement keeps the historical row readable but removes it from the active pool. */
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_growth_wheel_tier
+               SET status = 0, updated_at = NOW()
+             WHERE tier_name = #{tierName} AND is_deleted = 0 AND status = 1 AND LOWER(reward_kind) = 'points'
+            """)
+    int retirePointsWheelTier(@Param("tierName") String tierName);
+
     @Insert("""
             INSERT INTO nx_growth_wheel_guard (
                 guard_key, guard_label, guard_value, note, sort_order, status, created_at, updated_at, is_deleted
@@ -1379,4 +1520,94 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             @Param("eventId") String eventId,
             @Param("badgeAchievementCode") String badgeAchievementCode,
             @Param("now") LocalDateTime now);
+
+    @Select("""
+            WITH instance_windows AS (
+              SELECT i.user_id,i.instance_key,
+                     DATE_ADD(i.entered_at,INTERVAL i.full_reward_hours HOUR) fullEnd,
+                     LEAST(i.eligible_until,DATE_ADD(i.entered_at,INTERVAL i.eligibility_hours HOUR)) eligibleEnd
+                FROM nx_growth_day_one_instance i
+                JOIN nx_user u ON u.id=i.user_id AND COALESCE(u.sandbox,0)=0
+               WHERE i.is_deleted=0 AND i.snapshot_status='SNAPSHOT'
+                 AND i.snapshot_source='REGISTERED_V1' AND i.required_task_count>0
+                 AND i.full_reward_hours=24 AND i.eligibility_hours>=i.full_reward_hours
+                 AND i.entered_at IS NOT NULL AND i.eligible_until IS NOT NULL
+                 AND i.quest_bonus_multiplier>0 AND i.rhythm_month>0
+            ), posted_claims AS (
+              SELECT user_id,biz_no,MIN(created_at) postedAt
+                FROM nx_wallet_ledger
+               WHERE is_deleted=0 AND biz_type='QUEST_REWARD' AND asset='UVT'
+                 AND direction='IN' AND status='POSTED' AND biz_no LIKE 'QUEST:DAY_ONE:%'
+                 AND created_at<#{asOf}
+               GROUP BY user_id,biz_no
+            )
+            SELECT COUNT(DISTINCT w.user_id,w.instance_key) fullEligible,
+                   COUNT(DISTINCT CASE WHEN p.postedAt<w.fullEnd AND p.postedAt<w.eligibleEnd
+                                       THEN w.user_id END,w.instance_key) fullClaimed,
+                   COUNT(DISTINCT CASE WHEN w.eligibleEnd>w.fullEnd
+                                       THEN w.user_id END,w.instance_key) graceEligible,
+                   COUNT(DISTINCT CASE WHEN p.postedAt>=w.fullEnd AND p.postedAt<w.eligibleEnd
+                                       THEN w.user_id END,w.instance_key) graceClaimed
+              FROM instance_windows w LEFT JOIN posted_claims p
+                ON p.user_id=w.user_id
+               AND BINARY p.biz_no=BINARY CONCAT('QUEST:DAY_ONE:',w.user_id,':',w.instance_key)
+             WHERE w.eligibleEnd<=#{asOf}
+            """)
+    H3ClaimCounts h3ClaimCounts(@Param("asOf") LocalDateTime asOf);
+
+    @Select("""
+            SELECT COUNT(DISTINCT CASE WHEN um.completed_at IS NOT NULL THEN um.user_id END,
+                                  um.mission_id,um.instance_key) completedCount,
+                   COUNT(DISTINCT CASE WHEN um.completed_at IS NOT NULL AND wi.layer='WEEKLY_T1'
+                                       THEN um.user_id END,um.mission_id,um.instance_key) tier1Count,
+                   COUNT(DISTINCT CASE WHEN um.completed_at IS NOT NULL AND wi.layer='WEEKLY_T2'
+                                       THEN um.user_id END,um.mission_id,um.instance_key) tier2Count,
+                   COUNT(DISTINCT CASE WHEN um.completed_at IS NOT NULL
+                                       AND COALESCE(wi.layer,'') NOT IN ('WEEKLY_T1','WEEKLY_T2')
+                                       THEN um.user_id END,um.mission_id,um.instance_key) unknownTierCount,
+                   COUNT(DISTINCT CASE WHEN um.completed_at IS NULL THEN um.user_id END,
+                                  um.mission_id,um.instance_key) undatedCount
+              FROM nx_user_mission um
+              JOIN nx_user u ON u.id=um.user_id AND COALESCE(u.sandbox,0)=0
+              LEFT JOIN nx_growth_weekly_definition_item wi
+                ON wi.instance_key=um.instance_key AND wi.source_mission_id=um.mission_id
+             WHERE um.is_deleted=0 AND um.instance_key LIKE 'WEEK:%'
+               AND UPPER(um.mission_status) IN ('COMPLETED','CLAIMABLE','CLAIMED')
+               AND ((um.completed_at>=#{from} AND um.completed_at<#{asOf})
+                    OR (um.completed_at IS NULL AND um.instance_key=#{weekKey}))
+            """)
+    H3CompletionCounts h3CompletionCounts(@Param("from") LocalDateTime from,
+            @Param("asOf") LocalDateTime asOf, @Param("weekKey") String weekKey);
+
+    @Select("""
+            SELECT l.asset,SUM(l.amount) amount,COUNT(DISTINCT l.id) ledgerCount
+              FROM nx_wallet_ledger l
+              JOIN nx_user u ON u.id=l.user_id AND COALESCE(u.sandbox,0)=0
+             WHERE l.is_deleted=0 AND l.biz_type='QUEST_REWARD' AND l.biz_no LIKE 'QUEST:%'
+               AND l.direction='IN' AND l.status='POSTED'
+               AND l.created_at>=#{from} AND l.created_at<#{asOf}
+             GROUP BY l.asset ORDER BY l.asset
+            """)
+    List<H3PaidAsset> h3PaidAssets(@Param("from") LocalDateTime from, @Param("asOf") LocalDateTime asOf);
+
+    @Select("""
+            SELECT COUNT(DISTINCT participant.user_id) participantCount
+              FROM (
+                    SELECT um.user_id
+                      FROM nx_user_mission um
+                      JOIN nx_user u ON u.id = um.user_id AND u.is_deleted = 0 AND COALESCE(u.sandbox,0)=0
+                     WHERE um.is_deleted = 0 AND um.created_at >= #{from} AND um.created_at < #{asOf}
+                     UNION
+                    SELECT ue.user_id
+                      FROM nx_user_event_quest ue
+                      JOIN nx_user ue_user ON ue_user.id = ue.user_id AND ue_user.is_deleted = 0 AND COALESCE(ue_user.sandbox,0)=0
+                     WHERE ue.is_deleted = 0 AND ue.created_at >= #{from} AND ue.created_at < #{asOf}
+                   ) participant
+            """)
+    long h3MonthlyParticipants(@Param("from") LocalDateTime from, @Param("asOf") LocalDateTime asOf);
+
+    record H3ClaimCounts(long fullEligible, long fullClaimed, long graceEligible, long graceClaimed) { }
+    record H3CompletionCounts(long completedCount, long tier1Count, long tier2Count,
+                              long unknownTierCount, long undatedCount) { }
+    record H3PaidAsset(String asset, BigDecimal amount, long ledgerCount) { }
 }

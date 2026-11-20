@@ -1,5 +1,7 @@
 package ffdd.opsconsole.bi.domain;
 
+import static ffdd.opsconsole.bi.domain.BiSampleSuppression.belowThreshold;
+import static ffdd.opsconsole.bi.domain.BiSampleSuppression.protect;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
@@ -18,6 +20,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -27,6 +30,7 @@ import java.util.stream.Collectors;
  * cohorts.
  */
 public final class B3FunnelAnalytics {
+    private static final Pattern PHASE = Pattern.compile("SYSTEM|P[1-6]");
     private static final List<String> MAIN_EVENTS = List.of(
             "auth.register_completed",
             "store.viewed",
@@ -45,6 +49,10 @@ public final class B3FunnelAnalytics {
             "var(--brand)", "var(--success)", "var(--warning)", "var(--danger)");
 
     private B3FunnelAnalytics() {
+    }
+
+    public static boolean isSupportedPhase(String phase) {
+        return PHASE.matcher(phase).matches();
     }
 
     public static Map<String, Object> calculate(
@@ -77,8 +85,11 @@ public final class B3FunnelAnalytics {
 
         List<EventFact> registrations = named(allEvents, "auth.register_completed");
         List<String> cohorts = registrations.stream().map(B3FunnelAnalytics::cohortOf).distinct().sorted().toList();
-        List<String> phases = registrations.stream().map(EventFact::phase).distinct().sorted().toList();
+        List<String> phases = registrations.stream()
+                .map(event -> event.phase().toUpperCase(Locale.ROOT))
+                .filter(B3FunnelAnalytics::isSupportedPhase).distinct().sorted().toList();
         List<String> refs = registrations.stream().map(EventFact::ref).distinct().sorted().toList();
+        Map<String, Object> filterOptions = linked("cohorts", cohorts, "phases", phases, "refs", refs);
 
         List<EventFact> selectedRegistrations = registrations.stream()
                 .filter(event -> blank(cohort) || cohortOf(event).equals(cohort))
@@ -86,10 +97,12 @@ public final class B3FunnelAnalytics {
                 .filter(event -> blank(ref) || event.ref().equalsIgnoreCase(ref))
                 .toList();
         if (selectedRegistrations.isEmpty()) {
-            return unavailable(
+            Map<String, Object> result = unavailable(
                     "EMPTY_REGISTRATION_DENOMINATOR",
                     "当前筛选范围内没有注册用户，无法计算转化率；请调整筛选条件，或到「用户行为事件」检查注册事件。",
                     cohort, phase, ref, day0WindowSeconds);
+            result.put("filterOptions", filterOptions);
+            return result;
         }
         Map<String, List<EventFact>> byActor = allEvents.stream()
                 .collect(Collectors.groupingBy(EventFact::actor, LinkedHashMap::new, Collectors.toList()));
@@ -104,7 +117,7 @@ public final class B3FunnelAnalytics {
             int current = stageFacts.get(index).size();
             int previous = index == 0 ? current : stageFacts.get(index - 1).size();
             Double cvr = index == 0 ? null : percent(current, previous);
-            stages.add(linked(
+            stages.add(protect(linked(
                     "key", STAGE_KEYS.get(index),
                     "stage", STAGE_NAMES.get(index),
                     "event", STAGE_EVENTS.get(index),
@@ -115,7 +128,9 @@ public final class B3FunnelAnalytics {
                     "lifecycleLabel", LIFECYCLES.get(index),
                     "kpiTarget", index == 1 ? "5%–10%（浏览商城→首购）" : null,
                     "color", COLORS.get(index),
-                    "source", "nx_event_outbox:" + STAGE_EVENTS.get(index)));
+                    "source", "nx_event_outbox:" + STAGE_EVENTS.get(index)),
+                    belowThreshold(current) || belowThreshold(previous),
+                    "distinctUsers", "previousUsers", "cvrFromPrev", "momDelta"));
         }
 
         Map<String, Object> aux = auxMetrics(allEvents, registered, byActor, day0WindowSeconds);
@@ -124,7 +139,7 @@ public final class B3FunnelAnalytics {
                 "module", "B3",
                 "generatedAt", LocalDateTime.now().toString(),
                 "filters", filters(cohort, phase, ref),
-                "filterOptions", linked("cohorts", cohorts, "phases", phases, "refs", refs),
+                "filterOptions", filterOptions,
                 "stages", stages,
                 "auxMetrics", aux,
                 "trend", trendFromEvents(allEvents, normalizeStage(trendStage), phase, ref),
@@ -158,10 +173,11 @@ public final class B3FunnelAnalytics {
             int stageIndex = STAGE_KEYS.indexOf(normalizeStage(stage));
             int selected = stages.get(stageIndex).size();
             int previous = stageIndex == 0 ? selected : stages.get(stageIndex - 1).size();
-            points.add(linked(
+            points.add(protect(linked(
                     "cohort", entry.getKey(),
                     "distinctUsers", selected,
-                    "cvrFromPrev", stageIndex == 0 ? null : percent(selected, previous)));
+                    "cvrFromPrev", stageIndex == 0 ? null : percent(selected, previous)),
+                    belowThreshold(selected) || belowThreshold(previous), "distinctUsers", "cvrFromPrev"));
         }
         return points;
     }
@@ -186,11 +202,13 @@ public final class B3FunnelAnalytics {
                         return purchase != null && businessDay(purchase.at()).equals(day);
                     })
                     .count();
-            points.add(linked(
+            points.add(protect(linked(
                     "date", day.toString(),
                     "registeredUsers", cohortActors.size(),
                     "firstPurchaseUsers", firstPurchaseUsers,
-                    "conversionPct", percent(firstPurchaseUsers, cohortActors.size())));
+                    "conversionPct", percent(firstPurchaseUsers, cohortActors.size())),
+                    belowThreshold(cohortActors.size()) || belowThreshold(firstPurchaseUsers),
+                    "registeredUsers", "firstPurchaseUsers", "conversionPct"));
         }
         return points;
     }
@@ -207,10 +225,11 @@ public final class B3FunnelAnalytics {
         long total = counts.values().stream().mapToLong(Long::longValue).sum();
         return counts.entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed().thenComparing(Map.Entry::getKey))
-                .map(entry -> linked(
+                .map(entry -> protect(linked(
                         "channel", entry.getKey(),
                         "firstPurchaseUsers", entry.getValue(),
-                        "sharePct", percent(entry.getValue(), total)))
+                        "sharePct", percent(entry.getValue(), total)), belowThreshold(entry.getValue()),
+                        "firstPurchaseUsers", "sharePct"))
                 .toList();
     }
 
@@ -254,7 +273,7 @@ public final class B3FunnelAnalytics {
         }
         Map<String, EventFact> storeViewed = nextStage(byActor, registered, "store.viewed");
         Map<String, EventFact> purchasedFromStore = nextStage(byActor, storeViewed, "checkout.completed");
-        return linked(
+        Map<String, Object> result = linked(
                 "storeViewRate", percent(storeViewed.size(), registered.size()),
                 "storeViewNumerator", storeViewed.size(),
                 "storeViewDenominator", registered.size(),
@@ -271,6 +290,21 @@ public final class B3FunnelAnalytics {
                 "day7Denominator", matureActors.size(),
                 "day7Target", 60,
                 "day7Mature", !matureActors.isEmpty());
+        List<String> suppressed = new ArrayList<>();
+        protectAux(result, suppressed, "storeViewRate", "storeView", storeViewed.size(), registered.size());
+        protectAux(result, suppressed, "purchaseFromStoreRate", "purchaseFromStore", purchasedFromStore.size(), storeViewed.size());
+        protectAux(result, suppressed, "day0AccessRate", "day0", day0Actors.size(), registered.size());
+        protectAux(result, suppressed, "day7Retention", "day7", day7Actors.size(), matureActors.size());
+        if (!suppressed.isEmpty()) result.put("suppressedMetrics", suppressed);
+        return result;
+    }
+
+    private static void protectAux(Map<String, Object> result, List<String> suppressed, String rate,
+                                   String prefix, long numerator, long denominator) {
+        if (belowThreshold(numerator) || belowThreshold(denominator)) {
+            protect(result, true, rate, prefix + "Numerator", prefix + "Denominator");
+            suppressed.add(rate);
+        }
     }
 
     private static Map<String, Object> unavailable(
@@ -284,23 +318,7 @@ public final class B3FunnelAnalytics {
                 "filters", filters(cohort, phase, ref),
                 "filterOptions", linked("cohorts", List.of(), "phases", List.of(), "refs", List.of()),
                 "stages", List.of(),
-                "auxMetrics", linked(
-                        "storeViewRate", null,
-                        "storeViewNumerator", 0,
-                        "storeViewDenominator", 0,
-                        "purchaseFromStoreRate", null,
-                        "purchaseFromStoreNumerator", 0,
-                        "purchaseFromStoreDenominator", 0,
-                        "day0AccessRate", null,
-                        "day0Numerator", 0,
-                        "day0Denominator", 0,
-                        "day0Target", 95,
-                        "day0WindowSeconds", day0WindowSeconds,
-                        "day7Retention", null,
-                        "day7Numerator", 0,
-                        "day7Denominator", 0,
-                        "day7Target", 60,
-                        "day7Mature", false),
+                "auxMetrics", auxMetrics(List.of(), Map.of(), Map.of(), day0WindowSeconds),
                 "trend", List.of(),
                 "dailyFirstPurchaseTargetPct", 18,
                 "dailyFirstPurchase", dailyFirstPurchase(Map.of(), Map.of()),

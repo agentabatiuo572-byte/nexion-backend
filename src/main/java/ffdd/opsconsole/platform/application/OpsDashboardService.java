@@ -193,7 +193,8 @@ public class OpsDashboardService {
         Map<String, Object> l1 = map(biOverview.get("l1"));
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Map<String, Object> row : list(l1.get("kpis"))) {
-            BigDecimal value = decimal(row.get("value"));
+            boolean suppressed = Boolean.TRUE.equals(row.get("suppressed"));
+            BigDecimal value = suppressed || row.get("value") == null ? null : decimal(row.get("value"));
             BigDecimal target = decimal(row.get("target"));
             String dir = stringValue(row.get("dir"));
             rows.add(linked(
@@ -202,8 +203,10 @@ public class OpsDashboardService {
                     "value", value,
                     "target", target,
                     "unit", stringValue(row.get("unit")),
-                    "pass", passKpi(value, target, dir, row.get("band")),
+                    "pass", value == null ? null : passKpi(value, target, dir, row.get("band")),
+                    "suppressed", suppressed,
                     "series", row.getOrDefault("spark", List.of()),
+                    "seriesSuppressed", row.getOrDefault("sparkSuppressed", List.of()),
                     "hint", stringValue(row.get("cohort"))));
         }
         return rows;
@@ -225,16 +228,19 @@ public class OpsDashboardService {
         List<Map<String, Object>> rows = new ArrayList<>();
         for (int i = 0; i < raw.size(); i++) {
             Map<String, Object> row = raw.get(i);
-            long count = longValue(row.get("users"));
-            long previousCount = i == 0 ? count : longValue(raw.get(i - 1).get("users"));
-            rows.add(linked(
+            boolean suppressed = Boolean.TRUE.equals(row.get("suppressed"));
+            Object count = row.get("users");
+            Object previousCount = i == 0 ? count : raw.get(i - 1).get("users");
+            Map<String, Object> projected = linked(
                     "key", "stage-" + (i + 1),
                     "label", stringValue(row.get("stage")),
                     "event", stringValue(row.get("ev")),
                     "count", count,
-                    "prevCount", previousCount,
+                    "prevCount", suppressed ? null : previousCount,
                     "conversion", row.getOrDefault("cvr", null),
-                    "target", row.getOrDefault("target", null)));
+                    "target", row.getOrDefault("target", null));
+            if (suppressed) projected.put("suppressed", true);
+            rows.add(projected);
         }
         return rows;
     }

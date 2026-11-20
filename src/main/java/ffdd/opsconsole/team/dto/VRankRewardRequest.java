@@ -9,5 +9,10 @@ public record VRankRewardRequest(
         String skuId,
         String custom,
         String reason,
-        String operator) {
+        String operator,
+        String expectedRevision) {
+    public VRankRewardRequest(String type, BigDecimal amount, String voucherId, String skuId,
+                              String custom, String reason, String operator) {
+        this(type, amount, voucherId, skuId, custom, reason, operator, null);
+    }
 }

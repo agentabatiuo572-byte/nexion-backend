@@ -37,6 +37,43 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.details());
     }
 
+    @ExceptionHandler(ffdd.opsconsole.device.application.MonthlyTargetPoolException.class)
+    public ApiResult<Map<String,Object>> handleMonthlyTargetPool(ffdd.opsconsole.device.application.MonthlyTargetPoolException ex, HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.errorData());
+    }
+
+    @ExceptionHandler(ffdd.opsconsole.device.application.MonthlyTargetRewardOutOfRangeException.class)
+    public ApiResult<Map<String,Object>> handleMonthlyTargetReward(ffdd.opsconsole.device.application.MonthlyTargetRewardOutOfRangeException ex, HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.errorData());
+    }
+
+    @ExceptionHandler(ffdd.opsconsole.device.application.TaskPoolException.class)
+    public ApiResult<Map<String,Object>> handleTaskPool(ffdd.opsconsole.device.application.TaskPoolException ex,HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(),ex.getMessage(),ex.errorData());
+    }
+
+    @ExceptionHandler(ObjectLockedByA2Exception.class)
+    public ApiResult<Map<String,Object>> handleObjectLockedByA2(ObjectLockedByA2Exception ex, HttpServletResponse response) {
+        response.setStatus(normalizeHttpStatus(ex.getCode()));
+        return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
+    }
+
+    @ExceptionHandler(H4EventRuleIncompleteException.class)
+    public ApiResult<Map<String, Object>> handleH4EventRuleIncomplete(H4EventRuleIncompleteException ex, HttpServletResponse response) {
+        response.setStatus(normalizeHttpStatus(ex.getCode()));
+        return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
+    }
+
+    @ExceptionHandler(AppTextChineseNotAllowedException.class)
+    public ApiResult<Map<String, String>> handleAppTextChineseNotAllowed(
+            AppTextChineseNotAllowedException ex, HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
+    }
+
     @ExceptionHandler(BizException.class)
     public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
         response.setStatus(normalizeHttpStatus(ex.getCode()));
@@ -81,7 +118,11 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ApiResult<Void> handleUnreadableMessage(HttpMessageNotReadableException ex) {
+    public ApiResult<Void> handleUnreadableMessage(HttpMessageNotReadableException ex, HttpServletResponse response) {
+        if(ex.getMostSpecificCause() instanceof BizException biz && java.util.Set.of("MONTHLY_TARGET_DEVICE_INELIGIBLE","TASK_POOL_FORMAT_RETIRED").contains(biz.getMessage())) {
+            response.setStatus(biz.getCode());
+            return ApiResult.fail(biz.getCode(),biz.getMessage());
+        }
         return ApiResult.fail(400, "REQUEST_BODY_INVALID");
     }
 

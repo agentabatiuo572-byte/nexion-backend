@@ -44,6 +44,15 @@ public class MybatisPlatformConfigRepository implements PlatformConfigRepository
     }
 
     @Override
+    public Optional<PlatformConfigItem> findStoredByKey(String configKey) {
+        PlatformConfigItemEntity entity = mapper.selectOne(new LambdaQueryWrapper<PlatformConfigItemEntity>()
+                .eq(PlatformConfigItemEntity::getConfigKey, configKey)
+                .eq(PlatformConfigItemEntity::getIsDeleted, 0)
+                .last("LIMIT 1"));
+        return Optional.ofNullable(entity).map(this::toDomain);
+    }
+
+    @Override
     public List<PlatformConfigItem> findActiveByKeys(Collection<String> configKeys) {
         return mapper.selectList(new LambdaQueryWrapper<PlatformConfigItemEntity>()
                         .in(PlatformConfigItemEntity::getConfigKey, configKeys)
@@ -98,11 +107,18 @@ public class MybatisPlatformConfigRepository implements PlatformConfigRepository
         return inserted;
     }
 
+    @Override
+    public boolean reactivateIfInactive(PlatformConfigItem item) {
+        boolean reactivated = mapper.reactivateConfigIfInactive(item) == 1;
+        if (reactivated) publishPublicChange(item.configKey());
+        return reactivated;
+    }
+
     private void publishPublicChange(String key) {
         if (key.startsWith("platform.experience.") || key.startsWith("E.compute.")
                 || key.startsWith("K.rewards.") || key.startsWith("growth.phase.month.")
                 || key.startsWith("growth.public_stats.") || key.startsWith("h9.sb.")
-                || key.equals("G.staking.app_visible") || key.equals("dailyUsdtPerBaseline")
+                || key.equals("dailyUsdtPerBaseline")
                 || key.equals("platform.phase.config")) {
             PlatformConfigChangedEvent.publish(events);
         }

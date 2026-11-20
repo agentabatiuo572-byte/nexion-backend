@@ -322,7 +322,7 @@ class DataBootstrapMySqlIntegrationTest {
         var mapper=sessions.getMapper(ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class);
         var expiry=new ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor(mapper);
         var executor=new ffdd.opsconsole.shared.idempotency.AdminIdempotencyTransactionExecutor(mapper,
-                new ObjectMapper(),expiry);
+                new ObjectMapper(),expiry,new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(mapper));
         var proxy=new org.springframework.aop.framework.ProxyFactory(executor);
         proxy.setProxyTargetClass(true);
         proxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(transaction.getTransactionManager(),
@@ -337,7 +337,7 @@ class DataBootstrapMySqlIntegrationTest {
                 mock(ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository.class),repository,
                 mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class),mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
                 mock(VRankPromotionEngine.class),mock(VRankRewardDispatcher.class),mock(ffdd.opsconsole.shared.outbox.EventOutboxService.class),
-                mock(LeadershipPoolService.class),mock(F5CommissionService.class),idempotency,null,null,mock(VRankSkuFulfillmentService.class),null,null);
+                mock(LeadershipPoolService.class),mock(F5CommissionService.class),idempotency,null,null,mock(VRankSkuFulfillmentService.class),null,null,mock(ffdd.opsconsole.team.application.AmbassadorMaterialService.class));
         var before=f1Row(service,"V2");
         assertThat(before).containsEntry("selfBuy",9_007_199_254_740_991L).containsEntry("teamGv",4_294_967_297L)
                 .containsEntry("legRank","NONE").containsEntry("legCount",0);

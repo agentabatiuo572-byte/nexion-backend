@@ -5,10 +5,12 @@ package ffdd.opsconsole.team.dto;
  *
  * <p>仅承载操作原因,F1-MD4 补发/撤销两端的 resource locator(payoutId)走 path 参数。
  *
- * @param reason   操作原因(必填,长度 >= 6,由 OpsTeamService.requireCommand 校验)
- * @param operator 操作者账号(可选,缺省 resolveOperator 从 SecurityContext 解析 admin id)
+ * @param reason              操作原因(必填,长度 >= 6,由 OpsTeamService.requireCommand 校验)
+ * @param operator            操作者账号(可选,缺省 resolveOperator 从 SecurityContext 解析 admin id)
+ * @param usedVoucherClawback 券冲正时已用券是否扣回;null 表示未指定(旧单按扣回处理),仅 action=reverse 且 rewardType=voucher 有意义
  */
 public record VRankRewardPayoutActionRequest(
         String reason,
-        String operator) {
+        String operator,
+        Boolean usedVoucherClawback) {
 }

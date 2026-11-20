@@ -53,6 +53,8 @@ public interface EarningsReleaseMapper {
     RecoveryWallet lockRecoveryWallet(@Param("userId") Long userId, @Param("expectedSandbox") int expectedSandbox);
     @Select("SELECT entry_no entryNo,user_id userId,source_type sourceType,source_ref sourceRef,asset,amount,bucket,status,source_environment sourceEnvironment,is_deleted isDeleted,recovered_amount recoveredAmount,source_debit_baseline debitBaseline,source_wallet_id sourceWalletId FROM nx_earnings_release_entry WHERE entry_no=#{entryNo} FOR UPDATE")
     RecoveryEntry lockRecoveryEntry(@Param("entryNo") String entryNo);
+    @Select("SELECT entry_no entryNo,user_id userId,source_type sourceType,source_ref sourceRef,asset,amount,bucket,status,source_environment sourceEnvironment,is_deleted isDeleted,recovered_amount recoveredAmount,source_debit_baseline debitBaseline,source_wallet_id sourceWalletId FROM nx_earnings_release_entry WHERE entry_no=#{entryNo}")
+    RecoveryEntry recoveryEntry(@Param("entryNo") String entryNo);
     @Update("""
             UPDATE nx_user_wallet SET
                 usdt_available=usdt_available-CASE WHEN #{asset}='USDT' THEN #{amount} ELSE 0 END,
@@ -136,9 +138,20 @@ public interface EarningsReleaseMapper {
     int release(@Param("entryNo") String entryNo,@Param("source") String source);
     @Select("SELECT COALESCE(SUM(online_seconds),0) FROM nx_earnings_release_attestation WHERE user_id=#{userId} AND source_environment=#{sourceEnvironment}")
     long attestedSeconds(@Param("userId") Long userId,@Param("sourceEnvironment") String sourceEnvironment);
-    @Select("SELECT c.cluster_id clusterId,c.account_count accountCount,c.status FROM nx_admin_risk_multi_account_cluster c JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0 WHERE c.is_deleted=0 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json) AND JSON_CONTAINS(CAST(c.nodes_json AS JSON),JSON_OBJECT('userNo',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')))) ORDER BY c.account_count DESC,c.id ASC LIMIT 1")
+    String RISK_CLUSTER = """
+            SELECT c.cluster_id clusterId,c.account_count accountCount,c.status
+              FROM nx_admin_risk_multi_account_cluster c
+              JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0
+             WHERE c.is_deleted=0 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json)
+               AND JSON_CONTAINS(CAST(c.nodes_json AS JSON),JSON_OBJECT(
+                   'userNo',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'))))
+             ORDER BY (c.status IN ('detected','flagged','frozen')) DESC,c.account_count DESC,c.id ASC
+             LIMIT 1
+            """;
+
+    @Select(RISK_CLUSTER)
     RiskCluster riskCluster(@Param("userId") Long userId);
-    @Select("SELECT c.cluster_id clusterId,c.account_count accountCount,c.status FROM nx_admin_risk_multi_account_cluster c JOIN nx_user u ON u.id=#{userId} AND u.is_deleted=0 WHERE c.is_deleted=0 AND c.nodes_json IS NOT NULL AND JSON_VALID(c.nodes_json) AND JSON_CONTAINS(CAST(c.nodes_json AS JSON),JSON_OBJECT('userNo',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')))) ORDER BY c.account_count DESC,c.id ASC LIMIT 1 FOR UPDATE")
+    @Select(RISK_CLUSTER + "FOR UPDATE")
     RiskCluster lockRiskCluster(@Param("userId") Long userId);
     @Select("SELECT amount-recovered_amount AS amount FROM nx_earnings_release_entry WHERE user_id=#{userId} AND asset='USDT' AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0 ORDER BY id FOR UPDATE")
     List<BigDecimal> lockProtectedUsdtAmounts(@Param("userId") Long userId);
@@ -150,13 +163,19 @@ public interface EarningsReleaseMapper {
     ProtectedEntry lockProtectedEntry(@Param("entryNo") String entryNo);
     @Select("""
             <script>
-            SELECT entry_no entryNo,user_id userId,cluster_id clusterId,source_type sourceType,
-                   source_ref sourceRef,asset,amount-recovered_amount AS amount,bucket,created_at createdAt
-              FROM nx_earnings_release_entry
-             WHERE bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND amount>recovered_amount AND is_deleted=0
-             <if test="userId != null">AND user_id=#{userId}</if>
-             <if test="clusterId != null and clusterId != ''">AND cluster_id=#{clusterId}</if>
-             ORDER BY id ASC LIMIT #{limit}
+            SELECT e.entry_no entryNo,e.user_id userId,
+                   CONCAT('U',LPAD(u.id,GREATEST(8,LENGTH(CAST(u.id AS CHAR))),'0')) AS userNo,
+                   e.cluster_id clusterId,e.source_type sourceType,e.source_ref sourceRef,
+                   e.asset,e.amount-e.recovered_amount AS amount,e.bucket,e.created_at createdAt,
+                   e.amount grossAmount,e.recovered_amount recoveredAmount,
+                   e.source_environment sourceEnvironment,e.status
+              FROM nx_earnings_release_entry e
+              LEFT JOIN nx_user u ON u.id=e.user_id AND u.is_deleted=0
+             WHERE e.bucket IN ('pending_review','bonus_locked') AND e.status='ACTIVE'
+               AND e.amount>e.recovered_amount AND e.is_deleted=0
+             <if test="userId != null">AND e.user_id=#{userId}</if>
+             <if test="clusterId != null and clusterId != ''">AND e.cluster_id=#{clusterId}</if>
+             ORDER BY e.id ASC LIMIT #{limit}
             </script>
             """)
     List<ProtectedEntryView> protectedEntryViews(@Param("userId") Long userId,
@@ -175,8 +194,9 @@ public interface EarningsReleaseMapper {
                          String status,String idempotencyKey,String sourceEnvironment,Integer isDeleted){}
     record BucketAmount(String asset,String bucket,BigDecimal amount){}
     record ProtectedEntry(String entryNo,Long userId,String clusterId,String asset,BigDecimal amount,String bucket){}
-    record ProtectedEntryView(String entryNo,Long userId,String clusterId,String sourceType,String sourceRef,
-                              String asset,BigDecimal amount,String bucket,LocalDateTime createdAt){}
+    record ProtectedEntryView(String entryNo,Long userId,String userNo,String clusterId,String sourceType,String sourceRef,
+                              String asset,BigDecimal amount,String bucket,LocalDateTime createdAt,
+                              BigDecimal grossAmount,BigDecimal recoveredAmount,String sourceEnvironment,String status){}
     record RiskCluster(String clusterId,Integer accountCount,String status){}
     record RecoveryWallet(Long walletId,BigDecimal usdtAvailable,BigDecimal nexAvailable,BigDecimal usdtDebited,BigDecimal nexDebited){}
     record RecoveryEntry(String entryNo,Long userId,String sourceType,String sourceRef,String asset,BigDecimal amount,

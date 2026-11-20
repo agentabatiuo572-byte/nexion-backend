@@ -15,6 +15,7 @@ import ffdd.opsconsole.user.domain.UserTeamMemberView;
 import ffdd.opsconsole.user.dto.UserQueryRequest;
 import ffdd.opsconsole.user.infrastructure.UserEntity;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -24,6 +25,15 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface UserOpsMapper extends BaseMapper<UserEntity> {
+    @Select("SELECT COUNT(*) > 0 FROM nx_user WHERE nickname = #{nickname}")
+    boolean nicknameTaken(@Param("nickname") String nickname);
+
+    @Select("SELECT COUNT(*) > 0 FROM nx_user WHERE id = #{id}")
+    boolean userIdTaken(@Param("id") long id);
+
+    @Select("SELECT NULLIF(COUNT(*), 0) FROM nx_user_daily_active WHERE biz_date=#{date}")
+    Long dailyActiveUsers(@Param("date") LocalDate date);
+
     @Select("SELECT COUNT(*) FROM nx_user_oauth_identity WHERE user_id=#{userId} AND source_environment='PRODUCTION' AND is_deleted=0")
     int countProviderIdentities(@Param("userId") Long userId);
     @Select("SELECT * FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
@@ -230,6 +240,9 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Select("""
             SELECT COUNT(*)
               FROM nx_admin_risk_score_user rs
+              JOIN nx_user u
+                ON rs.user_no = CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))
+               AND u.is_deleted = 0
               JOIN (
                     SELECT model_version,band_high_min
                       FROM nx_admin_risk_score_model
@@ -340,6 +353,15 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     UserAccountControlFactView findAccountControlFact(@Param("userId") Long userId);
 
+    @Select("""
+            SELECT CONCAT('U', LPAD(id, GREATEST(8, LENGTH(CAST(id AS CHAR))), '0'))
+              FROM nx_user
+             WHERE id = #{userId}
+               AND status = 'ACTIVE'
+               AND is_deleted = 0
+            """)
+    String activeUserNo(@Param("userId") Long userId);
+
     String PROFILE_SELECT = """
             SELECT u.id,
                    CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) AS userNo,
@@ -432,8 +454,14 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
              <if test='query.walletUsdtMax != null'>AND COALESCE(w.usdt_available, 0) &lt;= #{query.walletUsdtMax}</if>
              <if test='query.walletNexMin != null'>AND COALESCE(w.nex_available, 0) &gt;= #{query.walletNexMin}</if>
              <if test='query.walletNexMax != null'>AND COALESCE(w.nex_available, 0) &lt;= #{query.walletNexMax}</if>
-             <if test='query.joinedFrom != null and query.joinedFrom != ""'>AND u.created_at &gt;= CONCAT(#{query.joinedFrom}, ' 00:00:00')</if>
-             <if test='query.joinedTo != null and query.joinedTo != ""'>AND u.created_at &lt; DATE_ADD(CONCAT(#{query.joinedTo}, ' 00:00:00'), INTERVAL 1 DAY)</if>
+             <if test='query.joinedFrom != null and query.joinedFrom.trim() != ""'>
+               <bind name='joinedFromBound' value='@ffdd.opsconsole.shared.config.BusinessCalendar@legacy().storageStart(@java.time.LocalDate@parse(query.joinedFrom.trim()))'/>
+               AND u.created_at &gt;= #{joinedFromBound}
+             </if>
+             <if test='query.joinedTo != null and query.joinedTo.trim() != ""'>
+               <bind name='joinedToBound' value='@ffdd.opsconsole.shared.config.BusinessCalendar@legacy().storageStart(@java.time.LocalDate@parse(query.joinedTo.trim()).plusDays(1))'/>
+               AND u.created_at &lt; #{joinedToBound}
+             </if>
             """;
     String PROFILE_FROM = " FROM nx_user u " + PROFILE_JOINS;
     String SCOPED_PROFILE_FROM = " FROM nx_user u JOIN nx_user scope_customer ON scope_customer.id=u.id " + PROFILE_JOINS;
@@ -457,7 +485,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     long countUsersByQuery(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
                           @Param("phoneKeyword") String phoneKeyword);
 
-    @Select("<script>" + PROFILE_SELECT + PROFILE_FROM + PROFILE_FILTER + " ORDER BY u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
+    @Select("<script>" + PROFILE_SELECT + PROFILE_FROM + PROFILE_FILTER + " ORDER BY u.created_at DESC, u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
     List<UserAccountView> pageUsers(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
                                     @Param("offset") int offset, @Param("pageSize") int pageSize,
                                     @Param("phoneKeyword") String phoneKeyword);
@@ -469,7 +497,15 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
 
     @Select("<script>" + PROFILE_SELECT + SCOPED_PROFILE_FROM + PROFILE_FILTER
             + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE
-            + " ORDER BY u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>")
+            + """
+             ORDER BY
+             <if test='query.keyword != null and query.keyword.matches("[Uu]?[0-9]+")'>
+               (CAST(u.id AS CHAR) = #{query.keyword}
+                OR CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0'))
+                   IN (UPPER(#{query.keyword}), CONCAT('U', #{query.keyword}))) DESC,
+             </if>
+             u.created_at DESC, u.id DESC LIMIT #{pageSize} OFFSET #{offset}</script>
+            """)
     List<UserAccountView> pageScopedUsers(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
                                          @Param("offset") long offset, @Param("pageSize") int pageSize,
                                          @Param("phoneKeyword") String phoneKeyword, @Param("scope") ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
@@ -490,7 +526,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    hashrate,
                    daily_usdt AS dailyUsdt,
                    daily_nex AS dailyNex,
-                   last_seen_at AS lastSeenAt
+                   last_seen_at AS lastSeenAt,id
               FROM nx_user_device
              WHERE user_id = #{userId}
                AND is_deleted = 0
@@ -544,7 +580,12 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    ) THEN 1 ELSE 0 END AS locked,
                    COALESCE(s.password_reset_required, 0) AS passwordResetRequired,
                    0 AS lockThreshold,
-                   0 AS lockDurationMinutes
+                   0 AS lockDurationMinutes,
+                   (SELECT MAX(g.locked_until) FROM nx_user_login_guard g
+                     WHERE g.user_id=u.id AND g.locked_until>NOW()) AS lockedUntil,
+                   (SELECT g.lock_kind FROM nx_user_login_guard g
+                     WHERE g.user_id=u.id AND g.locked_until>NOW()
+                     ORDER BY g.locked_until DESC LIMIT 1) AS lockKind
               FROM nx_user u
               LEFT JOIN nx_user_security s ON s.user_id = u.id AND s.is_deleted = 0
              WHERE u.id = #{userId} AND u.is_deleted = 0
@@ -559,13 +600,19 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             SELECT COUNT(DISTINCT s.user_id)
               FROM nx_user_security s
               JOIN (
-                  SELECT user_id, MAX(failed_count) AS failed_count, MAX(locked_until) AS locked_until
-                    FROM nx_user_login_guard
-                   WHERE user_id IS NOT NULL
-                   GROUP BY user_id
-              ) g ON g.user_id=s.user_id
-             WHERE s.is_deleted=0 AND g.locked_until>NOW()
-               AND GREATEST(COALESCE(s.login_fail_count,0),COALESCE(g.failed_count,0)) < #{longThreshold}
+                  SELECT g.user_id, g.lock_kind
+                    FROM nx_user_login_guard g
+                    JOIN (
+                        SELECT user_id, MAX(locked_until) AS locked_until
+                          FROM nx_user_login_guard
+                         WHERE user_id IS NOT NULL
+                         GROUP BY user_id
+                    ) latest ON latest.user_id = g.user_id AND latest.locked_until = g.locked_until
+                   WHERE g.user_id IS NOT NULL
+                     AND g.locked_until > NOW()
+              ) g ON g.user_id = s.user_id
+             WHERE s.is_deleted = 0
+               AND COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') = 'SHORT'
             """)
     long countActiveShortLocks(@Param("longThreshold") int longThreshold);
 
@@ -573,13 +620,19 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             SELECT COUNT(DISTINCT s.user_id)
               FROM nx_user_security s
               JOIN (
-                  SELECT user_id, MAX(failed_count) AS failed_count, MAX(locked_until) AS locked_until
-                    FROM nx_user_login_guard
-                   WHERE user_id IS NOT NULL
-                   GROUP BY user_id
-              ) g ON g.user_id=s.user_id
-             WHERE s.is_deleted=0 AND g.locked_until>NOW()
-               AND GREATEST(COALESCE(s.login_fail_count,0),COALESCE(g.failed_count,0)) >= #{longThreshold}
+                  SELECT g.user_id, g.lock_kind
+                    FROM nx_user_login_guard g
+                    JOIN (
+                        SELECT user_id, MAX(locked_until) AS locked_until
+                          FROM nx_user_login_guard
+                         WHERE user_id IS NOT NULL
+                         GROUP BY user_id
+                    ) latest ON latest.user_id = g.user_id AND latest.locked_until = g.locked_until
+                   WHERE g.user_id IS NOT NULL
+                     AND g.locked_until > NOW()
+              ) g ON g.user_id = s.user_id
+             WHERE s.is_deleted = 0
+               AND COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') <> 'SHORT'
             """)
     long countActiveLongLocks(@Param("longThreshold") int longThreshold);
 
@@ -623,26 +676,22 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                    GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) AS loginFailCount,
                    1 AS locked,
                    COALESCE(s.password_reset_required, 0) AS passwordResetRequired,
-                   CASE
-                     WHEN GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) >= #{longLockThreshold} THEN 'LONG'
-                     ELSE 'SHORT'
-                   END AS lockKind,
-                   CASE
-                     WHEN GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) >= #{longLockThreshold} THEN CONCAT(#{longLockHours}, ' 小时长锁')
-                     ELSE CONCAT(#{shortLockMinutes}, ' 分钟短锁')
-                   END AS lockLabel,
-                   CASE
-                     WHEN GREATEST(COALESCE(s.login_fail_count, 0), COALESCE(g.failed_count, 0)) >= #{longLockThreshold} THEN '服务端登录保护长锁已触发'
-                     ELSE '服务端登录保护短锁已触发'
-                   END AS lockReason,
+                   CASE WHEN COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') = 'SHORT' THEN 'SHORT' ELSE 'LONG' END AS lockKind,
+                   CASE WHEN COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') = 'SHORT' THEN '已锁定（短锁）' ELSE '已锁定（长锁）' END AS lockLabel,
+                   CASE WHEN COALESCE(NULLIF(g.lock_kind, ''), 'UNKNOWN') = 'UNKNOWN' THEN '历史锁未记录类型，按长锁处理' ELSE '按触发时的锁类型处理' END AS lockReason,
                    CONCAT('锁定至 ', DATE_FORMAT(g.locked_until, '%Y-%m-%d %H:%i:%s')) AS lockLeft
               FROM nx_user_security s
               JOIN nx_user u ON u.id = s.user_id AND u.is_deleted = 0
               JOIN (
-                  SELECT user_id, MAX(locked_until) AS locked_until, MAX(failed_count) AS failed_count
-                    FROM nx_user_login_guard
-                   WHERE user_id IS NOT NULL
-                   GROUP BY user_id
+                  SELECT g.user_id, g.locked_until, g.failed_count, g.lock_kind
+                    FROM nx_user_login_guard g
+                    JOIN (
+                        SELECT user_id, MAX(locked_until) AS locked_until
+                          FROM nx_user_login_guard
+                         WHERE user_id IS NOT NULL
+                         GROUP BY user_id
+                    ) latest ON latest.user_id = g.user_id AND latest.locked_until = g.locked_until
+                   WHERE g.user_id IS NOT NULL
               ) g ON g.user_id = s.user_id
              WHERE s.is_deleted = 0
                AND g.locked_until IS NOT NULL
@@ -1259,7 +1308,8 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     @Insert("""
             INSERT INTO nx_user_impersonation_session (
                 session_no, user_id, status, ttl_minutes, operator, reason, expires_at, created_at, updated_at, is_deleted
-            ) VALUES (#{sessionNo}, #{userId}, 'ACTIVE', #{ttlMinutes}, #{operator}, #{reason}, #{expiresAt}, NOW(), NOW(), 0)
+            ) VALUES (#{sessionNo}, #{userId}, 'ACTIVE', #{ttlMinutes}, #{operator}, #{reason}, #{expiresAt},
+                      DATE_SUB(#{expiresAt}, INTERVAL #{ttlMinutes} MINUTE), NOW(), 0)
             """)
     int insertImpersonationSession(@Param("sessionNo") String sessionNo, @Param("userId") Long userId,
                                    @Param("ttlMinutes") int ttlMinutes, @Param("operator") String operator,

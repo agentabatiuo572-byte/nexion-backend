@@ -74,7 +74,8 @@ public class OpsBiExportController {
     }
 
     @GetMapping("/{exportId}")
-    @PreAuthorize("hasAuthority('bi_l5_read')")
+    // L4-BE-11: 申请人可用建单权限读取自己报表状态;服务层对非 bi_l5_read 会话限本人报表。
+    @PreAuthorize("hasAnyAuthority('bi_l1_write','bi_l2_write','bi_l3_write','bi_l3_export_detail','bi_l4_write','bi_l4_export_tree','bi_l5_read')")
     public ApiResult<BiReportView> exportTask(@PathVariable String exportId) {
         return exportQueryService.exportTask(exportId);
     }

@@ -39,7 +39,7 @@ public class PromotionNativeContractResolver {
             case "EARNINGS_RELEASE" -> {
                 valid("risk.k1.release.version".equals(resource),"PROMOTION_NATIVE_EARNINGS_UNKNOWN");
                 revision=number(config.activeValue(resource).orElseThrow(()->new BizException(503,"PROMOTION_NATIVE_EARNINGS_UNAVAILABLE")));
-                data=values("rows",earnings.rows(),"manualOnly",earnings.manualOnly(),"trustedAttestationEnabled",earnings.trustedAttestationEnabled());
+                data=values("rows",earnings.promotionContractRows(),"manualOnly",earnings.manualOnly(),"trustedAttestationEnabled",earnings.trustedAttestationEnabled());
             }
             case "A2_POLICY" -> {
                 valid("admin.a2.schema_version".equals(resource),"PROMOTION_NATIVE_A2_UNKNOWN");
@@ -116,11 +116,11 @@ public class PromotionNativeContractResolver {
         String identity=String.join(" ",type,text(product.get("device_type")),text(product.get("product_no")),text(sku.get("name"))).toUpperCase(Locale.ROOT);
         if(identity.contains("CLOUD-SHARE")||identity.contains("CLOUD_SHARE")||identity.matches(".*\\bSHARE\\b.*")||!Set.of("DEVICE","SERVER").contains(type))return "UNSUPPORTED_DEVICE_TYPE";
         if(!productOnSale(product.get("status")))return "PRODUCT_UNAVAILABLE";
-        if(powerWatts(sku.get("power_text"))==null||text(sku.get("datacenter")).isBlank()||product.get("vram_total_gb")==null||number(product.get("vram_total_gb"))<=0)return "PRODUCT_RIGHTS_INCOMPLETE";
+        if(powerWatts(sku.get("power_text"))==null||product.get("vram_total_gb")==null||number(product.get("vram_total_gb"))<=0)return "PRODUCT_RIGHTS_INCOMPLETE";
         return null;
     }
     public static java.math.BigDecimal powerWatts(Object value){
-        var power=java.util.regex.Pattern.compile(" *(([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})(\\.[0-9]{1,6})?)(?U:\\s)*(W((?U:\\s)+TDP|(?U:\\s)*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)? *")
+        var power=java.util.regex.Pattern.compile(" *(([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})(\\.[0-9]{1,6})?)(?U:\\s)*(W((?U:\\s)+TDP|(?U:\\s)*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)? *")
             .matcher(text(value).toUpperCase(Locale.ROOT));
         if(!power.matches())return null;
         var watts=new java.math.BigDecimal(power.group(1).replace(",",""));

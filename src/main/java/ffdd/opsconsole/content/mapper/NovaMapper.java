@@ -280,6 +280,26 @@ public interface NovaMapper extends BaseMapper<Object> {
             """)
     NovaChannelView channel(@Param("key") String key);
 
+    @Select("""
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(payload, '$.channel')) AS channel,
+                   COUNT(DISTINCT aggregate_id) AS sentCount
+              FROM nx_event_outbox
+             WHERE is_deleted = 0
+               AND event_name = 'nova.push_sent'
+               AND aggregate_type = 'NOVA_NOTIFICATION'
+               AND analytics_event = 1
+               AND schema_registered = 1
+               AND is_server_authoritative = 1
+               AND event_ts >= #{fromAt}
+               AND event_ts < #{toAt}
+               AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.channel')) IS NOT NULL
+               AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.channel')) <> ''
+             GROUP BY JSON_UNQUOTE(JSON_EXTRACT(payload, '$.channel'))
+             ORDER BY channel ASC
+            """)
+    List<Map<String, Object>> channelPushSentCounts(@Param("fromAt") LocalDateTime fromAt,
+                                                    @Param("toAt") LocalDateTime toAt);
+
     @Select("SELECT COALESCE(MAX(sort_order), 0) FROM nx_nova_channel WHERE is_deleted = 0")
     int maxChannelOrder();
 
@@ -524,13 +544,16 @@ public interface NovaMapper extends BaseMapper<Object> {
                    updated_at = NOW()
              WHERE channel_key = #{channel}
                AND status = 'DRAFT'
-               AND version = #{expectedVersion}
-               AND title_zh = #{expectedTitleZh}
-               AND body_zh = #{expectedBodyZh}
-               AND title_vi = #{expectedTitleVi}
-               AND body_vi = #{expectedBodyVi}
-               AND COALESCE(title_en, '') = #{expectedTitleEn}
-               AND COALESCE(body_en, '') = #{expectedBodyEn}
+               AND BINARY version = BINARY #{expectedVersion}
+               AND BINARY title_zh = BINARY #{expectedTitleZh}
+               AND BINARY body_zh = BINARY #{expectedBodyZh}
+               AND BINARY title_vi = BINARY #{expectedTitleVi}
+               AND BINARY body_vi = BINARY #{expectedBodyVi}
+               AND BINARY COALESCE(title_en, '') = BINARY #{expectedTitleEn}
+               AND BINARY COALESCE(body_en, '') = BINARY #{expectedBodyEn}
+               AND BINARY template_name <=> BINARY #{expectedName}
+               AND BINARY cta <=> BINARY #{expectedCta}
+               AND BINARY CAST(translations_json AS CHAR) <=> BINARY #{expectedTranslations,jdbcType=VARCHAR}
                AND is_deleted = 0
             """)
     int updateTemplateIfCurrent(
@@ -542,6 +565,9 @@ public interface NovaMapper extends BaseMapper<Object> {
             @Param("expectedBodyVi") String expectedBodyVi,
             @Param("expectedTitleEn") String expectedTitleEn,
             @Param("expectedBodyEn") String expectedBodyEn,
+            @Param("expectedName") String expectedName,
+            @Param("expectedCta") String expectedCta,
+            @Param("expectedTranslations") String expectedTranslations,
             @Param("name") String name,
             @Param("cta") String cta,
             @Param("version") String version,
@@ -703,20 +729,24 @@ public interface NovaMapper extends BaseMapper<Object> {
             SELECT id, event_type AS eventType, source_event_id AS sourceEventId,
                    actor_display AS actorDisplay, city_display AS cityDisplay,
                    amount_display AS amountDisplay, source_note AS sourceNote,
-                   source_system AS sourceSystem, source_table AS sourceTable, status,
+                   source_system AS sourceSystem, source_table AS sourceTable,
+                   CASE WHEN status = 'ACTIVE' AND expires_at IS NOT NULL AND expires_at &lt;= #{now}
+                        THEN 'EXPIRED' ELSE status END AS status,
                    occurred_at AS occurredAt, expires_at AS expiresAt, verified_at AS verifiedAt,
                    last_dispatched_at AS lastDispatchedAt, dispatch_count AS dispatchCount,
                    created_at AS createdAt, updated_at AS updatedAt
               FROM nx_nova_social_event
              WHERE is_deleted = 0
                <if test="eventType != null and eventType != ''">AND event_type = #{eventType}</if>
-               <if test="status != null and status != ''">AND status = #{status}</if>
+               <if test="status != null and status != ''">AND (CASE WHEN status = 'ACTIVE' AND expires_at IS NOT NULL
+                     AND expires_at &lt;= #{now} THEN 'EXPIRED' ELSE status END) = #{status}</if>
              ORDER BY occurred_at DESC, id DESC
              LIMIT #{limit} OFFSET #{offset}
             </script>
             """)
     List<NovaSocialEventView> socialEventsFiltered(@Param("eventType") String eventType,
                                                     @Param("status") String status,
+                                                    @Param("now") LocalDateTime now,
                                                     @Param("limit") int limit,
                                                     @Param("offset") int offset);
 
@@ -726,11 +756,13 @@ public interface NovaMapper extends BaseMapper<Object> {
               FROM nx_nova_social_event
              WHERE is_deleted = 0
                <if test="eventType != null and eventType != ''">AND event_type = #{eventType}</if>
-               <if test="status != null and status != ''">AND status = #{status}</if>
+               <if test="status != null and status != ''">AND (CASE WHEN status = 'ACTIVE' AND expires_at IS NOT NULL
+                     AND expires_at &lt;= #{now} THEN 'EXPIRED' ELSE status END) = #{status}</if>
             </script>
             """)
     long countSocialEventsFiltered(@Param("eventType") String eventType,
-                                   @Param("status") String status);
+                                   @Param("status") String status,
+                                   @Param("now") LocalDateTime now);
 
     @Select("""
             SELECT id, event_type AS eventType, source_event_id AS sourceEventId,
@@ -962,11 +994,13 @@ public interface NovaMapper extends BaseMapper<Object> {
                    CONCAT('newUsers:', DATE_FORMAT(MIN(u.created_at), '%Y%m%d%H')) AS sourceEventId,
                    'UVEL_CORE' AS sourceSystem,
                    'nx_user' AS sourceTable,
+                   -- BUG-520: 聚合事件没有任何真实地区；素材留空，渲染侧按可信来源身份
+                   -- (newUsers/UVEL_CORE/nx_user) 出「全网」，不再存会被掩码破坏的哨兵。
                    '' AS actorName,
-                   '全网' AS city,
+                   '' AS city,
                    COUNT(1) AS amount,
-                   '人' AS amountUnit,
-                   '完整小时注册用户聚合' AS sourceNote,
+                   'USERS' AS amountUnit,
+                   'HOURLY_REGISTRATION_AGGREGATE' AS sourceNote,
                    STR_TO_DATE(DATE_FORMAT(MIN(u.created_at), '%Y-%m-%d %H:00:00'), '%Y-%m-%d %H:%i:%s') AS occurredAt
               FROM nx_user u
              WHERE u.is_deleted = 0 AND u.created_at >= #{since} AND u.created_at < #{until}

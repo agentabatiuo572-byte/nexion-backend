@@ -4,15 +4,32 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
 import java.util.List;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotencyRecordEntity> {
+    /** Current read: an outer REPEATABLE_READ snapshot may predate the independently committed claim. */
+    @Options(flushCache = Options.FlushCachePolicy.TRUE, useCache = false)
+    @Select("""
+            SELECT * FROM nx_admin_idempotency_record
+             WHERE id=#{id} AND is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    AdminIdempotencyRecordEntity selectCurrentByIdForUpdate(@Param("id") Long id);
+
     @Select("""
             SELECT id,
                    scope,
                    idempotency_key AS idempotencyKey,
                    request_hash AS requestHash,
+                   origin_admin_id AS originAdminId,
+                   origin_method AS originMethod,
+                   origin_path AS originPath,
+                   origin_target AS originTarget,
+                   origin_targets AS originTargets,
+                   origin_read_authority AS originReadAuthority,
+                   rollback_confirmed AS rollbackConfirmed,
                    status,
                    response_json AS responseJson,
                    error_message AS errorMessage,
@@ -36,6 +53,13 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    scope,
                    idempotency_key AS idempotencyKey,
                    request_hash AS requestHash,
+                   origin_admin_id AS originAdminId,
+                   origin_method AS originMethod,
+                   origin_path AS originPath,
+                   origin_target AS originTarget,
+                   origin_targets AS originTargets,
+                   origin_read_authority AS originReadAuthority,
+                   rollback_confirmed AS rollbackConfirmed,
                    status,
                    response_json AS responseJson,
                    error_message AS errorMessage,
@@ -60,6 +84,13 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    scope,
                    idempotency_key AS idempotencyKey,
                    request_hash AS requestHash,
+                   origin_admin_id AS originAdminId,
+                   origin_method AS originMethod,
+                   origin_path AS originPath,
+                   origin_target AS originTarget,
+                   origin_targets AS originTargets,
+                   origin_read_authority AS originReadAuthority,
+                   rollback_confirmed AS rollbackConfirmed,
                    status,
                    response_json AS responseJson,
                    error_message AS errorMessage,
@@ -82,6 +113,13 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    scope,
                    idempotency_key AS idempotencyKey,
                    request_hash AS requestHash,
+                   origin_admin_id AS originAdminId,
+                   origin_method AS originMethod,
+                   origin_path AS originPath,
+                   origin_target AS originTarget,
+                   origin_targets AS originTargets,
+                   origin_read_authority AS originReadAuthority,
+                   rollback_confirmed AS rollbackConfirmed,
                    status,
                    response_json AS responseJson,
                    error_message AS errorMessage,
@@ -107,6 +145,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
             UPDATE nx_admin_idempotency_record
                SET request_hash = #{requestHash},
                    status = 'PROCESSING',
+                   rollback_confirmed = 0,
                    response_json = NULL,
                    error_message = NULL,
                    expires_at = #{expiresAt},
@@ -114,6 +153,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    updated_at = NOW()
              WHERE id = #{id}
                AND (expires_at <= NOW() OR is_deleted = 1)
+               AND status NOT IN ('PROCESSING','UNKNOWN','CONFIRMED_SUCCEEDED','CONFIRMED_NOT_EXECUTED')
             """)
     int resetExpiredById(@Param("id") Long id,
                          @Param("requestHash") String requestHash,
@@ -123,6 +163,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
             UPDATE nx_admin_idempotency_record
                SET request_hash = #{requestHash},
                    status = 'PROCESSING',
+                   rollback_confirmed = 0,
                    response_json = NULL,
                    error_message = NULL,
                    expires_at = #{expiresAt},
@@ -134,6 +175,29 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
     int resetFailedById(@Param("id") Long id,
                         @Param("requestHash") String requestHash,
                         @Param("expiresAt") java.time.LocalDateTime expiresAt);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_admin_idempotency_record
+             WHERE scope=#{scope} AND origin_method=#{method} AND BINARY origin_path=BINARY #{path}
+               AND BINARY origin_target=BINARY #{target}
+               AND BINARY idempotency_key != BINARY #{key} AND is_deleted=0
+               AND status IN ('UNKNOWN','PROCESSING')
+            """)
+    int countUnresolvedOrigin(@Param("scope") String scope, @Param("method") String method,
+                              @Param("path") String path, @Param("target") String target, @Param("key") String key);
+
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM nx_admin_idempotency_record
+             WHERE is_deleted=0 AND origin_targets IS NOT NULL
+               AND JSON_OVERLAPS(origin_targets, CAST(#{targets} AS JSON))
+               AND NOT (scope=#{scope} AND BINARY idempotency_key=BINARY #{key})
+               AND (status='UNKNOWN' OR (status='PROCESSING' AND id NOT IN
+                 <foreach collection='ancestors' item='id' open='(' separator=',' close=')'>#{id}</foreach>))
+            </script>
+            """)
+    int countUnresolvedTargets(@Param("targets") String targets, @Param("scope") String scope,
+            @Param("key") String key, @Param("ancestors") List<Long> ancestors);
 
     @Update("""
             UPDATE nx_admin_idempotency_record
@@ -157,6 +221,26 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                AND is_deleted = 0
             """)
     int markFailed(@Param("id") Long id, @Param("errorMessage") String errorMessage);
+
+    /** A trusted server-side business rejection keeps its result on the FAILED transaction row. */
+    @Update("""
+            UPDATE nx_admin_idempotency_record
+               SET status = 'FAILED',
+                   response_json = #{responseJson},
+                   error_message = #{errorMessage},
+                   updated_at = NOW()
+             WHERE id = #{id}
+               AND status = 'PROCESSING'
+               AND is_deleted = 0
+            """)
+    int markFailedWithResponse(@Param("id") Long id, @Param("errorMessage") String errorMessage,
+                               @Param("responseJson") String responseJson);
+
+    @Update("""
+            UPDATE nx_admin_idempotency_record SET rollback_confirmed=1, updated_at=NOW()
+             WHERE id=#{id} AND status IN ('PROCESSING','FAILED','UNKNOWN') AND is_deleted=0
+            """)
+    int markRollbackConfirmed(@Param("id") long id);
 
     /**
      * A PROCESSING row past its lease may be the result of a process crash after

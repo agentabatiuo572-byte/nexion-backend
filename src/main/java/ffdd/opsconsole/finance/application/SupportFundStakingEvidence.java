@@ -138,7 +138,7 @@ public class SupportFundStakingEvidence {
             String biz=text(l.get("bizNo"));require(biz.startsWith(no));String suffix=biz.substring(no.length());require((suffix.equals("-OPEN")||suffix.equals(terminal))&&suffixes.add(suffix)&&number(l.get("id"))>0&&ids.add(number(l.get("id")))&&number(l.get("customerId"))==number(p.get("customerId"))&&no.equals(l.get("positionNo"))&&"USDT".equals(l.get("asset"))&&"SUCCESS".equals(l.get("status"))&&flag(l.get("deleted"))==0);
             String type=suffix.equals("-OPEN")?(g7?"WALLET_REINVEST":"STAKING_OPEN"):suffix.equals("-CLAIM")?(g7?"REPURCHASE_CLAIM":"STAKING_CLAIM"):(g7?"REPURCHASE_EARLY_WITHDRAW":"STAKING_EARLY_WITHDRAW");
             BigDecimal amount=money(p.get("amountUsdt"));if(suffix.equals("-CLAIM"))amount=amount.add(money(p.get("estimatedInterestUsdt")));if(suffix.equals("-EARLY"))amount=amount.subtract(SupportStakingReadFacade.penalty(p));
-            require(type.equals(l.get("bizType"))&&(suffix.equals("-OPEN")?"OUT":"IN").equals(l.get("direction"))&&money(l.get("amount")).compareTo(amount)==0&&money(l.get("balanceAfter")).signum()>=0&&!time(l.get("updatedAt")).isBefore(time(l.get("createdAt"))));
+            require(type.equals(l.get("bizType"))&&(suffix.equals("-OPEN")?"OUT":"IN").equals(l.get("direction"))&&money(l.get("amount")).compareTo(amount)==0&&(suffix.equals("-CLAIM")||suffix.equals("-EARLY")||money(l.get("balanceAfter")).signum()>=0)&&!time(l.get("updatedAt")).isBefore(time(l.get("createdAt"))));
         }
     }
     private static void validPosition(Map<String,Object> p) {

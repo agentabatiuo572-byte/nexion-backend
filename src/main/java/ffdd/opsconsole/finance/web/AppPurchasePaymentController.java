@@ -24,6 +24,9 @@ public class AppPurchasePaymentController {
     public ApiResult<Map<String,Object>> get(Authentication auth,@PathVariable String intentNo){return ApiResult.ok(service.get(owner(auth),intentNo));}
     @GetMapping("/purchase-payment-intents")
     public ApiResult<Map<String,Object>> lookup(Authentication auth,@RequestParam String kind,@RequestParam String commandKey){return ApiResult.ok(service.lookup(owner(auth),kind,commandKey));}
+    /** 按本人订单号只读找回进行中的付款单:不要求本机原命令键,他人订单与不存在的订单同为 404。 */
+    @GetMapping("/purchase-payment-intents/by-order/{orderNo}")
+    public ApiResult<Map<String,Object>> activeByOrder(Authentication auth,@PathVariable String orderNo){return ApiResult.ok(service.activeByOrder(owner(auth),orderNo));}
     private long owner(Authentication auth){
         if(auth==null||!auth.isAuthenticated()||!(auth.getDetails() instanceof Map<?,?> details)||!"USER".equals(details.get("subjectType")))
             throw new BizException(403,"USER_SUBJECT_REQUIRED");

@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ThreadLocalRandom;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -22,13 +23,14 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class HomeDisplayService {
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(HomeDisplayService.class);
     static final String STATE_KEY = "growth.home_display.batch";
-    static final String CACHE_KEY = "uvel:home-display:batch:v2";
+    static final String CACHE_KEY = "uvel:home-display:batch:v3";
+    private static final long CACHE_TTL_MILLIS = 60_000;
     private static final List<String> FIELDS = List.of("homeOnlineCurrent", "homeOnlineStepMin", "homeOnlineStepMax",
             "homePaidCurrent", "homePaidStepMin", "homePaidStepMax", "homeDisplayEnabled");
     private static final DefaultRedisScript<Long> CACHE_WRITE = new DefaultRedisScript<>("""
             local old = redis.call('GET', KEYS[1])
             if not old or cjson.decode(old).batch.sequence <= tonumber(ARGV[2]) then
-              redis.call('SET', KEYS[1], ARGV[1], 'EX', 60)
+              redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
               return 1
             end
             return 0
@@ -59,10 +61,11 @@ public class HomeDisplayService {
         long now = clock.millis();
         if (batch == null || now >= entry.validUntil() || batch.enabled() && now >= batch.startAt() + (batch.online().length - 1L) * 1000) {
             batch = advance();
-            entry = new CachedBatch(batch, clock.millis() + 60_000);
+            entry = new CachedBatch(batch, clock.millis() + CACHE_TTL_MILLIS);
         }
         return Map.of("enabled", batch.enabled(), "startAt", batch.startAt(), "serverNow", clock.millis(),
-                "validUntil", entry.validUntil(), "sequence", batch.sequence(), "online", batch.online(), "paidCents", batch.paidCents());
+                "validUntil", entry.validUntil(), "sequence", batch.sequence(), "online", batch.online(),
+                "paidCents", batch.paidCents(), "activeJobs", batch.activeJobs());
     }
 
     /** One platform-wide minute job, independent of connected user count. */
@@ -76,9 +79,10 @@ public class HomeDisplayService {
             config.activeValueForUpdate(GrowthPublicStatsService.VERSION_KEY).orElseThrow();
             Map<String, Object> values = values();
             HomeDisplayBatch old = stored();
-            HomeDisplayBatch batch = old == null ? create(values, 1, clock.millis()) : old;
-            if (batch.needsExtension(clock.millis())) batch = extend(batch, values);
-            if (old == null || batch != old) persist(batch);
+            long now = clock.millis();
+            HomeDisplayBatch batch = old == null ? create(values, 1, now) : withActiveJobs(old, values, now);
+            if (batch.needsExtension(now)) batch = extend(batch, values, now);
+            if (batch != old) persist(batch);
             else publishAfterCommit(batch);
             return batch;
         });
@@ -86,17 +90,20 @@ public class HomeDisplayService {
 
     /** Called within the H9 transaction after its version lock, before storing the new configuration. */
     public void configure(Map<String, Object> before, Map<String, Object> next, long now) {
-        if (FIELDS.stream().allMatch(key -> "homeDisplayEnabled".equals(key)
-                ? java.util.Objects.equals(before.get(key), next.get(key))
+        boolean jobsUnchanged = Objects.equals(activeJobsBase(before), activeJobsBase(next));
+        if (jobsUnchanged && FIELDS.stream().allMatch(key -> "homeDisplayEnabled".equals(key)
+                ? Objects.equals(before.get(key), next.get(key))
                 : number(before, key).compareTo(number(next, key)) == 0)) return;
         HomeDisplayBatch old = stored();
-        if (old != null && old.needsExtension(now)) old = extend(old, before);
         if (old != null) {
-            int i = old.index(now);
+            old = withActiveJobs(old, before, now);
+            // An open client may still play the published plan until its cached batch expires.
+            int i = old.index(old.enabled() ? now + CACHE_TTL_MILLIS : now);
             if (number(before, "homeOnlineCurrent").compareTo(number(next, "homeOnlineCurrent")) == 0)
                 next.put("homeOnlineCurrent", old.online()[i]);
             if (number(before, "homePaidCurrent").compareTo(number(next, "homePaidCurrent")) == 0)
                 next.put("homePaidCurrent", BigDecimal.valueOf(old.paidCents()[i], 2));
+            if (jobsUnchanged) next.put("activeJobsBase", old.activeJobs()[i]);
         }
         next.put("homeDisplayAnchorAt", now);
         persist(create(next, old == null ? 1 : old.sequence() + 1, now));
@@ -107,12 +114,16 @@ public class HomeDisplayService {
         boolean enabled = Boolean.TRUE.equals(values.get("homeDisplayEnabled"));
         HomeDisplayBatch batch = new HomeDisplayBatch(sequence, enabled, now,
                 new long[]{number(values, "homeOnlineCurrent").longValueExact()},
-                new long[]{cents(values, "homePaidCurrent")});
-        return enabled ? extend(batch, values) : batch;
+                new long[]{cents(values, "homePaidCurrent")}, new Long[]{activeJobsBase(values)});
+        return enabled ? extend(batch, values, now) : batch;
     }
 
-    private HomeDisplayBatch extend(HomeDisplayBatch batch, Map<String, Object> values) {
-        return batch.extend(clock.millis(), number(values, "homeOnlineStepMin").longValueExact(),
+    private HomeDisplayBatch withActiveJobs(HomeDisplayBatch batch, Map<String, Object> values, long now) {
+        return batch.activeJobs() == null ? batch.withActiveJobs(activeJobsBase(values), now) : batch;
+    }
+
+    private HomeDisplayBatch extend(HomeDisplayBatch batch, Map<String, Object> values, long now) {
+        return batch.extend(now, number(values, "homeOnlineStepMin").longValueExact(),
                 number(values, "homeOnlineStepMax").longValueExact(), cents(values, "homePaidStepMin"),
                 cents(values, "homePaidStepMax"), (min, max) -> ThreadLocalRandom.current().nextLong(min, max));
     }
@@ -127,6 +138,9 @@ public class HomeDisplayService {
         catch (Exception ex) { throw new IllegalStateException("HOME_DISPLAY_CONFIG_UNAVAILABLE", ex); }
     }
     private static BigDecimal number(Map<String, Object> values, String key) { return new BigDecimal(String.valueOf(values.getOrDefault(key, 0))); }
+    static Long activeJobsBase(Map<?, ?> values) {
+        return values.get("activeJobsBase") instanceof Number base ? base.longValue() : null;
+    }
     private static long cents(Map<String, Object> values, String key) { return number(values, key).movePointRight(2).longValueExact(); }
     private void persist(HomeDisplayBatch batch) {
         try { config.upsertAdminValue(STATE_KEY, json.writeValueAsString(batch), "JSON", "growth", "H9 shared random display batch"); }
@@ -136,7 +150,11 @@ public class HomeDisplayService {
     private void publishAfterCommit(HomeDisplayBatch batch) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCommit() {
-                try { redis.execute(CACHE_WRITE, List.of(CACHE_KEY), json.writeValueAsString(new CachedBatch(batch, clock.millis() + 60_000)), String.valueOf(batch.sequence())); }
+                try {
+                    redis.execute(CACHE_WRITE, List.of(CACHE_KEY),
+                            json.writeValueAsString(new CachedBatch(batch, clock.millis() + CACHE_TTL_MILLIS)),
+                            String.valueOf(batch.sequence()), String.valueOf(CACHE_TTL_MILLIS));
+                }
                 catch (Exception ex) { LOG.warn("Home display cache refresh deferred; durable batch {} retained", batch.sequence()); }
             }
         });

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -12,6 +13,23 @@ import org.apache.ibatis.annotations.Select;
 @Mapper
 public interface ComputeV2ReadMapper extends BaseMapper<Object> {
     record LegacyCompletionRequest(String taskNo,long deviceId,String instanceNo,String state,LocalDateTime updatedAt) { }
+
+    @Select("""
+            <script>
+            SELECT COUNT(*) FROM nx_user_device d
+              WHERE d.user_id=#{userId} AND d.source_order_no=#{orderNo} AND d.is_deleted=0
+                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.source_channel&lt;&gt;'PROMOTION_GIFT' AND d.id IN
+              <foreach collection="deviceIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+              AND NOT EXISTS (
+                SELECT 1 FROM nx_compute_v2_event e WHERE e.user_id=d.user_id AND e.user_device_id=d.id
+              ) AND NOT EXISTS (
+                SELECT 1 FROM nx_compute_task t WHERE t.user_id=d.user_id AND t.user_device_id=d.id
+                  AND t.task_no LIKE 'CV2-%'
+              )
+            </script>
+            """)
+    int devicesWithoutV2History(@Param("orderNo") String orderNo,@Param("userId") long userId,
+            @Param("deviceIds") Set<Long> deviceIds);
 
     @Select("""
             <script>

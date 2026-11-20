@@ -1,12 +1,14 @@
 package ffdd.opsconsole.shared.idempotency;
 
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,10 +41,46 @@ public class AdminIdempotencyService {
         return execute(scope, idempotencyKey, requestHash, responseType, action, true);
     }
 
+    /** The action owns independent commits; failure to retain its receipt must never authorize another execution. */
+    public <T> T executeRetainedIndependent(String scope, String key, String requestHash, Class<T> responseType, Supplier<T> action) {
+        return execute(scope, key, requestHash, responseType, action, true, false, AdminCommandOrigin.current(scope), true);
+    }
+
     /** Retain the financial result while fencing a bounded, shared evidence range. */
     public <T> T executeRetainedRepeatableRead(String scope, String idempotencyKey, String requestHash, Class<T> responseType, Supplier<T> action) {
         return execute(scope, idempotencyKey, requestHash, responseType, action, true, true);
     }
+
+    /** Typed collection commands supply an exact business target, never a collection-wide fence. */
+    public <T> T executeBound(String scope, String key, String requestHash, Class<T> responseType,
+                              String readAuthority, String target, Supplier<T> action) {
+        return execute(scope, key, requestHash, responseType, action, true, false,
+                AdminCommandOrigin.current(scope, readAuthority, target));
+    }
+
+    public <T> T executeBoundTargets(String scope, String key, String requestHash, Class<T> responseType,
+                                     String readAuthority, java.util.List<AdminCommandOrigin.Target> targets,
+                                     Supplier<T> action) {
+        return execute(scope, key, requestHash, responseType, action, true, false,
+                AdminCommandOrigin.current(scope, readAuthority, null, targets));
+    }
+
+    /** A2 decision commands store their authenticated submitter even though A2 has no read authority. */
+    public <T> T executeOwned(String scope, String key, String requestHash, Class<T> responseType,
+                              long actorId, java.util.List<AdminCommandOrigin.Target> targets,
+                              Supplier<T> action) {
+        AdminCommandOrigin origin = new AdminCommandOrigin(actorId, null, null, null, null, targets);
+        return execute(scope, key, requestHash, responseType, action, true, false, origin, false);
+    }
+
+    /** A2 decision commands keep their trusted origin read authority and targets when the proposal provenance is known. */
+    public <T> T executeOwned(String scope, String key, String requestHash, Class<T> responseType,
+                              long actorId, String readAuthority, java.util.List<AdminCommandOrigin.Target> targets,
+                              Supplier<T> action) {
+        AdminCommandOrigin origin = new AdminCommandOrigin(actorId, null, null, null, readAuthority, targets);
+        return execute(scope, key, requestHash, responseType, action, true, false, origin, false);
+    }
+
 
     /** Read-only recovery information. Callers must derive the scope from the authenticated actor. */
     public RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
@@ -50,7 +88,8 @@ public class AdminIdempotencyService {
                 normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED"));
     }
 
-    public enum RecoveryStatus { SUCCEEDED, FAILED, PROCESSING, UNKNOWN, NOT_FOUND, MISMATCH }
+    public enum RecoveryStatus { SUCCEEDED, FAILED, PROCESSING, UNKNOWN, NOT_FOUND, MISMATCH,
+        CONFIRMED_SUCCEEDED, CONFIRMED_NOT_EXECUTED }
 
     /** Reads an owned receipt without reclaiming even an expired key. Callers must project only safe fields. */
     public <T> RecoveryResult<T> recoveryResult(String scope, String idempotencyKey, String requestHash,
@@ -61,6 +100,23 @@ public class AdminIdempotencyService {
 
     public record RecoveryResult<T>(RecoveryStatus status, T response) {}
 
+    public record ActiveReceipt(long recordId, String requestHash) {}
+
+    /** Locates an unexpired successful receipt without returning its response. */
+    public ActiveReceipt activeReceipt(String scope, String idempotencyKey) {
+        return transactionExecutor.activeReceipt(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey));
+    }
+
+    public record ActiveRequest(String requestHash, LocalDateTime updatedAt, boolean hasReceipt) {}
+
+    /** Probes an active key without claiming it. Command validation handles malformed keys. */
+    public ActiveRequest activeRequest(String scope, String idempotencyKey) {
+        if (!StringUtils.hasText(idempotencyKey) || idempotencyKey.trim().length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            return null;
+        }
+        return transactionExecutor.activeRequest(normalizeScope(scope), idempotencyKey.trim());
+    }
+
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess) {
         return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, false);
@@ -68,6 +124,18 @@ public class AdminIdempotencyService {
 
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess, boolean repeatableRead) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, repeatableRead,
+                AdminCommandOrigin.current(scope));
+    }
+
+    private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
+                          Supplier<T> action, boolean retainSuccess, boolean repeatableRead, AdminCommandOrigin origin) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, repeatableRead, origin, false);
+    }
+
+    private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
+                          Supplier<T> action, boolean retainSuccess, boolean repeatableRead, AdminCommandOrigin origin,
+                          boolean independentAction) {
         String normalizedScope = normalizeScope(scope);
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         String normalizedHash = normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED");
@@ -75,15 +143,15 @@ public class AdminIdempotencyService {
         LocalDateTime expiresAt = LocalDateTime.now(clock)
                 .truncatedTo(ChronoUnit.SECONDS)
                 .plus(DEFAULT_TTL);
-        AdminIdempotencyTransactionExecutor.Claim<T> claim = retainSuccess
-                ? transactionExecutor.claimRetained(normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType)
-                : transactionExecutor.claim(normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType);
+        AdminIdempotencyTransactionExecutor.Claim<T> claim = transactionExecutor.claimBound(
+                normalizedScope, normalizedKey, normalizedHash, expiresAt, responseType, retainSuccess, origin);
         if (!claim.executeAction()) {
             return claim.replayResponse();
         }
 
         boolean joinedTransaction = TransactionSynchronizationManager.isActualTransactionActive()
                 && TransactionSynchronizationManager.isSynchronizationActive();
+        AtomicReference<Object> businessRejection = new AtomicReference<>();
         if (joinedTransaction) {
             // The success marker joins the caller's transaction. Its later rollback
             // restores the independently committed claim to PROCESSING. Finalize only
@@ -91,9 +159,10 @@ public class AdminIdempotencyService {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
                 public void afterCompletion(int status) {
-                    if (status != STATUS_ROLLED_BACK) return;
+                    if (status != STATUS_ROLLED_BACK || independentAction) return;
                     try {
-                        transactionExecutor.markFailed(claim.recordId(), "EnclosingTransactionRolledBack");
+                        transactionExecutor.markFailed(claim.recordId(), "EnclosingTransactionRolledBack",
+                                businessRejection.get());
                     } catch (RuntimeException failure) {
                         // An uncertain outcome stays fenced; never make it retryable.
                         log.error("Could not finalize rolled-back idempotency claim {}", claim.recordId(), failure);
@@ -102,12 +171,25 @@ public class AdminIdempotencyService {
             });
         }
         try {
-            return repeatableRead ? transactionExecutor.runClaimedRepeatableRead(claim.recordId(), action)
+            return independentAction ? transactionExecutor.runClaimedIndependent(claim.recordId(), action)
+                    : repeatableRead ? transactionExecutor.runClaimedRepeatableRead(claim.recordId(), action)
                     : transactionExecutor.runClaimed(claim.recordId(), action);
         } catch (RuntimeException ex) {
-            if (joinedTransaction) throw ex;
+            Object businessResponse = ex instanceof AdminCommandBusinessRejection rejection
+                    ? rejection.response() : null;
+            if (businessResponse == null && "A2_COMMAND".equals(normalizedScope)
+                    && ex instanceof BizException businessError) {
+                Object errorData = businessError.errorData();
+                if (errorData != null) {
+                    // Reuse the exception's existing structured rejection payload, not a bare
+                    // status-code-derived ApiResult; only proven business exceptions are replayable.
+                    businessResponse = ApiResult.fail(businessError.getCode(), businessError.getMessage(), errorData);
+                }
+            }
+            businessRejection.set(businessResponse);
+            if (joinedTransaction || independentAction) throw ex;
             try {
-                transactionExecutor.markFailed(claim.recordId(), errorSummary(ex));
+                transactionExecutor.markFailed(claim.recordId(), errorSummary(ex), businessResponse);
             } catch (RuntimeException markFailedError) {
                 // Preserve the business/SQL root cause; persistence of failure metadata must never mask it.
                 ex.addSuppressed(markFailedError);

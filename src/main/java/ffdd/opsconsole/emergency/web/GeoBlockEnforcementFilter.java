@@ -5,6 +5,7 @@ import ffdd.opsconsole.emergency.application.GeoBlockPolicyService;
 import ffdd.opsconsole.emergency.application.GeoEdgeSourceRegistry;
 import ffdd.opsconsole.emergency.application.GeoEdgeHealthMonitor;
 import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
+import ffdd.opsconsole.shared.security.JwtAuthenticationFilter;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -15,6 +16,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
@@ -26,6 +28,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Order(Ordered.HIGHEST_PRECEDENCE + 30)
 @RequiredArgsConstructor
 public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
+    private static final String TRUSTED_COUNTRY_ATTRIBUTE = GeoBlockEnforcementFilter.class.getName() + ".trustedCountry";
     private static final String EDGE_SETTING = "emergency.geo.edgeJudgeSource";
     private static final String EDGE_FALLBACK_SETTING = "emergency.geo.edgeJudgeFallbackSource";
     private static final String EDGE_FALLBACK_UNTIL_SETTING = "emergency.geo.edgeJudgeFallbackUntilEpochMs";
@@ -71,6 +74,12 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
     private final EmergencyControlRepository repository;
     private final GeoBlockEnforcementProperties properties;
     private final GeoEdgeHealthMonitor healthMonitor;
+    @Autowired(required = false)
+    private JwtAuthenticationFilter trustedIdentity;
+
+    public static String trustedCountry(HttpServletRequest request) {
+        return (String) request.getAttribute(TRUSTED_COUNTRY_ATTRIBUTE);
+    }
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -166,15 +175,36 @@ public class GeoBlockEnforcementFilter extends OncePerRequestFilter {
 
         GeoBlockDecision decision = policyService.evaluate(countryCode, request.getMethod(), request.getRequestURI());
         if (!decision.blocked()) {
+            request.setAttribute(TRUSTED_COUNTRY_ATTRIBUTE, countryCode);
             filterChain.doFilter(request, response);
             return;
         }
-        repository.recordGeoBlockEvent(
-                countryCode,
-                new Locale("", countryCode).getDisplayCountry(Locale.SIMPLIFIED_CHINESE),
-                decision.endpointKey(),
-                resolvedSource);
+        String userNo = trustedUserNo(request);
+        if (userNo == null) {
+            repository.recordGeoBlockEvent(
+                    countryCode,
+                    new Locale("", countryCode).getDisplayCountry(Locale.SIMPLIFIED_CHINESE),
+                    decision.endpointKey(),
+                    resolvedSource);
+        } else {
+            repository.recordGeoBlockEvent(
+                    countryCode,
+                    new Locale("", countryCode).getDisplayCountry(Locale.SIMPLIFIED_CHINESE),
+                    decision.endpointKey(),
+                    resolvedSource,
+                    userNo);
+        }
         reject(response, 403, decision.code());
+    }
+
+    private String trustedUserNo(HttpServletRequest request) {
+        if (trustedIdentity == null) return null;
+        try {
+            return trustedIdentity.readOnlyUserNo(request);
+        } catch (RuntimeException ignored) {
+            // A denied request must keep its same 403 even if identity resolution fails.
+            return null;
+        }
     }
 
     private boolean fallbackActive() {

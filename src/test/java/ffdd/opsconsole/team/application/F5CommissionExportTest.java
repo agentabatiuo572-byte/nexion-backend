@@ -131,7 +131,8 @@ class F5CommissionExportTest {
         AdminIdempotencyTransactionExecutor transactionExecutor = new AdminIdempotencyTransactionExecutor(
                 recordMapper,
                 new ObjectMapper(),
-                mock(AdminIdempotencyExpiryTransitionExecutor.class));
+                mock(AdminIdempotencyExpiryTransitionExecutor.class),
+                mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence.class));
         AdminIdempotencyService durableIdempotency = new AdminIdempotencyService(
                 transactionExecutor,
                 Clock.fixed(Instant.parse("2026-08-11T00:00:00Z"), ZoneOffset.UTC));

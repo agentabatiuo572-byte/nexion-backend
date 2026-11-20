@@ -91,11 +91,14 @@ public class SupportFundEarningsEvidence {
                 keys(source,Set.of("beforeEntry","entry","recovery"));require("nx_earnings_source_recovery".equals(operation.get("sourceTable")));
                 var before=source.path("beforeEntry");validEntry(before,current,input);
                 var recovery=source.path("recovery");var actual=one(input.recoveries(),"recoveryNo",key);
+                String mode=text(recovery.path("evidenceStatus"));
+                boolean promotionRefund="D06_AVAILABLE_BALANCE".equals(mode);
                 require(equal(recovery,actual) &&no.equals(text(recovery.path("entryNo"))) &&number(recovery.path("userId"))==customer
                     &&asset.equals(text(recovery.path("asset"))) &&"PRODUCTION".equals(text(recovery.path("sourceEnvironment")))
                     &&("PROMOTION_REWARD".equals(text(recovery.path("sourceType"))) ||trialRecovery(trial,recovery,current))
                     &&equal(recovery.path("sourceType"),current.get("sourceType"))
-                    &&equal(recovery.path("sourceRef"),current.get("sourceRef")) &&"TRACKED_CONSERVATIVE".equals(text(recovery.path("evidenceStatus")))
+                    &&equal(recovery.path("sourceRef"),current.get("sourceRef"))
+                    &&("TRACKED_CONSERVATIVE".equals(mode) ||promotionRefund &&"PROMOTION_REWARD".equals(current.get("sourceType")))
                     &&equal(recovery.path("debitBaseline"),current.get("debitBaseline")));
                 BigDecimal recovered=decimal(recovery.path("recovered")),requested=decimal(recovery.path("requested"));
                 require(recovered.signum()>=0 &&requested.signum()>0 &&decimal(recovery.path("outstanding")).signum()>=0
@@ -108,13 +111,18 @@ public class SupportFundEarningsEvidence {
                     &&text(recovery.path("bucket")).equals(text(before.path("bucket"))) &&text(entry.path("bucket")).equals(text(before.path("bucket")))
                     &&decimal(recovery.path("debitCounterBefore")).compareTo(decimal(recovery.path("debitBaseline")))>=0);
                 BigDecimal remaining=decimal(before.path("amount")).subtract(decimal(before.path("recoveredAmount")));
-                BigDecimal delta=decimal(recovery.path("debitCounterBefore")).subtract(decimal(recovery.path("debitBaseline")));
-                BigDecimal excluded=otherRecoveries(input,no,customer,asset,number(before.path("sourceWalletId")),
-                    decimal(recovery.path("debitBaseline")),decimal(recovery.path("debitCounterBefore")));
-                require(requested.compareTo(remaining)<=0 &&excluded.signum()>=0 &&excluded.compareTo(delta)<=0);
-                BigDecimal provable=decimal(before.path("amount")).subtract(delta.subtract(excluded)).max(BigDecimal.ZERO);
-                require(recovered.compareTo(requested.min(remaining).min(provable).min(decimal(recovery.path("balanceBefore"))))==0);
-                expected=recovered.signum()==0?List.of():List.of(new Event("EARNINGS_RECOVER:"+key,Action.RECOVER,account,null,eventId,recovered,null));
+                require(requested.compareTo(remaining)<=0);
+                BigDecimal limit=requested.min(decimal(recovery.path("balanceBefore")));
+                if(!promotionRefund) {
+                    BigDecimal delta=decimal(recovery.path("debitCounterBefore")).subtract(decimal(recovery.path("debitBaseline")));
+                    BigDecimal excluded=otherRecoveries(input,no,customer,asset,number(before.path("sourceWalletId")),
+                        decimal(recovery.path("debitBaseline")),decimal(recovery.path("debitCounterBefore")));
+                    require(excluded.signum()>=0 &&excluded.compareTo(delta)<=0);
+                    limit=limit.min(decimal(before.path("amount")).subtract(delta.subtract(excluded)).max(BigDecimal.ZERO));
+                }
+                require(recovered.compareTo(limit)==0);
+                expected=recovered.signum()==0?List.of():List.of(new Event("EARNINGS_RECOVER:"+key,
+                    promotionRefund?Action.CLAWBACK:Action.RECOVER,account,null,eventId,recovered,null));
                 success=actual.get("createdAt");precisionKey="nx_earnings_source_recovery.created_at";
             }
             default -> throw new IllegalArgumentException("Unsupported earnings phase");
@@ -165,7 +173,7 @@ public class SupportFundEarningsEvidence {
             &&refund.kind()==ffdd.opsconsole.finance.facade.SupportPaymentFacts.Kind.DEVICE_PURCHASE_REFUND
             &&refund.customerId()==number(reward.path("customerId")) &&order.equals(refund.orderNo())
             &&text(source.path("factId")).equals(refund.originalFactId()) &&"USDT".equals(refund.currency())
-            &&decimal(source.path("amount")).compareTo(refund.amount())==0 &&refund.ledgerId()>0);
+            &&refund.amount().signum()>0 &&decimal(source.path("amount")).compareTo(refund.amount())>=0 &&refund.ledgerId()>0);
         require(("H2_TRIAL_REMAINDER".equals(type) &&"USDT".equals(asset) &&(claim+":REMAINDER").equals(text(reward.path("sourceRef"))))
             ||("H2_TRIAL_BONUS".equals(type) &&"UVT".equals(asset) &&(claim+":NEX").equals(text(reward.path("sourceRef")))));
         require(equal(reward.path("entryNo"),current.get("entryNo")) &&equal(reward.path("customerId"),current.get("userId"))

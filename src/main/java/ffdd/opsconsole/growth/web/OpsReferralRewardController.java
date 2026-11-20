@@ -32,6 +32,13 @@ public class OpsReferralRewardController {
         return ApiResult.ok(service.overview(cursor, pageSize));
     }
 
+    @GetMapping("/settlements/eligibility")
+    @PreAuthorize("hasAuthority('growth_h8_read')")
+    public ApiResult<Map<String, Object>> settlementEligibility(
+            @RequestParam Long invitedUserId) {
+        return ApiResult.ok(service.settlementEligibility(invitedUserId));
+    }
+
     @PatchMapping("/params/{paramKey}")
     @PreAuthorize("hasAuthority('growth_h8_write')")
     public ApiResult<Map<String, Object>> updateParam(

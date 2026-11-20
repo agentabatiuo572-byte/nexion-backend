@@ -13,7 +13,8 @@ public record NovaTemplateCreateRequest(
         String bodyEn,
         String operator,
         String reason,
-        java.util.Map<String, ffdd.opsconsole.content.domain.NotificationTranslation> translations) {
+        java.util.Map<String, ffdd.opsconsole.content.domain.NotificationTranslation> translations,
+        String expectedRevision) {
     public NovaTemplateCreateRequest {
         translations = ffdd.opsconsole.content.domain.MessageTranslations.ordered(translations);
     }
@@ -21,6 +22,12 @@ public record NovaTemplateCreateRequest(
     public NovaTemplateCreateRequest(String channel, String name, String cta, String version,
             String titleZh, String bodyZh, String titleVi, String bodyVi, String titleEn, String bodyEn,
             String operator, String reason) {
-        this(channel, name, cta, version, titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn, operator, reason, null);
+        this(channel, name, cta, version, titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn, operator, reason, null, null);
+    }
+
+    public NovaTemplateCreateRequest(String channel, String name, String cta, String version,
+            String titleZh, String bodyZh, String titleVi, String bodyVi, String titleEn, String bodyEn,
+            String operator, String reason, java.util.Map<String, ffdd.opsconsole.content.domain.NotificationTranslation> translations) {
+        this(channel, name, cta, version, titleZh, bodyZh, titleVi, bodyVi, titleEn, bodyEn, operator, reason, translations, null);
     }
 }

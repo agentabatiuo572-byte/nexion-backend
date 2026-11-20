@@ -9,6 +9,7 @@ import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -50,6 +51,7 @@ public class OpsReferralRewardService {
     private static final String EFFECTIVE_AT_KEY = "K.rewards.referral.effectiveAt";
     private static final String VERSION_KEY = "K.rewards.referral.version";
     private static final String ENABLED_KEY = "K.rewards.referral.enabled";
+    private static final String PRIOR_POLICY_KEY = "K.rewards.referral.priorPolicy";
     // This product ceiling is exact in JavaScript and remains below DECIMAL(18,6).
     private static final BigDecimal MAX_EFFECTIVE_REWARD = new BigDecimal("999999999.000000");
     // H1 payout multipliers are bounded to 4x. Capping the editable base here
@@ -116,15 +118,53 @@ public class OpsReferralRewardService {
                 "newcomer.usdt", effectiveRewards.newcomerUsdt(),
                 "newcomer.nex", effectiveRewards.newcomerNex(),
                 "inviter.nex", effectiveRewards.inviterNex()));
-        result.put("pending", mapper.totalPending(effectiveAt, accountSandbox, holdRisky));
+        long pending = 0L;
+        long blockedByK2 = 0L;
+        // H8-BE-10 segment eligibility: only an enabled segment with at least one
+        // positive reward can be settled. Disabled-period registrations are not pending.
+        if (enabled && hasPositiveRewards(effectiveRewards)) {
+            pending = mapper.totalPending(effectiveAt, accountSandbox, holdRisky);
+            blockedByK2 = mapper.totalBlockedByK2(effectiveAt, null, accountSandbox, holdRisky);
+        }
+        for (PriorPolicy prior : priorPolicies()) {
+            if (!hasPositiveRewards(prior.rewards())) continue;
+            boolean priorHoldRisky = "risk_bucket".equals(prior.lockMode());
+            pending += mapper.totalPendingBefore(prior.effectiveAt(), prior.effectiveUntil(), accountSandbox, priorHoldRisky);
+            blockedByK2 += mapper.totalBlockedByK2(prior.effectiveAt(), prior.effectiveUntil(), accountSandbox, priorHoldRisky);
+        }
+        result.put("pending", pending);
         result.put("settled", mapper.totalSettled(accountSandbox));
-        result.put("blockedByK2", mapper.totalBlockedByK2(effectiveAt, accountSandbox, holdRisky));
+        result.put("blockedByK2", blockedByK2);
         List<Map<String, Object>> queried = mapper.recentSettlementsPage(accountSandbox, cursor, pageSize + 1);
         List<Map<String, Object>> fetched = queried == null ? List.of() : queried;
         boolean hasMore = fetched.size() > pageSize;
-        List<Map<String, Object>> page = fetched.stream().limit(pageSize).map(row -> {
+        List<Map<String, Object>> visible = fetched.stream().limit(pageSize).toList();
+        Map<String, ffdd.opsconsole.shared.audit.AuditLogService.H8SettlementBatch> settlementBatches =
+                audit.findH8SettlementBatches(visible.stream()
+                        .map(row -> row.get("settlementNo"))
+                        .filter(java.util.Objects::nonNull)
+                        .map(String::valueOf)
+                        .filter(value -> !value.isBlank())
+                        .toList());
+        Map<String, Long> frozenByTrace = new LinkedHashMap<>();
+        List<Map<String, Object>> page = visible.stream().map(row -> {
             Map<String, Object> publicRow = new LinkedHashMap<>(row);
             publicRow.remove("rowId");
+            Object createdAt = publicRow.get("createdAt");
+            LocalDateTime createdAtLocal = createdAt instanceof LocalDateTime value ? value
+                    : createdAt instanceof java.sql.Timestamp value ? value.toLocalDateTime() : null;
+            publicRow.put("createdAt", createdAtLocal == null ? null
+                    : createdAtLocal.atZone(DATABASE_ZONE).toOffsetDateTime().toString());
+            String settlementNo = String.valueOf(publicRow.get("settlementNo"));
+            var batch = settlementBatches.get(settlementNo);
+            if (batch == null || !batch.complete() || batch.settlementNos().isEmpty()) {
+                publicRow.put("frozenCount", null);
+            } else {
+                publicRow.put("frozenCount", frozenByTrace.computeIfAbsent(batch.traceId(),
+                        ignored -> mapper.countHoldsBySettlementNos(batch.settlementNos())));
+            }
+            publicRow.put("proposerName", batch == null ? null : batch.proposerName());
+            publicRow.put("approverName", batch == null ? null : batch.approverName());
             return publicRow;
         }).toList();
         String nextCursor = hasMore && !fetched.isEmpty()
@@ -138,6 +178,81 @@ public class OpsReferralRewardService {
         result.put("effectiveAt", effectiveAt.atZone(DATABASE_ZONE).toInstant());
         result.put("version", currentVersion);
         result.put("rewardSnapshotHash", snapshotHash);
+        return result;
+    }
+
+    /** Read-only preflight for one newbie; uses the same production qualification query as settlement, never writes. */
+    public Map<String, Object> settlementEligibility(Long invitedUserId) {
+        requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_SETTLEMENT_FORBIDDEN_IN_SANDBOX");
+        if (invitedUserId == null || invitedUserId <= 0 || invitedUserId > 9_007_199_254_740_991L) {
+            throw new BizException(422, "REFERRAL_REWARD_INVITED_USER_INVALID");
+        }
+        boolean enabled = referralEnabled();
+        EffectiveRewards rewards = effectiveRewards();
+        boolean configReady = hasPositiveRewards(rewards);
+        List<PriorPolicy> priorPolicies = priorPolicies();
+        for (PriorPolicy prior : priorPolicies) {
+            if (hasPositiveRewards(prior.rewards())) { configReady = true; break; }
+        }
+        LocalDateTime effectiveAt = effectiveAtRequired();
+        boolean holdRisky = "risk_bucket".equals(lockMode());
+        ReferralRewardMapper.EligibilitySnapshot snapshot = mapper.eligibilitySnapshot(invitedUserId);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("invitedUserId", invitedUserId);
+        result.put("effectiveAt", effectiveAt.atZone(DATABASE_ZONE).toOffsetDateTime().toString());
+        result.put("configReady", configReady);
+        result.put("registeredAt", snapshot == null || snapshot.createdAt() == null ? null
+                : snapshot.createdAt().atZone(DATABASE_ZONE).toOffsetDateTime().toString());
+        result.put("walletPresent", snapshot == null ? null : Boolean.TRUE.equals(snapshot.walletPresent()));
+        result.put("settled", snapshot == null ? null : Boolean.TRUE.equals(snapshot.settled()));
+        result.put("freezeGift", snapshot == null ? null : snapshot.freezeGift());
+        List<ReferralRewardMapper.GiftHold> releaseHolds = snapshot == null
+                ? List.of() : mapper.releaseCandidates(invitedUserId);
+        long firstPaidOrder = snapshot == null ? 0L : mapper.firstPaidOrderCount(invitedUserId);
+        result.put("frozenGiftCount", snapshot == null ? null : releaseHolds.size());
+        result.put("firstPaidOrder", snapshot == null ? null : firstPaidOrder > 0);
+        boolean activeAccount = snapshot != null && "ACTIVE".equalsIgnoreCase(snapshot.status())
+                && !Integer.valueOf(1).equals(snapshot.isDeleted());
+        boolean currentPayable = enabled && hasPositiveRewards(rewards);
+        List<ReferralRewardMapper.ReferralRow> pending = snapshot == null || !currentPayable ? List.of()
+                : mapper.findPendingReferrals(effectiveAt, "PRODUCTION", 0, holdRisky, 1, invitedUserId);
+        List<ReferralRewardMapper.ReferralRow> riskScope = snapshot == null || !currentPayable ? List.of()
+                : mapper.findSettlementScopeCandidates(effectiveAt, null, "PRODUCTION", 0, 1, invitedUserId);
+        for (PriorPolicy prior : priorPolicies) {
+            if (!hasPositiveRewards(prior.rewards())) continue;
+            boolean priorHoldRisky = "risk_bucket".equals(prior.lockMode());
+            if (snapshot != null && pending.isEmpty()) {
+                pending = mapper.findPriorPendingReferrals(prior.effectiveAt(), prior.effectiveUntil(),
+                        "PRODUCTION", 0, priorHoldRisky, 1, invitedUserId);
+            }
+            if (snapshot != null && riskScope.isEmpty()) {
+                riskScope = mapper.findSettlementScopeCandidates(prior.effectiveAt(), prior.effectiveUntil(),
+                        "PRODUCTION", 0, 1, invitedUserId);
+            }
+        }
+        boolean candidate = enabled && configReady && !pending.isEmpty();
+        Boolean riskBlocked = enabled && configReady && !riskScope.isEmpty() ? !candidate : null;
+        result.put("riskBlocked", riskBlocked);
+        boolean freezeGift = Boolean.TRUE.equals(snapshot == null ? null : snapshot.freezeGift());
+        boolean settled = snapshot != null && Boolean.TRUE.equals(snapshot.settled());
+        boolean releasePossible = settled && freezeGift && firstPaidOrder > 0 && releaseHolds.stream()
+                .anyMatch(hold -> mapper.giftReleaseAllowed(invitedUserId, hold.sandbox(),
+                        "risk_bucket".equals(hold.lockMode())) == 1);
+        result.put("eligible", candidate);
+        result.put("willFreeze", candidate && freezeGift);
+        result.put("releasePossible", releasePossible);
+        String reason;
+        if (!enabled) reason = "DISABLED";
+        else if (!configReady) reason = "NOT_CONFIGURED";
+        else if (snapshot == null) reason = "USER_NOT_FOUND";
+        else if (!activeAccount) reason = "USER_NOT_ACTIVE";
+        else if (!candidate && (snapshot.createdAt() == null || snapshot.createdAt().isBefore(effectiveAt))) reason = "REGISTERED_BEFORE_EFFECTIVE_AT";
+        else if (!Boolean.TRUE.equals(snapshot.walletPresent())) reason = "WALLET_MISSING";
+        else if (Boolean.TRUE.equals(riskBlocked)) reason = "RISK_BLOCKED";
+        else if (settled) reason = releasePossible ? "ALREADY_SETTLED_GIFT_RELEASABLE" : "ALREADY_SETTLED";
+        else if (candidate) reason = "ELIGIBLE";
+        else reason = "NOT_ELIGIBLE";
+        result.put("reason", reason);
         return result;
     }
 
@@ -215,6 +330,78 @@ public class OpsReferralRewardService {
             String paramKey,
             String idempotencyKey,
             ReferralRewardParamUpdateRequest request) {
+        return updateParam(paramKey, idempotencyKey, request, false);
+    }
+
+    public record H8ParamReview(AuditLockTarget target, String action, String before, String after) {}
+
+    @Transactional
+    public H8ParamReview previewParamApproval(ReferralRewardParamUpdateRequest request) {
+        requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_CONFIG_FORBIDDEN_IN_SANDBOX");
+        requireReason(request == null ? null : request.reason());
+        String key = request.key();
+        if (!PARAMS.contains(key)) {
+            throw new BizException(422, "REFERRAL_PARAM_NOT_ALLOWED");
+        }
+        String value = normalizeParam(key, request.value());
+        long expectedVersion = requireExpectedVersion(request.expectedVersion());
+        requireRewardMutex();
+        long currentVersion = version(config.activeValueForUpdate(VERSION_KEY).orElse("1"));
+        if (expectedVersion != currentVersion) {
+            throw new BizException(409, "H8_CONFIG_VERSION_CONFLICT");
+        }
+        String before = rawValue(key);
+        if (!amplifies(key, before, value)) {
+            throw new BizException(422, "H8_PARAM_APPROVAL_NOT_REQUIRED");
+        }
+        EffectiveRewards proposed = effectiveRewards(key, value);
+        requireHealthyCoverage();
+        String label = switch (key) {
+            case "newcomer.usdt" -> "新人 USDT 基础额";
+            case "newcomer.nex" -> "新人 UVT 基础额";
+            case "inviter.nex" -> "邀请人 UVT 基础额";
+            case "newcomer.lockMode" -> "新人礼发放模式";
+            case "enabled" -> "新人礼与邀请奖励";
+            default -> throw new IllegalStateException("REFERRAL_PARAM_NOT_ALLOWED");
+        };
+        String unit = "newcomer.usdt".equals(key) ? " USDT" : key.endsWith(".nex") ? " UVT" : "";
+        String beforeDisplay = "enabled".equals(key) ? Boolean.parseBoolean(before) ? "已启用" : "已停用"
+                : "newcomer.lockMode".equals(key) ? "direct".equals(before) ? "符合资格就直接发" : "按风险检查发放" : before;
+        String afterDisplay = "enabled".equals(key) ? "已启用"
+                : "newcomer.lockMode".equals(key) ? "符合资格就直接发" : value;
+        String after = label + "：" + afterDisplay + unit + "；配置版本：" + Math.addExact(currentVersion, 1L);
+        if (Set.of("newcomer.usdt", "newcomer.nex", "inviter.nex").contains(key)) {
+            boolean inviter = "inviter.nex".equals(key);
+            BigDecimal multiplier = inviter ? proposed.inviterMultiplier() : proposed.newcomerMultiplier();
+            BigDecimal amount = inviter ? proposed.inviterNex()
+                    : "newcomer.usdt".equals(key) ? proposed.newcomerUsdt() : proposed.newcomerNex();
+            after += "；提案参考：第 " + proposed.rhythmMonth() + " 个月，倍率 " + multiplier.stripTrailingZeros().toPlainString()
+                    + "，有效额 " + amount.toPlainString() + unit;
+        }
+        String action = switch (key) {
+            case "newcomer.usdt" -> "提高新人 USDT 基础额";
+            case "newcomer.nex" -> "提高新人 UVT 基础额";
+            case "inviter.nex" -> "提高邀请人 UVT 基础额";
+            case "newcomer.lockMode" -> "改为符合资格就直接发";
+            case "enabled" -> "启用新人礼与邀请奖励";
+            default -> throw new IllegalStateException("REFERRAL_PARAM_NOT_ALLOWED");
+        };
+        return new H8ParamReview(H8RewardParamApproval.TARGET, action,
+                label + "：" + beforeDisplay + unit + "；配置版本：" + currentVersion, after);
+    }
+
+    @Transactional
+    public Map<String, Object> executeApprovedParam(
+            String idempotencyKey, ReferralRewardParamUpdateRequest request, AuditLockTarget expectedTarget) {
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())
+                || !H8RewardParamApproval.TARGET.equals(expectedTarget)) {
+            throw new BizException(403, "H8_PARAM_APPROVAL_FORBIDDEN");
+        }
+        return updateParam(request.key(), idempotencyKey, request, true);
+    }
+
+    private Map<String, Object> updateParam(
+            String paramKey, String idempotencyKey, ReferralRewardParamUpdateRequest request, boolean approved) {
         requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_CONFIG_FORBIDDEN_IN_SANDBOX");
         try {
             validateIdempotency(idempotencyKey);
@@ -234,6 +421,22 @@ public class OpsReferralRewardService {
                         }
                         String before = rawValue(paramKey);
                         boolean amplification = amplifies(paramKey, before, value);
+                        if (amplification && !approved) {
+                            throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
+                        }
+                        if (approved && !amplification) {
+                            throw new BizException(422, "H8_PARAM_APPROVAL_NOT_REQUIRED");
+                        }
+                        if (value.equals(normalizeParam(paramKey, before))) {
+                            Map<String, Object> unchanged = new LinkedHashMap<>();
+                            unchanged.put("key", paramKey);
+                            unchanged.put("value", value);
+                            unchanged.put("status", "UNCHANGED");
+                            unchanged.put("version", currentVersion);
+                            unchanged.put("effectiveAt", config.activeValue(EFFECTIVE_AT_KEY).orElse(null));
+                            return unchanged;
+                        }
+                        EffectiveRewards appliedRewards = approved ? effectiveRewards(paramKey, value) : null;
                         Map<String, Object> coverageEvidence;
                         if (amplification) {
                             coverageEvidence = coverageDetail(requireHealthyCoverage());
@@ -243,16 +446,25 @@ public class OpsReferralRewardService {
                                     "reason", "NOT_REQUIRED_FOR_NON_AMPLIFYING_CHANGE");
                         }
                         long nextVersion = Math.addExact(currentVersion, 1L);
-                        boolean startsNewRewardPolicy = ("enabled".equals(paramKey) && !Boolean.parseBoolean(before)
-                                && Boolean.parseBoolean(value)) || !"enabled".equals(paramKey);
-                        if (startsNewRewardPolicy) {
-                            config.upsertAdminValue(EFFECTIVE_AT_KEY, clock.instant().toString(), "DATETIME", "GROWTH_REFERRAL",
-                                    "H8 reward policy version " + nextVersion
-                                            + " effective time; earlier pending referrals are never repriced");
-                        } else if (config.activeValue(EFFECTIVE_AT_KEY).isEmpty()) {
-                            config.upsertAdminValue(EFFECTIVE_AT_KEY, clock.instant().toString(), "DATETIME", "GROWTH_REFERRAL",
-                                    "H8 first effective time; historical referrals are never retroactively paid");
+                        Instant policyChangeAt = clock.instant();
+                        Long pendingBeforePolicyChange = null;
+                        if (config.activeValue(EFFECTIVE_AT_KEY).isPresent()) {
+                            LocalDateTime priorEffectiveAt = effectiveAtRequired();
+                            // Every accepted param change freezes the running interval. Only an interval
+                            // that was actually enabled with positive rewards is sealed; a disabled or
+                            // zero-reward interval must not resurrect registrations made while it was off.
+                            // Pending count may be temporarily zero (wallet missing or risk review), but
+                            // the valid old segment still needs its own amount, interval and lock mode.
+                            boolean priorEligible = "enabled".equals(paramKey) ? Boolean.parseBoolean(before) : referralEnabled();
+                            if (priorEligible && hasPositiveRewards(effectiveRewards())) {
+                                pendingBeforePolicyChange = mapper.totalPendingBefore(priorEffectiveAt,
+                                        LocalDateTime.ofInstant(policyChangeAt, DATABASE_ZONE), 0, "risk_bucket".equals(lockMode()));
+                                storePriorPolicy(priorEffectiveAt, policyChangeAt);
+                            }
                         }
+                        config.upsertAdminValue(EFFECTIVE_AT_KEY, policyChangeAt.toString(), "DATETIME", "GROWTH_REFERRAL",
+                                "H8 reward policy version " + nextVersion
+                                        + " effective time; earlier pending referrals are never repriced");
                         config.upsertAdminValue(STORAGE_KEYS.get(paramKey), value,
                                 "enabled".equals(paramKey) ? "BOOLEAN"
                                         : "newcomer.lockMode".equals(paramKey) ? "STRING" : "DECIMAL", "GROWTH_REFERRAL",
@@ -260,16 +472,34 @@ public class OpsReferralRewardService {
                         config.upsertAdminValue(VERSION_KEY, String.valueOf(nextVersion), "NUMBER",
                                 "GROWTH_REFERRAL", "H8 referral reward configuration version");
                         String operator = actor(request.operator());
-                        audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey,
-                                Map.of("before", before, "after", value, "reason", reason,
-                                        "versionBefore", currentVersion, "versionAfter", nextVersion,
-                                        "coverage", coverageEvidence));
+                        Map<String, Object> detail = new LinkedHashMap<>(Map.of(
+                                "before", before, "after", value, "reason", reason,
+                                "versionBefore", currentVersion, "versionAfter", nextVersion,
+                                "coverage", coverageEvidence));
+                        if (appliedRewards != null) {
+                            detail.put("approvalOperationId", A2ReplayContext.operationId());
+                            detail.put("rhythmMonth", appliedRewards.rhythmMonth());
+                            detail.put("newcomerMultiplier", appliedRewards.newcomerMultiplier());
+                            detail.put("inviterMultiplier", appliedRewards.inviterMultiplier());
+                            detail.put("effectiveRewards", Map.of("newcomer.usdt", appliedRewards.newcomerUsdt(),
+                                    "newcomer.nex", appliedRewards.newcomerNex(), "inviter.nex", appliedRewards.inviterNex()));
+                        }
+                        if (pendingBeforePolicyChange != null) {
+                            detail.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
+                            if (pendingBeforePolicyChange > 0) detail.put("priorCohortDisposition", "AUTO_SETTLE_UNDER_PRIOR_POLICY");
+                        }
+                        audit("REFERRAL_REWARD_PARAM_UPDATE", paramKey, operator, idempotencyKey, detail);
                         outbox.publish("REFERRAL_REWARD_PARAM", paramKey, "H8_REFERRAL_REWARD_PARAM_CHANGED",
                                 Map.of("paramKey", paramKey, "before", before, "after", value,
                                         "version", nextVersion, "operator", operator, "reason", reason,
                                         "idempotencyKey", idempotencyKey));
-                        return Map.of("key", paramKey, "value", value, "status", "UPDATED",
-                                "version", nextVersion);
+                        Map<String, Object> result = new LinkedHashMap<>(Map.of("key", paramKey, "value", value,
+                                "status", "UPDATED", "version", nextVersion));
+                        if (pendingBeforePolicyChange != null) {
+                            result.put("pendingBeforePolicyChange", pendingBeforePolicyChange);
+                            if (pendingBeforePolicyChange > 0) result.put("priorCohortDisposition", "AUTO_SETTLE_UNDER_PRIOR_POLICY");
+                        }
+                        return result;
                     });
         } catch (RuntimeException ex) {
             rejectedAudit("REFERRAL_REWARD_PARAM_UPDATE_REJECTED", paramKey,
@@ -321,9 +551,11 @@ public class OpsReferralRewardService {
                     () -> settle(limit, reason, actor(request.operator()), idempotencyKey, snapshot,
                             accountSandbox, onlyInvitedUserId));
         } catch (RuntimeException ex) {
+            Map<String, Object> riskEvidence = ex instanceof RiskBlockedReferralException blocked
+                    ? blocked.evidence() : Map.of();
             rejectedAudit("REFERRAL_REWARD_SETTLEMENT_RUN_REJECTED", "batch",
                     request == null ? null : request.operator(), idempotencyKey,
-                    request == null ? null : request.reason(), ex);
+                    request == null ? null : request.reason(), ex, riskEvidence);
             throw ex;
         }
     }
@@ -445,56 +677,47 @@ public class OpsReferralRewardService {
         requireHealthyCoverage();
         LocalDateTime effectiveAt = snapshot.effectiveAt();
         EffectiveRewards effectiveRewards = snapshot.rewards();
-        BigDecimal newcomerMultiplier = effectiveRewards.newcomerMultiplier();
-        BigDecimal inviterMultiplier = effectiveRewards.inviterMultiplier();
-        BigDecimal newcomerUsdt = effectiveRewards.newcomerUsdt();
-        BigDecimal newcomerNex = effectiveRewards.newcomerNex();
-        BigDecimal inviterNex = effectiveRewards.inviterNex();
         String lockMode = snapshot.lockMode();
-        String configSnapshot = "usdt=" + newcomerUsdt.toPlainString() + ",newcomerNex="
-                + newcomerNex.toPlainString() + ",inviterNex=" + inviterNex.toPlainString()
-                + ",newcomerMultiplier=" + newcomerMultiplier.toPlainString()
-                + ",inviterMultiplier=" + inviterMultiplier.toPlainString() + ",lockMode=" + lockMode;
-        if (newcomerUsdt.signum() == 0 && newcomerNex.signum() == 0 && inviterNex.signum() == 0) {
-            throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_NOT_CONFIGURED");
-        }
-        int settled = 0;
-        int skipped = 0;
         boolean holdRisky = "risk_bucket".equals(lockMode);
-        List<ReferralRewardMapper.ReferralRow> pending = mapper.findPendingReferrals(
-                effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky, limit, onlyInvitedUserId);
-        if (onlyInvitedUserId != null && pending.isEmpty()) {
-            if(Boolean.TRUE.equals(mapper.freezeNewcomer(onlyInvitedUserId))) {
-                int released=releasePurchasedGifts(onlyInvitedUserId);
-                if(released>0) return Map.of("settled",0,"skipped",0,"released",released,"limit",limit);
+        List<ReferralRewardMapper.ReferralRow> currentPending = hasPositiveRewards(effectiveRewards)
+                ? mapper.findPendingReferrals(effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky, limit, onlyInvitedUserId)
+                : List.of();
+        List<PriorPolicy> priorPolicies = priorPolicies();
+        java.util.LinkedHashMap<PriorPolicy, List<ReferralRewardMapper.ReferralRow>> priorRows = new java.util.LinkedHashMap<>();
+        int remaining = Math.max(0, limit - currentPending.size());
+        for (PriorPolicy prior : priorPolicies) {
+            if (remaining <= 0) break;
+            if (!hasPositiveRewards(prior.rewards())) continue;
+            List<ReferralRewardMapper.ReferralRow> rows = mapper.findPriorPendingReferrals(
+                    prior.effectiveAt(), prior.effectiveUntil(), SETTLEMENT_ENVIRONMENT, accountSandbox,
+                    "risk_bucket".equals(prior.lockMode()), remaining, onlyInvitedUserId);
+            if (rows.isEmpty()) continue;
+            priorRows.put(prior, rows);
+            remaining -= rows.size();
+        }
+        if (onlyInvitedUserId != null && currentPending.isEmpty() && priorRows.isEmpty()) {
+            if (Boolean.TRUE.equals(mapper.freezeNewcomer(onlyInvitedUserId))) {
+                int released = releasePurchasedGifts(onlyInvitedUserId);
+                if (released > 0) return Map.of("settled", 0, "skipped", 0, "released", released, "limit", limit);
             }
+            Map<String, Object> riskEvidence = riskBlockedEvidence(
+                    onlyInvitedUserId, effectiveAt, effectiveRewards, priorPolicies, accountSandbox);
+            if (riskEvidence != null) throw new RiskBlockedReferralException(riskEvidence);
             throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
         }
-        for (ReferralRewardMapper.ReferralRow row : pending) {
-            String settlementNo = "REF-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
-            BigDecimal actualInviterNex=row.inviterUserId()==null?BigDecimal.ZERO:inviterNex;
-            if (mapper.insertSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
-                    newcomerUsdt, newcomerNex, actualInviterNex, lockMode, configSnapshot, operator, reason, key,
-                    effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky) != 1) {
-                if (onlyInvitedUserId != null) {
-                    throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
-                }
-                skipped++;
-                continue;
-            }
-            settleNewcomer(settlementNo,row.invitedUserId(),newcomerUsdt,newcomerNex,0,null);
-            if(row.inviterUserId()!=null) {
-                creditReward(row.inviterUserId(), settlementNo + ":INVITER", "UVT", actualInviterNex);
-                post(settlementNo + ":INVITER", row.inviterUserId(), BigDecimal.ZERO, actualInviterNex, "邀请人奖励");
-            }
-            Map<String,Object> detail=new LinkedHashMap<>(Map.of("invitedUserId",row.invitedUserId(),
-                    "newcomerUsdt",newcomerUsdt,"newcomerNex",newcomerNex,"inviterNex",actualInviterNex,
-                    "lockMode",lockMode,"reason",reason,"sourceEnvironment",SETTLEMENT_ENVIRONMENT));
-            if(row.inviterUserId()!=null) detail.put("inviterUserId",row.inviterUserId());
-            audit("REFERRAL_REWARD_SETTLED",settlementNo,operator,key,detail);
-            if(row.inviterUserId()!=null) outbox.publish("REFERRAL_REWARD_SETTLEMENT",settlementNo,"H8_REFERRAL_REWARD_SETTLED",detail);
-            settled++;
+        String configSnapshot = snapshotText(effectiveRewards, lockMode);
+        SettleCount currentCount = settleRows(currentPending, effectiveAt, effectiveRewards, lockMode, configSnapshot,
+                "CURRENT", reason, operator, key, accountSandbox, holdRisky, onlyInvitedUserId);
+        SettleCount priorCount = new SettleCount(0, 0);
+        for (java.util.Map.Entry<PriorPolicy, List<ReferralRewardMapper.ReferralRow>> priorEntry : priorRows.entrySet()) {
+            PriorPolicy prior = priorEntry.getKey();
+            String priorSnapshot = snapshotText(prior.rewards(), prior.lockMode());
+            SettleCount count = settleRows(priorEntry.getValue(), prior.effectiveAt(), prior.rewards(), prior.lockMode(), priorSnapshot,
+                    "PRIOR", reason, operator, key, accountSandbox, "risk_bucket".equals(prior.lockMode()), onlyInvitedUserId);
+            priorCount = new SettleCount(priorCount.settled() + count.settled(), priorCount.skipped() + count.skipped());
         }
+        int settled = currentCount.settled() + priorCount.settled();
+        int skipped = currentCount.skipped() + priorCount.skipped();
         // Recompute from the wallet state written by this transaction. If the batch
         // itself crosses B1 or makes UVT valuation unavailable, throwing here rolls
         // back every settlement, wallet credit, ledger entry and audit in the batch.
@@ -508,6 +731,11 @@ public class OpsReferralRewardService {
         batchAudit.put("effectiveAt", effectiveAt);
         batchAudit.put("sourceEnvironment", SETTLEMENT_ENVIRONMENT);
         batchAudit.put("coverage", coverageDetail());
+        if (!priorPolicies.isEmpty()) {
+            batchAudit.put("priorPolicyIntervals", priorPolicies.size());
+            batchAudit.put("priorCohortSettled", priorCount.settled());
+            batchAudit.put("priorCohortSkipped", priorCount.skipped());
+        }
         if (onlyInvitedUserId != null) batchAudit.put("invitedUserId", onlyInvitedUserId);
         audit("REFERRAL_REWARD_SETTLEMENT_RUN", "batch", operator, key, batchAudit);
         Map<String, Object> completed = new LinkedHashMap<>(Map.of(
@@ -517,6 +745,66 @@ public class OpsReferralRewardService {
         outbox.publish("REFERRAL_REWARD_SETTLEMENT", key, "H8_REFERRAL_REWARD_BATCH_COMPLETED",
                 completed);
         return Map.of("settled", settled, "skipped", skipped, "limit", limit);
+    }
+
+    private String snapshotText(EffectiveRewards rewards, String lockMode) {
+        return "usdt=" + rewards.newcomerUsdt().toPlainString()
+                + ",newcomerNex=" + rewards.newcomerNex().toPlainString()
+                + ",inviterNex=" + rewards.inviterNex().toPlainString()
+                + ",newcomerMultiplier=" + rewards.newcomerMultiplier().toPlainString()
+                + ",inviterMultiplier=" + rewards.inviterMultiplier().toPlainString()
+                + ",lockMode=" + lockMode;
+    }
+
+    private SettleCount settleRows(
+            List<ReferralRewardMapper.ReferralRow> rows,
+            LocalDateTime effectiveAt,
+            EffectiveRewards rewards,
+            String lockMode,
+            String configSnapshot,
+            String policy,
+            String reason,
+            String operator,
+            String key,
+            int accountSandbox,
+            boolean holdRisky,
+            Long onlyInvitedUserId) {
+        BigDecimal newcomerUsdt = rewards.newcomerUsdt();
+        BigDecimal newcomerNex = rewards.newcomerNex();
+        BigDecimal inviterNex = rewards.inviterNex();
+        int settled = 0;
+        int skipped = 0;
+        for (ReferralRewardMapper.ReferralRow row : rows) {
+            String settlementNo = "REF-" + UUID.randomUUID().toString().replace("-", "").substring(0, 24).toUpperCase();
+            BigDecimal actualInviterNex = row.inviterUserId() == null ? BigDecimal.ZERO : inviterNex;
+            if (mapper.insertSettlement(settlementNo, row.invitedUserId(), row.inviterUserId(),
+                    newcomerUsdt, newcomerNex, actualInviterNex, lockMode, configSnapshot, operator, reason, key,
+                    effectiveAt, SETTLEMENT_ENVIRONMENT, accountSandbox, holdRisky) != 1) {
+                if (onlyInvitedUserId != null) {
+                    throw new BizException(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
+                }
+                skipped++;
+                continue;
+            }
+            settleNewcomer(settlementNo, row.invitedUserId(), newcomerUsdt, newcomerNex, 0, null);
+            if (row.inviterUserId() != null) {
+                creditReward(row.inviterUserId(), settlementNo + ":INVITER", "UVT", actualInviterNex);
+                post(settlementNo + ":INVITER", row.inviterUserId(), BigDecimal.ZERO, actualInviterNex, "邀请人奖励");
+            }
+            Map<String, Object> detail = new LinkedHashMap<>(Map.of("invitedUserId", row.invitedUserId(),
+                    "newcomerUsdt", newcomerUsdt, "newcomerNex", newcomerNex, "inviterNex", actualInviterNex,
+                    "lockMode", lockMode, "reason", reason, "sourceEnvironment", SETTLEMENT_ENVIRONMENT,
+                    "policy", policy));
+            if (row.inviterUserId() != null) detail.put("inviterUserId", row.inviterUserId());
+            audit("REFERRAL_REWARD_SETTLED", settlementNo, operator, key, detail);
+            if (row.inviterUserId() != null) outbox.publish("REFERRAL_REWARD_SETTLEMENT", settlementNo,
+                    "H8_REFERRAL_REWARD_SETTLED", detail);
+            settled++;
+        }
+        return new SettleCount(settled, skipped);
+    }
+
+    private record SettleCount(int settled, int skipped) {
     }
 
     private void settleNewcomer(String no,long user,BigDecimal usdt,BigDecimal nex,int sandbox,String run) {
@@ -576,6 +864,10 @@ public class OpsReferralRewardService {
     }
 
     private EffectiveRewards effectiveRewards() {
+        return effectiveRewards(null, null);
+    }
+
+    private EffectiveRewards effectiveRewards(String changedKey, String normalizedValue) {
         GrowthRhythmSnapshot rhythm = GrowthRhythmSnapshot.from(config, readTimeSeedPolicy);
         BigDecimal newcomerMultiplier = rhythm.newUserBonusMultiplier();
         BigDecimal inviterMultiplier = rhythm.inviteRewardMultiplier();
@@ -584,9 +876,12 @@ public class OpsReferralRewardService {
         }
         return new EffectiveRewards(
                 rhythm.currentMonth(), newcomerMultiplier, inviterMultiplier,
-                effectiveAmount(amount("newcomer.usdt"), newcomerMultiplier),
-                effectiveAmount(amount("newcomer.nex"), newcomerMultiplier),
-                effectiveAmount(amount("inviter.nex"), inviterMultiplier));
+                effectiveAmount("newcomer.usdt".equals(changedKey) ? new BigDecimal(normalizedValue)
+                        : amount("newcomer.usdt"), newcomerMultiplier),
+                effectiveAmount("newcomer.nex".equals(changedKey) ? new BigDecimal(normalizedValue)
+                        : amount("newcomer.nex"), newcomerMultiplier),
+                effectiveAmount("inviter.nex".equals(changedKey) ? new BigDecimal(normalizedValue)
+                        : amount("inviter.nex"), inviterMultiplier));
     }
 
     /** 钱包、结算表、D4 与 App/PC 展示共用六位小数，不把数据库隐式舍入当业务规则。 */
@@ -607,6 +902,63 @@ public class OpsReferralRewardService {
             BigDecimal newcomerUsdt,
             BigDecimal newcomerNex,
             BigDecimal inviterNex) {
+    }
+
+
+    private boolean hasPositiveRewards(EffectiveRewards rewards) {
+        return rewards.newcomerUsdt().signum() > 0 || rewards.newcomerNex().signum() > 0 || rewards.inviterNex().signum() > 0;
+    }
+
+    private record PriorPolicy(
+            LocalDateTime effectiveAt,
+            LocalDateTime effectiveUntil,
+            String lockMode,
+            EffectiveRewards rewards) {
+    }
+
+    private void storePriorPolicy(LocalDateTime priorEffectiveAt, Instant nextEffectiveAt) {
+        EffectiveRewards priorRewards = effectiveRewards();
+        String record = String.join("|",
+                priorEffectiveAt.atZone(DATABASE_ZONE).toInstant().toString(),
+                nextEffectiveAt.toString(),
+                lockMode(),
+                String.valueOf(priorRewards.rhythmMonth()),
+                priorRewards.newcomerMultiplier().toPlainString(),
+                priorRewards.inviterMultiplier().toPlainString(),
+                priorRewards.newcomerUsdt().toPlainString(),
+                priorRewards.newcomerNex().toPlainString(),
+                priorRewards.inviterNex().toPlainString());
+        List<String> records = new java.util.ArrayList<>(priorPolicyRecords());
+        records.add(record);
+        config.upsertAdminValue(PRIOR_POLICY_KEY, String.join("\n", records), "STRING", "GROWTH_REFERRAL",
+                "H8 prior reward policy intervals for pending referrals registered before each policy change");
+    }
+
+    private List<String> priorPolicyRecords() {
+        String raw = config.activeValue(PRIOR_POLICY_KEY).orElse(null);
+        if (!StringUtils.hasText(raw)) return new java.util.ArrayList<>();
+        return new java.util.ArrayList<>(List.of(raw.split("\\n", -1)).stream()
+                .filter(StringUtils::hasText).toList());
+    }
+
+    private List<PriorPolicy> priorPolicies() {
+        List<PriorPolicy> policies = new java.util.ArrayList<>();
+        for (String record : priorPolicyRecords()) {
+            String[] p = record.split("\\|", -1);
+            if (p.length != 9) throw new IllegalStateException("H8_PRIOR_POLICY_INVALID");
+            policies.add(new PriorPolicy(
+                    LocalDateTime.ofInstant(Instant.parse(p[0]), DATABASE_ZONE),
+                    LocalDateTime.ofInstant(Instant.parse(p[1]), DATABASE_ZONE),
+                    p[2],
+                    new EffectiveRewards(
+                            Integer.parseInt(p[3]),
+                            new BigDecimal(p[4]),
+                            new BigDecimal(p[5]),
+                            new BigDecimal(p[6]),
+                            new BigDecimal(p[7]),
+                            new BigDecimal(p[8]))));
+        }
+        return policies;
     }
 
     private record RewardSnapshot(
@@ -682,7 +1034,11 @@ public class OpsReferralRewardService {
     }
 
     private void postAsset(String bizNo, Long userId, String asset, BigDecimal amount, String remark) {
-        ledger.postLedgerEntry(bizNo, userId, "REFERRAL_REWARD", asset, "IN", amount, "SUCCESS", remark);
+        if ("USDT".equals(asset)) {
+            ledger.postLedgerEntryWithActualBalance(bizNo, userId, "REFERRAL_REWARD", asset, "IN", amount, "SUCCESS", remark);
+        } else {
+            ledger.postLedgerEntry(bizNo, userId, "REFERRAL_REWARD", asset, "IN", amount, "SUCCESS", remark);
+        }
     }
 
     private BigDecimal amount(String key) {
@@ -756,7 +1112,7 @@ public class OpsReferralRewardService {
                 || snapshot.redlinePct().signum() <= 0) {
             throw new BizException(422, "B1_COVERAGE_DATA_UNAVAILABLE");
         }
-        if (snapshot.coverageRatio().compareTo(snapshot.redlinePct()) < 0) {
+        if (snapshot.redlineBreached()) {
             throw new BizException(422, "B1_COVERAGE_BELOW_REDLINE");
         }
         return snapshot;
@@ -768,7 +1124,8 @@ public class OpsReferralRewardService {
 
     private Map<String, Object> coverageDetail(TreasuryCoverageSnapshot snapshot) {
         return Map.of("coverageRatio", snapshot.coverageRatio(), "redlinePct", snapshot.redlinePct(),
-                "reliable", snapshot.reliable());
+                "reliable", snapshot.reliable(), "reserveUsd", snapshot.ratioReserveUsd(),
+                "liabilitiesUsd", snapshot.ratioLiabilitiesUsd(), "redlineBreached", snapshot.redlineBreached());
     }
 
     private LocalDateTime effectiveAtRequired() {
@@ -821,6 +1178,99 @@ public class OpsReferralRewardService {
         }
     }
 
+    /**
+     * Explains a single-user settlement rejection only when the reward exists outside the
+     * risk filter and a definitive K2 disposition/cluster hit proves the denial. Review
+     * holds and preflight reads never produce this evidence.
+     */
+    private Map<String, Object> riskBlockedEvidence(
+            Long invitedUserId,
+            LocalDateTime effectiveAt,
+            EffectiveRewards currentRewards,
+            List<PriorPolicy> priorPolicies,
+            int accountSandbox) {
+        ReferralRewardMapper.ReferralRow candidate = null;
+        EffectiveRewards reward = null;
+        if (hasNewcomerReward(currentRewards)) {
+            List<ReferralRewardMapper.ReferralRow> rows = mapper.findSettlementScopeCandidates(
+                    effectiveAt, null, SETTLEMENT_ENVIRONMENT, accountSandbox, 1, invitedUserId);
+            if (!rows.isEmpty()) {
+                candidate = rows.get(0);
+                reward = currentRewards;
+            }
+        }
+        if (candidate == null) {
+            for (PriorPolicy prior : priorPolicies) {
+                if (!hasNewcomerReward(prior.rewards())) continue;
+                List<ReferralRewardMapper.ReferralRow> rows = mapper.findSettlementScopeCandidates(
+                        prior.effectiveAt(), prior.effectiveUntil(), SETTLEMENT_ENVIRONMENT,
+                        accountSandbox, 1, invitedUserId);
+                if (rows.isEmpty()) continue;
+                candidate = rows.get(0);
+                reward = prior.rewards();
+                break;
+            }
+        }
+        if (candidate == null) return null;
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        String rewardIdentity = "H8_NEWCOMER_GIFT:" + candidate.invitedUserId();
+        evidence.put("rewardIdentity", rewardIdentity);
+        evidence.put("rewardType", "NEWCOMER_WELCOME_GIFT");
+        evidence.put("invitedUserId", candidate.invitedUserId());
+        if (candidate.inviterUserId() != null) evidence.put("inviterUserId", candidate.inviterUserId());
+        evidence.put("newcomerUsdt", reward.newcomerUsdt());
+        evidence.put("newcomerNex", reward.newcomerNex());
+        List<ReferralRewardMapper.K2GiftBlock> hits = mapper.findK2GiftBlocks(
+                candidate.invitedUserId(), candidate.inviterUserId());
+        List<String> clusters = hits.stream().map(ReferralRewardMapper.K2GiftBlock::clusterId)
+                .filter(StringUtils::hasText).distinct().sorted().toList();
+        if (clusters.size() == 1) {
+            String clusterId = clusters.get(0);
+            ReferralRewardMapper.K2GiftBlock hit = hits.stream()
+                    .filter(candidateHit -> clusterId.equals(candidateHit.clusterId()))
+                    .findFirst().orElseThrow();
+            evidence.put("attribution", "UNIQUE_CLUSTER");
+            evidence.put("clusterId", hit.clusterId());
+            evidence.put("hitSource", hit.hitSource());
+            if (StringUtils.hasText(hit.riskRowId())) evidence.put("riskRowId", hit.riskRowId());
+            if (StringUtils.hasText(hit.disposition())) evidence.put("disposition", hit.disposition());
+        } else if (clusters.size() > 1) {
+            // Both the invited user and the inviter may match different hard blocks.
+            // Keep the real rejection reason, but never attribute the reward to one cluster.
+            evidence.put("attribution", "MULTI_CLUSTER");
+            evidence.put("clusterIds", clusters);
+            evidence.put("hitSources", hits.stream().map(ReferralRewardMapper.K2GiftBlock::hitSource)
+                    .filter(StringUtils::hasText).distinct().sorted().toList());
+        } else {
+            List<ReferralRewardMapper.K2GiftBlock> fuzzy = mapper.findK2FuzzyGiftBlocks(
+                    candidate.invitedUserId(), candidate.inviterUserId());
+            if (fuzzy.isEmpty()) return null;
+            // A substring LIKE match cannot prove which cluster owns the denial.
+            evidence.put("attribution", "FUZZY_TEXT_ONLY");
+            evidence.put("fuzzyClusterIds", fuzzy.stream().map(ReferralRewardMapper.K2GiftBlock::clusterId)
+                    .filter(StringUtils::hasText).distinct().sorted().toList());
+        }
+        evidence.put("riskBlocked", true);
+        return evidence;
+    }
+
+    private boolean hasNewcomerReward(EffectiveRewards rewards) {
+        return rewards.newcomerUsdt().signum() > 0 || rewards.newcomerNex().signum() > 0;
+    }
+
+    private static final class RiskBlockedReferralException extends BizException {
+        private final Map<String, Object> evidence;
+
+        private RiskBlockedReferralException(Map<String, Object> evidence) {
+            super(409, "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
+            this.evidence = evidence;
+        }
+
+        private Map<String, Object> evidence() {
+            return evidence;
+        }
+    }
+
     private void rejectedAudit(
             String action,
             String resourceId,
@@ -828,12 +1278,24 @@ public class OpsReferralRewardService {
             String idempotencyKey,
             String reason,
             RuntimeException error) {
+        rejectedAudit(action, resourceId, operator, idempotencyKey, reason, error, Map.of());
+    }
+
+    private void rejectedAudit(
+            String action,
+            String resourceId,
+            String operator,
+            String idempotencyKey,
+            String reason,
+            RuntimeException error,
+            Map<String, Object> evidence) {
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("reason", StringUtils.hasText(reason) ? reason.trim() : "");
         detail.put("idempotencyKey", StringUtils.hasText(idempotencyKey) ? idempotencyKey.trim() : "");
         detail.put("error", StringUtils.hasText(error.getMessage())
                 ? error.getMessage()
                 : error.getClass().getSimpleName());
+        if (!evidence.isEmpty()) detail.putAll(evidence);
         audit.recordRequiredInNewTransaction(AuditLogWriteRequest.builder()
                 .action(action)
                 .resourceType("REFERRAL_REWARD")

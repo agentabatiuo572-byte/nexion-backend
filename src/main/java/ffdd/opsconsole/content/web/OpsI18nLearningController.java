@@ -8,6 +8,7 @@ import ffdd.opsconsole.content.domain.I18nLearningOverview;
 import ffdd.opsconsole.content.domain.I18nMessagePairView;
 import ffdd.opsconsole.content.domain.LearningCourseView;
 import ffdd.opsconsole.content.domain.LearningCourseVersionView;
+import ffdd.opsconsole.content.domain.LearningCourseNextVersionView;
 import ffdd.opsconsole.content.dto.I18nActionRequest;
 import ffdd.opsconsole.content.dto.I18nIntegrityFixRequest;
 import ffdd.opsconsole.content.dto.I18nLocalizedCopyRequest;
@@ -142,6 +143,12 @@ public class OpsI18nLearningController {
         return i18nLearningService.courseVersions(courseId);
     }
 
+    @GetMapping("/courses/{courseId}/versions/next")
+    @PreAuthorize("hasAuthority('content_i7_read')")
+    public ApiResult<LearningCourseNextVersionView> nextCourseVersion(@PathVariable String courseId) {
+        return i18nLearningService.nextCourseVersion(courseId);
+    }
+
     @PostMapping("/courses/{courseId}/versions")
     @PreAuthorize("hasAuthority('content_i7_write')")
     public ApiResult<LearningCourseVersionView> createCourseVersion(
@@ -267,9 +274,21 @@ public class OpsI18nLearningController {
         return (ApiResult<T>) idempotencyService.execute(
                 scope,
                 idempotencyKey.trim(),
-                requestHash(scope + "\u0000" + String.valueOf(request).trim()),
+                commandRequestHash(scope, idempotencyKey.trim(), request),
                 ApiResult.class,
                 (Supplier) action);
+    }
+
+    private String commandRequestHash(String scope, String key, Object request) {
+        String payload = scope + (char) 0 + String.valueOf(request).trim();
+        String newSuffix = ", translations=null]";
+        if (request instanceof I18nIntegrityFixRequest fix && fix.translations() == null && payload.endsWith(newSuffix)) {
+            String legacyHash = requestHash(payload.substring(0, payload.length() - newSuffix.length()) + "]");
+            var status = idempotencyService.recoveryStatus(scope, key, legacyHash);
+            if (status != AdminIdempotencyService.RecoveryStatus.NOT_FOUND
+                    && status != AdminIdempotencyService.RecoveryStatus.MISMATCH) return legacyHash;
+        }
+        return requestHash(payload);
     }
 
     private String requestHash(String value) {

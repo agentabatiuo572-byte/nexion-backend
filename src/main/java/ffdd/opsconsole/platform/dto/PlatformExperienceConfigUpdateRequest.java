@@ -12,10 +12,11 @@ public record PlatformExperienceConfigUpdateRequest(
         AppDownloadRequest appDownload,
         String reason,
         String operator,
-        JsonNode interfaceLanguages) {
+        JsonNode interfaceLanguages,
+        JsonNode operatingLanguages) {
     public PlatformExperienceConfigUpdateRequest(Long expectedVersion, String baseUrl, List<ShareChannelRequest> channels,
             AppDownloadRequest appDownload, String reason, String operator) {
-        this(expectedVersion, baseUrl, channels, appDownload, reason, operator, null);
+        this(expectedVersion, baseUrl, channels, appDownload, reason, operator, null, null);
     }
     public record ShareChannelRequest(
             String key,

@@ -60,18 +60,19 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
 
     @Insert("""
             INSERT IGNORE INTO nx_user_account_deletion_request(
-                request_no,user_id,idempotency_key,status,requested_at,created_at,updated_at,is_deleted)
-            VALUES(#{requestNo},#{userId},#{idempotencyKey},'REQUESTED',NOW(),NOW(),NOW(),0)
+                request_no,user_id,idempotency_key,status,original_reason,requested_at,created_at,updated_at,is_deleted)
+            VALUES(#{requestNo},#{userId},#{idempotencyKey},'REQUESTED',#{originalReason},NOW(),NOW(),NOW(),0)
             """)
     int insertAccountDeletionRequest(
             @Param("requestNo") String requestNo,
             @Param("userId") Long userId,
-            @Param("idempotencyKey") String idempotencyKey);
+            @Param("idempotencyKey") String idempotencyKey,
+            @Param("originalReason") String originalReason);
 
     @Select("""
             SELECT request_no AS requestNo,user_id AS userId,status,version,
                    requested_at AS requestedAt,reviewed_at AS reviewedAt,
-                   completed_at AS completedAt,reason,reviewed_by AS reviewedBy,
+                   completed_at AS completedAt,reason,original_reason AS originalReason,reviewed_by AS reviewedBy,
                    cancelled_at AS cancelledAt,block_reason AS blockReason
               FROM nx_user_account_deletion_request
              WHERE request_no=#{requestNo} AND is_deleted=0
@@ -82,7 +83,7 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
     @Select("""
             SELECT request_no AS requestNo,user_id AS userId,status,version,
                    requested_at AS requestedAt,reviewed_at AS reviewedAt,
-                   completed_at AS completedAt,reason,reviewed_by AS reviewedBy,
+                   completed_at AS completedAt,reason,original_reason AS originalReason,reviewed_by AS reviewedBy,
                    cancelled_at AS cancelledAt,block_reason AS blockReason
               FROM nx_user_account_deletion_request
              WHERE request_no=#{requestNo} AND is_deleted=0
@@ -93,7 +94,7 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
     @Select("""
             SELECT request_no AS requestNo,user_id AS userId,status,version,
                    requested_at AS requestedAt,reviewed_at AS reviewedAt,
-                   completed_at AS completedAt,reason,block_reason AS blockReason,
+                   completed_at AS completedAt,reason,original_reason AS originalReason,block_reason AS blockReason,
                    cancelled_at AS cancelledAt
               FROM nx_user_account_deletion_request
              WHERE is_deleted=0
@@ -114,7 +115,7 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
 
     @Select("""
             SELECT request_no AS requestNo,status,version,requested_at AS requestedAt,
-                   reviewed_at AS reviewedAt,completed_at AS completedAt,reason,
+                   reviewed_at AS reviewedAt,completed_at AS completedAt,reason,original_reason AS originalReason,
                    block_reason AS blockReason,cancelled_at AS cancelledAt
               FROM nx_user_account_deletion_request
              WHERE user_id=#{userId} AND idempotency_key=#{idempotencyKey} AND is_deleted=0
@@ -126,7 +127,7 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
 
     @Select("""
             SELECT request_no AS requestNo,status,version,requested_at AS requestedAt,
-                   reviewed_at AS reviewedAt,completed_at AS completedAt,reason,
+                   reviewed_at AS reviewedAt,completed_at AS completedAt,reason,original_reason AS originalReason,
                    block_reason AS blockReason,cancelled_at AS cancelledAt
               FROM nx_user_account_deletion_request
              WHERE user_id=#{userId} AND is_deleted=0
@@ -160,11 +161,11 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
             ) OR EXISTS(
                 SELECT 1 FROM nx_withdrawal_order w
                  WHERE w.user_id=#{userId} AND w.is_deleted=0
-                   AND w.status NOT IN ('COMPLETED','SUCCESS','FAILED','REJECTED','CANCELLED')
+                   AND w.status NOT IN ('COMPLETED','SUCCESS','CONFIRMED','FAILED','REJECTED','REVIEW_REJECTED','ADDRESS_INVALID','TX_FAILED','REFUNDED','CANCELLED')
             ) OR EXISTS(
                 SELECT 1 FROM nx_deposit_order d
                  WHERE d.user_id=#{userId} AND d.is_deleted=0
-                   AND d.status NOT IN ('COMPLETED','SUCCESS','FAILED','REJECTED','CANCELLED')
+                   AND d.status NOT IN ('COMPLETED','SUCCESS','CREDITED','FAILED','REJECTED','CANCELLED')
             ) OR EXISTS(
                 SELECT 1 FROM nx_exchange_order e
                  WHERE e.user_id=#{userId} AND e.is_deleted=0
@@ -172,15 +173,29 @@ public interface AppUserSecurityMapper extends BaseMapper<AppUserSecurityEntity>
             ) OR EXISTS(
                 SELECT 1 FROM nx_staking_position s
                  WHERE s.user_id=#{userId} AND s.is_deleted=0
-                   AND s.status NOT IN ('COMPLETED','CLOSED','CANCELLED','WITHDRAWN')
+                   AND s.status NOT IN ('COMPLETED','CLOSED','CLAIMED','EARLY_WITHDRAWN','CANCELLED','WITHDRAWN')
             ) OR EXISTS(
                 SELECT 1 FROM nx_order o
                  WHERE o.user_id=#{userId} AND o.is_deleted=0
-                   AND (o.order_status NOT IN ('COMPLETED','CANCELLED','CLOSED','FAILED','REFUNDED')
+                   AND (o.order_status NOT IN ('COMPLETED','CANCELLED','CLOSED','FAILED','REFUNDED','EXPIRED')
                         OR o.payment_status NOT IN ('PAID','FAILED','CANCELLED','REFUNDED','EXPIRED'))
             ) THEN 1 ELSE 0 END
             """)
     int hasUnsettledFundsOrOrders(@Param("userId") Long userId);
+
+    /**
+     * 注销结案的钱包结清判据(App 主 PRD v3.7：USDT、NEX 可用余额都等于 0)。
+     * 与上面的汇总判据不同，这里只比「是否等于零」：正余额与负余额(USDT 可为负)都算未结清，
+     * 不把负数当成已结清。待提现等其它约束仍在 hasUnsettledFundsOrOrders 里。
+     */
+    @Select("""
+            SELECT CASE WHEN EXISTS(
+                SELECT 1 FROM nx_user_wallet w
+                 WHERE w.user_id=#{userId} AND w.is_deleted=0
+                   AND (w.usdt_available <> 0 OR w.nex_available <> 0)
+            ) THEN 1 ELSE 0 END
+            """)
+    int hasUnclearedUsableBalance(@Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_user

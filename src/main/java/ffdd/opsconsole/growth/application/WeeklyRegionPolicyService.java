@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import ffdd.opsconsole.growth.mapper.WeeklyRegionPolicyMapper;
 import ffdd.opsconsole.growth.mapper.WeeklyRegionPolicyMapper.LegacyWindow;
+import ffdd.opsconsole.growth.domain.AccountWeeklyPeriod;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
@@ -14,6 +15,8 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -43,7 +46,13 @@ public class WeeklyRegionPolicyService {
     public record ZoneSelection(String callingCode, String zoneId, long revision, String source) {}
     public record Activation(Instant effectiveFrom, String lastLegacyInstanceKey) {}
     public record View(long revision, String defaultZoneId, List<Mapping> mappings, Instant effectiveFrom,
-                       String lastLegacyInstanceKey, String activation, String source, Activation nextActivation) {}
+                       String lastLegacyInstanceKey, String activation, String source, Activation nextActivation,
+                       Map<String,Object> actualAssignments) {
+        public View(long revision, String defaultZoneId, List<Mapping> mappings, Instant effectiveFrom,
+                    String lastLegacyInstanceKey, String activation, String source, Activation nextActivation) {
+            this(revision,defaultZoneId,mappings,effectiveFrom,lastLegacyInstanceKey,activation,source,nextActivation,Map.of());
+        }
+    }
     public record Proposal(long expectedRevision, List<Mapping> mappings,
                            Instant effectiveFrom, String lastLegacyInstanceKey) {}
 
@@ -56,11 +65,73 @@ public class WeeklyRegionPolicyService {
         return parse(config.activeValueForUpdate(KEY).orElse(null));
     }
 
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public View overview() {
+        Instant asOf = clock.instant();
         State state = read();
+        var rows = mapper.assignedWindows(LocalDateTime.ofInstant(asOf, AccountWeeklyPeriod.STORAGE_ZONE));
+        List<Map<String,Object>> currentWindows = new ArrayList<>();
+        List<Map<String,Object>> otherAllocations = new ArrayList<>();
+        Map<String,Long> stateCounts = new TreeMap<>();
+        long totalUsers = 0, unknownCallingCodeUsers = 0;
+        for (var row : rows) {
+            totalUsers += row.users();
+            stateCounts.merge(row.allocationState(), row.users(), Long::sum);
+            boolean codeKnown = row.callingCode() != null && !row.callingCode().isBlank();
+            if (!"UNASSIGNED".equals(row.allocationState()) && !codeKnown) unknownCallingCodeUsers += row.users();
+            Map<String,Object> window = new LinkedHashMap<>();
+            window.put("callingCode", row.callingCode());
+            window.put("callingCodeKnown", codeKnown);
+            window.put("mappingVersion", row.mappingVersion());
+            window.put("instanceKey", row.instanceKey());
+            window.put("assignedWeekStart", row.assignedWeekStart());
+            window.put("calendarVersion", row.calendarVersion());
+            window.put("timeZone", row.businessTimezone());
+            window.put("frozenWeekStart", row.frozenWeekStart());
+            window.put("assignedFrom", row.eligibleFrom() == null ? null : AccountWeeklyPeriod.instant(row.eligibleFrom()).toString());
+            window.put("assignedUntil", row.eligibleUntil() == null ? null : AccountWeeklyPeriod.instant(row.eligibleUntil()).toString());
+            window.put("state", row.allocationState());
+            window.put("users", row.users());
+            String shape = "UNDETERMINED";
+            if ("ACTIVE".equals(row.allocationState())) {
+                if (row.calendarVersion() == null && row.instanceKey().matches("WEEK:[0-9]{4}-W[0-9]{2}")) {
+                    shape = "LEGACY_FROZEN";
+                } else if (AccountWeeklyPeriod.CALENDAR_VERSION.equals(row.calendarVersion())
+                        && row.businessTimezone() != null && ZONES.contains(row.businessTimezone()) && row.frozenWeekStart() != null
+                        && row.frozenWeekStart().getDayOfWeek() == java.time.DayOfWeek.MONDAY) {
+                    ZoneId zone = ZoneId.of(row.businessTimezone());
+                    Instant regularFrom = row.frozenWeekStart().atStartOfDay(zone).toInstant();
+                    Instant regularUntil = row.frozenWeekStart().plusWeeks(1).atStartOfDay(zone).toInstant();
+                    shape = regularFrom.equals(AccountWeeklyPeriod.instant(row.eligibleFrom()))
+                            && regularUntil.equals(AccountWeeklyPeriod.instant(row.eligibleUntil()))
+                            ? "STANDARD_WEEK_BOUNDARIES" : "NONSTANDARD_WEEK_BOUNDARIES";
+                }
+            }
+            window.put("boundaryShape", shape);
+            ("ACTIVE".equals(row.allocationState()) ? currentWindows : otherAllocations).add(window);
+        }
+        long activeUsers = stateCounts.getOrDefault("ACTIVE", 0L);
+        Map<String,Object> actual = new LinkedHashMap<>();
+        actual.put("readAvailable", true);
+        actual.put("asOf", asOf.toString());
+        actual.put("source", "LATEST_ACCOUNT_ASSIGNMENT_JOIN_FROZEN_WEEKLY_DEFINITION");
+        actual.put("scope", "ACTIVE_NON_SANDBOX_ACCOUNTS");
+        actual.put("callingCodeSource", "ASSIGNMENT_SNAPSHOT");
+        actual.put("storageTimeZone", AccountWeeklyPeriod.STORAGE_ZONE.getId());
+        actual.put("scopeUsers", totalUsers);
+        actual.put("knownCurrentAssignedUsers", activeUsers);
+        actual.put("allocationStateCounts", stateCounts);
+        actual.put("unknownCallingCodeUsers", unknownCallingCodeUsers);
+        actual.put("currentWindowsSourceComplete", stateCounts.getOrDefault("HEADER_MISSING", 0L) == 0
+                && stateCounts.getOrDefault("HEADER_INVALID", 0L) == 0);
+        actual.put("currentWindowCoverageComplete", activeUsers == totalUsers && unknownCallingCodeUsers == 0);
+        actual.put("currentWindows", currentWindows);
+        actual.put("otherAllocationStates", otherAllocations);
+        actual.put("transitionCauseAvailable", false);
+        actual.put("transitionCauseReason", "EXPLICIT_TRANSITION_CAUSE_NOT_STORED");
         return new View(state.revision(), DEFAULT_ZONE, state.mappings(), state.effectiveFrom(),
                 state.lastLegacyInstanceKey(), "NEXT_ACCOUNT_WEEK",
-                state.revision() == 0 ? "DEFAULT" : "PUBLISHED", state.revision() == 0 ? activationPreview() : null);
+                state.revision() == 0 ? "DEFAULT" : "PUBLISHED", state.revision() == 0 ? activationPreview() : null, actual);
     }
 
     public ZoneSelection resolve(String countryCode) {

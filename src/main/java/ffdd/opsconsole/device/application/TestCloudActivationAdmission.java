@@ -40,6 +40,9 @@ public class TestCloudActivationAdmission {
                 && "TEST".equals(environment.getProperty(TestCloudExecutorService.PREFIX+"deployment-scope"))
                 && Set.of(environment.getActiveProfiles()).equals(Set.of("dev"));
     }
+    String legacyTaskConfig() {
+        return legacyEnabled() ? environment.getProperty(TestCloudExecutorService.PREFIX + "task-config-id", "") : "";
+    }
     private boolean v2Enabled() {
         return "true".equals(environment.getProperty("nexion.compute-v2.enabled"))
                 && "TEST".equals(environment.getProperty("nexion.compute-v2.deployment-scope"))

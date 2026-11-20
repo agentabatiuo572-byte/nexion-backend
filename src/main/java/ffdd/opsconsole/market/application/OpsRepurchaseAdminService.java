@@ -1,10 +1,13 @@
 package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.market.mapper.AppRepurchaseMapper;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.exception.ObjectLockedByA2Exception;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -46,6 +49,7 @@ public class OpsRepurchaseAdminService {
     private final EventOutboxService outbox;
     private final AuditLogService audit;
     private final OpsNexMarketService marketOverview;
+    private final AuditObjectLockMapper locks;
 
     public ApiResult<Map<String, Object>> orders(String status, Long cursor, Integer requestedLimit) {
         String normalizedStatus = StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : null;
@@ -69,8 +73,19 @@ public class OpsRepurchaseAdminService {
         requirePermission(PERMISSIONS.get(param));
         String hash = sha256(param + "|" + request.value().trim() + "|" + request.reason().trim()
                 + "|" + String.valueOf(request.g4Ref()));
-        return once("ADMIN:G7_REPURCHASE_PARAM:" + param, idempotencyKey, hash,
-                () -> updateInternal(param, idempotencyKey, request));
+        return once("ADMIN:G7_REPURCHASE_PARAM:" + param, idempotencyKey, hash, () -> {
+            // A pending A2 ticket owns this parameter. Direct writes, including same-value and
+            // tightening ones, must wait; approval replay is the only path allowed through.
+            // Keep this new-write gate inside the idempotency callback: an already confirmed
+            // success key must return its receipt before a later ticket's lock is considered.
+            if (!A2ReplayContext.isReplaying()) {
+                var activeLocks = locks.selectActiveTargetLocks("G", "repurchase_param", List.of(param));
+                if (!activeLocks.isEmpty()) {
+                    throw new ObjectLockedByA2Exception(activeLocks.get(0).ticketId());
+                }
+            }
+            return updateInternal(param, idempotencyKey, request);
+        });
     }
 
     @Transactional
@@ -79,10 +94,17 @@ public class OpsRepurchaseAdminService {
         if (product == null) throw new BizException(404, "G7_REPURCHASE_PRODUCT_NOT_FOUND");
         String before = before(product, key);
         String after = normalizeValue(key, request.value());
-        boolean amplifies = amplifies(key, decimal(before), decimal(after));
+        // presets is a list of App shortcut amounts, not a numeric payout/direction parameter.
+        // Keep its list normalization/storage path without parsing the whole list as one decimal.
+        boolean amplifies = !"presets".equals(key) && amplifies(key, decimal(before), decimal(after));
         TreasuryCoverageSnapshot snapshot = coverage.snapshot();
-        if (amplifies && snapshot.coverageRatio().compareTo(snapshot.redlinePct()) < 0) {
-            throw new BizException(422, "COVERAGE_BELOW_REDLINE");
+        if (amplifies) {
+            // 决策 T02/T11:放大资金流出的方向必须由另一位超管批准后回放,直写一律拒绝。
+            // 收紧方向(降 APY、降 nurture、提提前解锁扣款)保持立即生效。
+            if (!A2ReplayContext.isReplaying()) {
+                throw new BizException(409, "G7_REPURCHASE_PARAM_APPROVAL_REQUIRED");
+            }
+            marketOverview.requireCoverageRedline(BigDecimal.ZERO);
         }
         long issued = mapper.issuedTicketsThisMonth();
         long g4Capacity = configLong("G.genesis.lottery.monthlyCapacity", 100_000L);
@@ -164,7 +186,8 @@ public class OpsRepurchaseAdminService {
             } catch (RuntimeException ex) { throw new BizException(422, "G7_PRESETS_INVALID"); }
         }
         BigDecimal value = decimal(raw);
-        if ("apy".equals(key) && outside(value, BigDecimal.ZERO, BigDecimal.valueOf(300)))
+        if ("apy".equals(key)
+                && (value.compareTo(BigDecimal.ZERO) <= 0 || value.compareTo(BigDecimal.valueOf(300)) > 0))
             throw new BizException(422, "G7_APY_OUT_OF_RANGE");
         if ("penalty".equals(key) && outside(value, BigDecimal.ZERO, BigDecimal.valueOf(100)))
             throw new BizException(422, "G7_PENALTY_OUT_OF_RANGE");

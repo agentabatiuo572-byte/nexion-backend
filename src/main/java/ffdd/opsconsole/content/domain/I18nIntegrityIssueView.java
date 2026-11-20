@@ -1,5 +1,6 @@
 package ffdd.opsconsole.content.domain;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.util.List;
 
 public record I18nIntegrityIssueView(
@@ -7,5 +8,16 @@ public record I18nIntegrityIssueView(
         String kind,
         int cnt,
         List<String> samples,
-        String status) {
+        String status,
+        @JsonInclude(JsonInclude.Include.NON_NULL) Integer repairedCount,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String messageKey,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String version) {
+
+    public I18nIntegrityIssueView(String code, String kind, int cnt, List<String> samples, String status, Integer repairedCount) {
+        this(code, kind, cnt, samples, status, repairedCount, null, null);
+    }
+
+    public I18nIntegrityIssueView(String code, String kind, int cnt, List<String> samples, String status) {
+        this(code, kind, cnt, samples, status, null);
+    }
 }

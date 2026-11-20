@@ -1,6 +1,7 @@
 package ffdd.opsconsole.risk.web;
 
-
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -9,6 +10,7 @@ import ffdd.opsconsole.risk.application.OpsRiskService;
 import ffdd.opsconsole.risk.application.RiskReleaseParamsService;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
+import ffdd.opsconsole.risk.domain.RiskArbitrageViewGroup;
 import ffdd.opsconsole.risk.domain.RiskCaseView;
 import ffdd.opsconsole.risk.domain.RiskRuleHitView;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
@@ -41,8 +43,15 @@ import ffdd.opsconsole.risk.dto.RiskScoringEscalateRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringSourceRequest;
 import ffdd.opsconsole.risk.dto.RiskScoringWeightsRequest;
 import ffdd.opsconsole.risk.dto.RiskSignalRequest;
+import ffdd.opsconsole.risk.mapper.RiskOpsMapper.MultiAccountClusterRecord;
 import java.util.List;
 import java.util.Map;
+import ffdd.opsconsole.platform.application.OpsPlatformConfigService;
+import ffdd.opsconsole.platform.application.PendingApprovalProjection;
+import ffdd.opsconsole.platform.application.PendingApprovalProjection.PendingApproval;
+import ffdd.opsconsole.platform.dto.PlatformConfigResponse;
+import ffdd.opsconsole.platform.dto.PlatformConfigUpdateRequest;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -62,6 +71,9 @@ import org.springframework.web.bind.annotation.RestController;
 public class OpsRiskController {
     private final OpsRiskService riskService;
     private final RiskReleaseParamsService releaseParamsService;
+    private final PendingApprovalProjection pendingApprovals;
+    @Autowired
+    private OpsPlatformConfigService platformConfigService;
 
     @GetMapping("/overview")
     @PreAuthorize("hasAnyAuthority('risk_k1_read','risk_k2_read','risk_k3_read','risk_k4_read')")
@@ -108,10 +120,38 @@ public class OpsRiskController {
             @RequestParam(value = "clusterSort", required = false) String clusterSort,
             @RequestParam(value = "whitelistPageNum", required = false) Integer whitelistPageNum,
             @RequestParam(value = "whitelistPageSize", required = false) Integer whitelistPageSize) {
-        ApiResult<Map<String,Object>> result=riskService.multiAccountOverview(
+        ApiResult<Map<String, Object>> result = riskService.multiAccountOverview(
                 clusterPageNum, clusterPageSize, clusterLayer, clusterStatus, clusterSort,
                 whitelistPageNum, whitelistPageSize);
-        if(result.getCode()==0&&releaseParamsService!=null){Map<String,Object> data=new java.util.LinkedHashMap<>(result.getData());data.put("releaseParams",releaseParamsService.rows());return ApiResult.ok(data);}return result;
+        if (result.getCode() != 0 || releaseParamsService == null) return result;
+        Map<String, Object> data = new java.util.LinkedHashMap<>(result.getData());
+        if (data.get("clusters") instanceof PageResult<?> page) {
+            List<MultiAccountClusterRecord> rows = page.getRecords().stream()
+                    .map(MultiAccountClusterRecord.class::cast).toList();
+            var approvals = pendingApprovals.read("K", "cluster", rows.stream().map(MultiAccountClusterRecord::id).toList());
+            data.put("clusters", new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), rows.stream()
+                    .map(row -> new ClusterWithPendingApproval(row, approvals.get(row.id()))).toList()));
+        }
+        data.put("releaseParams", releaseParamsService.rows());
+        data.put("registrationParams", platformConfigService.k1RegistrationParams());
+        return ApiResult.ok(data);
+    }
+
+    private record ClusterWithPendingApproval(@JsonUnwrapped MultiAccountClusterRecord cluster,
+                                              @JsonInclude(JsonInclude.Include.NON_NULL) PendingApproval pendingApproval) {}
+
+    private record ArbitrageRowWithPending(@JsonUnwrapped RiskArbitrageRowView row,
+                                           @JsonInclude(JsonInclude.Include.NON_NULL) PendingApproval pendingApproval) {}
+
+    private record ArbitrageViewWithPending(String key, String label, String sub, List<String> head, String note,
+                                            List<ArbitrageRowWithPending> rows) {}
+
+    @PatchMapping("/multi-account/registration-params")
+    @PreAuthorize("hasAuthority('risk_k1_read') && @superAdminAuthorization.isSuperAdmin(authentication)")
+    public ApiResult<PlatformConfigResponse> updateK1RegistrationParam(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @RequestBody PlatformConfigUpdateRequest request) {
+        return platformConfigService.updateK1RegistrationParam(idempotencyKey, request);
     }
 
     @PatchMapping("/multi-account/params/{key}")
@@ -215,7 +255,28 @@ public class OpsRiskController {
     @GetMapping("/arbitrage/overview")
     @PreAuthorize("hasAuthority('risk_k2_read')")
     public ApiResult<Map<String, Object>> arbitrageOverview() {
-        return riskService.arbitrageOverview();
+        ApiResult<Map<String, Object>> result = riskService.arbitrageOverview();
+        if (result.getCode() != 0 || result.getData() == null) return result;
+        Map<String, Object> data = new java.util.LinkedHashMap<>(result.getData());
+        Object rawViews = data.get("views");
+        if (rawViews instanceof List<?> viewRows) {
+            List<RiskArbitrageViewGroup> groups = viewRows.stream()
+                    .filter(RiskArbitrageViewGroup.class::isInstance)
+                    .map(RiskArbitrageViewGroup.class::cast)
+                    .toList();
+            List<String> rowIds = groups.stream()
+                    .flatMap(group -> group.rows().stream())
+                    .map(RiskArbitrageRowView::rowId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .toList();
+            var approvals = pendingApprovals.readK2RowFreeze(rowIds);
+            data.put("views", groups.stream().map(group -> new ArbitrageViewWithPending(
+                    group.key(), group.label(), group.sub(), group.head(), group.note(),
+                    group.rows().stream()
+                            .map(row -> new ArbitrageRowWithPending(row, approvals.get(row.rowId())))
+                            .toList())).toList());
+        }
+        return ApiResult.ok(data);
     }
 
     @PatchMapping("/arbitrage/params/{key}")

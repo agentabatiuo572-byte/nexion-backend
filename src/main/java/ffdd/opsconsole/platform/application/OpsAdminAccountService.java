@@ -38,6 +38,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogQueryRequest;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.i18n.AppDisplayText;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminSessionRegistry;
 import ffdd.opsconsole.shared.security.AdminSessionPolicy;
@@ -177,6 +178,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
             return ApiResult.fail(409, "ADMIN_USERNAME_EXISTS");
         }
         String displayName = normalizeText(request.displayName(), "DISPLAY_NAME_REQUIRED");
+        AppDisplayText.requireNoHan("displayName", displayName);
         String email = normalizeOptionalEmail(request.email());
         if (StringUtils.hasText(request.email()) && email == null) {
             return ApiResult.fail(422, "EMAIL_FORMAT_INVALID");
@@ -188,8 +190,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (role == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
-        if (governanceRecoveryRequired() && !"super".equals(role)) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+        if (governanceRecoveryRequired()) {
+            if (!"super".equals(role)) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+            }
+            if (!A2ReplayContext.isReplaying()) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_REQUIRES_APPROVAL");
+            }
         }
         ffdd.opsconsole.content.application.SupportDefaultAvatarCatalog.gender(request.avatarGender());
         if(Boolean.TRUE.equals(request.useDefaultAvatar()) && (request.avatarAssetId()!=null || !"support".equals(role)))
@@ -314,12 +321,16 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
         boolean usernameChanged = !username.equals(current.username());
         boolean displayNameChanged = !displayName.equals(current.name());
+        if (displayNameChanged) AppDisplayText.requireNoHan("displayName", displayName);
         boolean emailChanged = !firstText(email).equals(firstText(current.email()));
         ffdd.opsconsole.content.application.SupportDefaultAvatarCatalog.gender(request.avatarGender());
         boolean genderChanged=request.avatarGender()!=null && !request.avatarGender().equals(current.avatarGender());
         boolean avatarChanged = request.avatarAssetId()!=null && !request.avatarAssetId().equals(current.avatarAssetId());
         if (!usernameChanged && !displayNameChanged && !emailChanged && !avatarChanged && !genderChanged) {
             return ApiResult.ok(current);
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
@@ -371,8 +382,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (nextRole == null) {
             return ApiResult.fail(422, "ROLE_INVALID");
         }
-        if (governanceRecoveryRequired() && !"super".equals(nextRole)) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+        if (governanceRecoveryRequired()) {
+            if (!"super".equals(nextRole)) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+            }
+            if (!A2ReplayContext.isReplaying()) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_REQUIRES_APPROVAL");
+            }
         }
         lockAccount(accountId);
         AdminAccountOverview.OperatorRecord current = findOperator(accountId).orElse(null);
@@ -387,11 +403,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        if ("super".equals(current.role())
-                && "enabled".equals(current.status())
+        if (AdminAccountGovernance.effectiveSuper(current.role(), current.status(), current.tfa())
                 && !"super".equals(nextRole)
                 && effectiveSupers(operators()) - 1 < minEffectiveSupers()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "MIN_EFFECTIVE_SUPER_REQUIRED");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
@@ -444,15 +462,21 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (nextStatus == null) {
             return ApiResult.fail(422, "STATUS_INVALID");
         }
-        if (governanceRecoveryRequired()
-                && !("enabled".equals(nextStatus) && "super".equals(current.role()) && current.tfa())) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+        if (governanceRecoveryRequired()) {
+            if (!("enabled".equals(nextStatus) && "super".equals(current.role()) && current.tfa())) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_ONLY");
+            }
+            if (!A2ReplayContext.isReplaying()) {
+                return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "ADMIN_GOVERNANCE_RECOVERY_REQUIRES_APPROVAL");
+            }
         }
         if ("disabled".equals(nextStatus)
-                && "super".equals(current.role())
-                && "enabled".equals(current.status())
+                && AdminAccountGovernance.effectiveSuper(current.role(), current.status(), current.tfa())
                 && effectiveSupers(operators()) - 1 < minEffectiveSupers()) {
             return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "MIN_EFFECTIVE_SUPER_REQUIRED");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
 
         Long adminId = parseAccountId(current.id()).orElseThrow();
@@ -509,14 +533,16 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (!current.tfa()) {
             return ApiResult.fail(409, "ADMIN_MFA_NOT_BOUND");
         }
-        if ("super".equals(current.role())
-                && "enabled".equals(current.status())
+        if (AdminAccountGovernance.effectiveSuper(current.role(), current.status(), current.tfa())
                 && effectiveSupers(currentOperators) - 1 < minEffectiveSupers()) {
             return ApiResult.fail(403, "MIN_EFFECTIVE_SUPER_REQUIRED");
         }
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         Long adminId = parseAccountId(current.id()).orElseThrow();
         if (adminMapper.incrementVersionIfVersion(adminId, accountVersionNumber(current.version())) != 1) {
@@ -605,6 +631,9 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("A", "account", current.id()) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+        if (!A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         LocalDateTime revokedAt = LocalDateTime.now();
         String now = revokedAt.format(ISO);
@@ -813,7 +842,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     }
 
     private int pendingA1OperationTickets() {
-        return auditCenterService.pendingOperationCountByActionMarker("(A1)");
+        return auditCenterService.pendingA1OperationCount();
     }
 
     /**
@@ -1036,10 +1065,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 firstText(admin.getUsername()),
                 StringUtils.hasText(admin.getEmail()) ? admin.getEmail().trim() : "",
                 role,
-                state != null
-                        && Integer.valueOf(1).equals(state.getTfaRequired())
-                        && StringUtils.hasText(state.getTfaSecretEncrypted())
-                        && state.getTfaBoundAt() != null,
+                AdminAccountGovernance.mfaBound(state),
                 enabled ? "enabled" : "disabled",
                 state != null && state.getLastLoginAt() != null
                         ? state.getLastLoginAt().format(ISO)
@@ -1257,20 +1283,16 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     }
 
     private ApiResult<Void> requireSessionRevokeAuthorization(
-            AdminAccountOverview.OperatorRecord actor,
-            AdminAccountOverview.OperatorRecord target) {
-        if (actor == null) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_ROLE_FORBIDDEN");
-        }
-        if (actor.id().equals(target.id())) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_SELF_FORBIDDEN");
-        }
-        if (!SESSION_REVOKE_ROLES.contains(actor.role())) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_ROLE_FORBIDDEN");
-        }
-        if ("super".equals(target.role())) {
-            return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "FORCE_LOGOUT_SUPER_TARGET_FORBIDDEN");
-        }
+            AdminAccountOverview.OperatorRecord actor, AdminAccountOverview.OperatorRecord target) {
+        return requireSessionRevokeAuthorization(actor == null ? null : actor.id(), actor == null ? null : actor.role(),
+                target.id(), target.role());
+    }
+
+    private ApiResult<Void> requireSessionRevokeAuthorization(String actorId, String actorRole, String targetId, String targetRole) {
+        if (actorId == null) return ApiResult.fail(403, "FORCE_LOGOUT_ROLE_FORBIDDEN");
+        if (actorId.equals(targetId)) return ApiResult.fail(403, "FORCE_LOGOUT_SELF_FORBIDDEN");
+        if (!SESSION_REVOKE_ROLES.contains(actorRole)) return ApiResult.fail(403, "FORCE_LOGOUT_ROLE_FORBIDDEN");
+        if ("super".equals(targetRole)) return ApiResult.fail(403, "FORCE_LOGOUT_SUPER_TARGET_FORBIDDEN");
         return null;
     }
 
@@ -1297,11 +1319,11 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private ApiResult<Void> requireSuperAuthorization(
             List<AdminAccountOverview.OperatorRecord> operators,
             String message) {
-        AdminAccountOverview.OperatorRecord actor = authenticatedOperator(operators).orElse(null);
-        if (actor != null && "super".equals(actor.role())) {
-            return null;
-        }
-        return ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), message);
+        return requireSuperAuthorization(authenticatedOperator(operators).map(AdminAccountOverview.OperatorRecord::role).orElse(null), message);
+    }
+
+    private ApiResult<Void> requireSuperAuthorization(String actorRole, String message) {
+        return "super".equals(actorRole) ? null : ApiResult.fail(403, message);
     }
 
     private void persistAvatarGender(Long adminId,String gender) {
@@ -1524,7 +1546,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private String defaultRoleDescription(String role) {
         return switch (role) {
             case "super" -> "平台 Owner，保留所有危急操作。";
-            case "config" -> "运营配置、平台参数与跨域配置变更。";
+            case "config" -> "维护已授权的运营配置，不默认拥有跨域变更权限。";
             case "finance" -> "资金、账务、提现与覆盖率。";
             case "risk" -> "风控模型、账户限制与熔断。";
             case "content" -> "文案、课程、风险披露与公告。";
@@ -1538,7 +1560,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     private String defaultRoleScope(String role) {
         return switch (role) {
             case "super" -> "全域：资金、风控、内容、配置、审计";
-            case "config" -> "A/C/E/F/G/H/I/J/M 配置";
+            case "config" -> "仅限此角色实际获授的菜单与配置权限";
             case "finance" -> "B/D/C 资金域";
             case "risk" -> "C/K/J 风控域";
             case "content" -> "I/公告/课程";
@@ -1575,9 +1597,8 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
 
     private int effectiveSupers(List<AdminAccountOverview.OperatorRecord> operators) {
         return (int) operators.stream()
-                .filter(operator -> "super".equals(operator.role())
-                        && "enabled".equals(operator.status())
-                        && operator.tfa())
+                .filter(operator -> AdminAccountGovernance.effectiveSuper(
+                        operator.role(), operator.status(), operator.tfa()))
                 .count();
     }
 
@@ -1586,7 +1607,7 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     }
 
     private int minEffectiveSupers() {
-        return 2;
+        return AdminAccountGovernance.MIN_EFFECTIVE_SUPERS;
     }
 
     private boolean writes(List<String> grants, List<String> roleKeys, String... roles) {
@@ -1627,6 +1648,50 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
     @Override
     public String domain() {
         return "A";
+    }
+
+    private String authorizationRole(String accountId) {
+        Long id = parseAccountId(accountId).orElse(null);
+        AdminEntity admin = id == null ? null : adminMapper.selectById(id);
+        return admin == null || !Integer.valueOf(0).equals(admin.getIsDeleted()) ? null
+                : roleFromRelation(id).orElseGet(() -> defaultRole(admin));
+    }
+
+    ApiResult<Void> reviewDisplayNameProposal(AuditReplayCommand command) {
+        Map<String, Object> params = command.params() == null ? Map.of() : command.params();
+        String displayName = firstText(str(params, "displayName"));
+        if ("a1_account_update_profile".equals(command.op())) {
+            var current = findOperator(str(params, "accountId")).orElse(null);
+            if (current == null) return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+            var versionError = requireAccountVersion(str(params, "expectedVersion"), current.version());
+            if (versionError != null) return versionError;
+            if (displayName.equals(current.name())) return ApiResult.ok();
+        }
+        AppDisplayText.requireNoHan("displayName", displayName);
+        return ApiResult.ok();
+    }
+
+    @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {
+        String actorId = authenticatedAdminId().map(String::valueOf).orElse(null);
+        String actorRole = authorizationRole(actorId);
+        if ("a1_account_force_logout".equals(cmd.op())) {
+            String targetId = str(cmd.params() == null ? Map.of() : cmd.params(), "accountId");
+            String targetRole = authorizationRole(targetId);
+            if (targetRole == null) return ApiResult.fail(404, "ACCOUNT_NOT_FOUND");
+            var denied = requireSessionRevokeAuthorization(actorId, actorRole, targetId, targetRole);
+            return denied == null ? ApiResult.ok() : denied;
+        }
+        String reason = switch (cmd.op()) {
+            case "a1_account_create", "a1_account_change_role" -> "ROLE_ASSIGNMENT_FORBIDDEN";
+            case "a1_account_update_profile" -> "ACCOUNT_PROFILE_UPDATE_FORBIDDEN";
+            case "a1_account_status_update" -> "ACCOUNT_STATUS_FORBIDDEN";
+            case "a1_account_reset_2fa" -> "ACCOUNT_2FA_RESET_FORBIDDEN";
+            case "a1_security_baseline_update" -> "SECURITY_BASELINE_FORBIDDEN";
+            default -> null;
+        };
+        var denied = reason == null ? null : requireSuperAuthorization(actorRole, reason);
+        return denied == null ? ApiResult.ok() : denied;
     }
 
     @Override
@@ -1683,8 +1748,13 @@ public class OpsAdminAccountService implements ffdd.opsconsole.platform.domain.A
                 return updateSecurityBaseline(idem, str(p, "baselineKey"), req);
             }
             case "a6_role_grants_update" -> {
+                // The snapshotted set travels with the command so the approval re-checks it instead of
+                // trusting the current grants; tickets proposed before the snapshot existed carry none
+                // and are refused rather than approved over an unknown base.
                 PlatformRoleGrantsUpdateRequest req = new PlatformRoleGrantsUpdateRequest(
-                        strings(p.get("permissionCodes")), longs(p.get("menuIds")), reason, operator);
+                        strings(p.get("permissionCodes")), longs(p.get("menuIds")), reason, operator,
+                        p.containsKey("expectedPermissionCodes") ? strings(p.get("expectedPermissionCodes")) : null,
+                        p.containsKey("expectedMenuIds") ? longs(p.get("expectedMenuIds")) : null);
                 return platformRoleService.updateRoleGrants(Long.valueOf(str(p, "roleId")), idem, req);
             }
             case "a6_role_disable" -> {

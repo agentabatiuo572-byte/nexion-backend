@@ -13,7 +13,12 @@ public final class SupportFundReplay {
         UNSUPPORTED_SOURCE, CAUSAL_ORDER, CASH_TRACE, ALLOCATION, ORIGIN, CONTINUITY_UNPROVEN, READ_FAILED, CLOSURE_LIMIT }
     public record Cash(BigDecimal usdt,BigDecimal nex,BigDecimal pending,BigDecimal risk) {
         public Cash {
-            for(var value:List.of(usdt,nex,pending,risk)) if(value.signum()<0 || value.stripTrailingZeros().scale()>6)
+            // USDT available may be a legitimate negative debt after F1 clawbacks.
+            // The other three cash buckets remain non-negative.
+            if(usdt==null || nex==null || pending==null || risk==null
+                    || nex.signum()<0 || pending.signum()<0 || risk.signum()<0
+                    || usdt.stripTrailingZeros().scale()>6 || nex.stripTrailingZeros().scale()>6
+                    || pending.stripTrailingZeros().scale()>6 || risk.stripTrailingZeros().scale()>6)
                 throw new IllegalArgumentException("Invalid four-bucket cash");
             usdt=usdt.setScale(6);nex=nex.setScale(6);pending=pending.setScale(6);risk=risk.setScale(6);
         }

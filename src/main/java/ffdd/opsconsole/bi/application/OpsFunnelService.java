@@ -32,7 +32,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsFunnelService {
     private static final Pattern COHORT = Pattern.compile("\\d{4}-W(?:0[1-9]|[1-4]\\d|5[0-3])");
-    private static final Pattern PHASE = Pattern.compile("P[1-6]");
     private static final Pattern REF = Pattern.compile("[\\p{L}\\p{N}._:-]{1,64}");
     private static final Set<String> STAGES = Set.of("register", "purchase", "repurchase", "withdraw");
     private static final Set<String> GRANULARITIES = Set.of("WEEK", "MONTH");
@@ -161,7 +160,7 @@ public class OpsFunnelService {
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> stages =
                 (List<Map<String, Object>>) dashboard.getOrDefault("stages", List.of());
-        StringBuilder csv = new StringBuilder("\uFEFFstage,event,lifecycle,distinct_users,previous_users,cvr_from_prev,cohort,phase,ref\r\n");
+        StringBuilder csv = new StringBuilder("\uFEFFstage,event,lifecycle,distinct_users,previous_users,cvr_from_prev,cohort,phase,ref,sample_status\r\n");
         for (Map<String, Object> stage : stages) {
             csv.append(csv(stage.get("stage"))).append(',')
                     .append(csv(stage.get("event"))).append(',')
@@ -171,7 +170,8 @@ public class OpsFunnelService {
                     .append(csv(stage.get("cvrFromPrev"))).append(',')
                     .append(csv(filter.valueOrAll(filter.cohort()))).append(',')
                     .append(csv(filter.valueOrAll(filter.phase()))).append(',')
-                    .append(csv(filter.valueOrAll(filter.ref()))).append("\r\n");
+                    .append(csv(filter.valueOrAll(filter.ref()))).append(',')
+                    .append(csv(Boolean.TRUE.equals(stage.get("suppressed")) ? "样本过小" : "")).append("\r\n");
         }
         auditRequired("admin.report_exported", "GET", "SUCCESS", linked(
                 "exportType", "B3_FUNNEL_COHORT",
@@ -179,7 +179,7 @@ public class OpsFunnelService {
                         "cohort", filter.valueOrAll(filter.cohort()),
                         "phase", filter.valueOrAll(filter.phase()),
                         "ref", filter.valueOrAll(filter.ref())),
-                "fields", "stage,event,lifecycle,distinct_users,previous_users,cvr_from_prev,cohort,phase,ref",
+                "fields", "stage,event,lifecycle,distinct_users,previous_users,cvr_from_prev,cohort,phase,ref,sample_status",
                 "rowCount", stages.size(),
                 "containsPii", false,
                 "maskingPolicy", "NONE",
@@ -198,7 +198,7 @@ public class OpsFunnelService {
         }
         if (normalizedPhase != null) {
             normalizedPhase = normalizedPhase.toUpperCase(Locale.ROOT);
-            if (!PHASE.matcher(normalizedPhase).matches()) throw new BizException(422, "B3_PHASE_INVALID");
+            if (!B3FunnelAnalytics.isSupportedPhase(normalizedPhase)) throw new BizException(422, "B3_PHASE_INVALID");
         }
         if (normalizedRef != null && !REF.matcher(normalizedRef).matches()) {
             throw new BizException(422, "B3_REF_INVALID");

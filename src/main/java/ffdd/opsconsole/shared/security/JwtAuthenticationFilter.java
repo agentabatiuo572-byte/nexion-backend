@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.core.env.Environment;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -43,6 +44,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final PlatformConfigFacade configFacade;
     private final UserAccountBlocklistVerifier blocklist;
     private final UserSessionRevocationService revocations;
+    private UserDailyActivityService dailyActivity;
+
+    @Autowired
+    void setDailyActivity(UserDailyActivityService dailyActivity) {
+        this.dailyActivity = dailyActivity;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -135,7 +142,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     if (recordActivity) revocations.revokeAll(userId);
                     return;
                 }
-                if (!isUserSessionActive(sessionId.trim(), userId, recordActivity)) return;
+                if (!isUserSessionActive(sessionId.trim(), user, recordActivity)) return;
             } catch (RuntimeException ex) {
                 throw new SessionStoreUnavailableException(ex, "USER");
             }
@@ -182,6 +189,26 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return null;
         }
         return authorization.substring(7);
+    }
+
+    /**
+     * Resolve a business user number for a request that is being rejected before the security
+     * chain runs. This reuses the exact signed Bearer + current session/user checks but uses only
+     * their read-only branch: it never touches the session, refreshes a token, writes activity,
+     * revokes anything, or sets the SecurityContext. Anonymous, admin, impersonation, stale or
+     * malformed credentials return null; no header/body identity is consulted.
+     */
+    public String readOnlyUserNo(HttpServletRequest request) {
+        String token = resolveToken(request);
+        if (token == null) return null;
+        try {
+            Claims claims = tokenProvider.parse(token);
+            if (!"USER".equals(String.valueOf(claims.getOrDefault("subjectType", "USER")))) return null;
+            if (!isSessionActive(claims, false)) return null;
+            return userMapper.activeUserNo(Long.valueOf(claims.getSubject()));
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private boolean isSessionActive(Claims claims, boolean recordActivity) {
@@ -233,17 +260,29 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                 if (recordActivity) revocations.revokeAll(userId);
                 return false;
             }
-            return isUserSessionActive(sessionId, userId, recordActivity);
+            return isUserSessionActive(sessionId, user, recordActivity);
         } catch (RuntimeException ex) {
             throw new SessionStoreUnavailableException(ex, "USER");
         }
     }
 
-    private boolean isUserSessionActive(String sessionId, Long userId, boolean recordActivity) {
+    private boolean isUserSessionActive(String sessionId, UserEntity user, boolean recordActivity) {
         int idleDays = userSessionIdleTtlDays();
+        Long userId = user.getId();
         if (!recordActivity) return authSessionMapper.isReadableUserSession(sessionId, userId, idleDays);
-        return authSessionMapper.touchActiveUserSession(sessionId, userId, idleDays) > 0
+        boolean active = authSessionMapper.touchActiveUserSession(sessionId, userId, idleDays) > 0
                 || authSessionMapper.touchRecentlyRotatedUserSession(sessionId, userId, idleDays) > 0;
+        if (active) recordDailyActivity(user);
+        return active;
+    }
+
+    private void recordDailyActivity(UserEntity user) {
+        if (dailyActivity == null || Integer.valueOf(1).equals(user.getSandbox())) return;
+        try {
+            dailyActivity.record(user);
+        } catch (RuntimeException failure) {
+            logger.warn("Daily App activity write failed: " + failure.getClass().getSimpleName());
+        }
     }
 
     private String sessionEndedReason(Claims claims) {

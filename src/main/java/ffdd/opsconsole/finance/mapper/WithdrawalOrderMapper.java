@@ -550,9 +550,22 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
             @Param("chainTxHash") String chainTxHash);
 
     @Update("""
+            <script>
             UPDATE nx_withdrawal_order
                SET status = #{newStatus},
-                   failure_reason = #{failureReason},
+                   <choose>
+                     <when test='newStatus == "FROZEN"'>
+                       d2_pre_freeze_reason = COALESCE(failure_reason, ''),
+                       failure_reason = #{failureReason},
+                     </when>
+                     <otherwise>
+                       failure_reason = CASE WHEN #{expectedStatus} = 'FROZEN' AND #{newStatus} = 'REVIEW_PENDING'
+                           THEN NULLIF(COALESCE(d2_pre_freeze_reason,
+                               IF(failure_reason = 'A3_STRONG_REVIEW_THRESHOLD', failure_reason, NULL)), '')
+                           ELSE #{failureReason} END,
+                       d2_pre_freeze_reason = NULL,
+                     </otherwise>
+                   </choose>
                    d2_hold_until = #{holdUntil},
                    d2_lifecycle_owner = #{owner},
                    d2_freeze_period = #{period},
@@ -562,6 +575,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
              WHERE withdrawal_no = #{withdrawalNo}
                AND status = #{expectedStatus}
                AND is_deleted = 0
+            </script>
             """)
     int transitionStatusWithLifecycle(
             @Param("withdrawalNo") String withdrawalNo,
@@ -591,16 +605,26 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
     int releaseExpiredHolds(@Param("now") LocalDateTime now);
 
     @Select("""
-            SELECT withdrawal_no
-              FROM nx_withdrawal_order
-             WHERE status IN ('EXTENDED_HOLD', 'FROZEN')
-               AND d2_hold_until IS NOT NULL
-               AND d2_hold_until <= #{now}
-               AND is_deleted = 0
-             ORDER BY d2_hold_until, id
+            SELECT withdrawal_no FROM (
+                SELECT withdrawal_no,id,
+                       CASE WHEN #{complianceEnabled,jdbcType=BOOLEAN} IS NOT NULL
+                                  AND status='EXTENDED_HOLD' AND chain IN ('USDT-BEP20','USDT-ERC20','USDT-TRC20')
+                                  AND ((d2_lifecycle_owner IN ('H1_PHASE_COOLDOWN','H1_ZERO_DAY_AUTO_REVIEW')
+                                        AND d2_previous_status='REVIEW_PASSED')
+                                       OR (d2_lifecycle_owner='H1_COMPLIANCE_HOLD' AND d2_previous_status='REVIEW_PENDING'))
+                            THEN TIMESTAMPADD(DAY,CASE WHEN #{complianceEnabled,jdbcType=BOOLEAN} AND amount>1000
+                                                       THEN #{cooldownDays} ELSE 0 END,created_at)
+                            ELSE d2_hold_until END effective_hold_until
+                  FROM nx_withdrawal_order
+                 WHERE status IN ('EXTENDED_HOLD','FROZEN') AND d2_hold_until IS NOT NULL AND is_deleted=0
+            ) lifecycle
+             WHERE effective_hold_until<=#{now}
+             ORDER BY effective_hold_until,id
              LIMIT 500
             """)
-    List<String> findExpiredLifecycleNos(@Param("now") LocalDateTime now);
+    List<String> findExpiredLifecycleNos(@Param("now") LocalDateTime now,
+                                        @Param("complianceEnabled") Boolean complianceEnabled,
+                                        @Param("cooldownDays") int cooldownDays);
 
     @Update("""
             UPDATE nx_withdrawal_order
@@ -609,7 +633,11 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    d2_lifecycle_owner = NULL,
                    d2_freeze_period = NULL,
                    d2_previous_status = NULL,
-                   failure_reason = #{failureReason},
+                   failure_reason = CASE WHEN #{expectedStatus} = 'FROZEN' AND #{newStatus} = 'REVIEW_PENDING'
+                       THEN COALESCE(NULLIF(d2_pre_freeze_reason, ''),
+                           IF(failure_reason = 'A3_STRONG_REVIEW_THRESHOLD', failure_reason, #{failureReason}))
+                       ELSE #{failureReason} END,
+                   d2_pre_freeze_reason = NULL,
                    d2_version = d2_version + 1,
                    updated_at = CURRENT_TIMESTAMP
              WHERE withdrawal_no = #{withdrawalNo}

@@ -320,7 +320,8 @@ public class SupportPaymentFactService {
             && number(row,"ledgerId")==refund.ledgerId() && Objects.equals(time(row,"ledgerAt"),refund.ledgerRecordedAt())
             && "USDT".equals(refund.currency()) && original.currency().equals(refund.currency())
             && decimal(row,"amount")!=null && decimal(row,"amount").compareTo(original.amount())==0
-            && refund.amount().compareTo(original.amount())==0;
+            && decimal(row,"refundAmount")!=null && decimal(row,"refundAmount").compareTo(refund.amount())==0
+            && refund.amount().signum()>0 && refund.amount().compareTo(original.amount())<=0;
     }
 
     private static List<FirstHistory> firstHistory(List<Long> ids,CapturedFinancialHistory captured,ReconciledIndex index,List<Issue> issues) {

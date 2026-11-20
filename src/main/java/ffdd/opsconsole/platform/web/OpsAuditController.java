@@ -48,8 +48,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.transaction.annotation.Transactional;
 
 @RestController
 @RequestMapping(OpsAdminApi.ADMIN_PREFIX + "/platform/audit")
@@ -99,24 +99,26 @@ public class OpsAuditController {
             @RequestBody(required = false) RetentionExecutionRequest request) {
         if (!StringUtils.hasText(idempotencyKey)) throw new BizException(400, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         if (request == null) throw new BizException(422, "REASON_REQUIRED");
-        a2RuntimePolicy.validateReason(request.reason());
         String actor = StringUtils.hasText(AdminActorResolver.resolve(null)) ? AdminActorResolver.resolve(null) : "unknown";
         String key = idempotencyKey.trim();
         return ApiResult.ok(idempotencyService.execute("A2_AUDIT_RETENTION_RUN", key,
-                retentionHash(actor, request.reason()), RetentionExecutionView.class,
-                () -> executeRetention(actor, key, request.reason())));
+                retentionHash(actor, request.reason(), request.expectedRetentionMonths()), RetentionExecutionView.class,
+                () -> executeRetention(actor, key, request.reason(), request.expectedRetentionMonths())));
     }
 
-    private RetentionExecutionView executeRetention(String actor, String idempotencyKey, String reason) {
-        AuditRetentionService.RetentionRun run = auditRetentionService.runNow();
-        RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.cutoff(), run.lockAcquired(),
+    private RetentionExecutionView executeRetention(
+            String actor, String idempotencyKey, String reason, Integer expectedRetentionMonths) {
+        a2RuntimePolicy.validateReason(reason);
+        AuditRetentionService.RetentionRun run = auditRetentionService.runNow(expectedRetentionMonths);
+        RetentionExecutionView view = new RetentionExecutionView(run.retentionMonths(), run.evaluatedAt(), run.lockAcquired(),
                 run.archivedRows(), run.affectedRows(), 0, 0);
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action("A2_AUDIT_RETENTION_MANUAL_EXECUTED").resourceType("A2_AUDIT_RETENTION")
-                .resourceId(run.cutoff().toLocalDate().toString()).actorType("ADMIN").actorUsername(actor)
+                .resourceId(run.evaluatedAt().toLocalDate().toString()).actorType("ADMIN").actorUsername(actor)
                 .result(run.lockAcquired() ? "SUCCESS" : "LOCKED").riskLevel("HIGH")
                 .detail(Map.ofEntries(Map.entry("reason", reason.trim()), Map.entry("idempotencyKey", idempotencyKey),
                         Map.entry("retentionMonths", view.retentionMonths()), Map.entry("evaluatedAt", view.evaluatedAt().toString()),
+                        Map.entry("cutoff", run.cutoff().toString()),
                         Map.entry("lockAcquired", view.lockAcquired()), Map.entry("archivedRows", view.archivedRows()),
                         Map.entry("deletedRows", view.deletedRows()), Map.entry("outboxRows", 0), Map.entry("behaviorFactRows", 0),
                         Map.entry("idempotent", true), Map.entry("explicitExpireAtOnly", true), Map.entry("coldArchiveRequired", true)))
@@ -127,12 +129,19 @@ public class OpsAuditController {
     private RetentionExecutionView retentionView(AuditLogRecord record) {
         try {
             Map<?, ?> detail = objectMapper.readValue(record.getDetailJson(), Map.class);
-            return new RetentionExecutionView(number(detail.get("retentionMonths")),
-                    LocalDateTime.parse(String.valueOf(detail.get("evaluatedAt"))), Boolean.TRUE.equals(detail.get("lockAcquired")),
+            // This path always stored the real execution time in evaluatedAt; rows without it fall back to
+            // the audit row's own creation time, which is still a real record time, never the read clock.
+            LocalDateTime evaluatedAt = detail.get("evaluatedAt") == null ? null
+                    : LocalDateTime.parse(String.valueOf(detail.get("evaluatedAt")));
+            if (evaluatedAt == null) evaluatedAt = record.getCreatedAt();
+            if (evaluatedAt == null) throw new IllegalArgumentException("A2_RETENTION_EXECUTION_TIME_MISSING");
+            return new RetentionExecutionView(number(detail.get("retentionMonths")), evaluatedAt,
+                    Boolean.TRUE.equals(detail.get("lockAcquired")),
                     number(detail.get("archivedRows")), number(detail.get("deletedRows")),
                     number(detail.get("outboxRows")), number(detail.get("behaviorFactRows")));
         } catch (Exception ex) {
-            return null;
+            // A present but unreadable row is not the same as no manual run at all.
+            throw new BizException(500, "A2_RETENTION_RUN_UNREADABLE");
         }
     }
 
@@ -140,10 +149,16 @@ public class OpsAuditController {
         return value instanceof Number number ? number.intValue() : 0;
     }
 
-    private String retentionHash(String actor, String reason) {
+    private String retentionHash(String actor, String reason, Integer expectedRetentionMonths) {
         try {
+            // Sorted locally so the serialised bytes, and therefore the request hash, do not depend on
+            // this JVM's Map.of iteration order. Fields are unchanged.
+            var command = expectedRetentionMonths == null
+                    ? new java.util.TreeMap<String, Object>(Map.of("actor", actor, "operation", "A2_AUDIT_RETENTION_RUN", "reason", reason.trim()))
+                    : new java.util.TreeMap<String, Object>(Map.of("actor", actor, "operation", "A2_AUDIT_RETENTION_RUN", "reason", reason.trim(),
+                            "expectedRetentionMonths", expectedRetentionMonths));
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(
-                    objectMapper.writeValueAsBytes(Map.of("actor", actor, "operation", "A2_AUDIT_RETENTION_RUN", "reason", reason.trim()))));
+                    objectMapper.writeValueAsBytes(command)));
         } catch (Exception ex) {
             throw new BizException(422, "A2_RETENTION_HASH_FAILED");
         }
@@ -164,9 +179,36 @@ public class OpsAuditController {
     }
 
     @GetMapping("/operations/proposals/by-idempotency-key")
+    @PreAuthorize("hasAnyAuthority('platform_a2_read','platform_a2_proposal_create','platform_a4_write','platform_a4_read','growth_h7_write','overview_b1_redline_write','overview_b5_threshold_write',"
+            + "'device_e2_write','growth_h8_write','growth_h5_write','growth_h3_write','growth_h4_write','growth_h4_read','growth_h4_wheel_pool_write','network_f1_write','network_f3_write','network_f4_pool_fund','finprod_g3_curve_target_price_write',"
+            + "'finprod_g3_curve_pump_prob_write','finprod_g3_override_price_write','finprod_g3_write','finprod_g4_dividend_rate_write','finprod_g4_write','finprod_g4_price_write',"
+            + "'finprod_g4_royalty_write','finprod_g4_airdrop_pct_write','finprod_g4_emission_curve_write','finprod_g4_airdrop_lock_days_write','emergency_j4_playbook_execute')"
+            + " || (hasAuthority('content_i7_write') && hasAuthority('content_i7_course_reward_adjust'))"
+            + " || (hasAuthority('content_i7_course_reward_adjust') && hasAnyAuthority('platform_a2_write','platform_a2_proposal_create'))"
+            + " || (hasAuthority('risk_k2_write') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))"
+            + " || (hasAuthority('risk_k1_cluster_release') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))"
+            + " || @auditReplayBusinessPermissionGuard.hasF5ProposalAuthority() || hasAuthority('network_f4_write')"
+            + " || (hasAuthority('platform_a2_write') && hasAnyAuthority('user_c2_session_revoke_all','user_c5_session_revoke_all'))"
+            + " || (hasAuthority('platform_a2_write') && hasAuthority('growth_h1_override_revoke'))"
+            + " || (hasAuthority('platform_a2_write') && hasAnyAuthority('network_f3_match_rate','network_f3_engine_pause'))"
+            + " || (hasAuthority('platform_a2_write') && hasAuthority('device_e1_read') && hasAuthority('device_e1_write'))"
+            + " || (hasAuthority('emergency_j1_gate_resume') && hasAuthority('platform_a2_write'))"
+            + " || (hasAuthority('content_i3_cap_adjust') && hasAnyAuthority('platform_a2_write','platform_a2_proposal_create'))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
-            @org.springframework.web.bind.annotation.RequestParam String idempotencyKey) {
+            @RequestParam(name = "idempotencyKey", required = false) String idempotencyKey) {
+        if (idempotencyKey == null) {
+            return ApiResult.fail(400, "idempotencyKey is required");
+        }
         return auditCenterService.proposalByIdempotencyKey(idempotencyKey);
+    }
+
+    @GetMapping("/operations/proposals/by-operation-id")
+    @PreAuthorize("hasAuthority('network_f3_write')"
+            + " || (hasAnyAuthority('platform_a2_proposal_create','platform_a2_write')"
+            + " && hasAnyAuthority('network_f3_match_rate','network_f3_engine_pause'))")
+    public ApiResult<AuditCenterOverview.AuditOperationTicket> ownF3ProposalByOperationId(
+            @RequestParam String operationId) {
+        return auditCenterService.ownF3ProposalByOperationId(operationId);
     }
 
     @GetMapping("/logs/trace/{traceId}")
@@ -179,7 +221,6 @@ public class OpsAuditController {
 
     @PostMapping("/exports")
     @PreAuthorize("hasAuthority('platform_a2_export')")
-    @Transactional
     public ResponseEntity<?> export(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AuditExportRequest request) {
@@ -200,9 +241,14 @@ public class OpsAuditController {
         String actor = AdminActorResolver.resolve(null);
         AuditExportResult export;
         try {
+            AuditLogQueryRequest query = auditExportQuery(request);
+            AuditExportScope currentScope = AuditExportScope.from(query);
             export = idempotencyService.execute("A2_COMMAND", normalizedKey,
                     exportHash(actor, request), AuditExportResult.class,
-                    () -> createExport(normalizedKey, actor, request));
+                    () -> createExport(normalizedKey, actor, request, query, currentScope));
+            if (!currentScope.canRecover(export.scope(), query.getDomain())) {
+                throw new BizException(403, "A2_EXPORT_SCOPE_CHANGED");
+            }
         } catch (BizException ex) {
             return ResponseEntity.status(ex.getCode()).contentType(MediaType.APPLICATION_JSON)
                     .body(ApiResult.fail(ex.getCode(), ex.getMessage()));
@@ -210,19 +256,22 @@ public class OpsAuditController {
             return ResponseEntity.unprocessableEntity().contentType(MediaType.APPLICATION_JSON)
                     .body(ApiResult.fail(422, ex.getMessage()));
         }
+        String extension = export.csv() ? ".csv" : ".xls";
         return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType("application/vnd.ms-excel;charset=UTF-8"))
+                .contentType(MediaType.parseMediaType(export.csv()
+                        ? "text/csv;charset=UTF-8" : "application/vnd.ms-excel;charset=UTF-8"))
                 .contentLength(export.body().length)
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        ContentDisposition.attachment().filename(export.jobNo() + ".xls", StandardCharsets.UTF_8).build().toString())
+                        ContentDisposition.attachment().filename(export.jobNo() + extension, StandardCharsets.UTF_8).build().toString())
                 .body(export.body());
     }
 
-    private AuditExportResult createExport(String idempotencyKey, String actor, AuditExportRequest request) {
+    private AuditExportResult createExport(String idempotencyKey, String actor, AuditExportRequest request,
+                                           AuditLogQueryRequest query, AuditExportScope scope) {
         LocalDateTime createdAt = LocalDateTime.now();
         String jobNo = "A2-AUD-EXP-" + DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS").format(createdAt);
-        ExportWorkbook workbook = auditExportWorkbook(jobNo, idempotencyKey, createdAt, request);
-        if (workbook.rowCount() == 0) {
+        AuditExportCsv csv = auditExportCsv(query);
+        if (csv.rowCount() == 0) {
             throw new BizException(422, "A2_EXPORT_EMPTY_RESULT");
         }
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
@@ -230,9 +279,9 @@ public class OpsAuditController {
                 .resourceId(jobNo).bizNo(jobNo).actorType("ADMIN").actorUsername(actor)
                 .result("SUCCESS").riskLevel("MEDIUM")
                 .detail(Map.of("jobNo", jobNo, "filter", request.filter(), "reason", request.reason().trim(),
-                        "idempotencyKey", idempotencyKey, "rowCount", workbook.rowCount()))
+                        "idempotencyKey", idempotencyKey, "rowCount", csv.rowCount()))
                 .build());
-        return new AuditExportResult(jobNo, createdAt, workbook.body());
+        return new AuditExportResult(jobNo, createdAt, csv.body(), true, scope);
     }
 
     private String exportHash(String actor, AuditExportRequest request) {
@@ -254,17 +303,14 @@ public class OpsAuditController {
                 .body(ApiResult.fail(errorCode.httpStatus(), errorCode.name()));
     }
 
-    private ExportWorkbook auditExportWorkbook(
-            String jobNo,
-            String idempotencyKey,
-            LocalDateTime createdAt,
-            AuditExportRequest request) {
+    private AuditLogQueryRequest auditExportQuery(AuditExportRequest request) {
         AuditLogQueryRequest query = new AuditLogQueryRequest();
         query.setLimit(MAX_EXPORT_ROWS);
-        if (request.filter() != null) {
-            applyAuditFilter(query, request.filter());
-        }
-        query = accessPolicy.constrain(query);
+        applyAuditFilter(query, request.filter());
+        return accessPolicy.constrain(query);
+    }
+
+    private AuditExportCsv auditExportCsv(AuditLogQueryRequest query) {
         long total = auditLogService.count(query);
         if (total > MAX_EXPORT_ROWS) {
             throw new BizException(422, "A2_EXPORT_TOO_LARGE_REFINE_FILTER");
@@ -273,32 +319,16 @@ public class OpsAuditController {
         if (rows.size() != total) {
             throw new BizException(409, "A2_EXPORT_SNAPSHOT_CHANGED_RETRY");
         }
-        StringBuilder html = new StringBuilder(8192);
-        html.append('\ufeff')
-                .append("<html><head><meta charset=\"UTF-8\"></head><body>")
-                .append("<table border=\"1\">")
-                .append("<tr><th colspan=\"9\">A2 审计日志导出</th></tr>")
-                .append("<tr><td>导出单号</td><td colspan=\"8\">").append(escape(jobNo)).append("</td></tr>")
-                .append("<tr><td>导出时间</td><td colspan=\"8\">").append(escape(createdAt.toString())).append("</td></tr>")
-                .append("<tr><td>幂等键</td><td colspan=\"8\">").append(escape(idempotencyKey)).append("</td></tr>")
-                .append("<tr><td>导出原因</td><td colspan=\"8\">").append(escape(request.reason().trim())).append("</td></tr>")
-                .append("<tr><th>时间</th><th>操作者</th><th>动作</th><th>资源类型</th><th>资源编号</th>")
-                .append("<th>业务编号</th><th>结果</th><th>风险级别</th><th>Schema 版本</th></tr>");
-        for (AuditLogRecord row : rows == null ? List.<AuditLogRecord>of() : rows) {
-            html.append("<tr>")
-                    .append("<td>").append(escape(row.getCreatedAt() == null ? "" : row.getCreatedAt().toString())).append("</td>")
-                    .append("<td>").append(escape(row.getActorUsername())).append("</td>")
-                    .append("<td>").append(escape(row.getAction())).append("</td>")
-                    .append("<td>").append(escape(row.getResourceType())).append("</td>")
-                    .append("<td>").append(escape(row.getResourceId())).append("</td>")
-                    .append("<td>").append(escape(row.getBizNo())).append("</td>")
-                    .append("<td>").append(escape(row.getResult())).append("</td>")
-                    .append("<td>").append(escape(row.getRiskLevel())).append("</td>")
-                    .append("<td>").append(escape(row.getSchemaVersion() == null ? "legacy" : row.getSchemaVersion())).append("</td>")
-                    .append("</tr>");
+        StringBuilder csv = new StringBuilder(8192).append('\ufeff');
+        appendCsvRow(csv, "时间", "操作者", "动作", "资源类型", "资源编号",
+                "业务编号", "结果", "风险级别", "Schema 版本");
+        for (AuditLogRecord row : rows) {
+            appendCsvRow(csv, row.getCreatedAt(), maskAuditIdentifier(row.getActorUsername()),
+                    row.getAction(), row.getResourceType(), maskAuditIdentifier(row.getResourceId()),
+                    maskAuditIdentifier(row.getBizNo()), row.getResult(), row.getRiskLevel(),
+                    row.getSchemaVersion() == null ? "legacy" : row.getSchemaVersion());
         }
-        html.append("</table></body></html>");
-        return new ExportWorkbook(html.toString().getBytes(StandardCharsets.UTF_8), rows == null ? 0 : rows.size());
+        return new AuditExportCsv(csv.toString().getBytes(StandardCharsets.UTF_8), rows.size());
     }
 
     private void applyAuditFilter(AuditLogQueryRequest query, Map<String, Object> filter) {
@@ -341,11 +371,18 @@ public class OpsAuditController {
         }
     }
 
-    private String escape(Object value) {
-        if (value == null) {
-            return "";
+    private void appendCsvRow(StringBuilder csv, Object... cells) {
+        for (int index = 0; index < cells.length; index++) {
+            if (index > 0) {
+                csv.append(',');
+            }
+            csv.append(csvCell(cells[index]));
         }
-        String text = String.valueOf(value);
+        csv.append("\r\n");
+    }
+
+    private String csvCell(Object value) {
+        String text = value == null ? "" : String.valueOf(value);
         String firstVisible = text.stripLeading();
         boolean leadingControl = !text.isEmpty()
                 && (text.charAt(0) == '\t' || text.charAt(0) == '\r' || text.charAt(0) == '\n');
@@ -353,25 +390,49 @@ public class OpsAuditController {
         if (leadingControl || formulaPrefix) {
             text = "'" + text;
         }
-        return text
-                .replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-                .replace("\"", "&quot;");
+        return "\"" + text.replace("\"", "\"\"") + "\"";
+    }
+
+    private String maskAuditIdentifier(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        int length = value.codePointCount(0, value.length());
+        if (length <= 4) {
+            return "***";
+        }
+        return value.substring(0, value.offsetByCodePoints(0, 2)) + "***"
+                + value.substring(value.offsetByCodePoints(0, length - 2));
     }
 
     @PostMapping("/operations/{operationId}/approve")
-    @PreAuthorize("hasAuthority('platform_a2_operation_approve')"
-            + " && @a2AccessPolicy.canAccessOperation(#operationId)")
+    @PreAuthorize("isAuthenticated()")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> approveOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String operationId,
-            @RequestBody(required = false) AuditOperationDecisionRequest request) {
-        return auditCenterService.approve(idempotencyKey, operationId, authenticated(request));
+            @RequestBody(required = false) AuditOperationDecisionRequest request,
+            jakarta.servlet.http.HttpServletRequest httpRequest) {
+        return decisionResponse(auditCenterService.approve(idempotencyKey, operationId, authenticated(request)), httpRequest);
     }
 
     @PostMapping("/operations")
-    @PreAuthorize("hasAnyAuthority('platform_a2_write','platform_a2_proposal_create')")
+    @PreAuthorize("hasAnyAuthority('platform_a2_write','platform_a2_proposal_create')"
+            + " || (#request != null && (@treasuryThresholdApproval.canPropose(#request.command())"
+            + " || @a4RegistryApproval.canPropose(#request.command())"
+            + " || @auditReplayBusinessPermissionGuard.canProposeH7(#request.command())"
+            + " || @e2TaskPricingApproval.canPropose(#request.command())"
+            + " || @h8RewardParamApproval.canPropose(#request.command())"
+            + " || @h5GrowthApproval.canPropose(#request.command())"
+            + " || @h3GrowthApproval.canPropose(#request.command())"
+            + " || @h4GrowthApproval.canPropose(#request.command())"
+            + " || @teamFundApproval.canPropose(#request.command())"
+            + " || @auditReplayBusinessPermissionGuard.canProposeHardwareQuota(#request.command())"
+            + " || @auditReplayBusinessPermissionGuard.canProposeF5(#request.command())"
+            + " || @g3MarketApproval.canPropose(#request.command())"
+            + " || @learningCourseActivationApproval.canPropose(#request.command())"
+            + " || @g4CatalogApproval.canPropose(#request.command())"
+            + " || @g4DividendApproval.canPropose(#request.command())"
+            + " || @g4ParamApproval.canPropose(#request.command())))")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> createOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) AuditOperationProposalRequest request) {
@@ -379,13 +440,31 @@ public class OpsAuditController {
     }
 
     @PostMapping("/operations/{operationId}/reject")
-    @PreAuthorize("hasAuthority('platform_a2_operation_approve')"
-            + " && @a2AccessPolicy.canAccessOperation(#operationId)")
+    @PreAuthorize("isAuthenticated()")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> rejectOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String operationId,
-            @RequestBody(required = false) AuditOperationDecisionRequest request) {
-        return auditCenterService.reject(idempotencyKey, operationId, authenticated(request));
+            @RequestBody(required = false) AuditOperationDecisionRequest request,
+            jakarta.servlet.http.HttpServletRequest httpRequest) {
+        return decisionResponse(auditCenterService.reject(idempotencyKey, operationId, authenticated(request)), httpRequest);
+    }
+
+    private ApiResult<AuditCenterOverview.AuditOperationTicket> decisionResponse(
+            ApiResult<AuditCenterOverview.AuditOperationTicket> result, jakarta.servlet.http.HttpServletRequest request) {
+        if (result.getCode() == 403 && "FORBIDDEN".equals(result.getMessage())) {
+            // Preserve HTTP denial auditing after moving only these routes to the shared A2 qualification.
+            var authentication = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+            try {
+                auditLogService.record(AuditLogWriteRequest.builder().action("A1_ACCESS_DENIED")
+                        .resourceType("ADMIN_PERMISSION").resourceId(request.getRequestURI())
+                        .actorType("ADMIN").actorUsername(authentication == null ? null : authentication.getName())
+                        .method(request.getMethod()).path(request.getRequestURI()).result("DENIED").riskLevel("MEDIUM")
+                        .detail(Map.of("method", request.getMethod(), "path", request.getRequestURI(), "reason", "FORBIDDEN")).build());
+            } catch (RuntimeException auditFailure) {
+                // As with the existing access-denied handler, an audit failure must not replace the denial.
+            }
+        }
+        return result;
     }
 
     @PostMapping("/operations/{operationId}/withdraw")
@@ -454,6 +533,26 @@ public class OpsAuditController {
         return ApiResult.ok(auditLogService.topUsers(request));
     }
 
-    public record AuditExportResult(String jobNo, LocalDateTime createdAt, byte[] body) {}
-    private record ExportWorkbook(byte[] body, int rowCount) {}
+    public record AuditExportResult(String jobNo, LocalDateTime createdAt, byte[] body, boolean csv,
+                                    AuditExportScope scope) {}
+
+    public record AuditExportScope(List<String> domains, String actor) {
+        static AuditExportScope from(AuditLogQueryRequest query) {
+            List<String> allowed = query.getAllowedDomains();
+            List<String> domains = query.getDomain() != null
+                    && (allowed == null || allowed.contains(query.getDomain())) ? List.of(query.getDomain()) : allowed;
+            return new AuditExportScope(domains, query.getOperatorExact());
+        }
+
+        boolean canRecover(AuditExportScope issued, String explicitDomain) {
+            if (issued == null) {
+                // Older receipts have no scope metadata. A requested domain still bounds the old result.
+                return actor == null && (domains == null || explicitDomain != null && domains.contains(explicitDomain));
+            }
+            return (actor == null || actor.equals(issued.actor()))
+                    && (domains == null || issued.domains() != null && domains.containsAll(issued.domains()));
+        }
+    }
+
+    private record AuditExportCsv(byte[] body, int rowCount) {}
 }

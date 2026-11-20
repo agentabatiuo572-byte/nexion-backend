@@ -49,11 +49,21 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppUserAuthService {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppUserAuthService.class);
+    private ffdd.opsconsole.shared.security.UserDailyActivityService dailyActivity;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setDailyActivity(ffdd.opsconsole.shared.security.UserDailyActivityService dailyActivity) {
+        this.dailyActivity = dailyActivity;
+    }
+
     private final AppPaymentPasswordService paymentPasswords;
 
     // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
@@ -106,6 +116,7 @@ public class AppUserAuthService {
         loginGuardMapper.createTable();
         if (loginGuardMapper.countUserIdColumn() == 0) loginGuardMapper.addUserIdColumn();
         if (loginGuardMapper.countUpdatedAtIndex() == 0) loginGuardMapper.addUpdatedAtIndex();
+        if (loginGuardMapper.countLockKindColumn() == 0) loginGuardMapper.addLockKindColumn();
     }
 
     // The account row serializes takeover. READ_COMMITTED keeps the session scan from locking adjacent users' insert gaps.
@@ -154,7 +165,8 @@ public class AppUserAuthService {
             loginGuardMapper.bindUser(loginKey, user.getId());
         }
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
-            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
+            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED",
+                    UserLoginResponse.locked(guard.getLockedUntil().toString()));
         }
         boolean passwordMatches = safePasswordMatches(request.password(),
                 user != null && StringUtils.hasText(user.getPasswordHash()) ? user.getPasswordHash() : DUMMY_PASSWORD_HASH);
@@ -212,7 +224,9 @@ public class AppUserAuthService {
         UserEntity user = lockLoginUser(findUser(countryCode, phone));
         if (user != null) loginGuardMapper.bindUser(loginKey, user.getId());
         if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
-            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
+            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED",
+                    new UserOtpLoginChallengeResponse(
+                            null, 0, null, guard.getLockedUntil().toString()));
         }
         AppOtpPolicy policy = AppOtpPolicy.load(configFacade);
         OtpSendRateDecision otpRate = consumeOtpSendRate(otpSendKey, now, policy,
@@ -280,6 +294,10 @@ public class AppUserAuthService {
         UserLoginGuardRecord guard = loginGuardMapper.lock(loginKey);
         UserEntity user = lockLoginUser(findUser(countryCode, phone));
         if (user != null) loginGuardMapper.bindUser(loginKey, user.getId());
+        if (guard != null && guard.getLockedUntil() != null && guard.getLockedUntil().isAfter(now)) {
+            // 产品决定：锁定期间的失败尝试不累计，也不升级锁类型。
+            return ApiResult.fail(429, "USER_LOGIN_TEMPORARILY_LOCKED");
+        }
         boolean eligible = user != null
                 && "ACTIVE".equalsIgnoreCase(user.getStatus())
                 && !blocklistVerifier.isBlocked(user.getId())
@@ -507,11 +525,31 @@ public class AppUserAuthService {
         String token = issued.refreshToken() == null ? null : tokenProvider.createUserToken(user.getId(), user.getPhone() == null ? "" : user.getPhone(),
                 List.of(), session.getRefreshTokenId(), Duration.ofHours(accessHours),
                 UserAuthEnvironment.resolve(environment).orElseThrow(() -> new BizException(503,"USER_AUTH_ENVIRONMENT_FORBIDDEN")));
-        return ApiResult.ok(new UserLoginResponse(token, "Bearer",
+        var response = ApiResult.ok(new UserLoginResponse(token, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), sessionCountryCode(user), sessionPhone(user),
                         user.getNickname(), userMapper.isOnboardingComplete(user.getId())), null, null,
                 issued.refreshToken(), null, tokenProvider.sessionSyncKey(session.getSessionChainId()))
                 .withContext(session, issued.status()));
+        if (token != null) recordActivityAfterLogin(user);
+        return response;
+    }
+
+    private void recordActivityAfterLogin(UserEntity user) {
+        if (dailyActivity == null || Integer.valueOf(1).equals(user.getSandbox())) return;
+        Runnable record = () -> {
+            try {
+                dailyActivity.record(user);
+            } catch (RuntimeException failure) {
+                LOG.warn("Daily App activity write failed after login: {}", failure.getClass().getSimpleName());
+            }
+        };
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() { record.run(); }
+            });
+        } else {
+            record.run();
+        }
     }
 
     @Transactional
@@ -526,7 +564,8 @@ public class AppUserAuthService {
                 && context.authReference() != null
                 && java.util.Set.of("GOOGLE", "APPLE", "TELEGRAM").contains(
                         context.authReference().split(":", 2)[0].trim().toUpperCase(java.util.Locale.ROOT))
-                && !OAuthProviderClient.enabled(environment)) {
+                && !(context.authReference().contains(":OIDC-")
+                        ? OAuthProviderClient.providerFlowEnabled(environment) : OAuthProviderClient.enabled(environment))) {
             throw new BizException(503, "OAUTH_DISABLED");
         }
         var issued = singleSessions.recover(context);
@@ -578,7 +617,7 @@ public class AppUserAuthService {
     /** Called only after the provider flow verifies the browser proof and resolves its linked account. */
     ApiResult<UserLoginResponse> issueProviderSession(Long userId, String clientAddress, AppLoginContext context,
             String challengeNo, String code, String captchaTicket) {
-        if (!OAuthProviderClient.enabled(environment)) return ApiResult.fail(503, "OAUTH_DISABLED");
+        if (!OAuthProviderClient.providerFlowEnabled(environment)) return ApiResult.fail(503, "OAUTH_DISABLED");
         ApiResult<UserLoginResponse> recovered = recoverCompletedLogin(context);
         if (recovered != null) return recovered;
         LocalDateTime now = LocalDateTime.now();
@@ -933,13 +972,18 @@ public class AppUserAuthService {
         LocalDateTime lockedUntil = failedCount >= longThreshold
                 ? now.plusHours(longLockHours)
                 : failedCount >= shortThreshold ? now.plusMinutes(shortWindowMinutes) : null;
-        loginGuardMapper.recordFailure(loginKey, failedCount, windowStartedAt, lockedUntil);
+        String lockKind = lockedUntil == null ? null
+                : failedCount >= longThreshold ? "LONG" : "SHORT";
+        loginGuardMapper.recordFailure(loginKey, failedCount, windowStartedAt, lockedUntil, lockKind);
         if (userId != null) {
             userMapper.syncLoginFailure(userId, failedCount);
-            boolean newlyLocked = lockedUntil != null && (guard == null || guard.getLockedUntil() == null
-                    || !guard.getLockedUntil().isAfter(now));
-            if (newlyLocked) {
-                String lockType = failedCount >= longThreshold ? "LONG" : "SHORT";
+            boolean alreadyLocked = guard != null && guard.getLockedUntil() != null
+                    && guard.getLockedUntil().isAfter(now);
+            boolean newlyLocked = lockedUntil != null && !alreadyLocked;
+            boolean upgradedToLong = lockedUntil != null && alreadyLocked
+                    && failedCount >= longThreshold && guard.getFailedCount() < longThreshold;
+            if (newlyLocked || upgradedToLong) {
+                String lockType = lockKind;
                 outboxService.publish("USER_SECURITY", String.valueOf(userId), "auth.login_locked", Map.of(
                         "targetUserId", userId,
                         "loginKeyHash", hashToken(loginKey),
@@ -963,7 +1007,7 @@ public class AppUserAuthService {
         int attempts = newWindow ? 1 : guard.getFailedCount() + 1;
         LocalDateTime windowStartedAt = newWindow ? now : guard.getWindowStartedAt();
         LocalDateTime lockedUntil = attempts >= IP_ATTEMPTS_PER_MINUTE ? now.plusMinutes(1) : null;
-        loginGuardMapper.recordFailure(key, attempts, windowStartedAt, lockedUntil);
+        loginGuardMapper.recordFailure(key, attempts, windowStartedAt, lockedUntil, null);
         return true;
     }
 

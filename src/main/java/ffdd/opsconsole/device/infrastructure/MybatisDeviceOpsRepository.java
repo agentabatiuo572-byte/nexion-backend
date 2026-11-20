@@ -2,13 +2,10 @@ package ffdd.opsconsole.device.infrastructure;
 
 
 import lombok.RequiredArgsConstructor;
-import ffdd.opsconsole.device.domain.DatacenterReferenceCount;
-import ffdd.opsconsole.device.domain.DeviceDatacenterView;
 import ffdd.opsconsole.device.domain.DeviceOpsRepository;
 import ffdd.opsconsole.device.domain.DeviceOpsView;
 import ffdd.opsconsole.device.domain.DeviceTradeinOverviewView;
 import ffdd.opsconsole.device.domain.DeviceTradeinTxView;
-import ffdd.opsconsole.device.dto.DeviceDatacenterUpsertRequest;
 import ffdd.opsconsole.device.dto.DeviceOpsQueryRequest;
 import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.shared.api.PageResult;
@@ -63,8 +60,9 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             Map.entry("tradeinLadderCut3", "75"), Map.entry("tradeinLadderCut4", "100"),
             Map.entry("tradeinLadderCredit1", "75"), Map.entry("tradeinLadderCredit2", "60"), Map.entry("tradeinLadderCredit3", "45"),
             Map.entry("tradeinLadderCredit4", "30"), Map.entry("tradeinLadderCredit5", "15"),
-            Map.entry("tradeinRequireHigherPrice", "true"), Map.entry("tradeinMaxDevicesPerOrder", "3"),
-            Map.entry("eligibility", "L4+ 持有者"), Map.entry("promoMult", "1.5"),
+            Map.entry("tradeinRequireHigherPrice", "true"), Map.entry("tradeinMaxDevicesPerOrder", "1"),
+            // BUG-522: 存储用稳定代码，后台展示/输入仍按六档中文名映射。
+            Map.entry("eligibility", ffdd.opsconsole.device.domain.TradeinEligibility.L4_PLUS), Map.entry("promoMult", "1.5"),
             Map.entry("promoCooldownDays", "14"), Map.entry("promoMaxPerSession", "3"),
             Map.entry("promoDelaySeconds", "6"), Map.entry("promoMinAgeDays", "30"),
             Map.entry("promoRoutes", "/me/devices"), Map.entry("inventorySoftMax", "0"),
@@ -79,33 +77,45 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         this(mapper,readTimeSeedPolicy,canonicalStateMapper,null);
     }
 
+    @org.springframework.beans.factory.annotation.Value("${nexion.simulated-tasks.enabled:false}")
+    private boolean simEnabled;
+
     @Override
     public Map<String, Object> overviewCounters() {
-        Map<String, Object> overview = new LinkedHashMap<>();
-        overview.put("totalDevices", mapper.countTotalDevices());
-        overview.put("onlineDevices", mapper.countOnlineDevices());
-        overview.put("offlineDevices", mapper.countOfflineDevices());
-        overview.put("recycledDevices", mapper.countRecycledDevices());
-        overview.put("pendingRecycleDevices", mapper.countPendingRecycleDevices());
-        overview.put("abnormalDevices", mapper.countAbnormalDevices());
-        overview.put("datacenters", datacenterSummaries());
-        return overview;
+        // 原四数只读旧口径 legacyState,与改动前完全一致:总数=在售范围全部;运行中=RUNNING;已停用=STOPPED;
+        // 等待启动=WAITING_ACTIVATION/WAITING_INIT/LEGACY_PENDING(显式三态)。stale ERROR 等一律按旧运行态归属。
+        // 新增三数只读 resolvedState(与列表状态筛选同一有效状态解析):出错重试=ERROR、旧任务未结清=LEGACY_PENDING、
+        // 等待配置=WAITING_CONFIG;它们仍计入总数,不重复也不改动原四数。simEnabled=false 时 resolvedState 全为 SIM_OFF,新三数为 0。
+        long total = 0, running = 0, waiting = 0, stopped = 0, errorRetry = 0, legacyPending = 0, waitingConfig = 0;
+        for (var row : mapper.storeStateCounts(simEnabled)) {
+            long count = row.deviceCount();
+            total += count;
+            switch (row.legacyState()) {
+                case "RUNNING" -> running += count;
+                case "WAITING_ACTIVATION", "WAITING_INIT", "LEGACY_PENDING" -> waiting += count;
+                case "STOPPED" -> stopped += count;
+                default -> { }
+            }
+            switch (row.resolvedState()) {
+                case "ERROR" -> errorRetry += count;
+                case "LEGACY_PENDING" -> legacyPending += count;
+                case "WAITING_CONFIG" -> waitingConfig += count;
+                default -> { }
+            }
+        }
+        Map<String, Object> counters = new LinkedHashMap<>();
+        counters.put("total", total);
+        counters.put("running", running);
+        counters.put("waitingActivation", waiting);
+        counters.put("stopped", stopped);
+        counters.put("errorRetry", errorRetry);
+        counters.put("legacyPending", legacyPending);
+        counters.put("waitingConfig", waitingConfig);
+        return counters;
     }
 
     @Override
     public Map<String, Object> e5Observability() {
-        DeviceOpsMapper.FleetObservabilityMetrics row = mapper.e5FleetObservabilityMetrics();
-        Map<String, Object> telemetry = new LinkedHashMap<>();
-        telemetry.put("heartbeatLost1h", row == null || row.heartbeatLost1h() == null ? 0L : row.heartbeatLost1h());
-        telemetry.put("reconnectEvents24h", mapper.countE5ReconnectEvents24h());
-        telemetry.put("persistentOffline1h", row == null || row.persistentOffline1h() == null ? 0L : row.persistentOffline1h());
-        telemetry.put("activeTasks", row == null || row.activeTasks() == null ? 0L : row.activeTasks());
-        telemetry.put("avgGpuUsagePct", row == null ? null : row.avgGpuUsagePct());
-        telemetry.put("avgGpuPowerW", row == null ? null : row.avgGpuPowerW());
-        telemetry.put("avgCpuUsagePct", null);
-        telemetry.put("dispatchLatencyP95Ms", null);
-        telemetry.put("dispatchLatencySampleCount", 0);
-        telemetry.put("latestRuntimeAt", row == null ? null : row.latestRuntimeAt());
         List<Map<String, Object>> activity = mapper.e5Activity24h().stream().map(event -> {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("eventType", event.eventType());
@@ -114,33 +124,46 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             item.put("occurredAt", event.createdAt());
             return item;
         }).toList();
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("telemetry", telemetry);
-        result.put("activity", activity);
-        result.put("sources", List.of("nx_user_device_runtime", "nx_event_outbox"));
-        result.put("missingMetrics", List.of("avgCpuUsagePct", "dispatchLatencyP95Ms"));
-        return result;
+        return Map.of("activity", activity);
     }
 
     @Override
-    public PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request) {
-        String status = request == null ? null : normalizeUpper(request.status());
-        String dcLocation = request == null ? null : normalize(request.dcLocation());
-        String keyword = request == null ? null : normalize(request.keyword());
-        Long userId = request == null || request.userId() == null || request.userId() <= 0 ? null : request.userId();
-        String kind = request == null ? null : normalizeUpper(request.kind());
-        String heartbeat = request == null ? null : normalize(request.heartbeat());
-        long pageNum = normalizePage(request == null ? null : request.pageNum());
-        long pageSize = normalizeSize(request == null ? null : request.pageSize());
+    public PageResult<DeviceOpsView> pageDevices(DeviceOpsQueryRequest request, boolean phones) {
+        String state = normalizeUpper(request.simState());
+        if (state != null && !Set.of("WAITING_ACTIVATION", "WAITING_INIT", "LEGACY_PENDING", "RUNNING", "WAITING_CONFIG", "PAUSED", "CLOSING",
+                "STOPPED", "UNBOUND", "ERROR", "SIM_OFF").contains(state))
+            throw new BizException(422, "E5_SIM_STATE_INVALID");
+        String source = normalizeUpper(request.source());
+        if (source != null && !Set.of("ORDER", "TRADE_IN", "TRIAL", "PROMOTION_GIFT").contains(source))
+            throw new BizException(422, "E5_SOURCE_INVALID");
+        String productCode = normalize(request.productCode());
+        String keyword = normalize(request.keyword());
+        Long userId = request.userId();
+        if (userId != null && userId <= 0)
+            throw new BizException(422, "E5_USER_ID_INVALID");
+        long pageNum = normalizePage(request.pageNum());
+        long pageSize = normalizeSize(request.pageSize());
         long offset;
         try {
             offset = Math.multiplyExact(pageNum - 1, pageSize);
         } catch (ArithmeticException invalidOffset) {
             throw new BizException(422, "E5_PAGE_NUM_INVALID");
         }
-        long total = mapper.countDevices(status, dcLocation, keyword, userId, kind, heartbeat);
-        List<DeviceOpsView> records = mapper.pageDevices(status, dcLocation, keyword, userId, kind, heartbeat, pageSize, offset);
+        long total = mapper.countDevices(phones, simEnabled, state, source, productCode, keyword, userId);
+        var records = mapper.pageDevices(phones, simEnabled, state, source, productCode, keyword, userId, pageSize, offset);
         return new PageResult<>(total, pageNum, pageSize, records);
+    }
+
+    @Override
+    public Set<Long> legacyPendingDeviceIds(List<Long> deviceIds) {
+        return deviceIds.isEmpty() ? Set.of() : mapper.legacyPendingDeviceIds(deviceIds);
+    }
+
+    @Override
+    public PageResult<DeviceOpsView> pageUserDevices(Long userId, long page, long size) {
+        long pageNum = normalizePage(page), pageSize = normalizeSize(size);
+        return new PageResult<>(mapper.countUserDevices(userId), pageNum, pageSize,
+                mapper.listUserDevices(userId, pageSize, Math.multiplyExact(pageNum - 1, pageSize)));
     }
 
     @Override
@@ -148,7 +171,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         if (userId == null || userId <= 0) {
             return List.of();
         }
-        return mapper.listUserDevices(userId, normalizeSize((long) limit));
+        return mapper.listUserDevices(userId, normalizeSize((long) limit), 0);
     }
 
     @Override
@@ -161,6 +184,11 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         mapper.restoreDevice(deviceId, restoredAt);
         mapper.restoreDeviceRuntime(deviceId, restoredAt);
         return findDevice(deviceId);
+    }
+
+    @Override
+    public Optional<String> ownershipStatus(Long deviceId) {
+        return Optional.ofNullable(mapper.deviceOwnershipStatus(deviceId));
     }
 
     @Override
@@ -182,11 +210,16 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public Optional<DeviceOpsView> activateDevice(Long deviceId, LocalDateTime activatedAt) {
-        if (mapper.activateE5Device(deviceId, activatedAt) != 1) {
+        if (mapper.activateE5Device(deviceId, activatedAt, simEnabled) != 1) {
             return Optional.empty();
         }
         mapper.restoreDeviceRuntime(deviceId, activatedAt);
         return findDevice(deviceId);
+    }
+
+    @Override
+    public String e5ActivationTargetStatus(Long deviceId) {
+        return mapper.e5ActivationTargetStatus(deviceId, simEnabled);
     }
 
     @Override
@@ -212,22 +245,27 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
 
     @Override
     public List<Long> lockE5BatchCandidateIds(Long userId, boolean pause, int limit) {
-        return mapper.lockE5BatchCandidateIds(userId, pause ? 1 : 0, limit);
+        return mapper.lockE5BatchCandidateIds(userId, pause ? 1 : 0, limit, simEnabled);
     }
 
     @Override
     public int pauseDevicesByUser(Long userId, String reason, LocalDateTime now) {
-        return mapper.pauseDevicesByUser(userId, reason, now);
+        return mapper.pauseDevicesByUser(userId, reason, now, simEnabled);
     }
 
     @Override
-    public int resumeDevicesByUser(Long userId, LocalDateTime now) {
-        return mapper.resumeDevicesByUser(userId);
+    public int resumeDevicesByUser(Long userId, List<Long> deviceIds, LocalDateTime now) {
+        return mapper.resumeDevicesByUser(userId, deviceIds);
     }
 
     @Override
-    public DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth) {
-        DeviceOpsMapper.TradeinOverviewMetrics metrics = mapper.tradeinOverviewMetrics(cliffMonth);
+    public void syncSimulatedPause(Long userId, List<Long> deviceIds, boolean pause, LocalDateTime now) {
+        if (simEnabled) mapper.syncSimulatedPause(userId, deviceIds, pause, now);
+    }
+
+    @Override
+    public DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int earlyEnd, int midEnd) {
+        DeviceOpsMapper.TradeinOverviewMetrics metrics = mapper.tradeinOverviewMetrics(earlyEnd, midEnd);
         List<DeviceTradeinTxView> txStats = new ArrayList<>();
         txStats.add(txStat("recycle", "设备回收", "POST /api/admin/devices/e3/tradein/recycle", since));
         txStats.add(txStat("replace", "设备置换", "POST /api/admin/devices/e3/tradein/replace", since));
@@ -235,6 +273,8 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         return new DeviceTradeinOverviewView(
                 metrics.averageAgeMonths(),
                 metrics.cliffDeviceCount(),
+                metrics.earlyDeviceCount(),
+                metrics.midDeviceCount(),
                 mapper.countTradeinApplicationsSince(monthStart),
                 safe(mapper.sumTradeinDiscountSince(monthStart)),
                 mapper.countK2ArbitrageHits(),
@@ -286,107 +326,6 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         if (updated == 0) {
             mapper.insertE3Config(key, value, valueType, operator, sortForConfig(key));
         }
-    }
-
-    @Override
-    public List<DeviceDatacenterView> datacenterSummaries() {
-        return mapper.datacenterSummaries().stream()
-                .map(this::toDatacenterView)
-                .toList();
-    }
-
-    @Override
-    public Optional<DeviceDatacenterView> findDatacenter(String dcLocation) {
-        return Optional.ofNullable(mapper.findDatacenter(dcLocation))
-                .map(this::toDatacenterView);
-    }
-
-    @Override
-    public DeviceDatacenterView createDatacenter(DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
-        mapper.insertDatacenter(request.dcLocation(), request.regionLabel(), request.location(), request.displayName(),
-                request.status(), request.sortOrder(), operator);
-        return findDatacenter(request.dcLocation()).orElseThrow();
-    }
-
-    @Override
-    public Optional<DeviceDatacenterView> updateDatacenter(String dcLocation, DeviceDatacenterUpsertRequest request, String operator, LocalDateTime now) {
-        boolean renamed = !dcLocation.equals(request.dcLocation());
-        int updated = renamed
-                ? mapper.renameDatacenter(dcLocation, request.dcLocation(), request.regionLabel(), request.location(),
-                        request.displayName(), request.status(), request.sortOrder(), operator)
-                : mapper.updateDatacenter(dcLocation, request.regionLabel(), request.location(), request.displayName(),
-                        request.status(), request.sortOrder(), operator);
-        if (updated == 0) {
-            return Optional.empty();
-        }
-        if (renamed) {
-            mapper.renameDatacenterState(dcLocation, request.dcLocation());
-            mapper.renameDatacenterDevices(dcLocation, request.dcLocation());
-        }
-        return findDatacenter(request.dcLocation());
-    }
-
-    @Override
-    public boolean softDeleteDatacenter(String dcLocation, String operator, LocalDateTime now) {
-        return mapper.softDeleteDatacenter(dcLocation, operator, now) > 0;
-    }
-
-    @Override
-    public DatacenterReferenceCount countDatacenterReferences(String dcLocation) {
-        long devices = mapper.countDevicesByDatacenter(dcLocation);
-        long pendingOrders = mapper.countPendingOrdersByDatacenter(dcLocation);
-        long skus = mapper.countSkusByDatacenter(dcLocation);
-        return new DatacenterReferenceCount(devices, pendingOrders, skus);
-    }
-
-    @Override
-    public void syncDatacenterReferencesOnDelete(String dcLocation, String operator, LocalDateTime now) {
-        // 清空设备表 dc_location(防悬挂/笛儿),并软删运营状态行。
-        mapper.detachDevicesFromDatacenter(dcLocation);
-        mapper.softDeleteDatacenterOpsState(dcLocation, operator, now);
-    }
-
-    @Override
-    public void pauseDatacenter(String dcLocation, String reason, String operator, LocalDateTime now) {
-        upsertDatacenterState(dcLocation, true, reason, operator, now);
-        mapper.pauseRuntimeByDatacenter(dcLocation, reason, now);
-    }
-
-    @Override
-    public void resumeDatacenter(String dcLocation, String operator, LocalDateTime now) {
-        upsertDatacenterState(dcLocation, false, null, operator, now);
-        mapper.resumeRuntimeByDatacenter(dcLocation);
-    }
-
-    private void upsertDatacenterState(String dcLocation, boolean paused, String reason, String operator, LocalDateTime now) {
-        int pausedValue = paused ? 1 : 0;
-        int updated = mapper.updateDatacenterState(dcLocation, pausedValue, reason, operator, now);
-        if (updated == 0) {
-            mapper.insertDatacenterState(dcLocation, pausedValue, reason, paused ? now : null, paused ? null : now, operator);
-        }
-    }
-
-    private DeviceDatacenterView toDatacenterView(DeviceOpsMapper.DatacenterSummaryRow row) {
-        return new DeviceDatacenterView(
-                row.dcLocation(),
-                row.regionLabel(),
-                row.status(),
-                row.sortOrder(),
-                safeLong(row.totalDevices()),
-                safeLong(row.onlineDevices()),
-                safeLong(row.pendingRecycleDevices()),
-                safeLong(row.abnormalDevices()),
-                safe(row.avgGpuUsage()),
-                safe(row.avgGpuTempC()),
-                safe(row.avgGpuPowerW()),
-                row.dispatchPaused() != null && row.dispatchPaused() == 1,
-                row.pausedReason(),
-                row.pausedAt(),
-                row.resumedAt(),
-                row.createdAt(),
-                row.updatedAt(),
-                row.location(),
-                row.displayName());
     }
 
     private String decayToPercent(BigDecimal value) {

@@ -124,7 +124,7 @@ class AdminIdempotencyServiceTest {
     private final AdminIdempotencyExpiryTransitionExecutor expiryTransitionExecutor =
             org.mockito.Mockito.mock(AdminIdempotencyExpiryTransitionExecutor.class);
     private final AdminIdempotencyTransactionExecutor transactionExecutor =
-            new AdminIdempotencyTransactionExecutor(recordMapper, objectMapper, expiryTransitionExecutor);
+            new AdminIdempotencyTransactionExecutor(recordMapper, objectMapper, expiryTransitionExecutor, org.mockito.Mockito.mock(ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence.class));
     private final AdminIdempotencyService service = new AdminIdempotencyService(
             transactionExecutor,
             Clock.fixed(Instant.parse("2026-06-18T00:00:00Z"), ZoneOffset.UTC));

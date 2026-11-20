@@ -44,7 +44,7 @@ public class OpsPlatformConfigService {
                     "ops-console-shell",
                     List.of("on", "off"),
                     List.of("SUPER_ADMIN")));
-    private static final Map<String, ParamDefinition> PARAM_DEFINITIONS = Map.of(
+    private static final Map<String, ParamDefinition> K1_REGISTRATION_PARAM_DEFINITIONS = Map.of(
             "auth.risk.h5_register_captcha",
             new ParamDefinition("auth.risk.h5_register_captcha","H5 注册人机验证",
                     "1 为每次发注册短信都验证，0 沿用普通策略。缺少浏览器设备标识始终验证","0/1",0,1,
@@ -56,7 +56,8 @@ public class OpsPlatformConfigService {
             "auth.risk.h5_freeze_newcomer_gift",
             new ParamDefinition("auth.risk.h5_freeze_newcomer_gift","H5 新人礼首购解冻",
                     "1 为首笔非零购买付款后可发，0 沿用普通审核条件。仅影响新注册账号","0/1",0,1,
-                    "H5 新人奖励",List.of("SUPER_ADMIN")),
+                    "H5 新人奖励",List.of("SUPER_ADMIN")));
+    private static final Map<String, ParamDefinition> PARAM_DEFINITIONS = Map.of(
             "platform.global_rate_limit_per_minute",
             new ParamDefinition("platform.global_rate_limit_per_minute", "全球限流上限",
                     "全平台 API 每分钟允许的请求总数", "次/分钟", 100, 1_000_000,
@@ -81,12 +82,7 @@ public class OpsPlatformConfigService {
                         .orElse(null))
                 .filter(java.util.Objects::nonNull)
                 .toList();
-        List<Map<String, Object>> params = PARAM_DEFINITIONS.values().stream()
-                .map(definition -> configRepository.findActiveByKey(definition.key())
-                        .map(item -> paramView(definition, item, role))
-                        .orElse(null))
-                .filter(java.util.Objects::nonNull)
-                .toList();
+        List<Map<String, Object>> params = parameterViews(PARAM_DEFINITIONS, role);
         List<Map<String, Object>> gates = emergencyStateProvider.currentKillSwitches();
         List<Map<String, Object>> health = healthProvider.currentHealth();
         long upGates = gates.stream().filter(gate -> Boolean.TRUE.equals(gate.get("up"))).count();
@@ -102,6 +98,28 @@ public class OpsPlatformConfigService {
                                 .count(),
                         "killGates", gates.size(),
                         "killGatesUp", upGates)));
+    }
+
+    static boolean isK1RegistrationParam(String key) {
+        return K1_REGISTRATION_PARAM_DEFINITIONS.containsKey(key);
+    }
+
+    public List<Map<String, Object>> k1RegistrationParams() {
+        return parameterViews(K1_REGISTRATION_PARAM_DEFINITIONS, normalizeRole(roleResolver.resolveCode()));
+    }
+
+    private List<Map<String, Object>> parameterViews(Map<String, ParamDefinition> definitions, String role) {
+        return definitions.values().stream()
+                .flatMap(definition -> configRepository.findActiveByKey(definition.key())
+                        .map(item -> paramView(definition, item, role)).stream())
+                .toList();
+    }
+
+    @Transactional
+    public ApiResult<PlatformConfigResponse> updateK1RegistrationParam(
+            String idempotencyKey, PlatformConfigUpdateRequest request) {
+        if (request == null) return fail(OpsErrorCode.VALIDATION_FAILED, "A3_REQUEST_REQUIRED");
+        return updateParam(idempotencyKey, request, K1_REGISTRATION_PARAM_DEFINITIONS);
     }
 
     public ApiResult<Map<String, Object>> runtimeFlags() {
@@ -126,7 +144,7 @@ public class OpsPlatformConfigService {
             return fail(OpsErrorCode.VALIDATION_FAILED, "A3_REQUEST_REQUIRED");
         }
         if ("param".equals(normalize(request.kind()))) {
-            return updateParam(idempotencyKey, request);
+            return updateParam(idempotencyKey, request, PARAM_DEFINITIONS);
         }
         if (!"flag".equals(normalize(request.kind()))) {
             return fail(OpsErrorCode.VALIDATION_FAILED,
@@ -167,11 +185,13 @@ public class OpsPlatformConfigService {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private ApiResult<PlatformConfigResponse> updateParam(String idempotencyKey, PlatformConfigUpdateRequest request) {
+    private ApiResult<PlatformConfigResponse> updateParam(String idempotencyKey, PlatformConfigUpdateRequest request,
+                                                          Map<String, ParamDefinition> definitions) {
         if (!StringUtils.hasText(idempotencyKey)) {
             return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        ParamDefinition definition = PARAM_DEFINITIONS.get(trim(request.flagKey()));
+        String key = trim(request.flagKey());
+        ParamDefinition definition = key == null ? null : definitions.get(key);
         if (definition == null) return fail(OpsErrorCode.VALIDATION_FAILED, "A3_PARAM_UNKNOWN");
         String reason = trim(request.reason());
         if (reason == null || reason.length() < 8 || reason.length() > 200) {
@@ -191,10 +211,21 @@ public class OpsPlatformConfigService {
         String role = normalizeRole(roleResolver.resolveCode());
         if (!definition.writerRoles().contains(role)) return fail(OpsErrorCode.FORBIDDEN, "A3_PARAM_ROLE_FORBIDDEN");
         String hash = requestHash(definition.key(), String.valueOf(value), String.valueOf(expected), reason, role);
-        ApiResult result = idempotencyService.execute(
+        ApiResult result = idempotencyService.executeBound(
                 "A3_PLATFORM_PARAM:" + definition.key(), idempotencyKey.trim(), hash, ApiResult.class,
+                paramReadAuthority(definition), definition.key(),
                 () -> updateParamOnce(definition, value, expected, reason, role, idempotencyKey.trim()));
         return (ApiResult<PlatformConfigResponse>) result;
+    }
+
+    /**
+     * K1 registration params are read through the K1 overview; the other A3 params are read through
+     * the platform config overview. The authority is derived from the writer's canonical key, never
+     * from the authenticated caller or a page label.
+     */
+    private String paramReadAuthority(ParamDefinition definition) {
+        return K1_REGISTRATION_PARAM_DEFINITIONS.containsKey(definition.key())
+                ? "risk_k1_read" : "platform_a3_read";
     }
 
     private ApiResult<PlatformConfigResponse> updateParamOnce(

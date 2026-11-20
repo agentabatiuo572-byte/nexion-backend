@@ -7,6 +7,7 @@ import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
 import ffdd.opsconsole.content.domain.DisclosureJurisdictionCatalogView;
 import ffdd.opsconsole.content.domain.DisclosureVersionItem;
 import ffdd.opsconsole.content.domain.TrustDisclosureOverview;
+import ffdd.opsconsole.content.domain.TrustPublishedSnapshotView;
 import ffdd.opsconsole.content.domain.TrustSectionView;
 import ffdd.opsconsole.content.domain.TrustSectionVersionView;
 import ffdd.opsconsole.content.dto.DisclosureDraftRequest;
@@ -42,6 +43,13 @@ public class OpsTrustDisclosureController {
     @PreAuthorize("hasAnyAuthority('content_i4_read','content_i5_read')")
     public ApiResult<TrustDisclosureOverview> overview() {
         return trustDisclosureService.overview();
+    }
+
+    /** I4-only status of the exact snapshot served by the App public endpoint. */
+    @GetMapping("/published-snapshot")
+    @PreAuthorize("hasAuthority('content_i4_read')")
+    public ApiResult<TrustPublishedSnapshotView> publishedSnapshot() {
+        return trustDisclosureService.publishedSnapshot();
     }
 
     @PostMapping("/trust-sections/{sectionKey}/publish")

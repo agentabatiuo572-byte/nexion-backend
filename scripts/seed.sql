@@ -173,7 +173,6 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO nx_config_item (config_key, config_value, value_type, config_group, visibility, remark, status)
 VALUES
   ('admin.bootstrap.mode', 'baseline', 'STRING', 'admin_system', 'ADMIN', 'Local system baseline mode.', 1),
-  ('admin.security.min_super_admins', '1', 'NUMBER', 'admin_system', 'ADMIN', 'Minimum active super admins for local startup.', 1),
   ('auth.session.access_ttl_hours', '2', 'NUMBER', 'auth', 'PRIVATE', 'Access token lifetime in hours.', 1),
   ('auth.session.refresh_ttl_days', '30', 'NUMBER', 'auth', 'PRIVATE', 'Refresh token lifetime in days.', 1),
   ('auth.session.idle_ttl_days', '7', 'NUMBER', 'auth', 'PRIVATE', 'Idle session lifetime in days.', 1),

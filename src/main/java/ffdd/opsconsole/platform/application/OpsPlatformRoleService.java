@@ -1,6 +1,9 @@
 package ffdd.opsconsole.platform.application;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import ffdd.opsconsole.auth.infrastructure.AdminRoleRelationEntity;
 import ffdd.opsconsole.auth.mapper.AdminRolePermissionMapper;
 import ffdd.opsconsole.auth.mapper.AdminRoleRelationMapper;
@@ -8,6 +11,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.dto.AdminAccountActionRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.RoleGrantsDiff;
 import ffdd.opsconsole.platform.dto.PlatformRoleCreateRequest;
 import ffdd.opsconsole.platform.dto.PlatformRoleDetail;
 import ffdd.opsconsole.platform.dto.PlatformRoleGrantsUpdateRequest;
@@ -19,13 +23,18 @@ import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.mapper.AdminRoleMapper;
 import ffdd.opsconsole.platform.mapper.AdminRoleMenuMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.RecoveryStatus;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -57,16 +66,33 @@ public class OpsPlatformRoleService {
     private final AuditLogService auditLogService;
     private final OpsAuditCenterService auditCenterService;
     private final AdminIdempotencyService idempotencyService;
+    private final AuditOperationTicketMapper ticketMapper;
+    private final ObjectMapper objectMapper;
 
     public ApiResult<PlatformRoleOverview> overview() {
         List<AdminRoleEntity> roles = roleMapper.selectList(new LambdaQueryWrapper<AdminRoleEntity>()
                 .eq(AdminRoleEntity::getIsDeleted, 0)
                 .orderByAsc(AdminRoleEntity::getId));
+        Map<Long, Long> permissionCounts = new HashMap<>();
+        for (AdminRolePermissionMapper.RoleCount row : rolePermissionMapper.countActivePermissionCodesByRole()) {
+            permissionCounts.put(row.roleId(), row.count());
+        }
+        Map<Long, Long> menuGrantCounts = new HashMap<>();
+        for (AdminRoleMenuMapper.RoleCount row : roleMenuMapper.countActiveMenuGrantsByRole()) {
+            menuGrantCounts.put(row.roleId(), row.count());
+        }
+        Map<Long, Long> enabledAdminCounts = new HashMap<>();
+        for (AdminRoleRelationMapper.RoleEnabledAdminCount row : roleRelationMapper.countEnabledAdminsByRole()) {
+            enabledAdminCounts.put(row.roleId(), row.enabledCount());
+        }
         List<RoleSummary> summaries = new ArrayList<>(roles.size());
         for (AdminRoleEntity role : roles) {
             summaries.add(new RoleSummary(role.getId(), role.getRoleCode(), role.getRoleName(),
                     role.getRemark(), role.getStatus(),
-                    BUILTIN_ROLE_CODES.contains(role.getRoleCode()), countAdminsByRole(role.getId())));
+                    BUILTIN_ROLE_CODES.contains(role.getRoleCode()), countAdminsByRole(role.getId()),
+                    permissionCounts.getOrDefault(role.getId(), 0L),
+                    menuGrantCounts.getOrDefault(role.getId(), 0L),
+                    enabledAdminCounts.getOrDefault(role.getId(), 0L)));
         }
         return ApiResult.ok(new PlatformRoleOverview(summaries, summaries.size()));
     }
@@ -78,9 +104,11 @@ public class OpsPlatformRoleService {
         }
         List<String> permissionCodes = rolePermissionMapper.selectActivePermissionCodesByRole(roleId);
         List<Long> menuIds = roleMenuMapper.selectActiveMenuIdsByRole(roleId);
+        List<String> legacyNonRead = "AUDITOR".equalsIgnoreCase(role.getRoleCode()) && !permissionCodes.isEmpty()
+                ? rolePermissionMapper.selectNonReadPermissionCodes(permissionCodes) : List.of();
         return ApiResult.ok(new PlatformRoleDetail(role.getId(), role.getRoleCode(), role.getRoleName(),
                 role.getRemark(), role.getStatus(), BUILTIN_ROLE_CODES.contains(role.getRoleCode()),
-                permissionCodes, menuIds));
+                permissionCodes, menuIds, legacyNonRead));
     }
 
     @Transactional
@@ -275,6 +303,8 @@ public class OpsPlatformRoleService {
         if (desiredPerms == null || desiredMenus == null) {
             return ApiResult.fail(422, "ROLE_GRANTS_INVALID");
         }
+        ApiResult<Void> readOnlyRole = validateAuditRolePermissions(entity, desiredPerms);
+        if (readOnlyRole.getCode() != 0) return readOnlyRole;
         List<String> validPerms = desiredPerms.isEmpty()
                 ? List.of() : rolePermissionMapper.selectExistingActivePermissionCodes(desiredPerms);
         List<Long> validMenus = desiredMenus.isEmpty()
@@ -283,6 +313,14 @@ public class OpsPlatformRoleService {
                 || !new java.util.HashSet<>(validMenus).equals(new java.util.HashSet<>(desiredMenus))) {
             return ApiResult.fail(422, "ROLE_GRANTS_UNKNOWN_PERMISSION_OR_MENU");
         }
+        // A6: the request replaces the whole grant set, so a proposal built on a snapshot that has
+        // since moved would silently undo grants or revocations made meanwhile. The proposer's own
+        // snapshot is required — the current server state is never substituted for what was seen.
+        // Approval re-runs this same check against the snapshotted command, so a pause between the
+        // proposal and the decision is caught too.
+        ApiResult<Void> snapshot = validateRoleGrantsSnapshot(roleId,
+                request.expectedPermissionCodes(), request.expectedMenuIds());
+        if (snapshot.getCode() != 0) return snapshot;
 
         if (!A2ReplayContext.isReplaying()) {
             String authenticatedOperator = actor(request.operator());
@@ -290,8 +328,11 @@ public class OpsPlatformRoleService {
             params.put("roleId", roleId);
             params.put("permissionCodes", desiredPerms);
             params.put("menuIds", desiredMenus);
+            params.put("expectedPermissionCodes", request.expectedPermissionCodes());
+            params.put("expectedMenuIds", request.expectedMenuIds());
             params.put("reason", request.reason());
             params.put("operator", authenticatedOperator);
+            // Keep the legacy inner proposal fingerprint; A2 derives the stored financial flag from the command.
             AuditOperationProposalRequest proposal = new AuditOperationProposalRequest(
                     "A6_ROLE_GRANTS_CHANGED",
                     roleCode,
@@ -329,17 +370,28 @@ public class OpsPlatformRoleService {
             roleMenuMapper.restoreRoleMenus(roleId, desiredMenus);
             roleMenuMapper.insertMissingRoleMenus(roleId, desiredMenus);
         }
+        ApiResult<PlatformRoleDetail> saved = detail(roleId);
+        if (saved.getData() == null) {
+            return saved;
+        }
+        // A disabled role may be preconfigured, but its actual saved whitelist must
+        // match the request before this transaction can claim success.
+        if (Integer.valueOf(0).equals(entity.getStatus())
+                && (!new java.util.HashSet<>(saved.getData().permissionCodes()).equals(new java.util.HashSet<>(desiredPerms))
+                    || !new java.util.HashSet<>(saved.getData().menuIds()).equals(new java.util.HashSet<>(desiredMenus)))) {
+            return ApiResult.fail(409, "A6_ROLE_GRANTS_NOT_PERSISTED");
+        }
         List<Long> adminIds = roleRelationMapper.selectAdminIdsByRole(roleId);
         evictAdmins(adminIds);
-        int permsAfter = rolePermissionMapper.selectActivePermissionCodesByRole(roleId).size();
-        int menusAfter = roleMenuMapper.selectActiveMenuIdsByRole(roleId).size();
+        int permsAfter = saved.getData().permissionCodes().size();
+        int menusAfter = saved.getData().menuIds().size();
         audit("A6_ROLE_GRANTS_CHANGED", roleId.toString(), request.reason(), request.operator(), idempotencyKey,
                 Map.of("roleCode", roleCode,
                         "permsBefore", permsBefore, "permsAfter", permsAfter,
                         "menusBefore", menusBefore, "menusAfter", menusAfter,
                         "affectedAdmins", adminIds.size()),
                 "HIGH");
-        return detail(roleId);
+        return saved;
     }
 
     private long countAdminsByRole(Long roleId) {
@@ -359,6 +411,83 @@ public class OpsPlatformRoleService {
 
     private AdminRoleEntity loadActiveForUpdate(Long roleId) {
         return roleId == null ? null : roleMapper.selectActiveForUpdate(roleId);
+    }
+
+    /** Generic A2 proposals must check the same snapshot and read-only role before a ticket or lock. */
+    public ApiResult<Void> validateRoleGrantsProposal(Map<String, Object> params) {
+        if (params == null || params.get("expectedPermissionCodes") == null || params.get("expectedMenuIds") == null)
+            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_REQUIRED");
+        if (!(params.get("expectedPermissionCodes") instanceof List<?> permissions)
+                || !(params.get("expectedMenuIds") instanceof List<?> menus)
+                || permissions.stream().anyMatch(value -> !(value instanceof String)))
+            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
+        try {
+            Long roleId = Long.valueOf(String.valueOf(params.get("roleId")));
+            List<Long> menuIds = menus.stream().map(value -> Long.valueOf(String.valueOf(value))).toList();
+            ApiResult<Void> snapshot = validateRoleGrantsSnapshot(roleId,
+                    permissions.stream().map(String.class::cast).toList(), menuIds);
+            if (snapshot.getCode() != 0) return snapshot;
+            AdminRoleEntity role = loadActive(roleId);
+            if (role == null) return ApiResult.fail(404, "ROLE_NOT_FOUND");
+            // Match the existing replay's strings(...) conversion, then the dedicated save's normalization.
+            List<String> desiredPerms = normalizePermissionCodes(params.get("permissionCodes") instanceof List<?> codes
+                    ? codes.stream().map(String::valueOf).toList() : List.of());
+            if (desiredPerms == null) return ApiResult.fail(422, "ROLE_GRANTS_INVALID");
+            return validateAuditRolePermissions(role, desiredPerms);
+        } catch (NumberFormatException invalid) {
+            return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
+        }
+    }
+
+    /** Called only after the generic proposal guard has verified the expected snapshot. */
+    RoleGrantsDiff roleGrantsDiff(Map<String, Object> params) {
+        Set<String> beforePermissions = new LinkedHashSet<>(normalizePermissionCodes(
+                ((List<?>) params.get("expectedPermissionCodes")).stream().map(String::valueOf).toList()));
+        Set<Long> beforeMenus = new LinkedHashSet<>(normalizeMenuIds(
+                ((List<?>) params.get("expectedMenuIds")).stream()
+                        .map(value -> Long.valueOf(String.valueOf(value))).toList()));
+        Set<String> afterPermissions = new LinkedHashSet<>(normalizePermissionCodes(
+                params.get("permissionCodes") instanceof List<?> codes
+                        ? codes.stream().map(String::valueOf).toList() : List.of()));
+        List<Long> desiredMenus;
+        try {
+            desiredMenus = normalizeMenuIds(params.get("menuIds") instanceof List<?> menus
+                    ? menus.stream().map(value -> Long.valueOf(String.valueOf(value))).toList() : List.of());
+        } catch (NumberFormatException invalidTarget) {
+            return null;
+        }
+        if (desiredMenus == null) return null;
+        Set<Long> afterMenus = new LinkedHashSet<>(desiredMenus);
+        return new RoleGrantsDiff(
+                afterPermissions.stream().filter(code -> !beforePermissions.contains(code)).toList(),
+                beforePermissions.stream().filter(code -> !afterPermissions.contains(code)).toList(),
+                afterMenus.stream().filter(id -> !beforeMenus.contains(id)).toList(),
+                beforeMenus.stream().filter(id -> !afterMenus.contains(id)).toList());
+    }
+
+    private ApiResult<Void> validateAuditRolePermissions(AdminRoleEntity role, List<String> desiredPerms) {
+        // Dedicated save/replay and generic proposals share the built-in AUDITOR's catalogue classification.
+        // The role comes from storage; stored grants are left untouched.
+        if ("AUDITOR".equalsIgnoreCase(role.getRoleCode()) && !desiredPerms.isEmpty()) {
+            List<String> nonRead = rolePermissionMapper.selectNonReadPermissionCodes(desiredPerms);
+            if (nonRead != null && !nonRead.isEmpty()) {
+                return ApiResult.fail(403, "AUDIT_ROLE_WRITE_FORBIDDEN");
+            }
+        }
+        return ApiResult.ok();
+    }
+
+    private ApiResult<Void> validateRoleGrantsSnapshot(Long roleId, List<String> permissions, List<Long> menus) {
+        if (permissions == null || menus == null) return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_REQUIRED");
+        List<String> expectedPerms = normalizePermissionCodes(permissions);
+        List<Long> expectedMenus = normalizeMenuIds(menus);
+        if (expectedPerms == null || expectedMenus == null) return ApiResult.fail(422, "ROLE_GRANTS_EXPECTED_INVALID");
+        if (!new java.util.HashSet<>(expectedPerms)
+                        .equals(new java.util.HashSet<>(rolePermissionMapper.selectActivePermissionCodesByRole(roleId)))
+                || !new java.util.HashSet<>(expectedMenus)
+                        .equals(new java.util.HashSet<>(roleMenuMapper.selectActiveMenuIdsByRole(roleId))))
+            return ApiResult.fail(409, "ROLE_GRANTS_STALE");
+        return ApiResult.ok();
     }
 
     private List<String> normalizePermissionCodes(List<String> values) {
@@ -435,20 +564,106 @@ public class OpsPlatformRoleService {
                 .build());
     }
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
     private ApiResult<?> idempotent(String scope, String idempotencyKey, Object request,
                                     Supplier<ApiResult<?>> action) {
-        return (ApiResult<?>) idempotencyService.execute(
-                scope, idempotencyKey.trim(), requestHash(scope, request), ApiResult.class, (Supplier) action);
+        Long actorId = A2ReplayContext.authenticatedAdminId();
+        if (actorId == null) return ApiResult.fail(403, OpsErrorCode.FORBIDDEN.name());
+        String key = idempotencyKey.trim();
+        var legacy = idempotencyService.recoveryResult(scope, key, requestHash(scope, request, key, null), ApiResult.class);
+        if (legacy.status() == RecoveryStatus.SUCCEEDED) {
+            return legacyReceipt(scope, key, request, actorId, legacy.response());
+        }
+        if (legacy.status() == RecoveryStatus.UNKNOWN) {
+            return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+        }
+        return idempotencyService.executeRetained(scope, key, requestHash(scope, request, key, actorId),
+                ApiResult.class, () -> {
+                    ApiResult<?> result = action.get();
+                    if (result.getCode() != 0) {
+                        Map<String, Object> rejection = new LinkedHashMap<>();
+                        rejection.put("code", result.getCode());
+                        rejection.put("message", result.getMessage());
+                        throw new AdminCommandBusinessRejection(result.getCode(), result.getMessage(), rejection);
+                    }
+                    return result;
+                });
     }
 
-    private String requestHash(String scope, Object request) {
+    private ApiResult<?> legacyReceipt(String scope, String key, Object request, long actorId, ApiResult<?> receipt) {
+        // A legacy receipt has no bound replay ticket. A new A2 approval must execute its own mutation.
+        if (A2ReplayContext.isReplaying()) return ApiResult.fail(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        if (receipt.getCode() != 0) return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+        int separator = scope.indexOf(':');
+        String command = scope.substring(0, separator);
+        String target = scope.substring(separator + 1);
+        Map<?, ?> data = receipt.getData() instanceof Map<?, ?> saved ? saved : Map.of();
+        Object resultId = data.get("id");
+        if (resultId instanceof String ticketId && ticketId.startsWith("WO-")) {
+            String op = switch (command) {
+                case "A6_ROLE_UPDATE" -> "a6_role_status_update";
+                case "A6_ROLE_DELETE" -> "a6_role_delete";
+                case "A6_ROLE_GRANTS" -> "a6_role_grants_update";
+                default -> null;
+            };
+            String alternateOp = request instanceof PlatformRoleUpdateRequest update && Integer.valueOf(0).equals(update.status())
+                    ? "a6_role_disable" : op;
+            if (op == null || !roleMapper.matchesA6Proposal(ticketId, target, op, alternateOp)) {
+                return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+            }
+            var origins = ticketMapper.selectMakerAudits(List.of(ticketId));
+            Long makerId = origins.isEmpty() ? null : origins.get(0).makerId();
+            if (makerId == null || makerId <= 0) return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+            if (makerId != actorId) return ApiResult.fail(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+            if (!ticketId.equals(auditLogService.findA2ProposalId(actorId, key))) {
+                return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+            }
+            Map<Object, Object> owned = new LinkedHashMap<>(data);
+            owned.put("mine", true);
+            return ApiResult.ok(owned);
+        }
+        String action = switch (command) {
+            case "A6_ROLE_CREATE" -> "A6_ROLE_CREATED";
+            case "A6_ROLE_UPDATE" -> "A6_ROLE_UPDATED";
+            case "A6_ROLE_DELETE" -> "A6_ROLE_DELETED";
+            case "A6_ROLE_GRANTS" -> "A6_ROLE_GRANTS_CHANGED";
+            default -> throw new IllegalArgumentException(command);
+        };
+        String roleId = target;
+        String alternateAction = action;
+        if ("A6_ROLE_CREATE".equals(command)) {
+            if (!(resultId instanceof Number) || !target.equals(data.get("roleCode"))) {
+                return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+            }
+            roleId = resultId.toString();
+            alternateAction = "A6_ROLE_RESTORED";
+        } else if (!("A6_ROLE_DELETE".equals(command) && receipt.getData() == null)
+                && (!(resultId instanceof Number) || !target.equals(resultId.toString()))) {
+            return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+        }
+        List<Long> owners = roleMapper.findA6WriteActors(roleId, key, action, alternateAction);
+        if (owners.size() != 1 || owners.get(0) == null || owners.get(0) <= 0) {
+            return ApiResult.fail(409, "A6_RECEIPT_OWNER_UNVERIFIED");
+        }
+        return owners.get(0) == actorId ? receipt : ApiResult.fail(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+    }
+
+    private String requestHash(String scope, Object request, String key, Long actorId) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            digest.update(scope.getBytes(StandardCharsets.UTF_8));
-            digest.update((byte) 0);
-            digest.update(String.valueOf(request).getBytes(StandardCharsets.UTF_8));
+            if (actorId == null) {
+                // Preserve the deployed digest so only the exact original legacy request can recover.
+                digest.update(scope.getBytes(StandardCharsets.UTF_8));
+                digest.update((byte) 0);
+                digest.update(String.valueOf(request).getBytes(StandardCharsets.UTF_8));
+            } else {
+                ObjectNode payload = objectMapper.valueToTree(request);
+                payload.remove("operator");
+                digest.update(objectMapper.writeValueAsBytes(
+                        new Object[] {actorId, scope, key, A2ReplayContext.operationId(), payload}));
+            }
             return HexFormat.of().formatHex(digest.digest());
+        } catch (JsonProcessingException ex) {
+            throw new BizException(422, "A6_REQUEST_HASH_FAILED");
         } catch (NoSuchAlgorithmException ex) {
             throw new IllegalStateException("SHA-256 unavailable", ex);
         }

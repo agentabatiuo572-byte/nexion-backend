@@ -6,7 +6,7 @@
 
 -- ===== 1. 域级菜单（13，parent_id NULL）=====
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, icon, sort_order, remark, status, is_deleted) VALUES
-  ('A','平台基础','平台基础',NULL,'','shield-check',1,'A roles=[] 仅superadmin',1,0),
+  ('A','平台基础','平台基础',NULL,'','shield-check',14,'A roles=[] 仅superadmin',1,0),
   ('B','总览驾驶舱','总览驾驶舱',NULL,'','gauge',2,'B 全角色',1,0),
   ('C','用户与账户','用户与账户',NULL,'','users',3,'C support+risk',1,0),
   ('D','资金与财务','资金与财务',NULL,'','wallet',4,'D finance+risk',1,0),
@@ -30,7 +30,7 @@ JOIN (SELECT 'A1' code,'运营账号 & RBAC' name,'/platform/rbac' path,1 sort U
       SELECT 'A2','审计 & 操作确认','/platform/audit',2 UNION ALL
       SELECT 'A3','系统配置','/platform/config',3 UNION ALL
       SELECT 'A4','埋点事件体系','/platform/events',4 UNION ALL
-      SELECT 'A5','平台参数寄存器','/platform/params-registry',5 UNION ALL
+      SELECT 'A5','平台参数目录','/platform/params-registry',5 UNION ALL
       SELECT 'A6','角色管理','/platform/roles',6 UNION ALL
       SELECT 'A7','菜单管理','/platform/menus',7 UNION ALL
       SELECT 'A8','权限字典','/platform/permissions',8) v
@@ -42,10 +42,14 @@ SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'B' d) x ON p.menu_code='B'
 JOIN (SELECT 'B1' code,'双账本总览' name,'/overview/dual-ledger' path,1 sort UNION ALL
       SELECT 'B2','资金池水位','/overview/liquidity',2 UNION ALL
-      SELECT 'B3','转化漏斗','/overview/funnel',3 UNION ALL
+      SELECT 'B3','用户转化概览','/overview/funnel',3 UNION ALL
       SELECT 'B4','节奏状态','/overview/rhythm',4 UNION ALL
       SELECT 'B5','风险雷达','/overview/risk-radar',5) v
 ON 1=1
+-- B31 is activated manually after SPM-01; normal startup preserves its B2 tombstone.
+LEFT JOIN nx_admin_menu retired ON retired.menu_code=v.code AND v.code='B2'
+  AND retired.status=0 AND retired.is_deleted=1
+WHERE retired.id IS NULL
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 -- C 域 (6)
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
@@ -62,11 +66,11 @@ ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_pat
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'D' d) x ON p.menu_code='D'
-JOIN (SELECT 'D1' code,'充值对账中心' name,'/finance/recon' path,1 sort UNION ALL
-      SELECT 'D2','提现审核队列','/finance/withdrawals',2 UNION ALL
+JOIN (SELECT 'D1' code,'充值与收款对账' name,'/finance/recon' path,1 sort UNION ALL
+      SELECT 'D2','提现审核','/finance/withdrawals',2 UNION ALL
       SELECT 'D3','资金池水位仪表盘','/finance/pool',3 UNION ALL
       SELECT 'D4','账本/账单审计','/finance/ledger',4 UNION ALL
-      SELECT 'D5','提现参数配置','/finance/params',5 UNION ALL
+      SELECT 'D5','USDT 提现参数','/finance/params',5 UNION ALL
       SELECT 'D6','汇率牌价','/finance/fx-rate',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
@@ -79,7 +83,7 @@ JOIN (SELECT 'E1' code,'商品目录 & 上架门' name,'/devices/pricing' path,1
       SELECT 'E3','生命周期 & Trade-in','/devices/trade-in',3 UNION ALL
       SELECT 'E4','订单状态机','/devices/orders',4 UNION ALL
       SELECT 'E5','设备运维','/devices/ops',5 UNION ALL
-      SELECT 'E6','算力与设备配置','/devices/compute-config',6) v
+      SELECT 'E6','手机算力配置','/devices/compute-config',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 -- F 域 (5)
@@ -98,8 +102,8 @@ INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'G' d) x ON p.menu_code='G'
 JOIN (SELECT 'G1' code,'质押产品配置' name,'/finance-products/staking' path,1 sort UNION ALL
-      SELECT 'G2','兑换风控','/finance-products/exchange',2 UNION ALL
-      SELECT 'G3','UVT 行情引擎','/finance-products/market',3 UNION ALL
+      SELECT 'G2','兑换额度与规则','/finance-products/exchange',2 UNION ALL
+      SELECT 'G3','UVT价格管理','/finance-products/market',3 UNION ALL
       SELECT 'G4','创世节点销售与收益','/finance-products/genesis',4 UNION ALL
       SELECT 'G7','锁定计划','/finance-products/repurchase',5) v
 ON 1=1
@@ -112,7 +116,7 @@ JOIN (SELECT 'H1' code,'Phase 调度器' name,'/growth/phase' path,1 sort UNION 
       SELECT 'H2','免费试用引擎','/growth/trial',2 UNION ALL
       SELECT 'H3','Quest 引擎','/growth/quest',3 UNION ALL
       SELECT 'H4','活动中心 CMS','/growth/events',4 UNION ALL
-      SELECT 'H5','签到 & UVT','/growth/daily',5 UNION ALL
+      SELECT 'H5','签到与UVT奖励','/growth/daily',5 UNION ALL
       SELECT 'H7','代金券','/growth/vouchers',6 UNION ALL
       SELECT 'H8','新人礼与邀请奖励','/growth/referral-rewards',7) v
 ON 1=1
@@ -122,11 +126,11 @@ INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'I' d) x ON p.menu_code='I'
 JOIN (SELECT 'I1' code,'转化文案 A/B' name,'/content/copy-ab' path,1 sort UNION ALL
-      SELECT 'I2','Nova 推送运营','/content/nova',2 UNION ALL
+      SELECT 'I2','消息推送','/content/nova',2 UNION ALL
       SELECT 'I3','通知 Campaign','/content/notifications',3 UNION ALL
       SELECT 'I4','信任中心 CMS','/content/trust',4 UNION ALL
-      SELECT 'I5','风险披露版本','/content/disclosures',5 UNION ALL
-      SELECT 'I6','i18n 文案与教程','/content/i18n',6) v
+      SELECT 'I5','法律条款与风险披露','/content/disclosures',5 UNION ALL
+      SELECT 'I6','多语言与课程','/content/i18n',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
 UPDATE nx_admin_menu SET status=0, is_deleted=1 WHERE menu_code='I7';
@@ -170,17 +174,16 @@ FROM nx_admin_menu p JOIN (SELECT 'L' d) x ON p.menu_code='L'
 JOIN (SELECT 'L1' code,'KPI 看板' name,'/analytics/kpi' path,1 sort UNION ALL
       SELECT 'L2','漏斗/cohort/留存','/analytics/funnel-cohort',2 UNION ALL
       SELECT 'L3','财务报表','/analytics/financial',3 UNION ALL
-      SELECT 'L4','设备/任务/网络报表','/analytics/operations',4 UNION ALL
+      SELECT 'L4','设备、任务与团队报表','/analytics/operations',4 UNION ALL
       SELECT 'L5','导出 & 监管报告','/analytics/export',5 UNION ALL
       SELECT 'L6','用户行为热力图','/analytics/behavior-heatmap',6) v
 ON 1=1
 ON DUPLICATE KEY UPDATE menu_name=VALUES(menu_name), route_path=VALUES(route_path), sort_order=VALUES(sort_order), status=1, is_deleted=0;
--- M 域 (5)
+-- M 域 (4): M2 was retired by 20261028_support_ticket_rbac_retirement.sql.
 INSERT INTO nx_admin_menu (menu_code, menu_name, menu_name_zh, parent_id, route_path, sort_order, status, is_deleted)
 SELECT v.code, v.name, v.name, p.id, v.path, v.sort, 1, 0
 FROM nx_admin_menu p JOIN (SELECT 'M' d) x ON p.menu_code='M'
 JOIN (SELECT 'M1' code,'客服总览' name,'/service/overview' path,1 sort UNION ALL
-      SELECT 'M2','工单台','/service/tickets',2 UNION ALL
       SELECT 'M3','即时会话台','/service/sessions',3 UNION ALL
       SELECT 'M4','知识库与 SLA','/service/kb-sla',4 UNION ALL
       SELECT 'M5','话术与模板配置','/service/scripts',5) v
@@ -198,7 +201,9 @@ WHERE p.permission_code IN ('content_i7_read','content_i7_write','content_i7_cou
 -- 规则（高保真域 roles + 业务）：superadmin/审计 全可见；各域主操作角色见该域；B/L 全角色；
 -- A 默认仅 superadmin(+审计)，RISK 仅补 A 父级和 A2 只读跟踪入口，不开放其他 A 域页面。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m WHERE r.role_code IN ('SUPER_ADMIN','AUDITOR');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m
+WHERE r.role_code IN ('SUPER_ADMIN','AUDITOR')
+  AND (m.menu_code <> 'B2' OR m.status=1 OR m.is_deleted=0);
 -- C: risk
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'C%' WHERE r.role_code='RISK';
@@ -230,6 +235,8 @@ SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('
 WHERE r.role_code IN ('FINANCE','FINANCE_LEAD','RISK','RISK_LEAD');
 -- G: finance+growth
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
+SELECT r.id,m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('F','F4') WHERE r.role_code='FINANCE_LEAD';
+INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'G%' WHERE r.role_code IN ('FINANCE','GROWTH');
 -- H: growth
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
@@ -254,17 +261,19 @@ JOIN nx_admin_menu m ON m.id=rm.menu_id
 WHERE m.menu_code LIKE 'M%';
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'M%' WHERE r.role_code='RISK';
--- 内置 SUPPORT 仅客服域；重跑 seed 收紧旧默认关系，不改其它角色或账号角色关系。
+-- SUPPORT keeps the scoped D4 read entry as well as service menus.
 DELETE rm FROM nx_admin_role_menu rm
 JOIN nx_admin_role r ON r.id=rm.role_id AND r.role_code='SUPPORT';
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m
-WHERE r.role_code='SUPPORT' AND m.menu_code IN ('M','M1','M2','M3','M4','M5');
+WHERE r.role_code='SUPPORT' AND m.menu_code IN ('M','M1','M3','M4','M5','D','D4');
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('M','M5') WHERE r.role_code='CONTENT';
 -- B: 非客服业务角色态势概览。
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
-SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'B%' WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','CONFIG_ADMIN');
+SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code LIKE 'B%'
+WHERE r.role_code IN ('FINANCE','RISK','CONTENT','GROWTH','CONFIG_ADMIN')
+  AND (m.menu_code <> 'B2' OR m.status=1 OR m.is_deleted=0);
 
 -- L: 按职能最小可见；清理旧版全角色可见的宽授权。
 DELETE rm FROM nx_admin_role_menu rm
@@ -285,3 +294,18 @@ JOIN nx_admin_role_menu rm ON rm.role_id=finance_role.id AND rm.is_deleted=0
 WHERE lead_role.role_code='FINANCE_LEAD' AND lead_role.is_deleted=0;
 INSERT IGNORE INTO nx_admin_role_menu (role_id, menu_id)
 SELECT r.id, m.id FROM nx_admin_role r JOIN nx_admin_menu m ON m.menu_code IN ('L','L1','L2','L4','L5','L6') WHERE r.role_code='GROWTH';
+
+-- B38 menu reachability follows exact read grants, including upgraded soft-deleted rows.
+UPDATE nx_admin_role_menu rm
+JOIN nx_admin_role r ON r.id=rm.role_id
+JOIN nx_admin_menu m ON m.id=rm.menu_id
+SET rm.is_deleted=1
+WHERE r.role_code IN ('GROWTH','CONFIG_ADMIN','CONTENT','SUPPORT') AND m.menu_code='D6';
+INSERT INTO nx_admin_role_menu (role_id,menu_id,is_deleted)
+SELECT r.id,m.id,0 FROM nx_admin_role r JOIN nx_admin_menu m
+WHERE r.status=1 AND r.is_deleted=0 AND m.status=1 AND m.is_deleted=0
+  AND ((r.role_code='FINANCE_LEAD' AND m.menu_code IN ('A','A2','E','E4'))
+    OR (r.role_code='SUPPORT' AND m.menu_code IN ('D','D4'))
+    OR (r.role_code='RISK' AND m.menu_code IN ('I','I5'))
+    OR (r.role_code IN ('SUPER_ADMIN','FINANCE','FINANCE_LEAD','RISK','AUDITOR') AND m.menu_code IN ('D','D6')))
+ON DUPLICATE KEY UPDATE is_deleted=0, updated_at=NOW();

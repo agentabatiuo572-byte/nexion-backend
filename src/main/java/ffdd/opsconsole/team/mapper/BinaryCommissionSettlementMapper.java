@@ -1,6 +1,8 @@
 package ffdd.opsconsole.team.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -44,7 +46,7 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
                         WHEN """ + BinaryPlacementSourceSql.AUTOMATIC + """
                           THEN 'AUTO'
                         ELSE 'MANUAL' END assignmentSource
-            """ + ASSIGNMENT_READ_SCOPE + " ORDER BY u.id LIMIT #{limit} OFFSET #{offset}")
+            """ + ASSIGNMENT_READ_SCOPE + " ORDER BY u.created_at ASC, u.id ASC LIMIT #{limit} OFFSET #{offset}")
     List<AssignmentMemberRow> listAssignmentMembers(@Param("ownerUserId") Long ownerUserId,
                                                    @Param("memberUserId") Long memberUserId,
                                                    @Param("status") String status,
@@ -52,7 +54,17 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
                                                    @Param("limit") int limit);
 
     record AssignmentMemberRow(Long ownerUserId, Long memberUserId, String leg,
-                               String assignedBy, LocalDateTime assignedAt, String assignmentSource) { }
+                               String assignedBy, LocalDateTime assignedAt, String assignmentSource) {
+        /**
+         * The DB stores DATETIME in the fixed Asia/Shanghai storage contract; expose
+         * the same value as an offset-bearing instant while keeping assignedAt intact.
+         */
+        @JsonProperty("assignedAtIso")
+        public String assignedAtIso() {
+            return assignedAt == null ? null
+                    : assignedAt.atZone(BusinessCalendar.STORAGE_ZONE).toOffsetDateTime().toString();
+        }
+    }
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer userSandbox(@Param("userId") Long userId);
 
@@ -119,6 +131,27 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
     int countAssignmentsByLeg(
             @Param("ownerUserId") Long ownerUserId,
             @Param("leg") String leg);
+
+    @Select("""
+            WITH RECURSIVE assigned_tree AS (
+              SELECT a.leg, a.member_user_id AS node_user_id
+                FROM nx_binary_leg_assignment a
+                JOIN nx_team_member m ON m.user_id=a.owner_user_id AND m.member_user_id=a.member_user_id
+                 AND m.level=1 AND m.is_deleted=0
+               WHERE a.owner_user_id=#{ownerUserId} AND a.member_user_id<>#{ownerUserId}
+              UNION DISTINCT
+              SELECT t.leg, m.member_user_id
+                FROM assigned_tree t
+                JOIN nx_team_member m ON m.user_id=t.node_user_id AND m.level=1 AND m.is_deleted=0
+               WHERE m.member_user_id<>#{ownerUserId}
+            )
+            SELECT COUNT(CASE WHEN leg='A' THEN 1 END) AS trackATotalMembers,
+                   COUNT(CASE WHEN leg='B' THEN 1 END) AS trackBTotalMembers
+              FROM assigned_tree
+            """)
+    BinaryLegMemberTotals countWholeLegMembers(@Param("ownerUserId") Long ownerUserId);
+
+    record BinaryLegMemberTotals(long trackATotalMembers, long trackBTotalMembers) {}
 
     @Select("""
             SELECT COUNT(1)
@@ -304,12 +337,16 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
             @Param("ownerUserId") Long ownerUserId,
             @Param("windowEnd") LocalDateTime windowEnd);
 
-    @Select("""
+    String CONSUMED_MATCHED = """
             SELECT COALESCE(SUM(matched_volume),0)
               FROM nx_binary_commission_settlement
-             WHERE user_id=#{ownerUserId} AND settlement_date<#{windowEnd}
-               AND is_deleted=0 AND status<>'BLOCKED'
-            """)
+             WHERE user_id=#{ownerUserId} AND is_deleted=0 AND status<>'BLOCKED'
+            """;
+
+    @Select(CONSUMED_MATCHED)
+    BigDecimal totalConsumedMatched(@Param("ownerUserId") Long ownerUserId);
+
+    @Select(CONSUMED_MATCHED + " AND settlement_date<#{windowEnd}")
     BigDecimal consumedMatchedBefore(
             @Param("ownerUserId") Long ownerUserId,
             @Param("windowEnd") LocalDate windowEnd);
@@ -377,7 +414,7 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
     Long lockSettlementMutex(@Param("ownerUserId") Long ownerUserId,
                              @Param("settlementDate") LocalDate settlementDate);
 
-    @Select("""
+    String SETTLEMENT_BY_OWNER_DATE = """
             SELECT id,user_id userId,settlement_date settlementDate,
                    left_user_id leftUserId,right_user_id rightUserId,
                    left_volume leftVolume,right_volume rightVolume,matched_volume matchedVolume,
@@ -385,9 +422,18 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
                    commission_event_id commissionEventId,status
               FROM nx_binary_commission_settlement
              WHERE user_id=#{ownerUserId} AND settlement_date=#{settlementDate} AND is_deleted=0
-             LIMIT 1 FOR UPDATE
-            """)
+            """;
+
+    @Select(SETTLEMENT_BY_OWNER_DATE + " LIMIT 1 FOR UPDATE")
     BinarySettlementRow findSettlementForUpdate(
+            @Param("ownerUserId") Long ownerUserId,
+            @Param("settlementDate") LocalDate settlementDate);
+
+    @Select(SETTLEMENT_BY_OWNER_DATE + """
+             AND ((status<>'BLOCKED' AND amount_usdt>0 AND commission_event_id>0)
+               OR (status='CAPPED' AND amount_usdt=0 AND commission_event_id IS NULL))
+            """)
+    BinarySettlementRow findSettlementReceipt(
             @Param("ownerUserId") Long ownerUserId,
             @Param("settlementDate") LocalDate settlementDate);
 

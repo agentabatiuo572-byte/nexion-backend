@@ -82,6 +82,17 @@ public class LeadershipPoolSettleScheduler {
         }
     }
 
+    /** New saves must describe one weekly wall-clock occurrence; existing reads keep their parser. */
+    static String normalizeWeeklyCron(String configured) {
+        String cron = normalizeCron(configured);
+        String[] fields = cron.split(" ");
+        boolean weekly = fields[0].matches("\\d+") && fields[1].matches("\\d+") && fields[2].matches("\\d+")
+                && ("*".equals(fields[3]) || "?".equals(fields[3])) && "*".equals(fields[4])
+                && fields[5].matches("(?i)(?:[0-7]|MON|TUE|WED|THU|FRI|SAT|SUN)");
+        if (!weekly) throw new IllegalArgumentException("F4_SETTLE_CRON_WEEKLY_REQUIRED");
+        return cron;
+    }
+
     static String normalizeCron(String configured) {
         String value = configured == null ? "" : configured.trim().replaceAll("\\s+", " ");
         int fields = value.isEmpty() ? 0 : value.split(" ").length;

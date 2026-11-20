@@ -315,7 +315,7 @@ public class AppGrowthEngagementService {
                     quest.put("nameLocale", selected != null ? contentLocale(locale) : english != null ? "en" : "und");
                     return quest;
                 }).toList();
-        BigDecimal responseMultiplier = weekly != null ? weekly.questBonusMultiplier() : liveRhythmAvailable
+        BigDecimal responseMultiplier = weekly != null ? weekly.effectiveQuestBonusMultiplier() : liveRhythmAvailable
                 ? positiveOrOne(rhythm.questBonusMultiplier())
                 : positive(dayOneSnapshot.questBonusMultiplier());
         int responseRhythmMonth = weekly != null ? weekly.rhythmMonth() : liveRhythmAvailable ? rhythm.currentMonth()
@@ -325,7 +325,7 @@ public class AppGrowthEngagementService {
                 : "nx_mission + nx_user_mission + nx_growth_day_one_instance + nx_growth_day_one_instance_item + day_one_snapshot_only";
         return ApiResult.ok(productionResponse(linked(
                 "quests", quests,
-                "dayOneRewardNex", dayOneReward,
+                "dayOneRewardNex", dayOneReward, "dayOneRewardTierBasis", "CLAIM_TIME",
                 "dayOneRequiredTaskCount", dayOneRequiredTaskCount,
                 "dayOneSnapshotStatus", dayOneSnapshotStatus,
                 "promoBanner", projectPromoBanner(promo),
@@ -475,8 +475,9 @@ public class AppGrowthEngagementService {
                     && "active".equalsIgnoreCase(String.valueOf(row.get("definitionStatus")));
             long issuanceLimit = numberValue(item.remove("issuanceLimit"));
             long issuedCount = numberValue(item.remove("issuedCount"));
+            boolean wheelOnly = truthy(item.remove("wheelOnly"));
             boolean claimable = audienceEligible && definitionOpen && "UNCLAIMED".equals(grantStatus)
-                    && (issuanceLimit == 0L || issuedCount < issuanceLimit);
+                    && !wheelOnly && (issuanceLimit == 0L || issuedCount < issuanceLimit);
             long lastSeenAt = numberValue(row.get("popupLastSeenAt"));
             long delayMs = boundedCadence(row, "popupDelayMs", 1300L, 0L, 60_000L);
             long cooldownHours = boundedCadence(row, "popupCooldownHours", 24L, 0L, 720L);
@@ -560,7 +561,7 @@ public class AppGrowthEngagementService {
             }
             GrowthRhythmSnapshot rhythm = weekly == null ? growthRhythmFacade.snapshot() : null;
             if (weekly == null && (rhythm == null || rhythm.currentMonth() <= 0)) throw conflict("H1_RHYTHM_UNAVAILABLE");
-            BigDecimal multiplier = weekly == null ? positiveOrOne(rhythm.questBonusMultiplier()) : weekly.questBonusMultiplier();
+            BigDecimal multiplier = weekly == null ? positiveOrOne(rhythm.questBonusMultiplier()) : weekly.effectiveQuestBonusMultiplier();
             BigDecimal baseReward = reward.rewardNex();
             BigDecimal amount = positive(baseReward).multiply(multiplier)
                     .setScale(6, RoundingMode.DOWN);
@@ -618,11 +619,11 @@ public class AppGrowthEngagementService {
         Map<String, Object> detail = linked(
                 "layer", "DAY_ONE", "rewardNex", amount, "multiplier", multiplier,
                 "rhythmMonth", snapshot.rhythmMonth(), "instanceKey", instanceKey,
-                "requiredTaskCount", snapshot.requiredTaskCount());
+                "requiredTaskCount", snapshot.requiredTaskCount(), "rewardTierBasis", "CLAIM_TIME");
         audit("H3_QUEST_CLAIMED", "USER_MISSION", code, code, userId, detail);
         publish("MISSION", code, "quest.claimed", userId, attribution(userId), detail);
         return ApiResult.ok(linked("questId", code, "rewardNex", amount, "status", "CLAIMED",
-                "instanceKey", instanceKey,
+                "rewardTierBasis", "CLAIM_TIME", "instanceKey", instanceKey,
                 "serverCanonical", true, "sourceEnvironment", "PRODUCTION", "runId", ""));
     }
 
@@ -787,7 +788,7 @@ public class AppGrowthEngagementService {
             EventReward reward = mapper.lockClaimableEvent(userId, code);
             if (reward == null) return ApiResult.fail(409, "EVENT_NOT_CLAIMABLE");
             if (mapper.claimEvent(userId, code) != 1) throw conflict("EVENT_CLAIM_CONFLICT");
-            String rewardType = reward.rewardType() == null ? "" : reward.rewardType().trim().toUpperCase(Locale.ROOT);
+            String rewardType = reward.normalizedRewardType();
             BigDecimal amount = reward.rewardAmount() == null ? BigDecimal.ZERO : reward.rewardAmount();
             if ("UVT".equals(rewardType)) {
                 amount = positive(amount);
@@ -1001,13 +1002,16 @@ public class AppGrowthEngagementService {
                     .filter(row -> target == null || target.equals(row.milestoneId())).limit(1).toList();
             if (target != null && selected.isEmpty()) throw conflict("EARNING_MILESTONE_NOT_CLAIMABLE");
             for (EarningMilestone row : selected) {
-                BigDecimal reward = positive(row.rewardNex());
+                BigDecimal reward = row.rewardNex();
+                if (reward == null || reward.signum() < 0) throw conflict("REWARD_AMOUNT_INVALID");
                 String eventNo = "EMS-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
                 if (mapper.insertEarningMilestone(userId, row, eventNo) != 1) {
                     throw conflict("EARNING_MILESTONE_CONFLICT");
                 }
-                creditNex(userId, "EARNING-MS:" + userId + ":" + row.milestoneId(),
-                        "EARNING_MILESTONE", reward, "H5 earning milestone fired");
+                if (reward.signum() > 0) {
+                    creditNex(userId, "EARNING-MS:" + userId + ":" + row.milestoneId(),
+                            "EARNING_MILESTONE", reward, "H5 earning milestone fired");
+                }
                 Map<String, Object> detail = linked(
                         "milestoneId", row.milestoneId(), "thresholdUsd", row.thresholdUsdt(),
                         "rewardNex", reward, "lifetimeEarningsUsd", row.lifetimeEarningsUsdt());

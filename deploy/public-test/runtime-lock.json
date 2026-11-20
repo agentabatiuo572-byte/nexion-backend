@@ -12,7 +12,7 @@
     "public-test-policy.properties": "6ed34f3ea7e78ea8de6211e62de9d3ebda09243cd29f0a65d0d2284c48209f5e",
     "release_broker.py": "3533eaa68bf5a7b21fbbe942097f35306ce1ac5151b50bbe33991d576946751b",
     "schema_fingerprint.py": "1b585c87e0c00110328ea409e1b695de8ce0b523b5fd3452426bdac918e3a3b2",
-    "test-server.yml": "c8acdad7994b84473ff48c9183be91babe72b480ec283e1260f944330c332762",
+    "test-server.yml": "976c2ad829113a68f74c14b7a0577db150c853620b161c29b2127a3e749f0440",
     "trusted_entry.py": "8ff6ec1013de85c60248e179085a2d3e8b89c1dd37bdd74b436f0d3c7d4e0148"
   }
 }

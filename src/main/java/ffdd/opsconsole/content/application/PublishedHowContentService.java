@@ -91,17 +91,16 @@ public class PublishedHowContentService {
     public ApiResult<Map<String, Object>> adminView() {
         try {
             Map<String, Object> value = read();
-            if (!hasAdminDocumentShape(value)) value = defaultAdminDocument();
+            if (value == null) return adminUnavailable();
+            if (value.isEmpty()) value = defaultAdminDocument();
+            else if (!hasAdminDocumentShape(value)) return adminUnavailable();
             value = PublishedContentSnapshot.admin(value);
             PublishedContentSnapshot.markDefaultPublic(value);
             value.put("source", "server");
             value.put("configKey", CONFIG_KEY);
             return ApiResult.ok(value);
         } catch (Exception ex) {
-            Map<String, Object> value = defaultAdminDocument();
-            value.put("source", "server");
-            value.put("configKey", CONFIG_KEY);
-            return ApiResult.ok(value);
+            return adminUnavailable();
         }
     }
 
@@ -118,6 +117,7 @@ public class PublishedHowContentService {
         for (Map.Entry<String, Object> item : contents.entrySet()) {
             if (!CONTENT_KEYS.contains(item.getKey()) || !validContentEntry(map(item.getValue()))
                     || !validEntryVersion(map(item.getValue()))) return invalid();
+            if ("PUBLISHED".equals(status) && hasUnresolvedValue(map(item.getValue()))) return invalid();
         }
         try {
             Map<String, Object> before = read(true);
@@ -152,6 +152,7 @@ public class PublishedHowContentService {
 
     private ApiResult<Map<String, Object>> invalid() { return ApiResult.fail(422, "HOW_CONTENT_INVALID"); }
     private ApiResult<Map<String, Object>> unavailable() { return ApiResult.fail(503, "HOW_CONTENT_UNAVAILABLE"); }
+    private ApiResult<Map<String, Object>> adminUnavailable() { return ApiResult.fail(503, "HOW_CONTENT_UNAVAILABLE"); }
     private Map<String, Object> read() throws Exception { return read(false); }
     private Map<String, Object> read(boolean lock) throws Exception {
         String raw = (lock ? config.activeValueForUpdate(CONFIG_KEY) : config.activeValue(CONFIG_KEY)).orElse("{}");
@@ -183,6 +184,33 @@ public class PublishedHowContentService {
         Object raw = entry.get("version");
         return raw != null && raw instanceof String value
                 && !value.isBlank() && value.length() <= 64;
+    }
+
+    /**
+     * A published document must not contain the editor-only value token. The App rejects every
+     * occurrence in title/body/items because it cannot resolve canonical rule references itself.
+     * Drafts keep their existing model; no resolver or new reference syntax is introduced here.
+     */
+    private boolean hasUnresolvedValue(Map<String, Object> entry) {
+        Map<String, Object> locales = map(entry == null ? null : entry.get("locales"));
+        if (locales == null) return false;
+        for (Object rawLocale : locales.values()) {
+            Map<String, Object> locale = map(rawLocale);
+            Object rawBlocks = locale == null ? null : locale.get("blocks");
+            if (!(rawBlocks instanceof List<?> blocks)) continue;
+            for (Object rawBlock : blocks) {
+                Map<String, Object> block = map(rawBlock);
+                if (block == null) continue;
+                if (unresolvedValue(block.get("title")) || unresolvedValue(block.get("body"))) return true;
+                if (block.get("items") instanceof List<?> items
+                        && items.stream().anyMatch(this::unresolvedValue)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean unresolvedValue(Object value) {
+        return value != null && String.valueOf(value).contains("{value}");
     }
 
     private boolean hasAdminDocumentShape(Map<String, Object> value) {

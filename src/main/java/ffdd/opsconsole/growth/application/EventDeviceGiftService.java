@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.promotion.application.PromotionNativeContractResolver;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
@@ -16,6 +17,9 @@ import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 @Service
 @RequiredArgsConstructor
 public class EventDeviceGiftService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final PromotionMapper db;
     @lombok.NonNull
     private final TestCloudActivationAdmission testCloudAdmission;
@@ -47,6 +51,7 @@ public class EventDeviceGiftService {
         Map<String, Object> product = db.product(productNo, true);
         Map<String, Object> sku = db.requiredRow("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0 FOR UPDATE", productNo);
         require(PromotionNativeContractResolver.giftFailure(product, sku) == null, "H4_EVENT_GIFT_PRODUCT_UNAVAILABLE");
+        var hostingPool = hostingCenters.requirePool();
         testCloudAdmission.requireCapacity(quantity);
         require(db.write("UPDATE nx_product SET stock=stock-?,updated_at=NOW(6) WHERE id=? AND inventory_mode='FINITE' AND stock>=? AND is_deleted=0",
                 quantity, product.get("id"), quantity) == 1, "H4_EVENT_GIFT_STOCK_UNAVAILABLE");
@@ -55,13 +60,13 @@ public class EventDeviceGiftService {
         for (int i = 0; i < quantity; i++) {
             String instance = "EVD-" + sha256(receipt + ":" + i).substring(0, 48);
             changed(db.write("""
-                    INSERT INTO nx_user_device(user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+                    INSERT INTO nx_user_device(user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                       generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,source_channel,
                       source_environment,run_id,status,hashrate,daily_usdt,daily_nex,last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,is_deleted)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','','ACTIVE',?,?,?,NOW(),NOW(),NOW(),0,0,0)
-                    """, userId, null, product.get("id"), productNo, product.get("tier"), instance, product.get("name"), product.get("product_type"),
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','','ACTIVE',?,?,?,NOW(),NOW(),NOW(),0,0,0)
+                    """, userId, null, product.get("id"), productNo, product.get("tier"), product.get("series_code"), instance, product.get("name"), product.get("product_type"),
                     product.get("generation"), product.get("gpu_model"), product.get("vram_total_gb"), PromotionNativeContractResolver.powerWatts(sku.get("power_text")),
-                    sku.get("datacenter"), product.get("hashrate"), product.get("estimated_daily_usdt"), product.get("daily_nex")));
+                    hostingPool.assign(instance), product.get("hashrate"), product.get("estimated_daily_usdt"), product.get("daily_nex")));
             instances.add(instance);
         }
         return values("rewardType", "DEVICE", "quantity", quantity, "receiptId", receipt, "productNo", productNo, "instances", instances);

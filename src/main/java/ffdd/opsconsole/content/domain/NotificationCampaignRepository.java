@@ -11,6 +11,12 @@ public interface NotificationCampaignRepository {
 
     List<NotificationCampaignRow> listCampaigns();
 
+    List<CampaignDeliveryFacts> campaignDeliveryFacts(LocalDateTime asOf, LocalDateTime weekFrom);
+
+    record CampaignDeliveryFacts(String campaignNo, LocalDateTime campaignCreatedAt,
+            long linkedNotifications, long sentCount, long readCount, long weeklyReadCount,
+            long undatedReadCount, LocalDateTime firstSentAt, LocalDateTime lastSentAt) { }
+
     Optional<NotificationCampaignRow> findCampaign(String campaignNo);
 
     NotificationCampaignRow createCampaign(String campaignNo, NotificationCampaignCreateRequest request, long estimatedAudience, LocalDateTime now);

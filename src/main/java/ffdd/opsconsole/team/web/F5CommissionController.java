@@ -50,8 +50,14 @@ public class F5CommissionController {
                 kind, currency, userId, status, cohort, cursor, limit));
     }
 
-    @PostMapping("/commissions/export")
+    @GetMapping("/commissions/{commissionId}")
     @PreAuthorize("hasAuthority('network_f5_read')")
+    public ApiResult<Map<String, Object>> commission(@PathVariable String commissionId) {
+        return service.commission(commissionId);
+    }
+
+    @PostMapping("/commissions/export")
+    @PreAuthorize("hasAuthority('network_f5_export')")
     public ResponseEntity<byte[]> export(
             @RequestHeader(OpsAdminApi.IDEMPOTENCY_KEY_HEADER) String idempotencyKey,
             @RequestBody F5CommissionExportRequest request,

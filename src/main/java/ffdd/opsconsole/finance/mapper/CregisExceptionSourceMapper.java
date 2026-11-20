@@ -7,7 +7,7 @@ import org.apache.ibatis.annotations.*;
 
 @Mapper
 public interface CregisExceptionSourceMapper extends BaseMapper<Object> {
-    @Select("SELECT EXISTS(SELECT 1 FROM nx_cregis_deposit_address WHERE project_id=#{s.projectId} AND chain_id=#{s.network.chainId,javaType=java.lang.String} AND LOWER(address)=LOWER(#{s.address}) AND state='DIRECT_PURCHASE')")
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_cregis_deposit_address WHERE project_id=#{s.projectId} AND chain_id=#{s.network.chainId,javaType=java.lang.String} AND address=#{s.address} AND state='DIRECT_PURCHASE')")
     boolean directPurchaseAddress(@Param("s") Source source);
     @Insert("INSERT IGNORE INTO nx_cregis_exception_source(project_id,chain_id,txid,log_index,cid,address,gross_amount) VALUES(#{s.projectId},#{s.network.chainId,javaType=java.lang.String},#{s.txid},#{s.logIndex},#{s.cid},#{s.address},#{s.grossAmount})")
     int ensure(@Param("s") Source source);

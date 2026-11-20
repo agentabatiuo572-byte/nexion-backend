@@ -31,7 +31,8 @@ public class DeveloperWebhookSchedulerConfiguration {
         scheduler.setPoolSize(Math.max(1, environment.getProperty(
                 "spring.task.scheduling.pool.size", Integer.class, 1)));
         scheduler.setThreadNamePrefix("scheduling-");
-        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        // Keep Spring's early lifecycle stop: drain active work before Redis/SQL stop, discard future ticks.
+        scheduler.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         scheduler.setAwaitTerminationSeconds(10);
         return scheduler;
     }
@@ -41,7 +42,7 @@ public class DeveloperWebhookSchedulerConfiguration {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(2);
         scheduler.setThreadNamePrefix("developer-webhook-");
-        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         scheduler.setAwaitTerminationSeconds(10);
         return scheduler;
     }
@@ -53,7 +54,7 @@ public class DeveloperWebhookSchedulerConfiguration {
         int configured = environment.getProperty("nexion.outbox.compute-dispatch-workers", Integer.class, 8);
         scheduler.setPoolSize(Math.max(1, Math.min(configured, maximum)));
         scheduler.setThreadNamePrefix("compute-outbox-");
-        scheduler.setWaitForTasksToCompleteOnShutdown(true);
+        scheduler.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
         scheduler.setAwaitTerminationSeconds(10);
         return scheduler;
     }

@@ -11,5 +11,9 @@ public record OnboardingYieldComparisonView(
         BigDecimal dailyNex,
         Integer sortOrder,
         Long revision,
-        LocalDateTime updatedAt) {
+        LocalDateTime updatedAt, String productNo, Long bindingRevision, String boundProductName) {
+    public OnboardingYieldComparisonView(String configKey, String label, BigDecimal dailyUsdt, BigDecimal dailyNex,
+            Integer sortOrder, Long revision, LocalDateTime updatedAt) {
+        this(configKey,label,dailyUsdt,dailyNex,sortOrder,revision,updatedAt,null,null,null);
+    }
 }

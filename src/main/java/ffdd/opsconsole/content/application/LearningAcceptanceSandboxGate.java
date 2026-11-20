@@ -59,7 +59,9 @@ public class LearningAcceptanceSandboxGate {
     public void requireProductionMutationAllowed() {
         String[] activeProfiles = environment.getActiveProfiles();
         if (exactProfile("test")) {
-            throw new IllegalStateException("LEARNING_ACCEPTANCE_PRODUCTION_MUTATION_FORBIDDEN");
+            // The profile rejects the command before idempotency/audit/business writes;
+            // expose that deterministic refusal as a policy 403, not an unknown 500.
+            throw new BizException(403, "LEARNING_ACCEPTANCE_PRODUCTION_MUTATION_FORBIDDEN");
         }
         if (FundsSandboxProfileGuard.isStrictDevelopmentProfile(activeProfiles)) return;
         if (!FundsSandboxProfileGuard.isStrictProductionProfile(activeProfiles)) {

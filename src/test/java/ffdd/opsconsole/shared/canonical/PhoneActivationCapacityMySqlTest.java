@@ -689,7 +689,7 @@ class PhoneActivationCapacityMySqlTest {
         long inventory = deliverCapacityKeep(user);
         transaction.executeWithoutResult(status -> {
             assertThat(deviceRepository.countOccupiedSlotsForE5Activation(user)).isZero();
-            assertThat(opsMapper.activateE5Device(inventory, java.time.LocalDateTime.now())).isEqualTo(1);
+            assertThat(opsMapper.activateE5Device(inventory, java.time.LocalDateTime.now(), true)).isEqualTo(1);
             assertCapacityKeepReservations(user, 0);
             if ("unbound".equals(transition)) {
                 assertThat(opsMapper.deactivateE5Device(inventory, 1, java.time.LocalDateTime.now())).isEqualTo(1);

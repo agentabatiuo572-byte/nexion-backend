@@ -11,6 +11,17 @@ final class NovaRuntimeAdapterCatalog {
     private static final String PREFIX = "a4:";
     private static final Map<String, RuntimeSource> FIXED = fixed();
     private static final Map<String, RuntimeSource> GENERIC = generic();
+    private static final Map<String, String> FIXED_EVENT_LABELS = Map.of(
+            "auth.register_completed", "完成注册",
+            "device.upgrade_recommended", "推荐设备升级",
+            "earnings.credited", "收益到账",
+            "tradein.eligible", "符合以旧换新资格",
+            "event.reward_claimable", "活动奖励可领取",
+            "nova.wrapped_ready", "用户回顾已就绪",
+            "quest.monthly_lock_ready", "月度任务锁定已就绪",
+            "quest.grace_started", "任务宽限期开始",
+            "quest.expired", "任务已过期",
+            "quest.weekly_refreshed", "每周任务已刷新");
 
     private NovaRuntimeAdapterCatalog() {
     }
@@ -39,6 +50,17 @@ final class NovaRuntimeAdapterCatalog {
                 option("staking.early_withdrawn", "质押提前退出"),
                 option("genesis.purchased", "Genesis 购买"),
                 option("market.curve_advanced", "市场曲线推进（广播）"));
+    }
+
+    static Map<String, String> eventDisplayNames(List<String> events) {
+        Map<String, String> labels = new LinkedHashMap<>(FIXED_EVENT_LABELS);
+        options().forEach(option -> labels.put(option.value().substring(PREFIX.length()), option.label()));
+        Map<String, String> result = new LinkedHashMap<>();
+        for (String event : events) {
+            String label = labels.get(event);
+            if (label != null) result.put(event, label);
+        }
+        return result;
     }
 
     private static NovaOptionView option(String event, String label) {

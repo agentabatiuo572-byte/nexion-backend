@@ -1,5 +1,6 @@
 package ffdd.opsconsole.bi.domain;
 
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
@@ -35,6 +36,8 @@ public final class L4OperationsAnalytics {
             "device.purchase_completed", "quest.dispatched", "quest.completed", "daily.checkin",
             "referral.bound", "referral.invite_sent", "commission.paid", "checkout.completed",
             "auth.register_completed", "store.viewed", "app.dau");
+    /** A4RuntimePolicyService.eventRetentionMonths lower bound; the minimum guaranteed history floor. */
+    private static final int MIN_RETENTION_MONTHS = 13;
 
     private L4OperationsAnalytics() {
     }
@@ -67,10 +70,27 @@ public final class L4OperationsAnalytics {
             }
         }
         all.sort(Comparator.comparing(Fact::ts));
-        List<Fact> selected = all.stream()
+        List<Fact> currentRows = all.stream()
                 .filter(item -> !item.ts().isBefore(range.from()) && !item.ts().isAfter(range.to()))
+                .toList();
+        List<Fact> selected = currentRows.stream()
                 .filter(item -> "ALL".equals(normalizedPhase) || normalizedPhase.equals(item.phase()))
                 .toList();
+        Range previousRange = range.previous();
+        LocalDateTime historyStart = historyCoverageStart(now);
+        boolean currentCovered = !range.from().isBefore(historyStart);
+        boolean previousCovered = !previousRange.from().isBefore(historyStart);
+        List<Fact> previousSelected = all.stream()
+                .filter(item -> !item.ts().isBefore(previousRange.from()) && !item.ts().isAfter(previousRange.to()))
+                .filter(item -> "ALL".equals(normalizedPhase) || normalizedPhase.equals(item.phase()))
+                .toList();
+        boolean comparisonAvailable = currentCovered && previousCovered
+                && !selected.isEmpty() && !previousSelected.isEmpty();
+        String comparisonReason = !currentCovered
+                ? "CURRENT_WINDOW_OUTSIDE_RETENTION_FLOOR"
+                : !previousCovered ? "PREVIOUS_WINDOW_OUTSIDE_RETENTION_FLOOR"
+                : selected.isEmpty() ? "CURRENT_WINDOW_NO_FACTS"
+                : previousSelected.isEmpty() ? "PREVIOUS_WINDOW_NO_FACTS" : null;
 
         long actorRequired = selected.stream().filter(item -> ACTOR_EVENTS.contains(item.event())).count();
         long actorPresent = selected.stream()
@@ -99,8 +119,9 @@ public final class L4OperationsAnalytics {
                 "device", device(selected),
                 "tasks", tasks(selected, actorComplete, completionVolume, normalizedPeriod),
                 "network", network(selected, actorComplete),
-                "phaseEffect", phaseEffect(selected, actorComplete, normalizedPhase),
+                "phaseEffect", phaseEffect(selected, events(currentRows, "app.dau"), actorComplete, normalizedPhase),
                 "history", history,
+                "comparison", comparison(previousSelected, previousRange, comparisonAvailable, comparisonReason, normalizedPeriod),
                 "quality", linked(
                         "serverCanonical", true,
                         "sameActorRates", actorComplete,
@@ -123,6 +144,89 @@ public final class L4OperationsAnalytics {
                     "message", "所选周期没有可核验的运营事件，未生成比率或趋势。"));
         }
         return result;
+    }
+
+    /**
+     * Previous same-length window from the already parsed A4 facts. Complete history requires both the
+     * 400-day query bound and the explicit 13-month retention floor; the later bound is the safe start.
+     * Empty windows are explicitly unavailable because they are not evidence of a true zero.
+     */
+    private static Map<String, Object> comparison(
+            List<Fact> previousSelected, Range previousRange, boolean available, String reason, String period) {
+        var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+        Map<String, Object> block = linked(
+                "available", available,
+                "reason", reason,
+                "previousPeriod", linked(
+                        "from", calendar.dateAtStorage(previousRange.from()).toString(),
+                        "to", calendar.dateAtStorage(previousRange.to()).toString(),
+                        "fromAt", previousRange.from().toString(),
+                        "toAt", previousRange.to().toString()));
+        if (!available) {
+            block.put("device", null);
+            block.put("tasks", null);
+            block.put("network", null);
+            block.put("quality", null);
+            block.put("excludedSnapshots", excludedSnapshots());
+            return block;
+        }
+
+        long actorRequired = previousSelected.stream().filter(item -> ACTOR_EVENTS.contains(item.event())).count();
+        long actorPresent = previousSelected.stream()
+                .filter(item -> ACTOR_EVENTS.contains(item.event()) && hasText(item.actor()))
+                .count();
+        boolean actorComplete = actorRequired == actorPresent;
+        double actorCoverage = actorRequired == 0 ? 100.0 : pct(actorPresent, actorRequired);
+        List<Map<String, Object>> previousHistory = history(previousSelected, period);
+        long completionVolume = previousHistory.stream()
+                .mapToLong(row -> ((Number) row.get("tasksCompleted")).longValue())
+                .sum();
+        Map<String, Object> deviceSummary = summary(device(previousSelected));
+        Map<String, Object> taskSummary = summary(tasks(previousSelected, actorComplete, completionVolume, period));
+        Map<String, Object> networkSummary = summary(network(previousSelected, actorComplete));
+
+        block.put("device", linked("summary", linked(
+                "periodPurchasedDevices", deviceSummary.get("periodPurchasedDevices"),
+                "periodRetiredDevices", deviceSummary.get("periodRetiredDevices"),
+                "periodLockedDevices", deviceSummary.get("periodLockedDevices"),
+                "periodFirstYieldDevices", deviceSummary.get("periodFirstYieldDevices"),
+                "dailyYieldUsdt", deviceSummary.get("dailyYieldUsdt"),
+                "dailyYieldNex", deviceSummary.get("dailyYieldNex"),
+                "degradationLossUsdt", deviceSummary.get("degradationLossUsdt"))));
+        block.put("tasks", linked("summary", linked(
+                "dispatched", taskSummary.get("dispatched"),
+                "completed", taskSummary.get("completed"),
+                "acceptanceRate", taskSummary.get("acceptanceRate"),
+                "checkinActive", taskSummary.get("checkinActive"))));
+        block.put("network", linked("summary", networkSummary));
+        block.put("quality", linked(
+                "sameActorRates", actorComplete,
+                "actorCoveragePct", actorCoverage,
+                "incompleteRatesAreNull", true));
+        block.put("excludedSnapshots", excludedSnapshots());
+        return block;
+    }
+
+    private static List<Map<String, Object>> excludedSnapshots() {
+        return List.of(
+                linked("field", "device.summary.activeDevices",
+                        "reason", "current live DB snapshot, not a historical A4 event fact"),
+                linked("field", "tasks.summary.queueSaturation",
+                        "reason", "latest event snapshot, not a window flow"),
+                linked("field", "liveFacts",
+                        "reason", "current live DB counts, not historical event facts"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> summary(Map<String, Object> section) {
+        return (Map<String, Object>) section.get("summary");
+    }
+
+    private static LocalDateTime historyCoverageStart(LocalDateTime now) {
+        var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
+        LocalDateTime queryStart = calendar.storageStart(calendar.dateAtStorage(now).minusDays(400));
+        LocalDateTime retentionStart = now.minusMonths(MIN_RETENTION_MONTHS);
+        return retentionStart.isAfter(queryStart) ? retentionStart : queryStart;
     }
 
     private static Map<String, Object> device(List<Fact> rows) {
@@ -156,21 +260,58 @@ public final class L4OperationsAnalytics {
         List<Fact> completed = events(rows, "quest.completed");
         boolean keysComplete = merge(dispatched, completed).stream()
                 .allMatch(item -> hasText(item.actor()) && hasText(item.questKey()));
-        Map<String, LocalDateTime> dispatchTimes = firstTimes(dispatched, L4OperationsAnalytics::taskKey);
-        long dispatchedCount = keysComplete ? dispatchTimes.size() : distinctKey(dispatched, Fact::eventId);
+        // 派发实例身份复用既有可证实的事实身份:每条派发事实(一条 nx_user_event_quest 行)
+        // 的 eventId 就是一次真实派发实例,分母按它计数;不再按 actor+任务码 firstTimes 合并,
+        // 同一用户同任务码跨周期的多条派发各算一个独立实例。
+        Map<String, List<Fact>> dispatchesByKey = new LinkedHashMap<>();
+        for (Fact item : dispatched) {
+            dispatchesByKey.computeIfAbsent(taskKey(item), ignored -> new ArrayList<>()).add(item);
+        }
+        long dispatchedCount = distinctKey(dispatched, Fact::eventId);
         // 「完成量」与「周期趋势」同源同式：两者都读窗口内 quest.completed 的完成实例。
         // 派发-完成 join 只用于判定承接率分母是否可用，绝不能反过来把完成量压成 0：
         // quest.dispatched 当前没有生产方，若以 join 结果作完成量，汇总会恒为 0，
         // 而同一窗口的趋势表仍显示真实完成数，形成两个互相矛盾的权威值。
         boolean orderedJoin = actorComplete && keysComplete && dispatchedCount > 0;
+        // L4-BE-09: 承接率分子只统计与派发实例(actor+任务)匹配的完成,分子分母同一批任务实例;
+        // 无派发事实时承接率不可用。完成量/趋势仍读全部 quest.completed。
+        // L4-BE-12: 完成必须晚于该实例的派发,同一实例的多条完成只计一次,分子因此不自造超过分母。
+        // 完成端只带 actor+任务码、没有派发实例号:同一键在窗口内有多条派发时无法证明完成属于
+        // 哪一条实例(跨周期),这类歧义组保留各自的真实派发在分母里,承接率报不可用,不合并实例。
+        Set<String> completedInstances = new LinkedHashSet<>();
+        boolean ambiguousCompletions = false;
+        long unmatchedCompletions = 0;
+        if (orderedJoin) {
+            for (Fact item : completed) {
+                List<Fact> instances = dispatchesByKey.get(taskKey(item));
+                if (instances == null || instances.isEmpty()) {
+                    unmatchedCompletions++;
+                    continue;
+                }
+                if (instances.size() > 1) {
+                    ambiguousCompletions = true;
+                    continue;
+                }
+                if (item.ts().isAfter(instances.get(0).ts())) {
+                    completedInstances.add(taskKey(item));
+                } else {
+                    unmatchedCompletions++;
+                }
+            }
+        }
+        // 窗口里确有完成却对不上派发实例(如两批事实代码空间不同)、或存在无法归属的歧义组时,
+        // 0% 或任何百分比都不是可证明的值;按平台既有口径把承接率报为不可用(null),不把未知记 0。
+        boolean rateProvable = orderedJoin && !ambiguousCompletions
+                && (!completedInstances.isEmpty() || unmatchedCompletions == 0);
+        long matchedCompletions = completedInstances.size();
         return linked(
                 "summary", linked(
                         "dispatched", dispatchedCount,
                         "completed", completionVolume,
-                        "acceptanceRate", orderedJoin ? pct(completionVolume, dispatchedCount) : null,
+                        "acceptanceRate", rateProvable ? pct(matchedCompletions, dispatchedCount) : null,
                         "queueSaturation", saturation(rows),
                         "checkinActive", distinctActors(events(rows, "daily.checkin")),
-                        "orderedTaskJoin", orderedJoin),
+                        "orderedTaskJoin", rateProvable),
                 "byTier", distribution(completionInstances(completed, period), Fact::tier));
     }
 
@@ -238,7 +379,8 @@ public final class L4OperationsAnalytics {
     }
 
     private static List<Map<String, Object>> phaseEffect(
-            List<Fact> rows, boolean actorComplete, String phaseFilter) {
+            List<Fact> rows, List<Fact> activity, boolean actorComplete, String phaseFilter) {
+        boolean retentionActorsComplete = actorComplete && activity.stream().allMatch(fact -> hasText(fact.actor()));
         List<Map<String, Object>> result = new ArrayList<>();
         Double previousConversion = null;
         List<String> phases = "ALL".equals(phaseFilter) ? PHASES : List.of(phaseFilter);
@@ -249,11 +391,11 @@ public final class L4OperationsAnalytics {
             List<Fact> storeFacts = events(phaseRows, "store.viewed");
             List<Fact> buyerFacts = events(phaseRows, "checkout.completed");
             long registered = distinctActors(registrations);
-            long active = distinctActors(events(phaseRows, "app.dau"));
+            long active = distinctActors(activeFacts);
             long store = distinctActors(storeFacts);
-            long retained = orderedActors(registrations, activeFacts).size();
+            long retained = returningActors(registrations, activity).size();
             long converted = orderedActors(storeFacts, buyerFacts).size();
-            Double retention = actorComplete && registered > 0 ? pct(retained, registered) : null;
+            Double retention = retentionActorsComplete && registered > 0 ? pct(retained, registered) : null;
             Double conversion = actorComplete && store > 0 ? pct(converted, store) : null;
             Double step = conversion == null || previousConversion == null ? null : round(conversion - previousConversion);
             result.add(linked(
@@ -374,6 +516,19 @@ public final class L4OperationsAnalytics {
         return result;
     }
 
+    private static Set<String> returningActors(List<Fact> registrations, List<Fact> activity) {
+        var calendar = BusinessCalendar.legacy();
+        Map<String, LocalDateTime> starts = firstTimes(registrations, Fact::actor);
+        Set<String> result = new LinkedHashSet<>();
+        for (Fact item : activity) {
+            LocalDateTime start = starts.get(item.actor());
+            if (start != null && calendar.dateAtStorage(item.ts()).isAfter(calendar.dateAtStorage(start))) {
+                result.add(item.actor());
+            }
+        }
+        return result;
+    }
+
     private static Set<String> orderedActors(List<Fact> prerequisite, List<Fact> consequence) {
         Map<String, LocalDateTime> starts = firstTimes(prerequisite, Fact::actor);
         Set<String> result = new LinkedHashSet<>();
@@ -448,10 +603,12 @@ public final class L4OperationsAnalytics {
                 throw new IllegalArgumentException("L4_CUSTOM_RANGE_INVALID");
             }
             // R-1: custom dates are business dates; bounds are stored (Beijing) timestamps.
-            return new Range(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(start), ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(end.plusDays(1)).minusNanos(1));
+            long days = ChronoUnit.DAYS.between(start, end) + 1;
+            return new Range(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(start),
+                    ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(end.plusDays(1)).minusNanos(1), days);
         }
         long days = "day".equals(period) ? 1 : "month".equals(period) ? 30 : 7;
-        return new Range(now.minusDays(days), now);
+        return new Range(now.minusDays(days), now, days);
     }
 
     private static LocalDate parseDate(String value) {
@@ -540,7 +697,10 @@ public final class L4OperationsAnalytics {
         return result;
     }
 
-    private record Range(LocalDateTime from, LocalDateTime to) {
+    private record Range(LocalDateTime from, LocalDateTime to, long days) {
+        private Range previous() {
+            return new Range(from.minusDays(days), from.minusNanos(1), days);
+        }
     }
 
     private record Fact(

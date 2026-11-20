@@ -991,8 +991,12 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
         if(number(wallet,"userId")!=customer || number(wallet,"id")<=0 || flag(wallet,"sandbox")!=0
             || flag(wallet,"isDeleted")!=0 || text(wallet,"incarnation")==null || number(wallet,"revision")<0)
             throw failure("PAYMENT_FUND_WALLET_IDENTITY_INVALID");
-        for(String field:List.of("usdtAvailable","nexAvailable","pendingWithdraw","cregisRiskHeld"))
-            if(decimal(wallet,field)==null || decimal(wallet,field).signum()<0)throw failure("PAYMENT_FUND_WALLET_AMOUNT_INVALID");
+        // USDT available may be negative after F1 clawbacks; other balances remain non-negative.
+        for(String field:List.of("usdtAvailable","nexAvailable","pendingWithdraw","cregisRiskHeld")) {
+            BigDecimal amount=decimal(wallet,field);
+            if(amount==null || (!"usdtAvailable".equals(field) && amount.signum()<0))
+                throw failure("PAYMENT_FUND_WALLET_AMOUNT_INVALID");
+        }
         return wallet;
     }
 

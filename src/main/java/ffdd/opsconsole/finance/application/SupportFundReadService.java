@@ -252,7 +252,7 @@ public class SupportFundReadService {
                                 catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
                                 require(devicePhases.add(device.coveredPhase()),Gap.SOURCE);
                                 // Signed zero SIM receipts remain in source coverage without a cash replay movement.
-                                if("SUPPORT_DEVICE_EARNING_V2".equals(source.path("schemaVersion").asText())
+                                if(Set.of("SUPPORT_DEVICE_EARNING_V2","SUPPORT_DEVICE_EARNING_V3").contains(source.path("schemaVersion").asText())
                                         &&events.isEmpty()&&device.points().isEmpty())continue;
                                 stamp=device.stamp();sourcePoints=device.points();
                             }
@@ -716,7 +716,7 @@ public class SupportFundReadService {
         require(refund.kind()==SupportPaymentFacts.Kind.DEVICE_PURCHASE_REFUND &&refund.ledgerId()>0
             &&source.path("factId").asText().equals(refund.originalFactId()) &&"USDT".equals(refund.currency())
             &&source.path("amount").isNumber() &&source.path("amount").decimalValue().signum()>0
-            &&source.path("amount").decimalValue().compareTo(refund.amount())==0
+            &&refund.amount().signum()>0 &&source.path("amount").decimalValue().compareTo(refund.amount())>=0
             &&!refund.succeededAt().withNano(0).isBefore(parseTime(source.path("succeededAt")).withNano(0)),Gap.SOURCE);
         return refund;
     }

@@ -78,8 +78,8 @@ public class MybatisNovaSocialRuntimeRepository implements NovaSocialRuntimeRepo
     }
 
     @Override
-    public Optional<Long> fanoutBatchUpperUserId(long afterUserId, int limit) {
-        return Optional.ofNullable(mapper.fanoutBatchUpperUserId(afterUserId, limit));
+    public Optional<Long> fanoutBatchUpperUserId(long afterUserId, int limit, LocalDateTime audienceCutoff) {
+        return Optional.ofNullable(mapper.fanoutBatchUpperUserId(afterUserId, limit, audienceCutoff));
     }
 
     @Override
@@ -144,11 +144,11 @@ public class MybatisNovaSocialRuntimeRepository implements NovaSocialRuntimeRepo
     @Override
     public int enqueueBusinessNotificationBatch(
             String channel, String notificationType, String bizNo, long afterUserId, long upperUserId,
-            String titleZh, String bodyZh, String titleVi, String bodyVi,
+            LocalDateTime audienceCutoff, String titleZh, String bodyZh, String titleVi, String bodyVi,
             String titleEn, String bodyEn, String ctaHref,
             LocalDateTime cooldownSince, LocalDateTime now) {
         return mapper.enqueueBusinessNotificationBatch(channel, notificationType, bizNo,
-                afterUserId, upperUserId, titleZh, bodyZh, titleVi, bodyVi,
+                afterUserId, upperUserId, audienceCutoff, titleZh, bodyZh, titleVi, bodyVi,
                 titleEn, bodyEn, ctaHref, cooldownSince, now);
     }
 

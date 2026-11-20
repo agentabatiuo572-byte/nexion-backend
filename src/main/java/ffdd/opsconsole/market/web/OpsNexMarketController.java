@@ -9,6 +9,7 @@ import ffdd.opsconsole.market.application.G2G3AdminCommandService;
 import ffdd.opsconsole.market.application.G4AdminCommandService;
 import ffdd.opsconsole.market.application.GenesisCatalogService;
 import ffdd.opsconsole.market.application.OpsRepurchaseAdminService;
+import ffdd.opsconsole.market.application.G3ScheduledAdvanceService;
 import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
@@ -31,21 +32,35 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class OpsNexMarketController {
     private final OpsNexMarketService marketService;
+    private final G3ScheduledAdvanceService scheduledAdvanceService;
     private final G2G3AdminCommandService commandService;
     private final G4AdminCommandService g4CommandService;
     private final OpsRepurchaseAdminService repurchaseAdminService;
     private final GenesisCatalogService genesisCatalogService;
+    private final ffdd.opsconsole.market.application.G4DividendApproval g4DividendApproval;
+
+    @GetMapping("/genesis/dividend-approval-state")
+    @PreAuthorize("(#batchNo == null && hasAuthority('finprod_g4_dividend_rate_write')) || (#batchNo != null && hasAuthority('finprod_g4_write'))")
+    public ApiResult<Map<String,Object>> genesisDividendApprovalState(@RequestParam(required=false) String batchNo) {
+        return ApiResult.ok(g4DividendApproval.state(batchNo));
+    }
 
     @GetMapping("/curve")
     @PreAuthorize("hasAuthority('finprod_g3_read')")
     public ApiResult<Map<String, Object>> curve() {
-        return marketService.overview();
+        return marketService.overviewWithObjectStates();
     }
 
     @GetMapping("/curve/history")
     @PreAuthorize("hasAuthority('finprod_g3_read')")
     public ApiResult<Map<String, Object>> curveHistory() {
         return marketService.curveHistory();
+    }
+
+    @GetMapping("/curve/schedule-execution")
+    @PreAuthorize("hasAuthority('finprod_g3_read')")
+    public ApiResult<Map<String, Object>> scheduleExecution() {
+        return ApiResult.ok(scheduledAdvanceService.latestExecution());
     }
 
     @GetMapping("/repurchase")

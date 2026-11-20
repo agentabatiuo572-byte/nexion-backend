@@ -49,32 +49,32 @@ class CregisExceptionRefundDispatchMySqlTest {
         jdbc.update("INSERT INTO nx_cregis_risk_alert VALUES(?,'P0',NULL,'PROVIDER_ORPHAN',?)",project,"orphan-cid-"+cid);
     }
     @Test void twoValidApprovalsCanProgressSequentiallyButUnknownFirstBlocksSecond(){
-        assertThat(mapper.otherUnresolved(project,901,tx1,3,address1,new BigDecimal("5"))).isZero();
+        assertThat(mapper.otherUnresolved("2510",project,901,tx1,3,address1,new BigDecimal("5"))).isZero();
         assertThat(mapper.otherCriticalAlerts(project,901)).isZero();assertThat(mapper.otherActiveRefunds(project,1)).isZero();
         jdbc.update("UPDATE nx_cregis_exception_refund SET state='SUBMITTING' WHERE id=1");assertThat(mapper.otherActiveRefunds(project,2)).isEqualTo(1);
         jdbc.update("UPDATE nx_cregis_exception_refund SET state='UNKNOWN' WHERE id=1");assertThat(mapper.otherActiveRefunds(project,2)).isEqualTo(1);
         jdbc.update("UPDATE nx_cregis_exception_refund SET state='COMPLETED' WHERE id=1");
         jdbc.update("UPDATE nx_cregis_exception_source SET state='REFUNDED' WHERE cid=901");jdbc.update("UPDATE nx_cregis_chain_observation SET status='REFUNDED' WHERE txid=?",tx1);
         jdbc.update("UPDATE nx_cregis_deposit_address SET state='RETIRED' WHERE address=?",address1);jdbc.update("UPDATE nx_cregis_deposit_delivery SET processed_at=NOW() WHERE cid=901");jdbc.update("UPDATE nx_cregis_risk_alert SET resolved_at=NOW() WHERE alert_key='orphan-cid-901'");
-        assertThat(mapper.otherActiveRefunds(project,2)).isZero();assertThat(mapper.otherUnresolved(project,902,tx2,3,address2,new BigDecimal("5"))).isZero();
+        assertThat(mapper.otherActiveRefunds(project,2)).isZero();assertThat(mapper.otherUnresolved("2510",project,902,tx2,3,address2,new BigDecimal("5"))).isZero();
     }
     @Test void forgedOrUnapprovedOtherSourceAndUnrelatedP0RemainBlocked(){
         jdbc.update("UPDATE nx_cregis_exception_refund SET checker_id=maker_id WHERE id=2");
-        assertThat(mapper.otherUnresolved(project,901,tx1,3,address1,new BigDecimal("5"))).isGreaterThan(0);
+        assertThat(mapper.otherUnresolved("2510",project,901,tx1,3,address1,new BigDecimal("5"))).isGreaterThan(0);
         jdbc.update("UPDATE nx_cregis_exception_refund SET checker_id=8 WHERE id=2");jdbc.update("UPDATE nx_cregis_exception_source SET operation_ref='wrong' WHERE cid=902");
-        assertThat(mapper.otherUnresolved(project,901,tx1,3,address1,new BigDecimal("5"))).isGreaterThan(0);
+        assertThat(mapper.otherUnresolved("2510",project,901,tx1,3,address1,new BigDecimal("5"))).isGreaterThan(0);
         jdbc.update("UPDATE nx_cregis_exception_source SET operation_ref='CR-RF-2' WHERE cid=902");
         jdbc.update("UPDATE nx_cregis_ownership_challenge SET consumed_signature=NULL WHERE challenge_id='challenge-2'");
-        assertThat(mapper.otherUnresolved(project,901,tx1,3,address1,new BigDecimal("5"))).isGreaterThan(0);
+        assertThat(mapper.otherUnresolved("2510",project,901,tx1,3,address1,new BigDecimal("5"))).isGreaterThan(0);
         jdbc.update("UPDATE nx_cregis_ownership_challenge SET consumed_signature=?,signer=? WHERE challenge_id='challenge-2'","0x"+"1".repeat(130),address1);
-        assertThat(mapper.otherUnresolved(project,901,tx1,3,address1,new BigDecimal("5"))).isGreaterThan(0);
+        assertThat(mapper.otherUnresolved("2510",project,901,tx1,3,address1,new BigDecimal("5"))).isGreaterThan(0);
         jdbc.update("INSERT INTO nx_cregis_risk_alert VALUES(?,'P0',NULL,'MANUAL_EMERGENCY_OFF','manual-emergency')",project);
         assertThat(mapper.otherCriticalAlerts(project,901)).isGreaterThan(0);
     }
     @Test void aggregateFiveHundredHoldCanBeReducedButOtherP0CannotBeBypassed(){
         jdbc.update("INSERT INTO nx_cregis_risk_alert VALUES(?,'P0',NULL,'UNRESOLVED_EXPOSURE','unresolved-exposure-500')",project);
         assertThat(mapper.otherCriticalAlerts(project,901)).isZero();
-        assertThat(mapper.otherUnresolved(project,901,tx1,3,address1,new BigDecimal("5"))).isZero();
+        assertThat(mapper.otherUnresolved("2510",project,901,tx1,3,address1,new BigDecimal("5"))).isZero();
         jdbc.update("INSERT INTO nx_cregis_risk_alert VALUES(?,'P0',NULL,'MANUAL_EMERGENCY_OFF','manual-emergency')",project);
         assertThat(mapper.otherCriticalAlerts(project,901)).isEqualTo(1);
         jdbc.update("INSERT INTO nx_cregis_risk_alert VALUES(?,'P0',NULL,'UNRESOLVED_EXPOSURE','different-key')",project);

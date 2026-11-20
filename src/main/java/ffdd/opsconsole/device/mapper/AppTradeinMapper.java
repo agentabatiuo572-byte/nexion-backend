@@ -235,10 +235,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                   WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
                     AND UPPER(t.status) IN ('CLAIMED','RUNNING')
                )
-             ORDER BY COALESCE(d.daily_usdt,0), d.id
-             LIMIT 1
+             ORDER BY d.id
             """)
-    SourceDevice findCapacityReplacementSource(@Param("userId") Long userId);
+    List<SourceDevice> findCapacityReplacementSources(@Param("userId") Long userId);
 
     @Select("""
             SELECT d.id, d.user_id AS userId, d.instance_no AS instanceNo,
@@ -267,10 +266,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                   WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
                     AND UPPER(t.status) IN ('CLAIMED','RUNNING')
                )
-             ORDER BY COALESCE(d.daily_usdt,0), d.id
-             LIMIT 1 FOR UPDATE
+             ORDER BY d.id FOR UPDATE
             """)
-    SourceDevice lockCapacityReplacementSource(@Param("userId") Long userId);
+    List<SourceDevice> lockCapacityReplacementSources(@Param("userId") Long userId);
 
     /**
      * The App may publish only products that this mapper's quote/submit lookups
@@ -291,7 +289,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    s.image_asset_id AS imageAssetId,s.image_object_key AS imageObjectKey,
                    p.inventory_mode AS inventoryMode,
                    s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,
-                   p.compute_points AS computePoints
+                   p.compute_points AS computePoints,p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct
               FROM nx_product p
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0 AND p.store_visible=1
@@ -521,41 +519,44 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
 
     @Insert("""
             INSERT INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+              (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,
                source_channel,status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,last_seen_at,
                pending_deactivate,created_at,updated_at,is_deleted)
-            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
+            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},p.series_code,
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
                #{row.vramTotalGb},CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
-               s.datacenter,#{row.targetPriceUsdt},'OWNED','TRADE_IN',
+               #{hostingCenter},#{row.targetPriceUsdt},'OWNED','TRADE_IN',
                CASE WHEN #{row.activated} THEN 'ACTIVE' ELSE 'INACTIVE' END,#{row.hashrate},
                #{row.dailyUsdt},#{row.dailyNex},NOW(),CASE WHEN #{row.activated} THEN NOW() ELSE NULL END,
                CASE WHEN #{row.activated} THEN NOW() ELSE NULL END,0,NOW(),NOW(),0
               FROM nx_admin_device_sku s
-             WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0 AND TRIM(s.datacenter) <> ''
-               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)?\\\\z'
+              JOIN nx_product p ON p.id=#{row.productId} AND p.product_no=s.sku_id
+             WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0
+               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0
             """)
-    int insertTargetDevice(@Param("row") DeliveredDeviceWrite row);
+    int insertTargetDevice(@Param("row") DeliveredDeviceWrite row, @Param("hostingCenter") String hostingCenter);
 
     @Insert("""
             INSERT INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+              (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,
                source_channel,status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,last_seen_at,
                pending_deactivate,created_at,updated_at,is_deleted)
-            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},
+            SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},p.series_code,
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
                #{row.vramTotalGb},CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
-               s.datacenter,#{row.targetPriceUsdt},'OWNED','ORDER','ACTIVE',#{row.hashrate},
+               #{hostingCenter},#{row.targetPriceUsdt},'OWNED','ORDER','ACTIVE',#{row.hashrate},
                #{row.dailyUsdt},#{row.dailyNex},NOW(),NOW(),NOW(),0,NOW(),NOW(),0
               FROM nx_admin_device_sku s
-             WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0 AND TRIM(s.datacenter) <> ''
-               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)?\\\\z'
+              JOIN nx_product p ON p.id=#{row.productId} AND p.product_no=s.sku_id
+             WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0
+               AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0
             """)
-    int insertCapacityKeepTargetDevice(@Param("row") DeliveredDeviceWrite row);
+    int insertCapacityKeepTargetDevice(@Param("row") DeliveredDeviceWrite row,
+                                       @Param("hostingCenter") String hostingCenter);
 
     @Select("SELECT id FROM nx_user_device WHERE instance_no=#{instanceNo} AND is_deleted=0 LIMIT 1")
     Long findDeviceIdByInstanceNo(@Param("instanceNo") String instanceNo);
@@ -640,7 +641,20 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                                 BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
                                 BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
                                 String imageAssetId, String imageObjectKey,
+                                String inventoryMode, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+    public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn,
+                                BigDecimal phoneDailyEarnNex, String featuresJson, BigDecimal aiImageGenPerMin,
+                                BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
+                                String imageAssetId, String imageObjectKey,
                                 String inventoryMode, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
+        this(productNo,name,tier,priceUsdt,stock,deviceType,generation,gpuModel,vramTotalGb,hashrate,dailyUsdt,dailyNex,tagline,badge,sold,unlockPhase,updatedAt,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,featuresJson,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,purchaseGateJson,imageAssetId,imageObjectKey,inventoryMode,specDocumentTitle,specDocumentUrl,computePoints,null,null);
+    }
+
         /** Existing callers without compute points keep the line hidden. */
         public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                 String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.risk.application;
 
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.dto.B5AlertSubscriptionRequest;
 import ffdd.opsconsole.risk.dto.B5BankRunThresholdRequest;
@@ -18,6 +19,10 @@ import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.BankRunThresholdPolicy;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
+import ffdd.opsconsole.treasury.facade.TreasuryEmergencySignalFacade;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -33,7 +38,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -41,7 +49,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class OpsRiskRadarService {
     public static final BigDecimal PRESSURE_RED_LINE = new BigDecimal("0.7");
-    private static final String THRESHOLD_VERSION_KEY = "risk.bankrun-threshold-version";
     private static final String SUBSCRIPTION_CHANNELS_KEY = "risk.alert-subscription.channels";
     private static final String SUBSCRIPTION_WEBHOOK_KEY = "risk.alert-subscription.webhook-url";
     private static final String SUBSCRIPTION_VERSION_KEY = "risk.alert-subscription.version";
@@ -51,46 +58,60 @@ public class OpsRiskRadarService {
     private static final String TRIAGE_SCOPE = "B5_TRIAGE";
     private static final List<String> GATES = List.of("withdraw", "staking", "genesis", "exchange", "trial");
     private static final List<String> BACKLOG_STATES = List.of("submitted", "review-passed", "processing");
+    private static final ObjectMapper EVIDENCE_JSON = new ObjectMapper();
     private static final Map<String, String> TRIAGE_TARGETS = Map.of(
             "bankrun", "/finance/withdrawals",
             "abnormal-accounts", "/risk/multi-account",
             "withdraw-backlog", "/finance/withdrawals",
             "kill-switches", "/emergency/kill-switch",
-            "coverage", "/overview/dual-ledger");
+            "coverage", "/overview/dual-ledger",
+            // Recent-alert queue targets: K2 abuse, J3 tamper, K4 scoring.
+            "abuse", "/risk/abuse",
+            "tamper", "/emergency/tamper",
+            "scoring", "/risk/scoring");
 
     private final B5RiskRadarMapper mapper;
     private final PlatformConfigFacade configFacade;
     private final TreasuryCoverageFacade coverageFacade;
+    @Autowired
+    private TreasuryEmergencySignalFacade emergencySignalFacade;
     private final AdminIdempotencyService idempotencyService;
     private final AuditLogService auditLogService;
     private final AdminOperatorRoleResolver roleResolver;
     private final Clock clock;
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> radar() {
         return ApiResult.ok(radarView());
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Map<String, Object> radarView() {
         Map<String, Object> money = mapper.moneySnapshot();
         if (money == null || !money.keySet().containsAll(Set.of(
                 "withdraw24hUsdt", "reserveUsdt", "payoutUsdt", "commissionUsdt", "grossInflowUsdt"))) {
             throw new BizException(500, "B5_MONEY_SOURCE_UNAVAILABLE");
         }
-        BigDecimal withdrawal24h = decimal(money.get("withdraw24hUsdt"));
-        BigDecimal reserve = decimal(money.get("reserveUsdt"));
+        TreasuryEmergencySignalFacade.BankRunRead j1BankRun = bankRunRead();
+        BigDecimal withdrawal24h = j1BankRun == null
+                ? decimal(money.get("withdraw24hUsdt")) : j1BankRun.withdrawalRequests24hUsdt();
+        BigDecimal reserve = j1BankRun == null ? decimal(money.get("reserveUsdt")) : j1BankRun.reserveUsdt();
         BigDecimal payout = decimal(money.get("payoutUsdt"));
         BigDecimal commission = decimal(money.get("commissionUsdt"));
         BigDecimal grossInflow = decimal(money.get("grossInflowUsdt"));
-        boolean bankRunCalculable = reserve.signum() > 0;
-        BigDecimal bankRunRatio = bankRunCalculable ? ratio(withdrawal24h, reserve) : null;
+        boolean bankRunCalculable = j1BankRun != null && j1BankRun.ratioPct() != null
+                || j1BankRun == null && reserve.signum() > 0;
+        BigDecimal bankRunRatio = j1BankRun != null && j1BankRun.ratioPct() != null
+                ? j1BankRun.ratioPct().movePointLeft(2)
+                : bankRunCalculable ? ratio(withdrawal24h, reserve) : null;
         BigDecimal pressureNumerator = payout.add(commission);
         boolean pressureCalculable = grossInflow.signum() > 0;
         BigDecimal pressureRatio = pressureCalculable ? ratio(pressureNumerator, grossInflow) : null;
+        long version = BankRunThresholdPolicy.version(configFacade);
         BankRunThresholdPolicy.Bands bands = BankRunThresholdPolicy.resolve(configFacade);
-        long version = configVersion(THRESHOLD_VERSION_KEY, false);
 
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (coverage == null || !coverage.reliable()) {
+        if (coverage == null || !coverage.reliable() || coverage.healthyPct() == null) {
             throw new BizException(500, "B5_COVERAGE_SOURCE_UNAVAILABLE");
         }
 
@@ -143,14 +164,16 @@ public class OpsRiskRadarService {
                 "ratio", coverageCalculable ? safe(coverage.coverageRatio()) : null,
                 "light", coverageCalculable ? coverageLight(coverage) : "unavailable",
                 "redlinePct", safe(coverage.redlinePct()),
+                "healthyPct", coverage.healthyPct(),
                 "reserveUsdt", money(coverage.reserveUsd()),
                 "liabilitiesUsdt", money(coverage.liabilitiesUsd()),
                 "ratioReserveUsdt", safe(coverage.ratioReserveUsd()),
                 "ratioLiabilitiesUsdt", safe(coverage.ratioLiabilitiesUsd()),
+                "unit", "USDT",
                 "source", "B1:TreasuryCoverageFacade");
 
         return section(
-                "generatedAt", LocalDateTime.now(clock).toString(),
+                "generatedAt", clock.instant().toString(),
                 "bankrun", bankrun,
                 "abnormalAccounts", section(
                         "count", abnormalCount,
@@ -159,7 +182,7 @@ public class OpsRiskRadarService {
                 "withdrawBacklog", section(
                         "byState", backlog,
                         "totalCount", backlogCount,
-                        "totalAmountUsdt", money(backlogAmount),
+                        "totalAmountUsdt", safe(backlogAmount),
                         "slaHours", 48,
                         "overSlaCount", overdue,
                         "light", overdue > 0 ? "yellow" : "green",
@@ -206,18 +229,123 @@ public class OpsRiskRadarService {
                 label = "其他风险信号";
                 target = "/risk/scoring";
             }
+            String handlingStatus = requireSignalField(row.get("handlingStatus"), "handlingStatus");
+            boolean unhandled = "open".equals(handlingStatus);
+            Map<String, Object> facts = signalFacts(text(row.get("signalNo")), signalType, text(row.get("evidence")));
             return section(
                     "signalNo", requireSignalField(row.get("signalNo"), "signalNo"),
                     "level", requireSignalField(row.get("level"), "level"),
                     "message", label,
+                    "signalType", signalType,
                     "userId", whole(row.get("userId")),
+                    "userNo", text(row.get("userNo")),
+                    "facts", facts,
                     "createdAt", requireSignalField(row.get("createdAt"), "createdAt"),
                     "target", target,
                     "handlingStatusAvailable", true,
-                    "handlingStatus", requireSignalField(row.get("handlingStatus"), "handlingStatus"),
+                    "handlingStatus", handlingStatus,
                     "handlingVersion", whole(row.get("handlingVersion")),
+                    "handledBy", unhandled ? null : text(row.get("handledBy")),
+                    "handledAt", unhandled ? null : text(row.get("handledAt")),
                     "deliveryStatus", requireSignalField(row.get("deliveryStatus"), "deliveryStatus"));
         }).toList();
+    }
+
+    private Map<String, Object> signalFacts(String signalNo, String signalType, String evidence) {
+        if (!StringUtils.hasText(signalNo) || !StringUtils.hasText(signalType) || !StringUtils.hasText(evidence)) {
+            return null;
+        }
+        String type = signalType.trim().toLowerCase(Locale.ROOT);
+        Map<String, Object> facts = new LinkedHashMap<>();
+        if ("tamper_detected".equals(type) && signalNo.startsWith("TAMPER-")) {
+            try {
+                JsonNode node = EVIDENCE_JSON.readTree(evidence);
+                putFact(facts, "tamperPath", node.path("tamperPath").asText(null));
+                putFact(facts, "attackEffect", node.path("attackEffect").asText(null));
+            } catch (JsonProcessingException ignored) {
+                // Malformed producer evidence remains unknown; internal errors must still propagate.
+            }
+            return facts.isEmpty() ? null : facts;
+        }
+        Map<String, String> pairs;
+        if ("risk.trial_cycle_detected".equals(type) && signalNo.startsWith("K2-TC-")) {
+            pairs = evidencePairs(evidence);
+            putFact(facts, "rowId", pairs.get("row"));
+            putFact(facts, "cycleCount", positiveInt(pairs.get("cycles")));
+            putFact(facts, "windowDays", positiveInt(pairs.get("windowDays")));
+        } else if (("risk.arbitrage_suspected".equals(type) || "risk.leaderboard_velocity_flagged".equals(type))
+                && signalNo.startsWith("K2-") && !signalNo.startsWith("K2-TC-")) {
+            pairs = evidencePairs(evidence);
+            putFact(facts, "rowId", pairs.get("row"));
+            putFact(facts, "view", pairs.get("view"));
+            putFact(facts, "action", pairs.get("action"));
+        } else if ("user_frozen".equals(type) && signalNo.startsWith("SIG-C2-")) {
+            pairs = evidencePairs(evidence);
+            putFact(facts, "source", pairs.get("source"));
+        } else if ("d1_chargeback_shortfall".equals(type) && signalNo.startsWith("RSK-CB-")) {
+            return d1ChargebackFacts(evidence);
+        } else {
+            // Manual/legacy/multi-account signals share arbitrary types/evidence but never a producer prefix.
+            return null;
+        }
+        return facts.isEmpty() ? null : facts;
+    }
+
+    private Map<String, Object> d1ChargebackFacts(String evidence) {
+        // Producer format is fixed comma-separated: case=...,walletShortfall=...,feeBufferShortfall=...,evidence=...
+        // Only the first three fields are projected; everything after ",evidence=" is never returned.
+        String walletMarker = ",walletShortfall=";
+        String feeMarker = ",feeBufferShortfall=";
+        String evidenceMarker = ",evidence=";
+        if (!evidence.startsWith("case=")) return null;
+        int walletAt = evidence.indexOf(walletMarker);
+        int feeAt = evidence.indexOf(feeMarker);
+        int evidenceAt = evidence.indexOf(evidenceMarker);
+        if (walletAt < 5 || feeAt <= walletAt || evidenceAt <= feeAt) return null;
+        Map<String, Object> facts = new LinkedHashMap<>();
+        putFact(facts, "caseNo", evidence.substring(5, walletAt).trim());
+        putFact(facts, "walletShortfallUsdt",
+                decimalOrNull(evidence.substring(walletAt + walletMarker.length(), feeAt)));
+        putFact(facts, "feeBufferShortfallUsdt",
+                decimalOrNull(evidence.substring(feeAt + feeMarker.length(), evidenceAt)));
+        return facts.isEmpty() ? null : facts;
+    }
+
+    private Map<String, String> evidencePairs(String evidence) {
+        Map<String, String> pairs = new LinkedHashMap<>();
+        for (String part : evidence.split(";")) {
+            int separator = part.indexOf('=');
+            if (separator <= 0) continue;
+            String key = part.substring(0, separator).trim();
+            String value = part.substring(separator + 1).trim();
+            if (StringUtils.hasText(key) && StringUtils.hasText(value)) pairs.putIfAbsent(key, value);
+        }
+        return pairs;
+    }
+
+    private void putFact(Map<String, Object> facts, String key, Object value) {
+        if (value == null) return;
+        if (value instanceof String text && !StringUtils.hasText(text)) return;
+        facts.put(key, value);
+    }
+
+    private Integer positiveInt(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        try {
+            int parsed = Integer.parseInt(value.trim());
+            return parsed >= 0 ? parsed : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private BigDecimal decimalOrNull(String value) {
+        if (!StringUtils.hasText(value)) return null;
+        try {
+            return new BigDecimal(value.trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private List<Map<String, Object>> pressureHistory(List<Map<String, Object>> rows) {
@@ -238,27 +366,23 @@ public class OpsRiskRadarService {
         return result;
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> preview(B5ThresholdPreviewRequest request) {
         if (request == null) {
             throw new BizException(400, "BANKRUN_THRESHOLD_REQUIRED");
         }
-        Thresholds thresholds = validateThresholds(request.yellowPct(), request.redPct());
-        long currentVersion = configVersion(THRESHOLD_VERSION_KEY, false);
+        long currentVersion = BankRunThresholdPolicy.version(configFacade);
+        Thresholds thresholds = resolveThresholds(parseThresholds(request.yellowPct(), request.redPct()));
         requireExpectedVersion(request.expectedVersion(), currentVersion);
-        Map<String, Object> money = mapper.moneySnapshot();
-        if (money == null) {
+        TreasuryEmergencySignalFacade.BankRunRead j1BankRun = bankRunRead();
+        if (j1BankRun == null || j1BankRun.ratioPct() == null) {
             throw new BizException(500, "B5_MONEY_SOURCE_UNAVAILABLE");
         }
-        BigDecimal withdrawal24h = decimal(money.get("withdraw24hUsdt"));
-        BigDecimal reserve = decimal(money.get("reserveUsdt"));
-        boolean calculable = reserve.signum() > 0;
-        BigDecimal ratio = calculable ? ratio(withdrawal24h, reserve) : null;
+        BigDecimal ratio = j1BankRun.ratioPct().movePointLeft(2);
         return ApiResult.ok(section(
                 "ratio24h", ratio,
-                "ratioCalculable", calculable,
-                "light", calculable
-                        ? thresholdLight(ratio, thresholds.yellow(), thresholds.red())
-                        : withdrawal24h.signum() > 0 ? "red" : "unavailable",
+                "ratioCalculable", true,
+                "light", thresholdLight(ratio, thresholds.yellow(), thresholds.red()),
                 "yellowPct", thresholds.yellow(),
                 "redPct", thresholds.red(),
                 "expectedVersion", currentVersion));
@@ -271,43 +395,77 @@ public class OpsRiskRadarService {
             throw new BizException(400, "BANKRUN_THRESHOLD_REQUIRED");
         }
         String reason = requireReason(request.reason());
-        Thresholds thresholds = validateThresholds(request.yellowPct(), request.redPct());
+        Thresholds requested = parseThresholds(request.yellowPct(), request.redPct());
+        Thresholds thresholds = resolveThresholds(requested);
         String actor = AdminActorResolver.resolve(request.operator());
         requireActor(actor);
         String hash = hash(thresholds.yellow() + "|" + thresholds.red() + "|"
                 + request.expectedVersion() + "|" + reason + "|" + actor);
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 THRESHOLD_SCOPE, idempotencyKey, hash, ApiResult.class,
-                () -> updateThresholdsNew(thresholds, request.expectedVersion(), reason, actor));
+                () -> updateThresholdsNew(requested, expectedThresholdVersion(request), reason, actor));
     }
 
-    @Transactional
-    ApiResult<Map<String, Object>> updateThresholdsNew(
-            Thresholds thresholds, Long expectedVersion, String reason, String actor) {
-        long currentVersion = configVersion(THRESHOLD_VERSION_KEY, true);
-        requireExpectedVersion(expectedVersion, currentVersion);
-        BankRunThresholdPolicy.Bands before = BankRunThresholdPolicy.resolve(configFacade);
-        configFacade.upsertAdminValue(
-                BankRunThresholdPolicy.YELLOW_CONFIG_KEY, plain(thresholds.yellow()),
-                "NUMBER", "risk", "B5 bank-run warning threshold");
-        configFacade.upsertAdminValue(
-                BankRunThresholdPolicy.REDLINE_CONFIG_KEY, plain(thresholds.red()),
-                "NUMBER", "risk", "B5/J1 R1 shared bank-run redline");
-        configFacade.upsertAdminValue(
-                THRESHOLD_VERSION_KEY, String.valueOf(currentVersion + 1),
-                "NUMBER", "risk", "B5 optimistic concurrency version");
-        auditRequired("B5_BANKRUN_THRESHOLDS_CHANGED", "B5_THRESHOLD", "bankrun", actor, section(
-                "role", roleResolver.resolve(),
-                "before", section("yellowPct", before.yellowPct(), "redPct", before.redlinePct()),
-                "after", section("yellowPct", thresholds.yellow(), "redPct", thresholds.red()),
-                "reason", reason,
-                "version", currentVersion + 1,
-                "linkedDomain", "J1:R1"));
+    private ApiResult<Map<String, Object>> updateThresholdsNew(
+            Thresholds thresholds, long expectedVersion, String reason, String actor) {
+        var change = BankRunThresholdPolicy.applyDirect(configFacade, thresholds.yellow(), thresholds.red(), expectedVersion);
+        auditThresholdChange(change, reason, actor, null);
         return radar();
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
+    public ApiResult<Map<String, Object>> previewThresholdApproval(B5BankRunThresholdRequest request) {
+        requireReason(request.reason());
+        Thresholds thresholds = parseThresholds(request.yellowPct(), request.redPct());
+        long expectedVersion = expectedThresholdVersion(request);
+        var change = BankRunThresholdPolicy.previewApproval(
+                configFacade, thresholds.yellow(), thresholds.red(), expectedVersion);
+        return ApiResult.ok(section(
+                "before", thresholdSummary(change.before()),
+                "after", thresholdSummary(change.after()),
+                "expectedVersion", expectedVersion));
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> replayThresholdApproval(B5BankRunThresholdRequest request) {
+        String approvalOperationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || approvalOperationId == null) {
+            throw new BizException(409, BankRunThresholdPolicy.APPROVAL_REQUIRED);
+        }
+        String reason = requireReason(request.reason());
+        String actor = AdminActorResolver.resolve(null);
+        requireActor(actor);
+        Thresholds thresholds = parseThresholds(request.yellowPct(), request.redPct());
+        var change = BankRunThresholdPolicy.applyApproved(
+                configFacade, thresholds.yellow(), thresholds.red(), expectedThresholdVersion(request));
+        auditThresholdChange(change, reason, actor, approvalOperationId);
+        return ApiResult.ok(section(
+                "yellowPct", change.after().yellowPct(), "redPct", change.after().redlinePct(),
+                "version", change.newVersion()));
+    }
+
+    private void auditThresholdChange(
+            BankRunThresholdPolicy.Change change, String reason, String actor, String approvalOperationId) {
+        var detail = section(
+                "role", roleResolver.resolve(),
+                "before", section("yellowPct", change.before().yellowPct(), "redPct", change.before().redlinePct()),
+                "after", section("yellowPct", change.after().yellowPct(), "redPct", change.after().redlinePct()),
+                "reason", reason,
+                "version", change.newVersion(),
+                "linkedDomain", "J1:R1");
+        if (approvalOperationId != null) detail.put("approvalOperationId", approvalOperationId);
+        auditRequired("B5_BANKRUN_THRESHOLDS_CHANGED", "B5_THRESHOLD", "bankrun", actor, detail);
+    }
+
     public ApiResult<Map<String, Object>> subscription() {
-        return ApiResult.ok(subscriptionView());
+        Map<String, Object> view = subscriptionView();
+        String subscriber = String.valueOf(view.get("subscriber"));
+        String displayName = auditLogService.findDisplayNamesByUsernames(List.of(subscriber)).get(subscriber);
+        // Read-only projection: keep subscriber for ownership; missing/deleted names stay null.
+        // Do not put this lookup into subscriptionView(), because that map is shared by the write
+        // path and its idempotency receipt, which must not gain a new query dependency or field.
+        view.put("subscriberDisplayName", StringUtils.hasText(displayName) ? displayName : null);
+        return ApiResult.ok(view);
     }
 
     public ApiResult<List<Map<String, Object>>> alertInbox() {
@@ -351,14 +509,10 @@ public class OpsRiskRadarService {
             throw new BizException(400, "B5_SUBSCRIPTION_CHANNEL_REQUIRED");
         }
         if (email) {
-            throw new BizException(503, "B5_EMAIL_PROVIDER_UNAVAILABLE");
+            throw new BizException(409, "B5_EMAIL_PROVIDER_UNAVAILABLE");
         }
         if (webhook && (webhookUrl == null || !webhookUrl.startsWith("https://") || webhookUrl.length() > 500)) {
             throw new BizException(400, "B5_WEBHOOK_URL_INVALID");
-        }
-        if (webhook && !StringUtils.hasText(configFacade
-                .activeValue(B5RiskAlertDeliveryService.WEBHOOK_EGRESS_PROXY_KEY).orElse(""))) {
-            throw new BizException(503, "B5_WEBHOOK_EGRESS_PROXY_UNAVAILABLE");
         }
         if (webhook) {
             try {
@@ -385,6 +539,11 @@ public class OpsRiskRadarService {
     @Transactional
     ApiResult<Map<String, Object>> updateSubscriptionNew(
             String channels, String webhookUrl, long expectedVersion, String actor) {
+        // Checked after idempotency replay so a receipt created while the proxy was configured still replays.
+        if (channels.contains("webhook") && !StringUtils.hasText(configFacade
+                .activeValue(B5RiskAlertDeliveryService.WEBHOOK_EGRESS_PROXY_KEY).orElse(""))) {
+            throw new BizException(409, "B5_WEBHOOK_EGRESS_PROXY_UNAVAILABLE");
+        }
         long currentVersion = configVersion(SUBSCRIPTION_VERSION_KEY, true);
         if (expectedVersion != currentVersion) {
             throw new BizException(409, "B5_SUBSCRIPTION_VERSION_CONFLICT");
@@ -537,7 +696,7 @@ public class OpsRiskRadarService {
             canonical.add(section(
                     "state", state,
                     "count", whole(row.get("count")),
-                    "amountUsdt", money(decimal(row.get("amountUsdt"))),
+                    "amountUsdt", safe(decimal(row.get("amountUsdt"))),
                     "overSlaCount", whole(row.get("overSlaCount")),
                     "slaHours", 48));
         }
@@ -606,16 +765,20 @@ public class OpsRiskRadarService {
         return result;
     }
 
-    private Thresholds validateThresholds(String yellowValue, String redValue) {
-        BankRunThresholdPolicy.Bands current = BankRunThresholdPolicy.resolve(configFacade);
-        BigDecimal yellow = parseThreshold(
-                yellowValue, current.yellowPct(),
+    private Thresholds parseThresholds(String yellowValue, String redValue) {
+        BigDecimal yellow = parseThreshold(yellowValue,
                 BankRunThresholdPolicy.MIN_YELLOW_PCT, BankRunThresholdPolicy.MAX_YELLOW_PCT,
                 "BANKRUN_YELLOW_INVALID");
-        BigDecimal red = parseThreshold(
-                redValue, current.redlinePct(),
+        BigDecimal red = parseThreshold(redValue,
                 BankRunThresholdPolicy.MIN_REDLINE_PCT, BankRunThresholdPolicy.MAX_REDLINE_PCT,
                 "BANKRUN_RED_INVALID");
+        return new Thresholds(yellow, red);
+    }
+
+    private Thresholds resolveThresholds(Thresholds requested) {
+        BankRunThresholdPolicy.Bands current = BankRunThresholdPolicy.resolve(configFacade);
+        BigDecimal yellow = requested.yellow() == null ? current.yellowPct() : requested.yellow();
+        BigDecimal red = requested.red() == null ? current.redlinePct() : requested.red();
         if (red.compareTo(yellow) <= 0) {
             throw new BizException(400, "BANKRUN_REDLINE_MUST_EXCEED_YELLOW");
         }
@@ -623,9 +786,9 @@ public class OpsRiskRadarService {
     }
 
     private BigDecimal parseThreshold(
-            String value, BigDecimal fallback, BigDecimal min, BigDecimal max, String error) {
+            String value, BigDecimal min, BigDecimal max, String error) {
         if (!StringUtils.hasText(value)) {
-            return fallback;
+            return null;
         }
         try {
             BigDecimal parsed = new BigDecimal(value.trim());
@@ -636,6 +799,13 @@ public class OpsRiskRadarService {
         } catch (NumberFormatException ex) {
             throw new BizException(400, error);
         }
+    }
+
+    private long expectedThresholdVersion(B5BankRunThresholdRequest request) {
+        if (request.expectedVersion() == null) {
+            throw new BizException(409, "B5_THRESHOLD_VERSION_CONFLICT");
+        }
+        return request.expectedVersion();
     }
 
     private void requireExpectedVersion(Long expectedVersion, long currentVersion) {
@@ -677,11 +847,21 @@ public class OpsRiskRadarService {
     }
 
     private String coverageLight(TreasuryCoverageSnapshot coverage) {
+        // Reuse B1's exact redline decision; coverageRatio is display-rounded and can
+        // disagree at the boundary (e.g. reserve/liability + 100% redline).
+        if (coverage.redlineBreached()) return "red";
         BigDecimal ratio = safe(coverage.coverageRatio());
-        BigDecimal redline = safe(coverage.redlinePct());
-        if (ratio.compareTo(redline) < 0) return "red";
-        if (ratio.compareTo(redline.add(new BigDecimal("10"))) < 0) return "yellow";
+        if (ratio.compareTo(coverage.healthyPct()) < 0) return "yellow";
         return "green";
+    }
+
+    private TreasuryEmergencySignalFacade.BankRunRead bankRunRead() {
+        if (emergencySignalFacade == null) return null;
+        try {
+            return emergencySignalFacade.bankRunRead();
+        } catch (RuntimeException unavailable) {
+            throw new BizException(500, "B5_MONEY_SOURCE_UNAVAILABLE");
+        }
     }
 
     private BigDecimal ratio(BigDecimal numerator, BigDecimal denominator) {
@@ -722,8 +902,8 @@ public class OpsRiskRadarService {
         return safe(value).setScale(2, RoundingMode.HALF_UP);
     }
 
-    private String plain(BigDecimal value) {
-        return value.stripTrailingZeros().toPlainString();
+    private String thresholdSummary(BankRunThresholdPolicy.Bands bands) {
+        return "{yellowPct=" + bands.yellowPct().toPlainString() + ", redPct=" + bands.redlinePct().toPlainString() + "}";
     }
 
     private String text(Object value) {

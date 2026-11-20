@@ -32,6 +32,11 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
     }
 
     @Override
+    public Optional<String> storedValue(String configKey) {
+        return configRepository.findStoredByKey(configKey).map(PlatformConfigItem::configValue);
+    }
+
+    @Override
     public Map<String, String> activeValuesByKeys(java.util.Collection<String> keys) {
         return configRepository.findActiveByKeys(keys).stream()
                 .collect(Collectors.toMap(PlatformConfigItem::configKey, PlatformConfigItem::configValue));
@@ -80,7 +85,24 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
     @Override
     public boolean insertAdminValueIfMissing(
             String configKey, String configValue, String valueType, String configGroup, String remark) {
-        boolean inserted = configRepository.insertIfAbsent(new PlatformConfigItem(
+        boolean inserted = configRepository.insertIfAbsent(newAdminValue(configKey, configValue, valueType, configGroup, remark));
+        if (inserted && sessionLifetimeCache != null) sessionLifetimeCache.invalidateAfterCommit(configKey);
+        return inserted;
+    }
+
+    @Override
+    public boolean upsertAdminValueIfUnconfigured(
+            String configKey, String configValue, String valueType, String configGroup, String remark) {
+        PlatformConfigItem value = newAdminValue(configKey, configValue, valueType, configGroup, remark);
+        boolean changed = configRepository.reactivateIfInactive(value) || configRepository.insertIfAbsent(value);
+        if (changed && sessionLifetimeCache != null) sessionLifetimeCache.invalidateAfterCommit(configKey);
+        return changed;
+    }
+
+    private PlatformConfigItem newAdminValue(
+            String configKey, String configValue, String valueType, String configGroup, String remark) {
+        LocalDateTime now = LocalDateTime.now();
+        return new PlatformConfigItem(
                 null,
                 configKey,
                 configValue,
@@ -89,10 +111,8 @@ public class PlatformConfigFacadeAdapter implements PlatformConfigFacade {
                 "ADMIN",
                 remark,
                 1,
-                LocalDateTime.now(),
-                LocalDateTime.now()));
-        if (inserted && sessionLifetimeCache != null) sessionLifetimeCache.invalidateAfterCommit(configKey);
-        return inserted;
+                now,
+                now);
     }
 
     @Override

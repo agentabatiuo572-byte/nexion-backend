@@ -224,10 +224,10 @@ public class TestComputeWorkerService {
     public void requireDevice(Grant grant, DeviceRow device) {
         requireCurrent(grant);
         if (device == null || !Objects.equals(device.id(), grant.deviceId())
-                || !grant.instanceNo().equals(device.instanceNo()) || !"cloud-share".equals(device.productCode())
+                || !grant.instanceNo().equals(device.instanceNo()) || !"CLOUD_SHARE".equals(device.seriesCode())
                 || device.deviceType() == null || !Set.of("SHARE", "CLOUD_SHARE").contains(device.deviceType().toUpperCase(Locale.ROOT))
                 || device.activatedAt() == null || device.status() == null || !Set.of("ACTIVE", "ONLINE").contains(device.status().toUpperCase(Locale.ROOT))
-                || Boolean.TRUE.equals(device.dispatchPaused()) || hasText(device.pausedReason())
+                || hasText(device.pausedReason())
                 || mapper.lockPaidCloudShareDailyNex(grant.ownerId(), grant.deviceId()) == null) {
             throw new BizException(403, "TEST_COMPUTE_WORKER_DEVICE_INVALID");
         }

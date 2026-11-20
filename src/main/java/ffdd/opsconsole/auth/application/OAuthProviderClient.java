@@ -70,12 +70,22 @@ public class OAuthProviderClient {
     }
 
     public List<String> available() {
-        if (!enabled(environment)) return List.of();
+        if (!providerFlowEnabled(environment)) return List.of();
         return java.util.Arrays.stream(Provider.values()).filter(this::configured).map(Enum::name).toList();
     }
 
     static boolean enabled(Environment environment) {
         return "true".equalsIgnoreCase(environment.getProperty("oauth.enabled", "false"));
+    }
+
+    static boolean providerFlowEnabled(Environment environment) {
+        return publicTest(environment)
+                ? environment.getProperty("oauth.test-provider-enabled", Boolean.class, false) : enabled(environment);
+    }
+
+    static boolean publicTest(Environment environment) {
+        return UserAuthEnvironment.hasSingleActiveProfile(environment, "dev")
+                && environment.getProperty("nexion.deployment.public-test", Boolean.class, false);
     }
 
     public Provider provider(String value) {
@@ -101,7 +111,8 @@ public class OAuthProviderClient {
         try {
             publicBaseUrl();
             h5Origin();
-            if (provider == Provider.APPLE && AppleClientSecret.usesSigningKey(environment))
+            if (provider == Provider.APPLE
+                    && (publicTest(environment) || AppleClientSecret.usesSigningKey(environment)))
                 return AppleClientSecret.configured(environment);
             return !property(provider, "client-id").isEmpty() && !property(provider, "client-secret").isEmpty();
         } catch (BizException exception) { return false; }
@@ -120,8 +131,20 @@ public class OAuthProviderClient {
         } catch (RuntimeException exception) { throw new BizException(503, "OAUTH_PROVIDER_NOT_CONFIGURED"); }
     }
 
+    public boolean allowsAppleOnRequest(String serverName, String origin) {
+        if (!publicTest(environment)) return true;
+        try {
+            String appOrigin = h5Origin();
+            boolean testHost = URI.create(publicBaseUrl()).getHost().equalsIgnoreCase(serverName)
+                    || URI.create(appOrigin).getHost().equalsIgnoreCase(serverName);
+            return testHost && (origin == null || appOrigin.equals(origin));
+        } catch (BizException exception) {
+            return false;
+        }
+    }
+
     public void requireConfigured(Provider provider) {
-        if (!enabled(environment)) throw new BizException(503, "OAUTH_DISABLED");
+        if (!providerFlowEnabled(environment)) throw new BizException(503, "OAUTH_DISABLED");
         if (!configured(provider)) throw new BizException(503, "OAUTH_PROVIDER_NOT_CONFIGURED");
     }
 

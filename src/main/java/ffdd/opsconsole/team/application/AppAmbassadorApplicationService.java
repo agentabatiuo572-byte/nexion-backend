@@ -28,6 +28,8 @@ public class AppAmbassadorApplicationService {
     private final AppAmbassadorApplicationMapper mapper;
     private final Environment environment;
     private final AppAmbassadorPolicyService policyService;
+    @Autowired
+    private AmbassadorMaterialService materials;
 
     @Autowired
     public AppAmbassadorApplicationService(AppAmbassadorApplicationMapper mapper, Environment environment,
@@ -64,15 +66,15 @@ public class AppAmbassadorApplicationService {
         if (rank < 5) return ApiResult.fail(403, "AMBASSADOR_V5_REQUIRED");
         String canonicalBucket = normalizedBucket.toLowerCase();
         BigDecimal canonicalBudget = budget.setScale(6);
+        String requestHash = hash(eventDate + "\n" + normalizedCity + "\n" + canonicalBudget.toPlainString() + "\n" + canonicalBucket);
+        var existing = mapper.findByKey(userId, scope.sourceEnvironment(), scope.runId(), key);
+        if (existing != null) return existing.requestHash().equals(requestHash)
+                ? ApiResult.ok(view(existing)) : ApiResult.fail(409, "IDEMPOTENCY_PAYLOAD_CONFLICT");
         if (policyService == null) throw new BizException(503, "AMBASSADOR_POLICY_UNAVAILABLE");
         AppAmbassadorPolicyService.PolicySnapshot policy = policyService.requiredPolicy(userId);
         if (!policyService.budgetAllowed(policy, canonicalBucket, canonicalBudget)) {
             return ApiResult.fail(422, "AMBASSADOR_APPLICATION_INVALID");
         }
-        String requestHash = hash(eventDate + "\n" + normalizedCity + "\n" + canonicalBudget.toPlainString() + "\n" + canonicalBucket);
-        var existing = mapper.findByKey(userId, scope.sourceEnvironment(), scope.runId(), key);
-        if (existing != null) return existing.requestHash().equals(requestHash)
-                ? ApiResult.ok(view(existing)) : ApiResult.fail(409, "IDEMPOTENCY_PAYLOAD_CONFLICT");
         var pending = mapper.pending(userId, scope.sourceEnvironment(), scope.runId());
         if (pending != null) return pending.requestHash().equals(requestHash)
                 ? ApiResult.ok(view(pending)) : ApiResult.fail(409, "AMBASSADOR_APPLICATION_PENDING");
@@ -133,6 +135,7 @@ public class AppAmbassadorApplicationService {
         result.put("submittedAt", row.submittedAt().atZone(BUSINESS_ZONE).toInstant().toString());
         result.put("source", "server"); result.put("sourceEnvironment", row.sourceEnvironment());
         result.put("runId", row.runId());
+        if (materials != null) result.putAll(materials.summary(row.id()));
         return result;
     }
 

@@ -24,7 +24,7 @@ public class AppE2ConfigController {
 
     @GetMapping("/api/config/phone-tiers")
     public ApiResult<Map<String, Object>> phoneTiers() {
-        return deviceService.e2PhoneTiers();
+        return deviceService.e2PhoneTiers(false);
     }
 
     @GetMapping("/api/tasks/route")

@@ -12,6 +12,9 @@ import org.springframework.transaction.event.TransactionalEventListener;
 /**
  * M-20: after an assignment commits, invalidate the customer's latest advisor conversation so the new
  * advisor's console reloads it (and can notify) without waiting for the next poll.
+ *
+ * BUG-519: the SYSTEM sender name on that status event follows the customer's effective interface
+ * language, with English as the fallback for a missing translation or an unknown language.
  */
 @Component
 @RequiredArgsConstructor
@@ -20,6 +23,7 @@ public class SupportAssignmentNotifier {
     private final ffdd.opsconsole.content.mapper.ConversationMapper headers;
     private final ApplicationEventPublisher events;
     private final Clock clock;
+    private final ffdd.opsconsole.platform.application.PlatformExperienceConfigService experience;
 
     @TransactionalEventListener(phase = TransactionPhase.BEFORE_COMMIT)
     public void claimWelcome(SupportBindingService.SupportAssignmentChanged change) {
@@ -34,7 +38,9 @@ public class SupportAssignmentNotifier {
         String no = conversations.latestAdvisorConversationNo(change.customerId());
         if (no == null) return;
         events.publishEvent(ConversationMessageEvent.builder().conversationNo(no)
-                .eventType(ConversationMessageEvent.EventType.STATUS).senderType("SYSTEM").senderName("系统")
+                .eventType(ConversationMessageEvent.EventType.STATUS).senderType("SYSTEM")
+                .senderName(SupportSystemMessage.senderName(SupportSystemMessage.effectiveLanguage(
+                        conversations.userLanguage(change.customerId()), experience::interfaceLanguages)))
                 .body("ASSIGNMENT_CHANGED").ts(LocalDateTime.now(clock))
                 .ownerAgentId(String.valueOf(change.current().agentAdminId())).build());
     }

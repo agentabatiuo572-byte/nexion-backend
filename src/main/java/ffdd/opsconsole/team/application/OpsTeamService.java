@@ -1,5 +1,7 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
+
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -7,8 +9,10 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.security.AdminPermissionCache;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
@@ -20,8 +24,10 @@ import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
+import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
 import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRepository;
 import ffdd.opsconsole.team.domain.TeamFulfillmentQueueRow;
 import ffdd.opsconsole.team.domain.VRankConfigRow;
@@ -36,6 +42,7 @@ import ffdd.opsconsole.team.dto.VRankOverrideRequest;
 import ffdd.opsconsole.team.dto.VRankPromotionLogQuery;
 import ffdd.opsconsole.team.dto.VRankRewardPayoutActionRequest;
 import ffdd.opsconsole.team.dto.VRankRewardRequest;
+import ffdd.opsconsole.team.dto.VRankPolicyChangeRequest;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -45,6 +52,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Collections;
@@ -54,12 +62,17 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
+import org.springframework.dao.DataAccessException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.scheduling.support.CronExpression;
@@ -80,6 +93,8 @@ public class OpsTeamService implements AuditReplayable {
             "minPayoutUsdt",
             "rankWindowDays",
             "hardwareQuotaPerRank");
+    private static final String AUTO_SETTLE_UI_KEY = "F.binary.autoSettle";
+    private static final String PLATFORM_CAP_PCT_UI_KEY = "F.binary.platformCapPct";
     /**
      * updateConfig/updateUiConfig key→权限码(service 层二次精确校验,防跨域越权)。
      * 涵盖 ACTIVE_KEYS(数值政策) + UI keys(F.* 配置面、动态 key 由 {@link #resolvePermissionCode} 前缀兜底)。
@@ -132,6 +147,8 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("F.binary.matchRate", "network_f3_match_rate"),
             Map.entry("F.binary.threshold", "network_f3_match_rate"),
             Map.entry("F.binary.paused", "network_f3_engine_pause"),
+            Map.entry(AUTO_SETTLE_UI_KEY, "network_f3_engine_pause"),
+            Map.entry(PLATFORM_CAP_PCT_UI_KEY, "network_f3_match_rate"),
             // F4 领导池资金类 → pool_fund(HIGH)。
             Map.entry("F.pool.ratio", "network_f4_pool_fund"),
             Map.entry("F.pool.top1MaxPct", "network_f4_pool_fund"),
@@ -141,12 +158,13 @@ public class OpsTeamService implements AuditReplayable {
             Map.entry("F.pool.settleCron", "network_f4_write"),
             Map.entry("F.pool.unlockVRank", "network_f4_write"),
             // F4 · A1 批2b 修复1:F4 主流程按钮 key 对齐白名单 + 权限码。
-            // 票权/配额常规写 → f4_write;大使审批 → f4_ambassador_approve(HIGH);榜单控制 → f4_leaderboard_control(HIGH)。
+            // 配额常规写 → f4_write;票权 F.pool.votes.V{n} → f4_pool_fund;大使审批 → f4_ambassador_approve(HIGH);榜单控制 → f4_leaderboard_control(HIGH)。
             Map.entry("F.quota.proUnlock", "network_f4_write"),
             Map.entry("F.quota.rackUnlock", "network_f4_write"),
             Map.entry("F.quota.monthlyStock", "network_f4_write"),
             Map.entry("F.leaderboard.poolUsd", "network_f4_pool_fund"),
             Map.entry("F.leaderboard.minUsd", "network_f4_write"),
+            Map.entry("F.leaderboard.minComputePoints", "network_f4_write"),
             Map.entry("F.leaderboard.period.status", "network_f4_leaderboard_control"));
 
     /**
@@ -175,13 +193,9 @@ public class OpsTeamService implements AuditReplayable {
         if (key.startsWith("F.binary.")) {
             return "network_f3_match_rate";
         }
-        // F.pool.* → pool_fund
+        // F.pool.* → pool_fund(产品 2026-11-19:票权 F.pool.votes.V{n} 与资金权限统一走 pool_fund)
         if (key.startsWith("F.pool.")) {
             return "network_f4_pool_fund";
-        }
-        // F4 · A1 批2b 修复2:F.pool.votes.V{n} 票权动态分发 → f4_write(权重调整非直接放大流出,走常规写)。
-        if (key.startsWith("F.pool.votes.")) {
-            return "network_f4_write";
         }
         // F4 · A1 批2b 修复3:F.ambassador.{label}.status 动态分发 → f4_ambassador_approve(HIGH 大使审批专用)。
         if (key.startsWith("F.ambassador.") && key.endsWith(".status")) {
@@ -197,9 +211,28 @@ public class OpsTeamService implements AuditReplayable {
         }
         return null;
     }
+
+    /**
+     * Exact read family for a key inside the shared F_TEAM_CONFIG_UPDATE scope.
+     * Derived from the same key→write map; an unmapped key grants no broad F read.
+     */
+    private String resolveReadAuthority(String key) {
+        if (key != null && key.startsWith("F.commission.")) return "network_f5_read";
+        if (key != null && key.startsWith("F3.dailyCap.")) return "network_f3_read";
+        String write = resolvePermissionCode(key);
+        if (write == null) return null;
+        if (write.startsWith("network_f1_")) return "network_f1_read";
+        if (write.startsWith("network_f2_")) return "network_f2_read";
+        if (write.startsWith("network_f3_")) return "network_f3_read";
+        if (write.startsWith("network_f4_")) return "network_f4_read";
+        if (write.startsWith("network_f5_")) return "network_f5_read";
+        return null;
+    }
+
     private static final List<String> VRANK_LEVELS = List.of(
             "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8");
     private static final Set<String> VRANK_THRESHOLD_FIELDS = Set.of("selfBuy", "directRefs", "teamGv", "legCount", "legRank");
+    private static final Set<String> VRANK_ORDERED_FIELDS = Set.of("selfBuy", "teamGv", "legCount", "legRank");
     private static final long MAX_SAFE_COMPUTE_POINTS = 9_007_199_254_740_991L;
     private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "uvt", "voucher", "sku", "custom");
     private static final List<F2PolicyParamSeed> F2_POLICY_PARAM_SEEDS = List.of(
@@ -240,32 +273,41 @@ public class OpsTeamService implements AuditReplayable {
     private final VRankSkuFulfillmentService skuFulfillmentService;
     private final LeaderboardPauseSnapshotService pauseSnapshots;
     private final VRankBootstrapService rankBootstrap;
+    private final AmbassadorMaterialService ambassadorMaterials;
 
     public ApiResult<Map<String, Object>> overview() {
         Map<String, Object> binarySummary = binarySettlementSummary();
+        Map<String, String> values = configValues();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F");
         response.put("commissionPolicy", commissionPolicy());
         response.put("rankLadder", rankLadder());
-        response.put("vrankRows", vrankRows());
+        response.put("vrankRows", vrankRows(values.get("F.vrank.titles")));
         response.put("fulfillmentQueues", fulfillmentQueues());
         response.put("unilevelRates", unilevelRates());
         response.put("policyParams", policyParams());
         response.put("rateTiers", rateTiers());
         response.put("binarySettlements", binarySettlements());
         response.put("binaryMaxTrackGmv", intValue(binarySummary.get("maxTrackGmv"), 0));
+        response.put("binaryMaxTrackGmvRaw", decimalValue(binarySummary.get("maxTrackGmvRaw"), null));
         response.put("binaryParticipantCount", intValue(binarySummary.get("participantCount"), 0));
         response.put("binaryMonthlyMatchedUsd", intValue(binarySummary.get("monthlyMatchedUsd"), 0));
+        response.put("binaryMonthlyMatchedUsdRaw", decimalValue(binarySummary.get("monthlyMatchedUsdRaw"), null));
+        response.put("binaryDailyMatchUsdRaw", decimalValue(binarySummary.get("dailyMatchUsdRaw"), null));
+        response.put("binaryMaxDailyCapUsdRaw", decimalValue(binarySummary.get("maxDailyCapUsdRaw"), null));
+        response.put("binaryResidualPoolUsdRaw", decimalValue(binarySummary.get("residualPoolUsdRaw"), null));
         response.put("binaryAutoPlacement7dCount", intValue(binarySummary.get("autoPlacement7dCount"), 0));
         Map<String, Object> dailyCap = f3DailyCap();
         response.put("binaryDailyCapCurrentLabel", dailyCap.get("currentLabel"));
         response.put("binaryDailyCapWindowLabel", dailyCap.get("windowLabel"));
         response.put("binaryDailyCapNextTrigger", dailyCap.get("nextTrigger"));
         response.put("binaryDailyCapNextLabel", dailyCap.get("nextLabel"));
+        response.put("binaryDailyCapRaw", dailyCap.get("h1BinaryDailyCap"));
+        response.put("binaryStatistics", f3Statistics(dailyCap));
         response.put("leadershipPool", leadershipPoolReadModel());
         response.put("quotaPolicy", quotaPolicy());
         response.put("payoutGuardrails", guardrails());
-        response.put("configValues", configValues());
+        response.put("configValues", values);
         response.put("sunsetExclusions", sunsetExclusions());
         response.put("sources", List.of(
                 "nx_config_item:team.* policy keys",
@@ -284,6 +326,106 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    /** Read-only F4 vote-value projection: current estimate plus latest actual settlement audit. */
+    public ApiResult<Map<String, Object>> leadershipPoolVoteProjection() {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("domain", "F4");
+        response.put("estimate", leadershipPoolEstimate());
+        response.put("settled", leadershipPoolSettledVoteValue());
+        response.put("sources", List.of(
+                "nx_v_rank_config",
+                "nx_team_member",
+                "nx_config_item:team.ui.F.pool.*",
+                "nx_audit_log:F4_LEADERSHIP_POOL_SETTLED"));
+        return ApiResult.ok(response);
+    }
+
+    private Map<String, Object> leadershipPoolEstimate() {
+        Map<String, Object> estimate = new LinkedHashMap<>();
+        Map<String, Object> summary = commissionRepository.leadershipPoolSummary();
+        int weeklySettledCount = intValue(summary.get("weeklySettledCount"), 0);
+        if (weeklySettledCount > 0) {
+            estimate.put("available", false);
+            estimate.put("reason", "CURRENT_WEEK_SETTLED");
+            return estimate;
+        }
+        LeadershipPoolConfigGuard.SettlementConfig config;
+        try {
+            config = new LeadershipPoolConfigGuard(configFacade).requireValid();
+        } catch (LeadershipPoolConfigGuard.ConfigUnavailableException failure) {
+            estimate.put("available", false);
+            estimate.put("reason", "SETTLEMENT_CONFIG_UNAVAILABLE");
+            return estimate;
+        }
+        BigDecimal poolUsd = LeadershipPoolProjection.amount(summary, config);
+        List<Map<String, Object>> ranks = commissionRepository.leadershipVoterRanks(config.unlockRank());
+        List<Map<String, Object>> rankRows = new ArrayList<>();
+        BigDecimal totalVotes = BigDecimal.ZERO;
+        int eligibleCount = 0;
+        for (Map<String, Object> rank : ranks) {
+            int rankNo = intValue(rank.get("v"), 0);
+            int votesPerMember = intValue(rank.get("votes"), 0);
+            int eligible = intValue(rank.get("pop"), 0);
+            if (rankNo < config.unlockRank() || votesPerMember <= 0 || eligible <= 0) continue;
+            BigDecimal votes = BigDecimal.valueOf(votesPerMember)
+                    .multiply(BigDecimal.valueOf(eligible));
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("rank", "V" + rankNo);
+            row.put("eligibleCount", eligible);
+            row.put("votesPerMember", votesPerMember);
+            row.put("totalVotes", votes);
+            rankRows.add(row);
+            totalVotes = totalVotes.add(votes);
+            eligibleCount += eligible;
+        }
+        if (eligibleCount == 0 || totalVotes.signum() <= 0) {
+            estimate.put("available", false);
+            estimate.put("reason", "NO_ELIGIBLE_VOTERS");
+            return estimate;
+        }
+        if (poolUsd == null || poolUsd.signum() <= 0) {
+            estimate.put("available", false);
+            estimate.put("reason", "NO_CURRENT_POOL");
+            return estimate;
+        }
+        estimate.put("available", true);
+        estimate.put("period", "CURRENT_WEEK");
+        estimate.put("currency", "USDT");
+        estimate.put("poolUsd", poolUsd);
+        estimate.put("eligibleCount", eligibleCount);
+        estimate.put("totalVotes", totalVotes);
+        estimate.put("perVoteUsd", perVoteUsd(poolUsd, totalVotes));
+        estimate.put("ranks", rankRows);
+        estimate.put("ranksAvailability", "CURRENT_ELIGIBILITY_ESTIMATE");
+        return estimate;
+    }
+
+    private Map<String, Object> leadershipPoolSettledVoteValue() {
+        Map<String, Object> settled = new LinkedHashMap<>();
+        AuditLogService.LeadershipPoolSettlement audit = auditLogService.latestLeadershipPoolSettlement();
+        if (audit == null) {
+            settled.put("available", false);
+            settled.put("reason", "NO_SETTLEMENT_AUDIT");
+            return settled;
+        }
+        settled.put("available", true);
+        settled.put("period", "SETTLED_WEEK");
+        settled.put("currency", "USDT");
+        settled.put("weekKey", audit.weekKey());
+        settled.put("poolUsd", audit.poolAmountUsdt());
+        settled.put("totalVotes", audit.totalVotes());
+        settled.put("settledUsers", audit.settledUsers());
+        settled.put("perVoteUsd", perVoteUsd(audit.poolAmountUsdt(), audit.totalVotes()));
+        settled.put("ranks", null);
+        settled.put("ranksAvailability", "PER_RANK_NOT_RECORDED");
+        return settled;
+    }
+
+    private BigDecimal perVoteUsd(BigDecimal poolUsd, BigDecimal totalVotes) {
+        if (poolUsd == null || totalVotes == null || totalVotes.signum() <= 0) return null;
+        return poolUsd.divide(totalVotes, 6, RoundingMode.DOWN);
+    }
+
     public ApiResult<Map<String, Object>> leadershipPool() {
         Map<String, Object> response = new LinkedHashMap<>();
         Map<String, Object> pool = leadershipPoolReadModel();
@@ -299,6 +441,7 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> coverageOverview = new LinkedHashMap<>();
         coverageOverview.put("coverageRatio", coverage.coverageRatio());
         coverageOverview.put("redlinePct", coverage.redlinePct());
+        coverageOverview.put("reliable", coverage.reliable());
         response.put("coverage", coverageOverview);
         response.put("sources", List.of(
                 "nx_v_rank_config",
@@ -314,9 +457,25 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    private static final AuditLockTarget AMBASSADOR_POLICY_TARGET = new AuditLockTarget("F", "ambassador_policy", "default");
+
+    public record AmbassadorPolicyReview(AuditLockTarget target, String before, String after,
+                                         Map<String, Object> beforeFields, Map<String, Object> afterFields) { }
+
+    private record AmbassadorPolicyValues(String policyVersion, BigDecimal defaultBudgetUsdt,
+                                          List<Map<String, Object>> buckets, long revision) { }
+
     public ApiResult<Map<String, Object>> ambassadorPolicy() {
         try {
-            return ApiResult.ok(requireAmbassadorPolicy());
+            var policy = requireAmbassadorPolicy();
+            Map<String, Object> output = new LinkedHashMap<>();
+            output.put("policyVersion", policy.policyVersion());
+            output.put("revision", policy.revision());
+            output.put("defaultBudgetUsdt", policy.defaultBudgetUsdt());
+            output.put("buckets", policy.buckets());
+            output.put("source", "nx_team_ambassador_policy");
+            output.put("serverCanonical", true);
+            return ApiResult.ok(output);
         } catch (IllegalArgumentException exception) {
             return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
         }
@@ -329,70 +488,204 @@ public class OpsTeamService implements AuditReplayable {
         ApiResult<Map<String, Object>> guard = requireCommand(
                 idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
-        if (request.expectedRevision() == null || request.expectedRevision() <= 0) {
-            return ApiResult.fail(422, "AMBASSADOR_POLICY_REVISION_REQUIRED");
+        var values = requestedAmbassadorPolicy(request);
+        String bucketsJson = ambassadorPolicyBucketsJson(values.buckets());
+        String operator = actor(request.operator());
+        return executeIdempotent(
+                "F4_AMBASSADOR_POLICY_UPDATE",
+                idempotencyKey,
+                requestHash(values.policyVersion(), values.defaultBudgetUsdt(), bucketsJson,
+                        values.revision(), request.reason(), operator),
+                () -> updateAmbassadorPolicyInternal(idempotencyKey, request.reason(), operator, values, bucketsJson, null));
+    }
+
+    public ApiResult<AmbassadorPolicyReview> previewAmbassadorPolicyApproval(AmbassadorPolicyUpdateRequest request) {
+        var values = requestedAmbassadorPolicy(request);
+        var current = currentAmbassadorPolicyForUpdate(values);
+        if (current.getCode() != 0) return ApiResult.fail(current.getCode(), current.getMessage());
+        var before = current.getData();
+        var gate = validateAmbassadorPolicyApproval(expandsAmbassadorBudget(before, values));
+        if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
+
+        Map<String, Object> beforeFields = new LinkedHashMap<>();
+        Map<String, Object> afterFields = new LinkedHashMap<>();
+        beforeFields.put("revision", before.revision());
+        afterFields.put("revision", before.revision() + 1);
+        addAmbassadorPolicyReviewField(beforeFields, afterFields, "policyVersion", before.policyVersion(), values.policyVersion());
+        addAmbassadorPolicyReviewField(beforeFields, afterFields, "defaultBudgetUsdt",
+                before.defaultBudgetUsdt().stripTrailingZeros(), values.defaultBudgetUsdt().stripTrailingZeros());
+        for (int index = 0; index < values.buckets().size(); index++) {
+            var oldBucket = before.buckets().get(index);
+            var newBucket = values.buckets().get(index);
+            for (String field : List.of("title", "range", "rule", "minBudgetUsdt", "maxBudgetUsdt")) {
+                addAmbassadorPolicyReviewField(beforeFields, afterFields, newBucket.get("id") + "." + field,
+                        oldBucket.get(field), newBucket.get(field));
+            }
+        }
+        return ApiResult.ok(new AmbassadorPolicyReview(AMBASSADOR_POLICY_TARGET,
+                ambassadorPolicyBudgetSummary(before), ambassadorPolicyBudgetSummary(values), beforeFields, afterFields));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> executeApprovedAmbassadorPolicy(
+            String idempotencyKey, AmbassadorPolicyUpdateRequest request) {
+        String operationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId)) {
+            return ApiResult.fail(403, "AMBASSADOR_POLICY_APPROVAL_FORBIDDEN");
+        }
+        var locks = lockMapper.selectActiveByTicketId(operationId);
+        if (locks.size() != 1 || !operationId.equals(locks.get(0).getTicketId()) || !AMBASSADOR_POLICY_TARGET.equals(
+                new AuditLockTarget(locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
+            return ApiResult.fail(403, "AMBASSADOR_POLICY_APPROVAL_FORBIDDEN");
+        }
+        var guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
+        if (guard != null) return guard;
+        var values = requestedAmbassadorPolicy(request);
+        return updateAmbassadorPolicyInternal(idempotencyKey, request.reason(), actor(null), values,
+                ambassadorPolicyBucketsJson(values.buckets()), operationId);
+    }
+
+    private AmbassadorPolicyValues requestedAmbassadorPolicy(AmbassadorPolicyUpdateRequest request) {
+        if (request == null || request.expectedRevision() == null || request.expectedRevision() <= 0) {
+            throw new BizException(422, "AMBASSADOR_POLICY_REVISION_REQUIRED");
         }
         List<Map<String, Object>> buckets = normalizeAmbassadorPolicyBuckets(request.buckets());
         String version = requireText(request.policyVersion(), "AMBASSADOR_POLICY_VERSION_REQUIRED");
         if (!version.matches("[A-Za-z0-9][A-Za-z0-9._-]{2,63}")) {
-            return ApiResult.fail(422, "AMBASSADOR_POLICY_VERSION_INVALID");
+            throw new BizException(422, "AMBASSADOR_POLICY_VERSION_INVALID");
         }
         BigDecimal defaultBudget = request.defaultBudgetUsdt();
-        if (defaultBudget == null || defaultBudget.signum() <= 0
+        if (defaultBudget == null || defaultBudget.signum() <= 0 || defaultBudget.stripTrailingZeros().scale() > 6
                 || defaultBudget.compareTo(new BigDecimal("1000000")) > 0
                 || buckets.stream().noneMatch(bucket -> defaultBudget.compareTo((BigDecimal) bucket.get("minBudgetUsdt")) >= 0
                 && defaultBudget.compareTo((BigDecimal) bucket.get("maxBudgetUsdt")) <= 0)) {
-            return ApiResult.fail(422, "AMBASSADOR_POLICY_DEFAULT_BUDGET_INVALID");
+            throw new BizException(422, "AMBASSADOR_POLICY_DEFAULT_BUDGET_INVALID");
         }
-        String bucketsJson;
-        try {
-            bucketsJson = JSON_PROBE.writeValueAsString(buckets);
-        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
-            throw new IllegalStateException("AMBASSADOR_POLICY_JSON_WRITE_FAILED", exception);
-        }
-        return executeIdempotent(
-                "F4_AMBASSADOR_POLICY_UPDATE",
-                idempotencyKey,
-                requestHash(version, defaultBudget, bucketsJson, request.expectedRevision(), request.reason(), actor(request.operator())),
-                () -> updateAmbassadorPolicyInternal(idempotencyKey, request, version, defaultBudget, buckets, bucketsJson));
+        return new AmbassadorPolicyValues(version, defaultBudget, buckets, request.expectedRevision());
     }
 
-    private ApiResult<Map<String, Object>> updateAmbassadorPolicyInternal(
-            String idempotencyKey,
-            AmbassadorPolicyUpdateRequest request,
-            String version,
-            BigDecimal defaultBudget,
-            List<Map<String, Object>> buckets,
-            String bucketsJson) {
-        Map<String, Object> before;
+    private String ambassadorPolicyBucketsJson(List<Map<String, Object>> buckets) {
+        try {
+            return JSON_PROBE.writeValueAsString(buckets);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("AMBASSADOR_POLICY_JSON_WRITE_FAILED", exception);
+        }
+    }
+
+    private ApiResult<AmbassadorPolicyValues> currentAmbassadorPolicyForUpdate(AmbassadorPolicyValues values) {
+        AmbassadorPolicyValues before;
         try {
             before = requireAmbassadorPolicy();
         } catch (IllegalArgumentException exception) {
             return ApiResult.fail(503, "AMBASSADOR_POLICY_UNAVAILABLE");
         }
-        long currentRevision = parseLongFromMap(before.get("revision"));
-        if (currentRevision != request.expectedRevision()) {
+        if (before.revision() != values.revision()) {
             return ApiResult.fail(409, "AMBASSADOR_POLICY_VERSION_CONFLICT");
         }
-        if (expandsAmbassadorBudget(before, defaultBudget, buckets) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        for (int index = 0; index < values.buckets().size(); index++) {
+            for (String field : List.of("minBudgetUsdt", "maxBudgetUsdt")) {
+                BigDecimal budget = (BigDecimal) values.buckets().get(index).get(field);
+                if (budget.scale() > 6 && !budget.equals(before.buckets().get(index).get(field))) {
+                    return ApiResult.fail(422, "AMBASSADOR_POLICY_BUCKETS_INVALID");
+                }
+            }
         }
+        return ApiResult.ok(before);
+    }
+
+    private ApiResult<Map<String, Object>> updateAmbassadorPolicyInternal(
+            String idempotencyKey, String reason, String operator, AmbassadorPolicyValues values,
+            String bucketsJson, String approvalOperationId) {
+        var current = currentAmbassadorPolicyForUpdate(values);
+        if (current.getCode() != 0) return ApiResult.fail(current.getCode(), current.getMessage());
+        var before = current.getData();
+        boolean expandsBudget = expandsAmbassadorBudget(before, values);
+        if (approvalOperationId != null) {
+            var gate = validateAmbassadorPolicyApproval(expandsBudget);
+            if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
+        } else if (expandsBudget) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
+
+        long currentRevision = before.revision();
         if (!commissionRepository.updateAmbassadorPolicyCas(
-                currentRevision, version, defaultBudget, bucketsJson, actor(request.operator()))) {
+                currentRevision, values.policyVersion(), values.defaultBudgetUsdt(), bucketsJson, operator)) {
             return ApiResult.fail(409, "AMBASSADOR_POLICY_VERSION_CONFLICT");
         }
-        audit("F4_AMBASSADOR_POLICY_CHANGED", "nx_team_ambassador_policy:default", actor(request.operator()), Map.of(
+        Map<String, Object> detail = new LinkedHashMap<>(Map.of(
                 "oldRevision", currentRevision,
                 "newRevision", currentRevision + 1,
-                "oldPolicyVersion", String.valueOf(before.get("policyVersion")),
-                "newPolicyVersion", version,
-                "reason", request.reason().trim(),
+                "oldPolicyVersion", before.policyVersion(),
+                "newPolicyVersion", values.policyVersion(),
+                "reason", reason.trim(),
                 "idempotencyKey", idempotencyKey.trim()));
+        if (approvalOperationId != null) detail.put("a2OperationId", approvalOperationId);
+        audit("F4_AMBASSADOR_POLICY_CHANGED", "nx_team_ambassador_policy:default", operator, detail, approvalOperationId != null);
         return ambassadorPolicy();
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> requireAmbassadorPolicy() {
+    private ApiResult<Void> validateAmbassadorPolicyApproval(boolean expandsBudget) {
+        if (!expandsBudget) return ApiResult.fail(422, "AMBASSADOR_POLICY_APPROVAL_NOT_REQUIRED");
+        return validateFundPolicyCoverage();
+    }
+
+    private ApiResult<Void> validateFundPolicyCoverage() {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (coverage == null || !coverage.reliable() || coverage.redlinePct() == null
+                || coverage.ratioReserveUsd() == null || coverage.ratioLiabilitiesUsd() == null
+                || coverage.ratioLiabilitiesUsd().signum() < 0) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(), OpsErrorCode.COVERAGE_UNAVAILABLE.name());
+        }
+        BigDecimal reserve = coverage.ratioReserveUsd();
+        BigDecimal liabilities = coverage.ratioLiabilitiesUsd();
+        BigDecimal redline = coverage.redlinePct();
+        boolean belowRedline = liabilities.signum() == 0
+                ? (reserve.signum() > 0 ? BigDecimal.valueOf(100) : BigDecimal.ZERO).compareTo(redline) < 0
+                : reserve.movePointRight(2).compareTo(liabilities.multiply(redline)) < 0;
+        return belowRedline
+                ? ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name())
+                : ApiResult.ok();
+    }
+
+    /**
+     * F5 payout coverage for an unlock: the same contract the reissue path applies (reliable
+     * snapshot, coverage ratio at or above the redline), so releasing funds cannot run ahead of it.
+     */
+    private ApiResult<Void> requirePayoutCoverageForUnlock() {
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        if (coverage == null || !coverage.reliable()) {
+            return ApiResult.fail(503, "COVERAGE_SNAPSHOT_UNAVAILABLE");
+        }
+        if (coverage.coverageRatio() == null || coverage.redlinePct() == null
+                || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        }
+        return ApiResult.ok();
+    }
+
+    private void addAmbassadorPolicyReviewField(Map<String, Object> beforeFields, Map<String, Object> afterFields,
+                                                 String field, Object before, Object after) {
+        if (!Objects.equals(before, after)) {
+            beforeFields.put(field, before);
+            afterFields.put(field, after);
+        }
+    }
+
+    private String ambassadorPolicyBudgetSummary(AmbassadorPolicyValues values) {
+        List<String> labels = List.of("场地", "KOL", "印刷", "开发");
+        StringBuilder summary = new StringBuilder("USDT 默认 ")
+                .append(values.defaultBudgetUsdt().stripTrailingZeros().toPlainString());
+        for (int index = 0; index < values.buckets().size(); index++) {
+            var bucket = values.buckets().get(index);
+            summary.append(',').append(labels.get(index)).append(' ')
+                    .append(((BigDecimal) bucket.get("minBudgetUsdt")).toPlainString()).append('–')
+                    .append(((BigDecimal) bucket.get("maxBudgetUsdt")).toPlainString());
+        }
+        return summary.length() <= 128 ? summary.toString() : "USDT 预算（完整值见审批详情）";
+    }
+
+    private AmbassadorPolicyValues requireAmbassadorPolicy() {
         Map<String, Object> row = commissionRepository.ambassadorPolicy();
         String policyVersion = textValue(row, "policyVersion", "");
         Long revision = parseLongFromMap(row.get("revision"));
@@ -404,8 +697,9 @@ public class OpsTeamService implements AuditReplayable {
         }
         List<Map<String, Object>> raw;
         try {
-            raw = JSON_PROBE.readValue(bucketsJson, new TypeReference<>() { });
-        } catch (com.fasterxml.jackson.core.JsonProcessingException exception) {
+            raw = JSON_PROBE.readerFor(new TypeReference<List<Map<String, Object>>>() { })
+                    .with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readValue(bucketsJson);
+        } catch (JsonProcessingException exception) {
             throw new IllegalArgumentException("AMBASSADOR_POLICY_UNAVAILABLE", exception);
         }
         List<AmbassadorPolicyUpdateRequest.Bucket> typed = raw.stream().map(bucket ->
@@ -416,15 +710,7 @@ public class OpsTeamService implements AuditReplayable {
                         String.valueOf(bucket.getOrDefault("rule", "")),
                         decimalValue(bucket.get("minBudgetUsdt"), BigDecimal.valueOf(-1)),
                         decimalValue(bucket.get("maxBudgetUsdt"), BigDecimal.valueOf(-1)))).toList();
-        List<Map<String, Object>> buckets = normalizeAmbassadorPolicyBuckets(typed);
-        Map<String, Object> output = new LinkedHashMap<>();
-        output.put("policyVersion", policyVersion);
-        output.put("revision", revision);
-        output.put("defaultBudgetUsdt", defaultBudget);
-        output.put("buckets", buckets);
-        output.put("source", "nx_team_ambassador_policy");
-        output.put("serverCanonical", true);
-        return output;
+        return new AmbassadorPolicyValues(policyVersion, defaultBudget, normalizeAmbassadorPolicyBuckets(typed), revision);
     }
 
     private List<Map<String, Object>> normalizeAmbassadorPolicyBuckets(
@@ -463,18 +749,14 @@ public class OpsTeamService implements AuditReplayable {
         return List.copyOf(normalized);
     }
 
-    @SuppressWarnings("unchecked")
-    private boolean expandsAmbassadorBudget(
-            Map<String, Object> before,
-            BigDecimal nextDefault,
-            List<Map<String, Object>> nextBuckets) {
-        if (nextDefault.compareTo(decimalValue(before.get("defaultBudgetUsdt"), BigDecimal.ZERO)) > 0) return true;
-        Map<String, BigDecimal> oldMaximums = ((List<Map<String, Object>>) before.get("buckets")).stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        row -> String.valueOf(row.get("id")),
-                        row -> decimalValue(row.get("maxBudgetUsdt"), BigDecimal.ZERO)));
-        return nextBuckets.stream().anyMatch(row -> decimalValue(row.get("maxBudgetUsdt"), BigDecimal.ZERO)
-                .compareTo(oldMaximums.getOrDefault(String.valueOf(row.get("id")), BigDecimal.ZERO)) > 0);
+    private boolean expandsAmbassadorBudget(AmbassadorPolicyValues before, AmbassadorPolicyValues after) {
+        if (after.defaultBudgetUsdt().compareTo(before.defaultBudgetUsdt()) > 0) return true;
+        for (int index = 0; index < after.buckets().size(); index++) {
+            BigDecimal oldMax = (BigDecimal) before.buckets().get(index).get("maxBudgetUsdt");
+            BigDecimal newMax = (BigDecimal) after.buckets().get(index).get("maxBudgetUsdt");
+            if (newMax.compareTo(oldMax) > 0) return true;
+        }
+        return false;
     }
 
     public ApiResult<Map<String, Object>> commissions() {
@@ -513,10 +795,15 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     public ApiResult<Map<String, Object>> ranks() {
+        Map<String, String> values = configValues();
+        var calendar = BusinessCalendar.growthTeam();
+        var month = calendar.month(Instant.now());
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F1");
         response.put("rankLadder", rankLadder());
-        response.put("vrankRows", vrankRows());
+        response.put("vrankRows", vrankRows(values.get("F.vrank.titles")));
+        response.put("monthlyPromotionCount", commissionRepository.countUpwardPromotions(
+                calendar.storageStart(month), calendar.storageStart(month.plusMonths(1))));
         response.put("rewards", vRankRewards());
         Map<String, String> voucherLabels = voucherLabels();
         Map<String, String> skuLabels = skuLabels();
@@ -527,9 +814,12 @@ public class OpsTeamService implements AuditReplayable {
         response.put("leadership", leadershipSnapshot());
         response.put("promotionWindowDays", configDecimal("team.rank_window_days", BigDecimal.ZERO).intValue());
         response.put("quotaPolicy", quotaPolicy());
-        response.put("configValues", configValues());
+        response.put("configValues", values);
         // B1 备付金覆盖率快照:供前端 F1 OperationConfirmModal 对资金类奖励显示覆盖率 + covBlocked 拦截。
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        BigDecimal rewardRate = coverage.nexUsdRate();
+        response.put("rewardValuationUsdtPerUvt", rewardRate == null || rewardRate.signum() <= 0
+                ? null : rewardRate.stripTrailingZeros().toPlainString());
         Map<String, Object> coverageOverview = new LinkedHashMap<>();
         coverageOverview.put("coverageRatio", coverage.coverageRatio());
         coverageOverview.put("redlinePct", coverage.redlinePct());
@@ -537,6 +827,7 @@ public class OpsTeamService implements AuditReplayable {
         response.put("sources", List.of(
                 "nx_v_rank_config",
                 "nx_team_member",
+                "nx_user_level_log",
                 "nx_v_rank_reward_rule",
                 "nx_commission_event:leadership"));
         return ApiResult.ok(response);
@@ -546,6 +837,7 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "F2");
         response.put("metrics", f2Metrics());
+        response.put("payoutStatistics", f2PayoutStatistics());
         response.put("unilevelRates", unilevelRates());
         var directPolicy=directPolicies==null?null:directPolicies.getIfAvailable();
         response.put("sevenLayerRevision",directPolicy==null?0L:directPolicy.sevenLayerRevision());
@@ -577,13 +869,21 @@ public class OpsTeamService implements AuditReplayable {
         response.put("metrics", f3Metrics(summary));
         response.put("formula", f3Formula());
         response.put("settlements", binarySettlements());
+        response.put("blockedAttempts", auditLogService.f3BlockedSettlementAttempts(100));
         response.put("maxTrackGmv", intValue(summary.get("maxTrackGmv"), 0));
+        response.put("maxTrackGmvRaw", decimalValue(summary.get("maxTrackGmvRaw"), null));
+        response.put("maxDailyCapUsdRaw", decimalValue(summary.get("maxDailyCapUsdRaw"), null));
         response.put("participantCount", intValue(summary.get("participantCount"), 0));
         response.put("blockedCount", intValue(summary.get("blockedCount"), 0));
         response.put("monthlyMatchedUsd", intValue(summary.get("monthlyMatchedUsd"), 0));
+        response.put("monthlyMatchedUsdRaw", decimalValue(summary.get("monthlyMatchedUsdRaw"), null));
         response.put("autoPlacement7dCount", intValue(summary.get("autoPlacement7dCount"), 0));
         response.put("dailyMatchUsd", intValue(summary.get("dailyMatchUsd"), 0));
-        response.put("dailyCap", f3DailyCap());
+        response.put("dailyMatchUsdRaw", decimalValue(summary.get("dailyMatchUsdRaw"), null));
+        response.put("residualPoolUsdRaw", decimalValue(summary.get("residualPoolUsdRaw"), null));
+        Map<String, Object> dailyCap = f3DailyCap();
+        response.put("dailyCap", dailyCap);
+        response.put("statistics", f3Statistics(dailyCap));
         response.put("config", f3Config(summary));
         response.put("commissionPolicy", commissionPolicy());
         response.put("guardrails", guardrails());
@@ -601,6 +901,362 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    public record VRankPolicyReview(AuditLockTarget target, String before, String after,
+                                    Map<String, Object> beforeFields, Map<String, Object> afterFields) { }
+
+    private record VRankPolicyMutation(String rank, String action, String field, String value,
+                                       Map<String, Object> reward, Map<String, Object> before,
+                                       Map<String, Object> after, boolean amplifies) { }
+
+    @Transactional
+    public ApiResult<VRankPolicyReview> previewVRankPolicyApproval(VRankPolicyChangeRequest request) {
+        VRankPolicyMutation change = requestedVRankPolicyMutation(request);
+        if (!change.amplifies()) return ApiResult.fail(422, "VRANK_POLICY_APPROVAL_NOT_REQUIRED");
+        var gate = validateFundPolicyCoverage();
+        if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
+        Map<String, Object> before = vRankPolicyChangedFields(change, change.before());
+        Map<String, Object> after = vRankPolicyChangedFields(change, change.after());
+        return ApiResult.ok(new VRankPolicyReview(vRankPolicyTarget(change.rank()),
+                vRankPolicySummary(before), vRankPolicySummary(after),
+                vRankPolicyReviewFields(before), vRankPolicyReviewFields(after)));
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> executeApprovedVRankPolicy(
+            String idempotencyKey, VRankPolicyChangeRequest request, String makerReason) {
+        String operationId = A2ReplayContext.operationId();
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(operationId)) {
+            return ApiResult.fail(403, "VRANK_POLICY_APPROVAL_FORBIDDEN");
+        }
+        String rank = requireVRank(request == null ? null : request.rank()).v();
+        var locks = lockMapper.selectActiveByTicketId(operationId);
+        if (locks.size() != 1 || !operationId.equals(locks.get(0).getTicketId())
+                || !vRankPolicyTarget(rank).equals(new AuditLockTarget(locks.get(0).getTargetDomain(),
+                locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
+            return ApiResult.fail(403, "VRANK_POLICY_APPROVAL_FORBIDDEN");
+        }
+        var guard = requireCommand(idempotencyKey, makerReason);
+        if (guard != null) return guard;
+        VRankPolicyMutation change = requestedVRankPolicyMutation(request);
+        if (change.amplifies()) {
+            var gate = validateFundPolicyCoverage();
+            if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
+        }
+        String rewardId = String.valueOf(change.reward().getOrDefault("id", ""));
+        boolean written = switch (change.action()) {
+            case "threshold" -> commissionRepository.updateVRankThreshold(change.rank(), change.field(),
+                    vRankThresholdBusinessValue(change.field(), change.value()));
+            case "reward_add" -> commissionRepository.addVRankReward(change.rank(), change.reward());
+            case "reward_update" -> commissionRepository.updateVRankReward(change.rank(), rewardId, change.reward());
+            default -> false;
+        };
+        if (!written) throw new BizException(422, "VRANK_POLICY_BUSINESS_TABLE_UPDATE_FAILED");
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("a2OperationId", operationId);
+        detail.put("rank", change.rank());
+        detail.put("action", change.action());
+        detail.put("beforeRevision", change.before().get("policyRevision"));
+        detail.put("afterRevision", change.after().get("policyRevision"));
+        detail.put("before", vRankPolicyChangedFields(change, change.before()));
+        detail.put("after", vRankPolicyChangedFields(change, change.after()));
+        detail.put("reason", makerReason.trim());
+        detail.put("idempotencyKey", idempotencyKey.trim());
+        audit("F_TEAM_VRANK_POLICY_CHANGED", "nx_v_rank_config:" + change.rank(), actor(null), detail, true);
+        Map<String, Object> response = ranks().getData();
+        response.put("updated", Map.of("rank", change.rank(), "action", change.action(), "a2OperationId", operationId));
+        return ApiResult.ok(response);
+    }
+
+    private AuditLockTarget vRankPolicyTarget(String rank) {
+        return new AuditLockTarget("F", "vrank_policy", rank);
+    }
+
+    private ApiResult<Map<String, Object>> rejectIfVRankPolicyLocked(String rank) {
+        return !A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("F", "vrank_policy", rank) > 0
+                ? ApiResult.fail(409, "OBJECT_LOCKED_BY_A2") : null;
+    }
+
+    private void requireDirectVRankPolicyRevision(Map<String, Object> policy, String expectedRevision) {
+        if (!StringUtils.hasText(expectedRevision) || !expectedRevision.matches("[0-9a-f]{64}")) {
+            throw new BizException(422, "VRANK_POLICY_REVISION_REQUIRED");
+        }
+        if (!expectedRevision.equals(policy.get("policyRevision"))) {
+            throw new BizException(409, "VRANK_POLICY_VERSION_CONFLICT");
+        }
+    }
+
+    private VRankPolicyMutation requestedVRankPolicyMutation(VRankPolicyChangeRequest request) {
+        if (request == null || request.expectedRevision() == null
+                || !request.expectedRevision().matches("[0-9a-f]{64}")) {
+            throw new BizException(422, "VRANK_POLICY_REVISION_REQUIRED");
+        }
+        String rank = requireVRank(request.rank()).v();
+        String action = requireText(request.action(), "VRANK_POLICY_ACTION_REQUIRED");
+        String field = request.field();
+        var orderedThresholds = lockOrderedVRankThresholds("threshold".equals(action) ? field : null);
+        Map<String, Object> before = currentVRankPolicy(rank);
+        if (!request.expectedRevision().equals(before.get("policyRevision"))) {
+            throw new BizException(409, "VRANK_POLICY_VERSION_CONFLICT");
+        }
+        Map<String, Object> after = new LinkedHashMap<>(before);
+        Map<String, Object> reward = Map.of();
+        String value = request.value();
+        boolean amplifies;
+        if ("threshold".equals(action)) {
+            if (field == null || !VRANK_THRESHOLD_FIELDS.contains(field) || request.reward() != null
+                    || StringUtils.hasText(request.rewardId())) {
+                throw new BizException(422, "VRANK_POLICY_THRESHOLD_INVALID");
+            }
+            value = normalizeVRankThreshold(rank, field, value);
+            after.put(field, "legRank".equals(field) ? value : parseDecimal(value).stripTrailingZeros());
+            validateVRankThresholdOrder(orderedThresholds, rank, field, before, after);
+            amplifies = loosensVRankCondition(before, after, field);
+        } else if ("reward_add".equals(action) || "reward_update".equals(action)) {
+            if (request.reward() == null || StringUtils.hasText(field) || StringUtils.hasText(value)) {
+                throw new BizException(422, "VRANK_POLICY_REWARD_INVALID");
+            }
+            List<Map<String, Object>> rewards = new ArrayList<>(policyRewards(before));
+            Map<String, Object> oldReward = Map.of();
+            String id;
+            if ("reward_update".equals(action)) {
+                id = requireText(request.rewardId(), "TEAM_VRANK_REWARD_ID_REQUIRED");
+                oldReward = rewards.stream().filter(item -> id.equals(item.get("id"))).findFirst()
+                        .orElseThrow(() -> new BizException(422, "TEAM_VRANK_REWARD_NOT_FOUND"));
+            } else {
+                if (StringUtils.hasText(request.rewardId())) throw new BizException(422, "VRANK_POLICY_REWARD_INVALID");
+                var candidate = request.reward();
+                id = "vr-" + rank + "-" + requestHash(rank, request.expectedRevision(), candidate.type(),
+                        candidate.amount(), candidate.voucherId(), candidate.skuId(), candidate.custom()).substring(0, 32);
+            }
+            var candidate = request.reward();
+            reward = normalizePolicyReward(id, new VRankRewardRequest(candidate.type(), candidate.amount(),
+                    candidate.voucherId(), candidate.skuId(), candidate.custom(), null, null), oldReward);
+            reward.put("sortOrder", oldReward.getOrDefault("sortOrder", 0));
+            amplifies = amplifiesVRankReward(oldReward, reward);
+            Map<String, Object> replacement = vRankPolicyRewardFields(reward);
+            if (oldReward.isEmpty()) rewards.add(replacement);
+            else rewards.set(rewards.indexOf(oldReward), replacement);
+            rewards.sort(Comparator.comparingInt(item -> intValue(item.get("sortOrder"), 0)));
+            after.put("rewards", rewards);
+        } else {
+            throw new BizException(422, "VRANK_POLICY_ACTION_INVALID");
+        }
+        after.put("policyRevision", vRankPolicyRevision(after));
+        return new VRankPolicyMutation(rank, action, field, value, reward, before, after, amplifies);
+    }
+
+    private Map<String, Object> currentVRankPolicy(String rank) {
+        Map<String, Object> row = commissionRepository.lockVRankPolicy(rank);
+        if (row.isEmpty()) throw new BizException(422, "TEAM_VRANK_NOT_FOUND");
+        return vRankPolicyFields(row, commissionRepository.vRankRewardsForUpdate(rank));
+    }
+
+    private List<Map<String, Object>> lockOrderedVRankThresholds(String field) {
+        if (field == null || !VRANK_ORDERED_FIELDS.contains(field)) return List.of();
+        return VRANK_LEVELS.stream().map(commissionRepository::lockVRankPolicy)
+                .filter(row -> !row.isEmpty()).toList();
+    }
+
+    private void validateVRankThresholdOrder(List<Map<String, Object>> rows, String rank, String field,
+                                             Map<String, Object> before, Map<String, Object> after) {
+        if (rows.isEmpty()) return;
+        requireVRankThresholdOrder(rows, rank, field, vRankOrderValue(after, field));
+        if (("legCount".equals(field) || "legRank".equals(field))
+                && !hasVRankBranchThreshold(before) && hasVRankBranchThreshold(after)) {
+            String otherField = "legCount".equals(field) ? "legRank" : "legCount";
+            requireVRankThresholdOrder(rows, rank, otherField, vRankOrderValue(after, otherField));
+        }
+    }
+
+    private void requireVRankThresholdOrder(List<Map<String, Object>> rows, String rank, String field, long value) {
+        if (value <= 0) return;
+        long lower = 0;
+        long upper = Long.MAX_VALUE;
+        for (var row : rows) {
+            int position = textValue(row, "v", "").compareToIgnoreCase(rank);
+            long neighbor = vRankOrderValue(row, field);
+            if (position == 0 || neighbor <= 0) continue;
+            if (position > 0) {
+                upper = neighbor;
+                break;
+            }
+            lower = neighbor;
+        }
+        if (value < lower || value > upper) {
+            throw new BizException(422, "VRANK_THRESHOLD_ORDER_INVALID");
+        }
+    }
+
+    private long vRankOrderValue(Map<String, Object> row, String field) {
+        return switch (field) {
+            case "legCount" -> hasVRankBranchThreshold(row) ? intValue(row.get("legCount"), 0) : 0;
+            case "legRank" -> hasVRankBranchThreshold(row)
+                    ? VRANK_LEVELS.indexOf(textValue(row, "legRank", "").toUpperCase(Locale.ROOT)) + 1L : 0;
+            default -> decimalValue(row.get(field), BigDecimal.ZERO).longValueExact();
+        };
+    }
+
+    private boolean hasVRankBranchThreshold(Map<String, Object> row) {
+        return intValue(row.get("legCount"), 0) > 0
+                && VRANK_LEVELS.contains(textValue(row, "legRank", "").toUpperCase(Locale.ROOT));
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> policyRewards(Map<String, Object> policy) {
+        return (List<Map<String, Object>>) policy.get("rewards");
+    }
+
+    private Map<String, Object> vRankPolicyFields(Map<String, Object> row, List<Map<String, Object>> rewards) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("rank", row.get("v"));
+        for (String field : List.of("selfBuy", "teamGv", "directRefs", "legCount")) {
+            fields.put(field, decimalValue(row.get(field), BigDecimal.ZERO).stripTrailingZeros());
+        }
+        fields.put("legRank", textValue(row, "legRank", "NONE").toUpperCase(Locale.ROOT));
+        fields.put("rewards", rewards.stream().map(this::vRankPolicyRewardFields).toList());
+        fields.put("policyRevision", vRankPolicyRevision(fields));
+        return fields;
+    }
+
+    private Map<String, Object> vRankPolicyRewardFields(Map<String, Object> reward) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        for (String key : List.of("id", "type", "amount", "voucherId", "skuId", "custom", "sortOrder")) {
+            Object value = reward.get(key);
+            fields.put(key, value instanceof BigDecimal decimal ? decimal.stripTrailingZeros() : value);
+        }
+        return fields;
+    }
+
+    private String vRankPolicyRevision(Map<String, Object> policy) {
+        Map<String, Object> fields = new LinkedHashMap<>(policy);
+        fields.remove("policyRevision");
+        try {
+            return requestHash(JSON_PROBE.writeValueAsString(fields));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("VRANK_POLICY_JSON_WRITE_FAILED", exception);
+        }
+    }
+
+    private Map<String, Object> vRankPolicyChangedFields(VRankPolicyMutation change, Map<String, Object> policy) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("rank", change.rank());
+        if ("threshold".equals(change.action())) {
+            if ("legCount".equals(change.field()) || "legRank".equals(change.field())) {
+                fields.put("legCount", policy.get("legCount"));
+                fields.put("legRank", policy.get("legRank"));
+            } else {
+                fields.put(change.field(), policy.get(change.field()));
+            }
+        } else {
+            fields.put("reward", policyRewards(policy).stream()
+                    .filter(reward -> change.reward().get("id").equals(reward.get("id"))).findFirst().orElse(null));
+        }
+        return fields;
+    }
+
+    private String vRankPolicySummary(Map<String, Object> policy) {
+        Map<String, Object> fields = vRankPolicyReviewFields(policy);
+        String prefix = policy.get("rank") + " · ";
+        if (policy.containsKey("reward")) {
+            if (policy.get("reward") == null) return prefix + "尚未配置该奖励";
+            return prefix + fields.get("奖励类型") + " " + fields.getOrDefault("金额(USDT)",
+                    fields.getOrDefault("数量(UVT)", fields.getOrDefault("代金券",
+                    fields.getOrDefault("商品", fields.getOrDefault("自定义内容或原始备注", "")))));
+        }
+        fields.remove("等级");
+        return prefix + fields.entrySet().stream().map(field -> field.getKey() + " " + field.getValue())
+                .collect(java.util.stream.Collectors.joining("，"));
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> vRankPolicyReviewFields(Map<String, Object> policy) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        fields.put("等级", policy.get("rank"));
+        for (String field : List.of("selfBuy", "teamGv", "directRefs", "legCount", "legRank")) {
+            if (!policy.containsKey(field)) continue;
+            String label = switch (field) {
+                case "selfBuy" -> "自购算力点";
+                case "teamGv" -> "团队算力点";
+                case "directRefs" -> "直接邀请人数";
+                case "legCount" -> "达标分支数";
+                default -> "分支最低等级";
+            };
+            Object value = policy.get(field);
+            fields.put(label, "NONE".equals(value) ? "未设置"
+                    : value instanceof BigDecimal decimal ? decimal.toPlainString() : value);
+        }
+        if (policy.containsKey("reward")) {
+            if (policy.get("reward") == null) {
+                fields.put("奖励", "尚未配置");
+                return fields;
+            }
+            Map<String, Object> reward = (Map<String, Object>) policy.get("reward");
+            String type = String.valueOf(reward.get("type")).trim().toLowerCase(Locale.ROOT);
+            fields.put("奖励编号", reward.get("id"));
+            fields.put("奖励类型", switch (type) {
+                case "usdt" -> "USDT 现金";
+                case "uvt" -> "UVT 代币";
+                case "voucher" -> "代金券";
+                case "sku" -> "商品";
+                case "custom" -> "自定义";
+                default -> type;
+            });
+            Object amount = reward.get("amount");
+            if (amount != null) fields.put("usdt".equals(type) ? "金额(USDT)" : "uvt".equals(type) ? "数量(UVT)" : "展示金额",
+                    decimalValue(amount, BigDecimal.ZERO).toPlainString());
+            if (reward.get("voucherId") != null) fields.put("代金券", reward.get("voucherId"));
+            if (reward.get("skuId") != null) fields.put("商品", reward.get("skuId"));
+            if (reward.get("custom") != null) fields.put("自定义内容或原始备注", reward.get("custom"));
+            fields.put("排序", reward.get("sortOrder"));
+            String marker = String.valueOf(reward.getOrDefault("custom", "")).toLowerCase(Locale.ROOT);
+            fields.put("受益人", "uvt".equals(type) && !marker.contains("self") && !marker.contains("direct")
+                    ? "直接邀请人；未绑定时为晋升用户本人" : "晋升用户本人");
+        }
+        return fields;
+    }
+
+    private boolean loosensVRankCondition(Map<String, Object> before, Map<String, Object> after, String field) {
+        if (!"legCount".equals(field) && !"legRank".equals(field)) {
+            return decimalValue(after.get(field), BigDecimal.ZERO).compareTo(decimalValue(before.get(field), BigDecimal.ZERO)) < 0;
+        }
+        int oldCount = intValue(before.get("legCount"), 0);
+        int newCount = intValue(after.get("legCount"), 0);
+        if (oldCount == 0) return false;
+        if (newCount == 0) return true;
+        int oldRank = VRANK_LEVELS.indexOf(before.get("legRank"));
+        int newRank = VRANK_LEVELS.indexOf(after.get("legRank"));
+        if (newRank < 0) return false;
+        if (oldRank < 0) return true;
+        return newCount < oldCount || newRank < oldRank;
+    }
+
+    private Map<String, Object> normalizePolicyReward(
+            String id, VRankRewardRequest request, Map<String, Object> before) {
+        Map<String, Object> reward = normalizeReward(id, request);
+        if (isFundRewardItem(reward) && String.valueOf(reward.get("type")).equalsIgnoreCase(String.valueOf(before.get("type")).trim())
+                && before.get("custom") != null) {
+            reward.put("custom", before.get("custom"));
+        }
+        return reward;
+    }
+
+    private boolean amplifiesVRankReward(Map<String, Object> before, Map<String, Object> after) {
+        if (!isFundRewardItem(after)) return false;
+        if (!isFundRewardItem(before)) return true;
+        BigDecimal oldAmount = decimalValue(before.get("amount"), BigDecimal.ZERO);
+        BigDecimal newAmount = decimalValue(after.get("amount"), BigDecimal.ZERO);
+        String oldType = String.valueOf(before.get("type")).trim().toLowerCase(Locale.ROOT);
+        String newType = String.valueOf(after.get("type")).trim().toLowerCase(Locale.ROOT);
+        if (oldType.equals(newType)) return newAmount.compareTo(oldAmount) > 0;
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        BigDecimal rate = coverage == null ? null : coverage.nexUsdRate();
+        if (rate == null || rate.signum() <= 0) throw new BizException(503, "VRANK_REWARD_VALUATION_UNAVAILABLE");
+        BigDecimal oldUsdt = "uvt".equals(oldType) ? oldAmount.multiply(rate) : oldAmount;
+        BigDecimal newUsdt = "uvt".equals(newType) ? newAmount.multiply(rate) : newAmount;
+        return newUsdt.compareTo(oldUsdt) > 0;
+    }
+
     public ApiResult<Map<String, Object>> updateVRankThreshold(
             String rank, String field, String idempotencyKey, TeamCommissionConfigUpdateRequest request) {
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
@@ -610,7 +1266,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F1_VRANK_THRESHOLD_UPDATE",
                 idempotencyKey,
-                requestHash("threshold", rank, field, request.value(), request.reason(), actor(request.operator())),
+                vRankRequestHash(request.expectedRevision(), "threshold", rank, field, request.value(), request.reason(), actor(request.operator())),
                 () -> updateVRankThresholdInternal(rank, field, idempotencyKey, request));
     }
 
@@ -623,11 +1279,19 @@ public class OpsTeamService implements AuditReplayable {
         }
         String value = normalizeVRankThreshold(rankCode, normalizedField, request.value());
         Object businessValue = vRankThresholdBusinessValue(normalizedField, value);
-        Map<String, Object> before = vrankRows().stream()
-                .filter(row -> rankCode.equals(row.get("v")))
-                .findFirst()
-                .orElse(Map.of());
-        String oldValue = String.valueOf(before.getOrDefault(normalizedField, ""));
+        ApiResult<Map<String, Object>> policyLock = rejectIfVRankPolicyLocked(rankCode);
+        if (policyLock != null) return policyLock;
+        var orderedThresholds = lockOrderedVRankThresholds(normalizedField);
+        Map<String, Object> before = currentVRankPolicy(rankCode);
+        requireDirectVRankPolicyRevision(before, request.expectedRevision());
+        String oldValue = "legRank".equals(normalizedField) ? String.valueOf(before.get(normalizedField))
+                : decimalValue(before.get(normalizedField), BigDecimal.ZERO).toPlainString();
+        Map<String, Object> after = new LinkedHashMap<>(before);
+        after.put(normalizedField, "legRank".equals(normalizedField) ? value : parseDecimal(value).stripTrailingZeros());
+        validateVRankThresholdOrder(orderedThresholds, rankCode, normalizedField, before, after);
+        if (loosensVRankCondition(before, after, normalizedField)) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         if (!commissionRepository.updateVRankThreshold(rankCode, normalizedField, businessValue)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -652,7 +1316,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F1_VRANK_REWARD_ADD",
                 idempotencyKey,
-                requestHash(
+                vRankRequestHash(request.expectedRevision(),
                         "add", rank, request.type(), request.amount(), request.voucherId(),
                         request.skuId(), request.custom(), request.reason(), actor(request.operator())),
                 () -> addVRankRewardInternal(rank, idempotencyKey, request));
@@ -661,11 +1325,12 @@ public class OpsTeamService implements AuditReplayable {
     private ApiResult<Map<String, Object>> addVRankRewardInternal(
             String rank, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
+        ApiResult<Map<String, Object>> policyLock = rejectIfVRankPolicyLocked(seed.v());
+        if (policyLock != null) return policyLock;
+        Map<String, Object> beforePolicy = currentVRankPolicy(seed.v());
+        requireDirectVRankPolicyRevision(beforePolicy, request.expectedRevision());
         Map<String, Object> item = normalizeReward(nextRewardId(seed.v()), request);
-        // 资金类奖励(USDT/UVT,金额>0)放大平台资金流出,B1 备付金覆盖率红线预检;低于红线直接拒。
-        if (isFundRewardItem(item) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        if (isFundRewardItem(item)) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         if (!commissionRepository.addVRankReward(seed.v(), item)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_INSERT_FAILED");
         }
@@ -688,7 +1353,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F1_VRANK_REWARD_UPDATE",
                 idempotencyKey,
-                requestHash(
+                vRankRequestHash(request.expectedRevision(),
                         "update", rank, rewardId, request.type(), request.amount(), request.voucherId(),
                         request.skuId(), request.custom(), request.reason(), actor(request.operator())),
                 () -> updateVRankRewardInternal(rank, rewardId, idempotencyKey, request));
@@ -698,16 +1363,15 @@ public class OpsTeamService implements AuditReplayable {
             String rank, String rewardId, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
-        boolean exists = activeRewards(seed.v()).stream()
-                .anyMatch(item -> id.equals(String.valueOf(item.get("id"))));
-        if (!exists) {
-            throw new IllegalArgumentException("F1 V-Rank reward not found");
-        }
-        Map<String, Object> item = normalizeReward(id, request);
-        // 资金类奖励(USDT/UVT,金额>0)放大平台资金流出,B1 备付金覆盖率红线预检;低于红线直接拒。
-        if (isFundRewardItem(item) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        ApiResult<Map<String, Object>> policyLock = rejectIfVRankPolicyLocked(seed.v());
+        if (policyLock != null) return policyLock;
+        Map<String, Object> policy = currentVRankPolicy(seed.v());
+        requireDirectVRankPolicyRevision(policy, request.expectedRevision());
+        Map<String, Object> before = policyRewards(policy).stream()
+                .filter(item -> id.equals(item.get("id"))).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("F1 V-Rank reward not found"));
+        Map<String, Object> item = normalizePolicyReward(id, request, before);
+        if (amplifiesVRankReward(before, item)) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         if (!commissionRepository.updateVRankReward(seed.v(), id, item)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_REWARD_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -730,7 +1394,7 @@ public class OpsTeamService implements AuditReplayable {
         return executeIdempotent(
                 "F1_VRANK_REWARD_REMOVE",
                 idempotencyKey,
-                requestHash(
+                vRankRequestHash(request.expectedRevision(),
                         "remove", rank, rewardId, request.type(), request.amount(), request.voucherId(),
                         request.skuId(), request.custom(), request.reason(), actor(request.operator())),
                 () -> removeVRankRewardInternal(rank, rewardId, idempotencyKey, request));
@@ -740,7 +1404,11 @@ public class OpsTeamService implements AuditReplayable {
             String rank, String rewardId, String idempotencyKey, VRankRewardRequest request) {
         VRankSeed seed = requireVRank(rank);
         String id = requireText(rewardId, "TEAM_VRANK_REWARD_ID_REQUIRED");
-        boolean exists = activeRewards(seed.v()).stream()
+        ApiResult<Map<String, Object>> policyLock = rejectIfVRankPolicyLocked(seed.v());
+        if (policyLock != null) return policyLock;
+        Map<String, Object> policy = currentVRankPolicy(seed.v());
+        requireDirectVRankPolicyRevision(policy, request.expectedRevision());
+        boolean exists = policyRewards(policy).stream()
                 .anyMatch(item -> id.equals(String.valueOf(item.get("id"))));
         if (!exists) {
             throw new IllegalArgumentException("F1 V-Rank reward not found");
@@ -764,10 +1432,17 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
-        return executeIdempotent(
+        // The writer trims the key before it writes, so the receipt has to bind the same canonical key;
+        // otherwise a key sent with surrounding whitespace writes successfully without an origin.
+        String bindingKey = request.key() == null ? null : request.key().trim();
+        return executeBound(
                 "F_TEAM_CONFIG_UPDATE",
                 idempotencyKey,
-                requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator())),
+                request.expectedMaterialRevision() == null
+                        ? requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator()))
+                        : requestHash("config", request.key(), request.value(), request.reason(), actor(request.operator()), request.expectedMaterialRevision()),
+                resolveReadAuthority(bindingKey),
+                bindingKey,
                 () -> updateConfigInternal(idempotencyKey, request));
     }
 
@@ -798,9 +1473,7 @@ public class OpsTeamService implements AuditReplayable {
         }
         BigDecimal oldValue = currentValue(key);
         BigDecimal newValue = normalizeValue(key, request.value());
-        if (loosensPayoutControl(key, oldValue, newValue) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        requirePayoutIncreaseCoverage(loosensPayoutControl(key, oldValue, newValue));
         String configKey = configKey(key);
         configFacade.upsertAdminValue(configKey, newValue.toPlainString(), "NUMBER", "team", "F domain team commission policy");
         Long settlementConfigVersion = bumpLeadershipPoolConfigVersion(key);
@@ -837,6 +1510,9 @@ public class OpsTeamService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> updateUiConfig(
             String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
+        if ("F.leaderboard.minUsd".equals(key)) {
+            return ApiResult.fail(409, "F4_LEADERBOARD_MIN_USD_RETIRED_USE_COMPUTE_POINTS");
+        }
         var sevenPolicy=directPolicies==null?null:directPolicies.getIfAvailable();
         boolean affectsSeven=key.startsWith("F.unilevel.")||key.startsWith("F.influence.")||key.startsWith("F.promo.")||"F.cooldown".equals(key);
         if(affectsSeven&&sevenPolicy!=null)sevenPolicy.lockSevenLayerRevision();
@@ -885,7 +1561,9 @@ public class OpsTeamService implements AuditReplayable {
         if (!UI_CONFIG_KEYS.contains(key)) {
             throw new IllegalArgumentException("Unsupported F team UI config key");
         }
-        if (!A2ReplayContext.isReplaying()
+        boolean binaryPayoutControl = isBinaryPayoutControlKey(key);
+        // F3 risk reductions remain available during pending approval. Replay rechecks the bound original value.
+        if (!binaryPayoutControl && !A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("F", "ui_config", key) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
@@ -901,9 +1579,28 @@ public class OpsTeamService implements AuditReplayable {
             leadershipPoolService.lockLeaderboardMaintenance();
         }
         // F.cooldown 使用引擎消费者读取的单一权威键，避免 UI 镜像键与业务键双写分叉。
-        String configKey = "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
-        String oldValue = ("F.leaderboard.paused".equals(key)
-                ? configFacade.activeValueForUpdate(configKey) : configFacade.activeValue(configKey)).orElse("");
+        String configKey = uiConfigStorageKey(key);
+        String oldValue = (binaryPayoutControl || "F.leaderboard.paused".equals(key)
+                ? configFacade.activeValueForUpdate(configKey) : configFacade.activeValue(configKey))
+                .orElseGet(() -> uiConfigDefault(key));
+        int binaryControlChange = binaryPayoutControl ? compareBinaryPayoutControl(key, oldValue, value) : 0;
+        if (binaryPayoutControl && A2ReplayContext.isReplaying()
+                && !oldValue.equals(request.expectedValue())) {
+            return ApiResult.fail(409, "F3_CONFIG_STALE");
+        }
+        if (binaryControlChange > 0) {
+            if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())) {
+                return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+            }
+            String block = BinarySettlementPolicyProvider.currentCoverageBlock(coverageFacade.snapshot());
+            if (block != null) return ApiResult.fail(422, block);
+        }
+        // A2 F4 提案在服务端绑定发起时原值；回放时只对本类 F4 配置键比对，
+        // 不一致保持 pending 且不写业务值。历史/在途票没有 expectedValue 时维持原行为。
+        if (A2ReplayContext.isReplaying() && isF4StoredUiConfigKey(key) && request.expectedValue() != null
+                && !request.expectedValue().equals(oldValue)) {
+            return ApiResult.fail(409, "F4_CONFIG_STALE");
+        }
         String effectiveOldValue = projectLegacyUiValue(key, oldValue);
         LeaderboardPauseSnapshotService.State pauseChange = null;
         if ("F.leaderboard.paused".equals(key)) {
@@ -917,23 +1614,35 @@ public class OpsTeamService implements AuditReplayable {
                 pauseSnapshots.resume();
             }
         }
-        // A1 批1a 修复2:全域 B1 资金护栏接线(原 UI keys 路径完全跳过 loosensPayoutControl + coverageBelowRedline)。
-        // 资金放大类 UI key(费率/比例上调、门槛下调)在 B1 红线下阻断,范式同 updateConfig:434-436。
-        if (loosensPayoutControlUiKey(key, effectiveOldValue, value) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        requirePayoutIncreaseCoverage(loosensPayoutControlUiKey(configFacade, key, effectiveOldValue, value));
         String persistedValue;
         if ("F.cooldown".equals(key)) {
             persistedValue = String.valueOf(
                     parseDecimal(value.replaceAll("[^0-9].*$", ""), BigDecimal.ZERO).intValueExact());
         } else if ("F.pool.settleCron".equals(key)) {
-            persistedValue = LeadershipPoolSettleScheduler.normalizeCron(value);
+            persistedValue = LeadershipPoolSettleScheduler.normalizeWeeklyCron(value);
         } else if ("F.pool.ratio".equals(key)) {
             persistedValue = LeadershipPoolConfigGuard.canonicalConfiguredPercent(value);
+        } else if ("F.binary.matchRate".equals(key)) {
+            persistedValue = BinarySettlementPolicyProvider.normalizeMatchRate(value).movePointRight(2).toPlainString() + "%";
+        } else if ("F.binary.threshold".equals(key)) {
+            persistedValue = BinarySettlementPolicyProvider.normalizeThreshold(value).toPlainString();
+        } else if ("F.binary.paused".equals(key) || AUTO_SETTLE_UI_KEY.equals(key)) {
+            persistedValue = Boolean.TRUE.equals(BinarySettlementPolicyProvider.parsePaused(value)) ? "on" : "off";
+        } else if (PLATFORM_CAP_PCT_UI_KEY.equals(key)) {
+            persistedValue = BinarySettlementPolicyProvider.parsePlatformCapPct(value).toPlainString() + "%";
         } else {
             persistedValue = value;
         }
-        configFacade.upsertAdminValue(configKey, persistedValue, "TEXT", "team", "F domain authoritative policy state");
+        String effectiveValue = binaryPayoutControl || "F.binary.paused".equals(key) ? persistedValue : value;
+        boolean changed = !binaryPayoutControl || binaryControlChange != 0;
+        if (changed) {
+            configFacade.upsertAdminValue(configKey, persistedValue, "TEXT", "team", "F domain authoritative policy state");
+            if (AUTO_SETTLE_UI_KEY.equals(key) && "on".equals(persistedValue)) {
+                configFacade.upsertAdminValue(BinarySettlementPolicyProvider.AUTO_ENABLED_AT_UTC_KEY,
+                        java.time.Instant.now().toString(), "TEXT", "team", "F3 automatic settlement activation instant");
+            }
+        }
         if(affectsSeven&&sevenPolicy!=null)sevenPolicy.bumpSevenLayerRevision();
         // F4 发布即校验(简报 #48):F.pool.* 的 configVersion 是 LeadershipPoolConfigGuard 的
         // 生效信号,必须整组通过权威预检才允许推进。此前任一次 F.pool.* 写入都会 bump 版本,
@@ -943,11 +1652,14 @@ public class OpsTeamService implements AuditReplayable {
         // 结算链路独立 fail-closed,不依赖此版本号。
         String settlementConfigIncompleteKey = key.startsWith("F.pool.") ? leadershipPoolConfigIncompleteKey() : null;
         Long settlementConfigVersion = settlementConfigIncompleteKey == null ? bumpLeadershipPoolConfigVersion(key) : null;
-        postCommissionLedgerIfStatusChanged(key, value);
+        postCommissionLedgerIfStatusChanged(key, effectiveValue);
         Map<String, Object> auditDetail = new LinkedHashMap<>();
         auditDetail.put("key", key);
         auditDetail.put("oldValue", oldValue);
-        auditDetail.put("newValue", value);
+        auditDetail.put("newValue", effectiveValue);
+        if ("F.leaderboard.minComputePoints".equals(key)) {
+            auditDetail.put("rankingMetric", LeaderboardComputePoints.METRIC);
+        }
         auditDetail.put("reason", request.reason().trim());
         auditDetail.put("idempotencyKey", idempotencyKey.trim());
         if (settlementConfigVersion != null) auditDetail.put("settlementConfigVersion", settlementConfigVersion);
@@ -957,14 +1669,16 @@ public class OpsTeamService implements AuditReplayable {
             auditDetail.put("pauseCapturedAt", pauseChange.capturedAt());
             auditDetail.put("pauseSnapshotState", pauseChange.mode());
         }
-        audit("F_TEAM_UI_CONFIG_CHANGED", configKey, actor(request.operator()), auditDetail, pauseChange != null);
-        publishApprovedUiConfigOutbox(key, oldValue, value, request, pauseChange);
+        if (changed) {
+            audit("F_TEAM_UI_CONFIG_CHANGED", configKey, actor(request.operator()), auditDetail, pauseChange != null);
+            publishApprovedUiConfigOutbox(key, oldValue, effectiveValue, request, pauseChange);
+        }
         Map<String, Object> response = overview().getData();
         Map<String, Object> updated = new LinkedHashMap<>();
         updated.put("key", key);
         updated.put("configKey", configKey);
         updated.put("oldValue", oldValue);
-        updated.put("newValue", value);
+        updated.put("newValue", effectiveValue);
         if (settlementConfigVersion != null) updated.put("settlementConfigVersion", settlementConfigVersion);
         if (settlementConfigIncompleteKey != null) {
             updated.put("settlementConfigIncompleteKey", settlementConfigIncompleteKey);
@@ -1030,17 +1744,11 @@ public class OpsTeamService implements AuditReplayable {
         String field = key.startsWith("F.unilevel.nex.") ? "nexPerUsd" : "usdtRate";
         if(layerNo==1&&"nexPerUsd".equals(field)&&sevenPolicy!=null&&sevenPolicy.sevenLayerActive(sevenPolicy.now())&&sevenPolicy.at(sevenPolicy.now()).schemaVersion()==2&&sevenPolicy.at(sevenPolicy.now()).purchase().enabled())return ApiResult.fail(409,"L1_LEGACY_NEX_READ_ONLY_DURING_SPLIT");
         Object businessValue = "usdtRate".equals(field)
-                ? percentRatio(value, BigDecimal.ZERO)
+                ? percentPointRatio(value, BigDecimal.ZERO)
                 : parseDecimal(value, BigDecimal.ZERO);
-        Map<String, Object> oldRow = unilevelRates().stream()
-                .filter(row -> ("L" + layerNo).equals(row.get("level")))
-                .findFirst()
-                .orElse(Map.of());
-        String oldValue = String.valueOf(oldRow.getOrDefault("usdtRate".equals(field) ? "usdtPct" : "nexReward", ""));
-        // A1 批1a 修复2:unilevel 版税费率上调放大佣金流出,B1 红线下阻断(usdtRate / nexPerUsd 上调 = 放大)。
-        if (loosensPayoutControlUiKey(key, oldValue, value) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        String oldValue = unilevelRuleValue(commissionRepository, key);
+        requirePayoutIncreaseCoverage(
+                loosensPayoutControlUiKey(configFacade, key, unilevelComparisonValue(key, oldValue), value));
         if (!commissionRepository.updateUnilevelRule(layerNo, field, businessValue)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNILEVEL_RULE_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -1058,11 +1766,90 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    /** Shared input boundary for the A2 proposal and its eventual execution. */
+    public static List<Map<String, Object>> unilevelBootstrapLayerRates(
+            TeamCommissionConfigUpdateRequest.UnilevelBootstrap request) {
+        List<Map<String, Object>> rows = new ArrayList<>(7);
+        for (var layer : request.layers()) {
+            BigDecimal usdtPct;
+            BigDecimal usdtRate;
+            BigDecimal nexPerUsd;
+            try {
+                usdtPct = parseDecimal(layer.usdtPct(), null);
+                usdtRate = percentPointRatio(layer.usdtPct(), null);
+                nexPerUsd = parseDecimal(layer.nexPerUsd(), null)
+                        .setScale(6, RoundingMode.UNNECESSARY);
+                if (nexPerUsd.precision() - nexPerUsd.scale() > 12) {
+                    throw new ArithmeticException("UVT coefficient exceeds DECIMAL(18,6)");
+                }
+            } catch (ArithmeticException | IllegalArgumentException invalid) {
+                throw new BizException(422, "F2_UNILEVEL_BOOTSTRAP_INVALID");
+            }
+            rows.add(Map.of("level", "L" + layer.layerNo(), "usdtPct", usdtPct, "nexReward", nexPerUsd, "usdtRate", usdtRate));
+        }
+        // Reuse the exact L1-L7 completeness, L1=10%, USDT 0-100 and UVT >= 0 checks.
+        try {
+            UnilevelCommissionService.requireCompleteLayerRates(rows);
+        } catch (BizException invalid) {
+            throw new BizException(422, invalid.getMessage());
+        }
+        return rows;
+    }
+
+    /**
+     * The only first-configuration path for an empty F2 rule table. The operator must submit
+     * every layer and both values explicitly; no old backup or default rate is used.
+     */
+    private Map<String, Object> initializeUnilevelRules(Map<String, Object> params, AuditReplayContext context) {
+        if (!A2ReplayContext.isReplaying() || A2ReplayContext.operationId() == null) {
+            throw new BizException(403, "A2_CONFIRMATION_REQUIRED");
+        }
+        var request = TeamCommissionConfigUpdateRequest.UnilevelBootstrap.from(params);
+        var sevenPolicy = directPolicies == null ? null : directPolicies.getIfAvailable();
+        if (sevenPolicy != null) {
+            sevenPolicy.lockSevenLayerRevision();
+            var policyTime = sevenPolicy.now();
+            if (sevenPolicy.sevenLayerActive(policyTime)
+                    && sevenPolicy.at(policyTime).schemaVersion() == 2
+                    && sevenPolicy.at(policyTime).purchase().enabled()) {
+                throw new BizException(409, "L1_LEGACY_NEX_READ_ONLY_DURING_SPLIT");
+            }
+        }
+        // The existing rows are the initial-state proof; do not use a global F policy version.
+        if (!commissionRepository.lockAllUnilevelRules().isEmpty()) {
+            throw new BizException(409, "F2_UNILEVEL_RULES_ALREADY_CONFIGURED");
+        }
+        List<Map<String, Object>> rows = unilevelBootstrapLayerRates(request);
+        requirePayoutIncreaseCoverage(true);
+        for (int index = 0; index < rows.size(); index++) {
+            var row = rows.get(index);
+            BigDecimal usdtRate = (BigDecimal) row.get("usdtRate");
+            if (!commissionRepository.insertUnilevelRule(
+                    request.layers().get(index).layerNo(), usdtRate, (BigDecimal) row.get("nexReward"))) {
+                throw new BizException(409, "F2_UNILEVEL_BOOTSTRAP_WRITE_FAILED");
+            }
+        }
+        if (sevenPolicy != null) {
+            sevenPolicy.bumpSevenLayerRevision();
+        }
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("layers", request.layers());
+        detail.put("reason", context.reason());
+        detail.put("idempotencyKey", context.idempotencyKey());
+        detail.put("operationId", A2ReplayContext.operationId());
+        audit("F_TEAM_UNILEVEL_RULE_CHANGED", "unilevel_rules/current", context.operator(), detail, true);
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("initialized", true);
+        response.put("layers", request.layers());
+        response.put("source", "nx_commission_rule");
+        return response;
+    }
+
     /**
      * A1 批2b 修复2:F4 票权(领导池权重)写业务表 nx_v_rank_config.leadership_votes。
      * F.pool.votes.V{n} → 解析 V{n} → UPDATE leadership_votes WHERE rank_code=V{n}。
      * 票权权重放大头部分润,B1 资金护栏 loosensPayoutControl 不直连(权重非比例/阈值,业务复杂度留后续);
-     * 当前保守策略:_votes 调高 = 放大头部虹吸,放大值时受 B1 红线阻断(见 coverageBelowRedline)。
+     * 当前策略：调高票权按放大处理，要求通过 B1 覆盖率检查。
      */
     private ApiResult<Map<String, Object>> updateVRankVotes(
             String idempotencyKey,
@@ -1083,10 +1870,7 @@ public class OpsTeamService implements AuditReplayable {
                 .findFirst()
                 .orElse(Map.of());
         String oldValue = String.valueOf(before.getOrDefault("votes", "0"));
-        // 票权权重调高 = 放大头部虹吸(领导池分配按 votes 权重),受 B1 红线阻断。
-        if (votes > parseIntSafe(oldValue, 0) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        requirePayoutIncreaseCoverage(votes > parseIntSafe(oldValue, 0));
         if (!commissionRepository.updateVRankLeadershipVotes(rankCode, votes)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_VOTES_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -1123,9 +1907,12 @@ public class OpsTeamService implements AuditReplayable {
         }
         String value = normalizeUiValue(request.value());
         String canonical = canonicalAmbassadorStatus(value);
-        // approved(开通 4 类预算额度)是资金放大动作,B1 红线下阻断;rejected(不开通预算)非放大。
-        if ("APPROVED".equals(canonical) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        if (!Set.of("APPROVED", "REJECTED").contains(canonical)) return ApiResult.fail(422, "AMBASSADOR_STATUS_INVALID");
+        if ("APPROVED".equals(canonical)) ambassadorMaterials.requireApproval(applicationId, request.expectedMaterialRevision());
+        // Final approval grants only the selected category, and still observes the B1 redline.
+        if ("APPROVED".equals(canonical)) {
+            var gate = validateFundPolicyCoverage();
+            if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
         }
         if (!commissionRepository.updateAmbassadorStatus(label, canonical, actor(request.operator()), request.reason().trim())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "AMBASSADOR_APPLICATION_UPDATE_FAILED");
@@ -1140,7 +1927,8 @@ public class OpsTeamService implements AuditReplayable {
                 "applicationLabel", label,
                 "newValue", canonical,
                 "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+                "idempotencyKey", idempotencyKey.trim(),
+                "materialRevision", request.expectedMaterialRevision() == null ? -1 : request.expectedMaterialRevision()), true);
         Map<String, Object> response = leadershipPool().getData();
         response.put("updated", Map.of("key", key, "source", "nx_team_ambassador_application", "newValue", canonical));
         return ApiResult.ok(response);
@@ -1188,7 +1976,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     /** F4 榜单 action 归一:disqualified/paused/fraud 三态化(其余原样大写)。 */
-    private String canonicalLeaderboardAction(String raw) {
+    private static String canonicalLeaderboardAction(String raw) {
         String normalized = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
         return switch (normalized) {
             case "disqualified", "取消资格" -> "DISQUALIFIED";
@@ -1211,21 +1999,39 @@ public class OpsTeamService implements AuditReplayable {
             TeamCommissionConfigUpdateRequest request,
             String key,
             String eventId) {
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("F", "commission_event", eventId) > 0) {
-            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
-        }
         String value = normalizeUiValue(request.value());
-        Map<String, Object> oldEvent = commissionEvents().stream()
-                .filter(row -> eventId.equals(row.get("id")))
-                .findFirst()
-                .orElse(null);
+        String toCanonical = canonicalCommissionState(value);
+        if (!A2ReplayContext.isReplaying()) {
+            Long adminId = parseAdminIdFromContext();
+            if (adminId == null) {
+                return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
+            }
+            String authority = switch (toCanonical) {
+                case "REJECTED" -> "network_f5_commission_reverse";
+                case "FROZEN", "COOLING" -> "network_f5_commission_freeze";
+                default -> "network_f5_commission_release";
+            };
+            if (!permissionCache.getPermissionCodes(adminId).contains(authority)) {
+                return ApiResult.fail(403, "PERMISSION_DENIED");
+            }
+        }
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
+        var locks = lockMapper.selectActiveByTicketId(A2ReplayContext.operationId());
+        if (locks.size() != 1 || !"F".equals(locks.get(0).getTargetDomain())
+                || !"commission_event".equals(locks.get(0).getTargetType())
+                || !eventId.equals(locks.get(0).getTargetId())) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
+        Long directEventId = parseLongFromMap(eventId.replaceFirst("^CM-", ""));
+        Map<String, Object> oldEvent = directEventId != null && eventId.equals("CM-" + directEventId)
+                ? commissionRepository.commissionEventById(directEventId) : null;
         if (oldEvent == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COMMISSION_EVENT_NOT_FOUND");
         }
         // A1 批1a 修复1:F5 佣金事件状态机校验(原接受任意 status,REJECTED→UNLOCKED 静默复活=资金漏洞)。
         String fromCanonical = canonicalCommissionState(String.valueOf(oldEvent.get("status")));
-        String toCanonical = canonicalCommissionState(value);
         if (request.expectedVersion() == null || request.expectedVersion() < 0) {
             return ApiResult.fail(400,"F5_EXPECTED_VERSION_REQUIRED");
         }
@@ -1235,29 +2041,34 @@ public class OpsTeamService implements AuditReplayable {
         if (!isLegalCommissionStateTransition(fromCanonical, toCanonical)) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
-        // F5 权限按资金影响分键:冻结/解冻(止损)、解锁/支付(放钱)、红冲(退钱)。
-        if (!A2ReplayContext.isReplaying()) {
-            Long adminId = parseAdminIdFromContext();
-            if (adminId == null) {
-                return ApiResult.fail(401, "ADMIN_AUTH_REQUIRED");
-            }
-            String f5Required = switch (toCanonical) {
-                case "REJECTED" -> "network_f5_commission_reverse";
-                case "FROZEN", "COOLING" -> "network_f5_commission_freeze";
-                default -> "network_f5_commission_release";
-            };
-            if (!permissionCache.getPermissionCodes(adminId).contains(f5Required)) {
-                return ApiResult.fail(403, "PERMISSION_DENIED");
-            }
-        }
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
-        Long directEventId = Long.valueOf(eventId.replaceFirst("^CM-", ""));
         if (direct != null && direct.groupForEvent(directEventId) != null) {
+            if ("UNLOCKED".equals(toCanonical)) {
+                ApiResult<Void> coverage = requirePayoutCoverageForUnlock();
+                if (coverage.getCode() != 0) {
+                    return ApiResult.fail(coverage.getCode(), coverage.getMessage());
+                }
+            }
             direct.changeStatus(directEventId, toCanonical, request.expectedVersion());
             if (!commissionRepository.recordCommissionOperation(eventId, fromCanonical+"_TO_"+toCanonical, idempotencyKey.trim(), request.expectedVersion(), actor(request.operator()), request.reason().trim())) throw new IllegalStateException("F5_OPERATION_AUDIT_CONFLICT");
             return ApiResult.ok(Map.of("updated", direct.eventSnapshot(directEventId)));
         }
+        // The grouped writer checks suspension itself; legacy events need the explicit check here.
+        // Both manual unlock branches apply the same payout coverage gate before any write.
+        if ("UNLOCKED".equals(toCanonical)) {
+            if (commissionRepository.countEventUserSuspended(directEventId) > 0) {
+                return ApiResult.fail(409, "COMMISSION_USER_SUSPENDED");
+            }
+            ApiResult<Void> coverage = requirePayoutCoverageForUnlock();
+            if (coverage.getCode() != 0) {
+                return ApiResult.fail(coverage.getCode(), coverage.getMessage());
+            }
+        }
         if(direct!=null)direct.lockEventSource(directEventId,"UNLOCKED".equals(toCanonical));
+        String unfreezeBlocked = commissionUnfreezeBlockedReason(fromCanonical, toCanonical, oldEvent.get("unlockAt"));
+        if (unfreezeBlocked != null) {
+            return ApiResult.fail(409, unfreezeBlocked);
+        }
         if (!commissionRepository.updateCommissionStatusCas(eventId,fromCanonical,toCanonical,request.expectedVersion())) {
             return ApiResult.fail(409, "F5_COMMISSION_VERSION_CONFLICT");
         }
@@ -1308,7 +2119,13 @@ public class OpsTeamService implements AuditReplayable {
      * F5 佣金事件状态归一化(PRD F5②:cooling/unlocked/withdrawn/reversed + 任务 A1 转换图 frozen/settled/paid)。
      * nx_commission_event 历史数据混用中英文,统一归一为大写英文供状态机判断。
      */
-    private String canonicalCommissionState(String raw) {
+    /** Shared by proposal validation and the two existing deadline-dependent replay paths. */
+    public static String commissionUnfreezeBlockedReason(String from, String to, Object unlockAt) {
+        return "FROZEN".equals(from) && "COOLING".equals(to) && unlockAt == null
+                ? "F5_COOLDOWN_DEADLINE_UNRECOVERABLE" : null;
+    }
+
+    public static String canonicalCommissionState(String raw) {
         String normalized = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
         return switch (normalized) {
             case "计提", "cooling", "pending" -> "COOLING";
@@ -1358,6 +2175,38 @@ public class OpsTeamService implements AuditReplayable {
         // Freezing and settlement/payment markers do not transfer the wallet funds again.
     }
 
+    /** Derives the A2 ticket direction from the same configuration used at execution. */
+    public static boolean uiConfigAmplifies(PlatformConfigFacade configs, TeamCommissionRepository rules,
+            String key, String proposedValue) {
+        String currentValue = isUnilevelRuleKey(key) && rules != null
+                ? unilevelComparisonValue(key, unilevelRuleValue(rules, key))
+                : proposalUiConfigValue(configs, key);
+        if (isBinaryPayoutControlKey(key)) return binaryPayoutControlAmplifies(key, currentValue, proposedValue);
+        return loosensPayoutControlUiKey(configs, key, currentValue, proposedValue);
+    }
+
+    public static boolean isBinaryPayoutControlKey(String key) {
+        return AUTO_SETTLE_UI_KEY.equals(key) || PLATFORM_CAP_PCT_UI_KEY.equals(key);
+    }
+
+    public static boolean binaryPayoutControlAmplifies(String key, String currentValue, String nextValue) {
+        return compareBinaryPayoutControl(key, currentValue, nextValue) > 0;
+    }
+
+    private static int compareBinaryPayoutControl(String key, String currentValue, String nextValue) {
+        if (AUTO_SETTLE_UI_KEY.equals(key)) {
+            Boolean current = BinarySettlementPolicyProvider.parsePaused(currentValue);
+            Boolean next = BinarySettlementPolicyProvider.parsePaused(nextValue);
+            if (next == null) return 0;
+            return current == null ? (next ? 1 : -1) : next.compareTo(current);
+        }
+        BigDecimal current = BinarySettlementPolicyProvider.parsePlatformCapPct(currentValue);
+        BigDecimal next = BinarySettlementPolicyProvider.parsePlatformCapPct(nextValue);
+        if (next == null) return 0;
+        // A positive repair of an invalid cap restores payout capacity.
+        return current == null ? (next.signum() > 0 ? 1 : -1) : next.compareTo(current);
+    }
+
     /**
      * A1 批1a 修复2:全域 B1 资金护栏接线 — UI keys 资金放大判断。
      * 费率/比例上调 = 放大;门槛下调 = 放大。复盖:
@@ -1366,7 +2215,7 @@ public class OpsTeamService implements AuditReplayable {
      *   F4 pool.ratio/top1MaxPct/top5MaxPct/periodPrize 上调
      * 新值解析失败由 validateUiConfig 上层报错；F2 旧门槛缺失或非法值修复会恢复结算，按放宽预检。
      */
-    private boolean loosensPayoutControlUiKey(String key, String oldValue, String newValue) {
+    private static boolean loosensPayoutControlUiKey(PlatformConfigFacade configs, String key, String oldValue, String newValue) {
         if (key == null) {
             return false;
         }
@@ -1377,19 +2226,56 @@ public class OpsTeamService implements AuditReplayable {
                     return parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
                 }
                 // usdtRate 百分比上调 = 版税费率放大
-                return percentRatio(newValue, BigDecimal.ZERO).compareTo(percentRatio(oldValue, BigDecimal.ZERO)) > 0;
+                return percentPointRatio(newValue, BigDecimal.ZERO)
+                        .compareTo(percentPointRatio(oldValue, BigDecimal.ZERO)) > 0;
             }
             return switch (key) {
                 case "F.cooldown" -> parseDecimal(newValue.replaceAll("[^0-9].*$", ""), BigDecimal.ZERO)
-                        .intValueExact() < resolveCommissionCoolingDays();
-                case "F.promo.weekMultiplier", "F.peer.rate", "F.pool.periodPrize" ->
+                        .intValueExact() < commissionCoolingDays(oldValue);
+                case "F.promo.weekMultiplier", "F.peer.rate" ->
                         parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
+                case "F.pool.periodPrize" -> periodPrizeIncreases(oldValue, newValue);
+                case "F.pool.monthlyCap" -> {
+                    BigDecimal proposed = LeadershipPoolConfigGuard.parseConfiguredMoney(newValue);
+                    if (!StringUtils.hasText(oldValue)) yield proposed.signum() > 0;
+                    try {
+                        yield proposed.compareTo(LeadershipPoolConfigGuard.parseConfiguredMoney(oldValue)) > 0;
+                    } catch (IllegalArgumentException blockedCurrent) {
+                        // The settlement guard blocks an invalid current cap; a positive repair restores capacity.
+                        yield proposed.signum() > 0;
+                    }
+                }
+                case "F.leaderboard.poolUsd" -> {
+                    BigDecimal current = LeadershipPoolService.parseMoney(oldValue);
+                    BigDecimal proposed = LeadershipPoolService.parseMoney(newValue);
+                    boolean currentOverride = current != null && current.signum() > 0;
+                    boolean proposedOverride = proposed != null && proposed.signum() > 0;
+                    BigDecimal fallback = currentOverride && proposedOverride ? BigDecimal.ZERO
+                            : LeadershipPoolService.configuredPeriodPrize(configs, "week");
+                    yield (proposedOverride ? proposed : fallback).compareTo(currentOverride ? current : fallback) > 0;
+                }
                 case "F.pool.ratio" -> LeadershipPoolConfigGuard.isConfiguredRateIncrease(oldValue, newValue);
-                case "F.binary.matchRate", "F.pool.top1MaxPct", "F.pool.top5MaxPct" ->
-                        percentRatio(newValue, BigDecimal.ZERO).compareTo(percentRatio(oldValue, BigDecimal.ZERO)) > 0;
+                case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(newValue)
+                        .compareTo(currentBinaryMatchRate(oldValue)) > 0;
+                case "F.pool.top1MaxPct", "F.pool.top5MaxPct" -> {
+                    // These two caps are stored and settled as percentage points; compare the same unit.
+                    // An unconfigured cap settles with LeadershipPoolService's default (25 / 60), never 0.
+                    BigDecimal current = parseDecimal(
+                            StringUtils.hasText(oldValue) ? oldValue
+                                    : "F.pool.top1MaxPct".equals(key) ? "25" : "60",
+                            BigDecimal.ZERO);
+                    yield parseDecimal(newValue, BigDecimal.ZERO).compareTo(current) > 0;
+                }
                 // 门槛下调 = 放大(更低门槛触发更多结算)
-                case "F.binary.threshold" ->
-                        parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) < 0;
+                case "F.binary.threshold" -> {
+                    BigDecimal next = BinarySettlementPolicyProvider.normalizeThreshold(newValue);
+                    try {
+                        yield next.compareTo(BinarySettlementPolicyProvider.normalizeThreshold(oldValue)) < 0;
+                    } catch (IllegalArgumentException invalidCurrent) {
+                        // Repairing an invalid/missing threshold re-enables settlement.
+                        yield true;
+                    }
+                }
                 case "F.unilevel.depthGate" -> {
                     int next = depthGateLayer(newValue);
                     try {
@@ -1415,25 +2301,53 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
-    private int depthGateLayer(String value) {
+    private static BigDecimal currentBinaryMatchRate(String value) {
+        try {
+            return BinarySettlementPolicyProvider.normalizeMatchRate(value);
+        } catch (IllegalArgumentException ex) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    private static boolean periodPrizeIncreases(String oldValue, String newValue) {
+        try {
+            var reader = JSON_PROBE.reader().with(com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+            com.fasterxml.jackson.databind.JsonNode proposed = reader.readTree(newValue);
+            if (!proposed.isObject()) {
+                return parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
+            }
+            com.fasterxml.jackson.databind.JsonNode current = isValidJson(oldValue) && !oldValue.isBlank()
+                    ? reader.readTree(oldValue) : JSON_PROBE.createObjectNode();
+            return List.of("today", "week", "month", "allTime").stream().anyMatch(period ->
+                    proposed.path(period).decimalValue().compareTo(current.path(period).decimalValue()) > 0);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+            return false;
+        }
+    }
+
+    private static int depthGateLayer(String value) {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
         if (!normalized.matches("L[1-7]")) throw new IllegalArgumentException("F_TEAM_DEPTH_GATE_LAYER_INVALID");
         return Integer.parseInt(normalized.substring(1));
     }
 
-    private int existingDepthGateLayer(String value) {
+    private static int existingDepthGateLayer(String value) {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
         // The settlement engine also accepts existing bare 1..7 values.
         return normalized.matches("[1-7]") ? Integer.parseInt(normalized) : depthGateLayer(normalized);
     }
 
-    private int depthGateRank(String value) {
+    private static int depthGateRank(String value) {
         String normalized = value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
         if (!normalized.matches("V[0-8]")) throw new IllegalArgumentException("F_TEAM_DEPTH_GATE_RANK_INVALID");
         return Integer.parseInt(normalized.substring(1));
     }
 
-    private Optional<String> commissionStatusEventId(String key) {
+    public static boolean isCommissionEventStatusKey(String key) {
+        return commissionStatusEventId(key).isPresent();
+    }
+
+    private static Optional<String> commissionStatusEventId(String key) {
         String prefix = "F.commission.";
         String suffix = ".status";
         if (!key.startsWith(prefix) || !key.endsWith(suffix)) {
@@ -1442,7 +2356,7 @@ public class OpsTeamService implements AuditReplayable {
         return Optional.of(key.substring(prefix.length(), key.length() - suffix.length()));
     }
 
-    private boolean isUnilevelRuleKey(String key) {
+    private static boolean isUnilevelRuleKey(String key) {
         if (!key.startsWith("F.unilevel.L") && !key.startsWith("F.unilevel.nex.L")) {
             return false;
         }
@@ -1454,7 +2368,7 @@ public class OpsTeamService implements AuditReplayable {
 
     /**
      * A1 批2b 修复2:F.pool.votes.V{n} 动态 key 判定。
-     * V{n} 中 n 必须为 1-12 数字(V0 无票权、不入权重表;前端 voteWeights 来自 leadershipRanks 已过滤 votes>0)。
+     * V{n} 中 n 必须为 1-8 数字(V0 无票权、不入权重表;前端 voteWeights 来自 leadershipRanks 已过滤 votes>0)。
      */
     private boolean isVRankVoteKey(String key) {
         if (!key.startsWith("F.pool.votes.")) {
@@ -1466,7 +2380,7 @@ public class OpsTeamService implements AuditReplayable {
         }
         try {
             int n = Integer.parseInt(raw.substring(1));
-            return n >= 1 && n <= 12;
+            return n >= 1 && n <= 8;
         } catch (NumberFormatException ex) {
             return false;
         }
@@ -1493,7 +2407,7 @@ public class OpsTeamService implements AuditReplayable {
         return "F.leaderboard.period.status".equals(key);
     }
 
-    private int unilevelLayerNo(String key) {
+    private static int unilevelLayerNo(String key) {
         String raw = key.startsWith("F.unilevel.nex.L")
                 ? key.substring("F.unilevel.nex.L".length())
                 : key.substring("F.unilevel.L".length());
@@ -1544,6 +2458,23 @@ public class OpsTeamService implements AuditReplayable {
                 .toList();
     }
 
+    private List<Map<String, Object>> vrankRows(String approvedTitles) {
+        List<Map<String, Object>> rows = vrankRows();
+        if (!StringUtils.hasText(approvedTitles)) return rows;
+        try {
+            JsonNode titles = JSON_PROBE.readTree(approvedTitles);
+            for (Map<String, Object> row : rows) {
+                JsonNode title = titles.path(String.valueOf(row.get("v")));
+                if (title.isTextual() && !title.asText().isBlank()) {
+                    row.put("label", title.asText().trim());
+                }
+            }
+        } catch (JsonProcessingException ex) {
+            log.warn("Ignoring malformed approved F1 rank titles", ex);
+        }
+        return rows;
+    }
+
     private Map<String, Object> normalizeVRankRow(Map<String, Object> raw) {
         String level = textValue(raw, "v", "");
         // The engine evaluates every configured dimension at every rank; expose the same editable values.
@@ -1560,7 +2491,9 @@ public class OpsTeamService implements AuditReplayable {
         row.put("votes", intValue(raw.get("votes"), 0));
         row.put("visible", boolValue(raw.get("visible"), true));
         row.put("pop", intValue(raw.get("pop"), 0));
-        row.put("rewards", activeRewards(level));
+        List<Map<String, Object>> rewards = commissionRepository.vRankRewards(level);
+        row.put("rewards", rewards.stream().map(this::normalizeRewardMap).toList());
+        row.put("policyRevision", vRankPolicyFields(row, rewards).get("policyRevision"));
         row.put("source", "nx_v_rank_config + nx_team_member");
         return row;
     }
@@ -1585,6 +2518,56 @@ public class OpsTeamService implements AuditReplayable {
         return row;
     }
 
+    private List<Map<String, Object>> f2PayoutStatistics() {
+        Map<String, Map<String, Object>> found = new LinkedHashMap<>();
+        for (Map<String, Object> raw : commissionRepository.f2PayoutStatistics()) {
+            String currency = String.valueOf(raw.get("currency") == null ? "" : raw.get("currency"))
+                    .trim().toUpperCase(Locale.ROOT);
+            if (!Set.of("USDT", "UVT").contains(currency)) continue;
+            Map<String, Object> statistic = new LinkedHashMap<>();
+            statistic.put("currency", currency);
+            statistic.put("available", true);
+            statistic.put("window", "created_at >= DB_NOW_MINUS_7_DAYS (no upper bound)");
+            statistic.put("statusScope", "ALL_EVENT_STATUSES");
+            statistic.put("allStatusAmountRaw", decimalValue(raw.get("allStatusAmountRaw"), null));
+            statistic.put("allStatusEventCount", intValue(raw.get("allStatusEventCount"), 0));
+            statistic.put("paidOrSettledStatuses", List.of("PAID", "SETTLED"));
+            statistic.put("paidOrSettledAmountRaw", decimalValue(raw.get("paidOrSettledAmountRaw"), null));
+            statistic.put("paidOrSettledEventCount", intValue(raw.get("paidOrSettledEventCount"), 0));
+            statistic.put("paidStatuses", List.of("PAID"));
+            statistic.put("paidAmountRaw", decimalValue(raw.get("paidAmountRaw"), null));
+            statistic.put("paidEventCount", intValue(raw.get("paidEventCount"), 0));
+            statistic.put("statusMarkerOnly", true);
+            statistic.put("cashSettlementTimeAvailable", false);
+            statistic.put("basis", "nx_commission_event.created_at; PAID/SETTLED are current status markers, not cash transfer or paid_at proof");
+            found.put(currency, statistic);
+        }
+        List<Map<String, Object>> statistics = new ArrayList<>();
+        for (String currency : List.of("USDT", "UVT")) {
+            Map<String, Object> statistic = found.get(currency);
+            if (statistic == null) {
+                statistic = new LinkedHashMap<>();
+                statistic.put("currency", currency);
+                statistic.put("available", false);
+                statistic.put("window", "created_at >= DB_NOW_MINUS_7_DAYS (no upper bound)");
+                statistic.put("statusScope", "ALL_EVENT_STATUSES");
+                statistic.put("allStatusAmountRaw", null);
+                statistic.put("allStatusEventCount", null);
+                statistic.put("paidOrSettledStatuses", List.of("PAID", "SETTLED"));
+                statistic.put("paidOrSettledAmountRaw", null);
+                statistic.put("paidOrSettledEventCount", null);
+                statistic.put("paidStatuses", List.of("PAID"));
+                statistic.put("paidAmountRaw", null);
+                statistic.put("paidEventCount", null);
+                statistic.put("statusMarkerOnly", true);
+                statistic.put("cashSettlementTimeAvailable", false);
+                statistic.put("basis", "nx_commission_event.created_at; no rows for this currency in the rolling window");
+            }
+            statistics.add(statistic);
+        }
+        return statistics;
+    }
+
     private List<Map<String, Object>> f2Metrics() {
         return commissionRepository.f2Metrics().stream()
                 .map(row -> {
@@ -1606,12 +2589,39 @@ public class OpsTeamService implements AuditReplayable {
                 .toList();
     }
 
+    private static String unilevelRuleValue(TeamCommissionRepository rules, String key) {
+        return unilevelRuleValue(rules, key, false);
+    }
+
+    private static String unilevelRuleValue(TeamCommissionRepository rules, String key, boolean preserveMissing) {
+        String level = "L" + unilevelLayerNo(key);
+        String field = key.startsWith("F.unilevel.nex.") ? "nexReward" : "usdtPct";
+        return rules.unilevelRates().stream()
+                .filter(row -> level.equals(row.get("level")))
+                .findFirst()
+                .filter(row -> !preserveMissing || row.get(field) != null)
+                .map(row -> decimalValue(row.get(field), BigDecimal.ZERO).stripTrailingZeros().toString())
+                .orElse("");
+    }
+
+    private static String unilevelComparisonValue(String key, String currentValue) {
+        // usdtPct is expressed in percentage points; nexReward is a multiplier.
+        return key.startsWith("F.unilevel.nex.") ? currentValue : currentValue + "%";
+    }
+
     private Map<String, Object> normalizeUnilevelRate(Map<String, Object> raw) {
         String level = textValue(raw, "level", "");
+        Object rawUsdtPct = raw.get("usdtPct");
+        Object rawNexReward = raw.get("nexReward");
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("level", level);
-        row.put("usdtPct", decimalValue(raw.get("usdtPct"), BigDecimal.ZERO).stripTrailingZeros());
-        row.put("nexReward", decimalValue(raw.get("nexReward"), BigDecimal.ZERO).stripTrailingZeros());
+        // Keep the legacy numeric values (old clients require non-null, non-negative
+        // numbers), but expose whether each raw projection was absent. A real zero
+        // remains a configured zero: only a null/missing raw value sets the flag.
+        row.put("usdtPct", decimalValue(rawUsdtPct, BigDecimal.ZERO).stripTrailingZeros());
+        row.put("nexReward", decimalValue(rawNexReward, BigDecimal.ZERO).stripTrailingZeros());
+        row.put("usdtPctMissing", rawUsdtPct == null);
+        row.put("nexRewardMissing", rawNexReward == null);
         row.put("label", textValue(raw, "label", ""));
         row.put("direct", boolValue(raw.get("direct"), false));
         row.put("configKey", "nx_commission_rule:UNILEVEL:" + level + ".usdt_rate");
@@ -1705,8 +2715,12 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> formula = new LinkedHashMap<>();
         formula.put("user", String.valueOf(settlement.getOrDefault("user", "")));
         formula.put("trackA", intValue(settlement.get("trackA"), 0));
+        formula.put("trackARaw", settlement.get("trackARaw"));
         formula.put("trackB", intValue(settlement.get("trackB"), 0));
+        formula.put("trackBRaw", settlement.get("trackBRaw"));
         formula.put("matchAmount", intValue(settlement.get("matchAmount"), 0));
+        formula.put("matchAmountRaw", settlement.get("matchAmountRaw"));
+        formula.put("todayPaidRaw", settlement.get("todayPaidRaw"));
         formula.put("matchRate", configText("F.binary.matchRate", ""));
         formula.put("threshold", configText("F.binary.threshold", ""));
         formula.put("settlePeriod", configText("F.binary.settlePeriod", ""));
@@ -1723,9 +2737,69 @@ public class OpsTeamService implements AuditReplayable {
         config.put("gvResetCron", configText("F.binary.gvResetCron", ""));
         config.put("settlePeriod", configText("F.binary.settlePeriod", ""));
         config.put("residualPolicy", configText("F.binary.residualPolicy", ""));
+        config.put("paused", BinarySettlementPolicyProvider.parsePaused(configText("F.binary.paused", "")));
+        config.put("autoSettle", BinarySettlementPolicyProvider.parsePaused(proposalUiConfigValue(configFacade, AUTO_SETTLE_UI_KEY)));
+        config.put("platformCapPct", BinarySettlementPolicyProvider.parsePlatformCapPct(
+                proposalUiConfigValue(configFacade, PLATFORM_CAP_PCT_UI_KEY)));
         config.put("residualPool", f3ResidualPool(summary));
         config.put("residualSub", "未匹配体量按当前沉淀策略处理");
         return config;
+    }
+
+    private Map<String, Object> f3Statistics(Map<String, Object> dailyCap) {
+        Map<String, Object> statistics = new LinkedHashMap<>();
+        statistics.put("basis", "CURRENT_BUSINESS_TIME_SQL_PROJECTION");
+        statistics.put("participantCount", f3Statistic(
+                "nx_binary_commission_settlement", "COUNT(DISTINCT user_id)", "user_id",
+                "is_deleted=0", "ALL_NON_DELETED_SETTLEMENTS", "ALL_STATUSES", true));
+        statistics.put("blockedCount", f3Statistic(
+                "nx_binary_commission_settlement", "SUM(CASE WHEN UPPER(status) IN ('BLOCKED','REJECTED','FAILED','FROZEN') THEN 1 ELSE 0 END)", "status",
+                "is_deleted=0", "ALL_NON_DELETED_SETTLEMENTS",
+                "BLOCKED,REJECTED,FAILED,FROZEN", false));
+        statistics.put("monthlyMatchedUsd", f3Statistic(
+                "nx_binary_commission_settlement", "SUM(matched_volume)", "matched_volume",
+                "is_deleted=0", "SETTLEMENT_DATE >= CURRENT_BUSINESS_MONTH_START",
+                "ALL_STATUSES", false));
+        statistics.put("dailyMatchUsd", f3Statistic(
+                "nx_binary_commission_settlement", "SUM(matched_volume)", "matched_volume",
+                "is_deleted=0", "SETTLEMENT_DATE = CURRENT_BUSINESS_DATE", "ALL_STATUSES", false));
+        statistics.put("autoPlacement7dCount", f3Statistic(
+                "nx_binary_leg_assignment", "COUNT(1)", "assigned_at",
+                "SYSTEM_AUTO_PLACEMENT or F3_BINARY_AUTO_PLACED audit",
+                "DB_NOW_MINUS_7_DAYS_TO_DB_NOW", "N/A", false));
+        statistics.put("maxDailyCapUsd", f3Statistic(
+                "nx_binary_commission_settlement", "MAX(daily_cap_usdt)", "daily_cap_usdt",
+                "is_deleted=0", "ALL_NON_DELETED_SETTLEMENTS", "ALL_STATUSES", false));
+        statistics.put("maxTrackGmv", f3Statistic(
+                "nx_binary_commission_settlement", "MAX(GREATEST(left_volume,right_volume))",
+                "left_volume,right_volume", "is_deleted=0", "ALL_NON_DELETED_SETTLEMENTS",
+                "ALL_STATUSES", false));
+        statistics.put("residualPoolUsd", f3Statistic(
+                "nx_binary_paid_order_volume + nx_binary_commission_settlement + nx_binary_volume_cursor",
+                "SUM(GREATEST(track_a-matched, track_b-matched, 0))", "amount_usdt,matched_volume",
+                "volume status=ACTIVE; settlement status<>BLOCKED; current residualPolicy",
+                "CURRENT_RESIDUAL_POLICY", "ALL_ACTIVE_VOLUME; NON_BLOCKED_SETTLEMENTS", false));
+        statistics.put("settlements", f3Statistic(
+                "nx_binary_commission_settlement", "SELECT", "left_volume,right_volume,matched_volume,amount_usdt,status",
+                "is_deleted=0", "LATEST_100_BY_SETTLEMENT_DATE_DESC_ID_DESC", "ALL_STATUSES", false));
+        statistics.put("h1BinaryDailyCap", f3Statistic(
+                "H1 growth rhythm facade", "READ",
+                "growth.phase.month." + dailyCap.get("currentMonth") + ".binaryDailyCap",
+                "current business month/phase", "CURRENT_BUSINESS_MONTH", "N/A", false));
+        return statistics;
+    }
+
+    private Map<String, Object> f3Statistic(String source, String aggregate, String field,
+                                            String filter, String window, String status, boolean distinct) {
+        Map<String, Object> statistic = new LinkedHashMap<>();
+        statistic.put("source", source);
+        statistic.put("aggregate", aggregate);
+        statistic.put("field", field);
+        statistic.put("filter", filter);
+        statistic.put("window", window);
+        statistic.put("status", status);
+        statistic.put("distinct", distinct);
+        return statistic;
     }
 
     private Map<String, Object> f3DailyCap() {
@@ -1745,9 +2819,21 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> binarySettlements() {
-        return commissionRepository.binarySettlements(100).stream()
-                .map(this::normalizeBinarySettlementMap)
-                .toList();
+        var settlements = commissionRepository.binarySettlements(100);
+        var reviews = auditLogService.f3SettlementReviews(settlements.stream()
+                .map(row -> String.valueOf(row.get("settlementNo"))).toList());
+        return settlements.stream().map(raw -> {
+            Map<String, Object> row = normalizeBinarySettlementMap(raw);
+            String settlementNo = (String) raw.get("settlementNo");
+            row.put("settlementNo", settlementNo);
+            var review = reviews.getOrDefault(settlementNo, Map.of());
+            for (String key : List.of("residualTrackARaw", "residualTrackBRaw", "residualAmountUsdt",
+                    "residualPolicy", "proposerName", "approverName", "a2OperationId")) {
+                row.put(key, review.get(key));
+            }
+            if (!row.containsKey("settlementMode")) row.put("settlementMode", review.get("settlementMode"));
+            return row;
+        }).toList();
     }
 
     private String f3ResidualPool(Map<String, Object> summary) {
@@ -1768,9 +2854,19 @@ public class OpsTeamService implements AuditReplayable {
         row.put("settlementDate", String.valueOf(raw.getOrDefault("settlementDate", "")));
         row.put("cohort", String.valueOf(raw.getOrDefault("cohort", "")));
         row.put("trackA", intValue(raw.get("trackA"), 0));
+        row.put("trackARaw", decimalValue(raw.get("trackARaw"), null));
         row.put("trackB", intValue(raw.get("trackB"), 0));
+        row.put("trackBRaw", decimalValue(raw.get("trackBRaw"), null));
         row.put("matchAmount", intValue(raw.get("matchAmount"), 0));
+        row.put("matchAmountRaw", decimalValue(raw.get("matchAmountRaw"), null));
         row.put("todayPaid", intValue(raw.get("todayPaid"), 0));
+        row.put("todayPaidRaw", decimalValue(raw.get("todayPaidRaw"), null));
+        row.put("platformRawAmountUsdt", decimalValue(raw.get("platformRawAmountUsdt"), null));
+        row.put("platformSettledAmountUsdt", decimalValue(raw.get("platformSettledAmountUsdt"), null));
+        if (raw.containsKey("settlementMode")) row.put("settlementMode", raw.get("settlementMode"));
+        for (String key : List.of("platformReductionPct", "platformCapUsdt", "platformUsedUsdt")) {
+            if (raw.containsKey(key)) row.put(key, decimalValue(raw.get(key), null));
+        }
         row.put("state", String.valueOf(raw.getOrDefault("state", "")));
         row.put("tone", String.valueOf(raw.getOrDefault("tone", "")));
         return row;
@@ -1793,8 +2889,10 @@ public class OpsTeamService implements AuditReplayable {
         List<Map<String, Object>> ranks = leadershipRanks();
         int participantCount = 0;
         List<Map<String, Object>> quotaRows = quotaRows();
-        int quotaCurrent = quotaRows.stream().mapToInt(row -> intValue(row.get("current"), 0)).sum();
-        int quotaCap = quotaRows.stream().mapToInt(row -> intValue(row.get("cap"), 0)).sum();
+        List<Map<String, Object>> activeQuotaRows = quotaRows.stream()
+                .filter(OpsTeamService::activeQuota).toList();
+        int quotaCurrent = activeQuotaRows.stream().mapToInt(row -> intValue(row.get("current"), 0)).sum();
+        int quotaCap = activeQuotaRows.stream().mapToInt(row -> intValue(row.get("cap"), 0)).sum();
         Map<String, Object> ambassador = commissionRepository.ambassadorSummary();
         Map<String, Object> leaderboard = commissionRepository.leaderboardSummary();
         String leaderboardStatus = textValue(leaderboard, "periodStatus", "");
@@ -1854,16 +2952,33 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("quotaMonthlyStockTotal", quotaCap);
         pool.put("quotaMonthlyStockUsed", quotaCurrent);
         pool.put("quotaMonthlyStockRemaining", Math.max(0, quotaCap - quotaCurrent));
-        pool.put("proUnlock", quotaUnlock("PRO"));
-        pool.put("rackUnlock", quotaUnlock("RACK"));
+        pool.put("proUnlock", quotaUnlock(activeQuotaRows, "PRO"));
+        pool.put("rackUnlock", quotaUnlock(activeQuotaRows, "RACK"));
         pool.put("ambassadorBands", ambassadorBands());
-        pool.put("ambassadorApplications", commissionRepository.ambassadorApplications(30));
+        pool.put("ambassadorApplications", commissionRepository.ambassadorApplications(30).stream().map(row -> {
+            Map<String, Object> view = new LinkedHashMap<>(row);
+            Long id = parseLongFromMap(row.get("id"));
+            if (id != null) view.putAll(ambassadorMaterials.adminListPacket(id));
+            return view;
+        }).toList());
         pool.put("ambassadorStatus", textValue(ambassador, "status", ""));
         pool.put("ambassadorPendingCount", intValue(ambassador.get("pendingCount"), 0));
         pool.put("ambassadorBudgetApprovedLabel", moneyLabel(decimalValue(ambassador.get("approvedBudgetUsd"), BigDecimal.ZERO)));
         pool.put("ambassadorBudgetCapLabel", moneyLabel(decimalValue(ambassador.get("requestedBudgetUsd"), BigDecimal.ZERO)));
         pool.put("ambassadorKolBudgetPct", intValue(ambassador.get("kolBudgetPct"), 0));
         pool.put("ambassadorNextQuotaReviewDate", textValue(ambassador, "nextQuotaReviewDate", ""));
+        pool.put("ambassadorMetricBasis", Map.of(
+                "source", "nx_team_ambassador_application", "period", "ALL_TIME",
+                "timeFilter", "NONE", "excludedDeleted", true,
+                "metrics", Map.of(
+                        "ambassadorPendingCount", Map.of("aggregation", "COUNT", "statusFilter", "PENDING", "unit", "APPLICATION"),
+                        "ambassadorBudgetApprovedLabel", Map.of("aggregation", "SUM", "field", "requested_budget_usdt",
+                                "statusFilter", "APPROVED", "currency", "USDT", "amountBasis", "APPLICATION_REQUESTED_BUDGET", "isPaidAmount", false),
+                        "ambassadorBudgetCapLabel", Map.of("aggregation", "SUM", "field", "requested_budget_usdt",
+                                "statusFilter", "ALL", "currency", "USDT", "amountBasis", "APPLICATION_REQUESTED_BUDGET", "isBudgetCap", false),
+                        "ambassadorKolBudgetPct", Map.of("aggregation", "MAX", "field", "kol_budget_pct", "statusFilter", "ALL"),
+                        "ambassadorNextQuotaReviewDate", Map.of("aggregation", "MIN", "field", "event_date",
+                                "statusFilter", "PENDING", "isQuarterPlan", false))));
         pool.put("leaderboardPoolLabel", pause.available() ? moneyLabel(decimalValue(displayLeaderboard.get("poolUsd"), BigDecimal.ZERO)) : null);
         pool.put("leaderboardParticipantCount", pause.available() ? intValue(displayLeaderboard.get("participantCount"), 0) : null);
         pool.put("leaderboardFraudHitCount", intValue(leaderboard.get("fraudHitCount"), 0));
@@ -1900,7 +3015,7 @@ public class OpsTeamService implements AuditReplayable {
         if (intValue(pool.get("weeklyGmvUsd"), 0) == 0
                 && intValue(pool.get("weeklyInjectedUsd"), 0) == 0
                 && pool.get("quotaRows") instanceof List<?> quotaRows
-                && quotaRows.isEmpty()) {
+                && quotaRows.stream().noneMatch(row -> row instanceof Map<?, ?> quota && activeQuota(quota))) {
             return List.of();
         }
         return List.of(
@@ -1967,6 +3082,10 @@ public class OpsTeamService implements AuditReplayable {
                 .toList();
     }
 
+    private static boolean activeQuota(Map<?, ?> row) {
+        return Integer.valueOf(1).equals(row.get("status"));
+    }
+
     private Map<String, Object> normalizeQuotaRow(Map<String, Object> raw) {
         int current = intValue(raw.get("current"), 0);
         int cap = Math.max(current, intValue(raw.get("cap"), current));
@@ -1974,7 +3093,12 @@ public class OpsTeamService implements AuditReplayable {
         row.put("id", parseLongFromMap(raw.get("id")));
         row.put("quotaCode", String.valueOf(raw.getOrDefault("quotaCode", "")));
         row.put("productNo", String.valueOf(raw.getOrDefault("productNo", "")));
+        row.put("monthlyQuota", raw.get("cap"));
         row.put("name", String.valueOf(raw.getOrDefault("name", "Quota")));
+        row.put("displayName", row.get("name"));
+        row.put("note", String.valueOf(raw.getOrDefault("note", "")));
+        row.put("status", intValue(raw.get("status"), 1));
+        row.put("sortOrder", intValue(raw.get("sortOrder"), 0));
         row.put("directRefs", intValue(raw.get("directRefs"), 0));
         BigDecimal monthComputePoints = decimalValue(raw.get("monthComputePoints"), BigDecimal.ZERO);
         row.put("monthComputePoints", monthComputePoints);
@@ -2031,15 +3155,31 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private List<Map<String, Object>> voteWeights() {
-        return leadershipRanks().stream()
-                .map(row -> {
-                    Map<String, Object> weight = new LinkedHashMap<>();
-                    weight.put("v", "V" + intValue(row.get("v"), 0));
-                    weight.put("votes", decimalValue(row.get("votes"), BigDecimal.ZERO));
-                    weight.put("source", "nx_v_rank_config");
-                    return weight;
-                })
-                .toList();
+        // Management read must keep an active level with a legal zero vote value editable.
+        // Business leadershipRanks() intentionally stays positive-only for participant/ranking reads.
+        List<Map<String, Object>> weights = new ArrayList<>();
+        for (Map<String, Object> row : commissionRepository.vRankRows()) {
+            int level = voteWeightLevel(row.get("v"));
+            int votes = intValue(row.get("votes"), 0);
+            if (level < 1 || level > 8 || votes < 0) continue;
+            Map<String, Object> weight = new LinkedHashMap<>();
+            weight.put("v", "V" + level);
+            weight.put("votes", BigDecimal.valueOf(votes));
+            weight.put("source", "nx_v_rank_config");
+            weights.add(weight);
+        }
+        return weights;
+    }
+
+    private int voteWeightLevel(Object value) {
+        String raw = String.valueOf(value == null ? "" : value).trim().toUpperCase(Locale.ROOT);
+        if (raw.startsWith("V")) raw = raw.substring(1);
+        try {
+            int level = Integer.parseInt(raw);
+            return level >= 1 && level <= 8 ? level : 0;
+        } catch (NumberFormatException invalid) {
+            return 0;
+        }
     }
 
     private Map<String, Object> commissionSummary(List<Map<String, Object>> commissionEvents) {
@@ -2243,11 +3383,14 @@ public class OpsTeamService implements AuditReplayable {
 
     private ApiResult<Map<String, Object>> updateLeaderboardMemberStatus(
             String idempotencyKey, TeamCommissionConfigUpdateRequest request, String key) {
-        String rawId = key.substring("F.leaderboard.week.user.".length(), key.length() - ".status".length());
-        Long memberUserId = parseLongFromMap(rawId);
+        Long memberUserId = leaderboardMemberUserId(key);
         String actionType = canonicalLeaderboardAction(normalizeUiValue(request.value()));
         if (memberUserId == null || memberUserId <= 0 || !Set.of("DISQUALIFIED", "FRAUD").contains(actionType)) {
             return ApiResult.fail(422, "LEADERBOARD_MEMBER_ACTION_INVALID");
+        }
+        String evidence = commissionRepository.leaderboardDisqualificationEvidence(memberUserId);
+        if (evidence == null) {
+            return ApiResult.fail(422, "NO_RISK_EVIDENCE");
         }
         if (!commissionRepository.insertLeaderboardMemberAction("week", memberUserId, actionType,
                 request.reason().trim(), actor(request.operator()))) {
@@ -2255,7 +3398,8 @@ public class OpsTeamService implements AuditReplayable {
         }
         audit("F_TEAM_LEADERBOARD_MEMBER_DISQUALIFIED", "nx_team_leaderboard_action:week:" + memberUserId,
                 actor(request.operator()), Map.of("memberUserId", memberUserId, "actionType", actionType,
-                        "reason", request.reason().trim(), "idempotencyKey", idempotencyKey));
+                        "reason", request.reason().trim(), "idempotencyKey", idempotencyKey,
+                        "riskEvidenceRef", evidence));
         Map<String, Object> response = leadershipPool().getData();
         response.put("updated", Map.of("key", key, "source", "nx_team_leaderboard_action", "memberUserId", memberUserId));
         return ApiResult.ok(response);
@@ -2269,8 +3413,23 @@ public class OpsTeamService implements AuditReplayable {
         return key != null && key.matches("^F\\.quota\\.usage\\.[1-9][0-9]*\\.status$");
     }
 
-    private boolean isLeaderboardMemberStatusKey(String key) {
+    private static boolean isLeaderboardMemberStatusKey(String key) {
         return key != null && key.matches("^F\\.leaderboard\\.week\\.user\\.[1-9][0-9]*\\.status$");
+    }
+
+    private static Long leaderboardMemberUserId(String key) {
+        return parseLongFromMap(key.substring("F.leaderboard.week.user.".length(), key.length() - ".status".length()));
+    }
+
+    public static ApiResult<Void> validateLeaderboardMemberProposal(
+            TeamCommissionRepository repository, String key, String value) {
+        if (!isLeaderboardMemberStatusKey(key)) return ApiResult.ok();
+        Long memberUserId = leaderboardMemberUserId(key);
+        if (memberUserId == null || !Set.of("DISQUALIFIED", "FRAUD").contains(canonicalLeaderboardAction(value))) {
+            return ApiResult.fail(422, "LEADERBOARD_MEMBER_ACTION_INVALID");
+        }
+        return repository.leaderboardDisqualificationEvidence(memberUserId) == null
+                ? ApiResult.fail(422, "NO_RISK_EVIDENCE") : ApiResult.ok();
     }
 
     private Map<String, Object> normalizeCommissionAuditFeedItem(Map<String, Object> raw) {
@@ -2288,7 +3447,7 @@ public class OpsTeamService implements AuditReplayable {
         return String.valueOf(value).trim();
     }
 
-    private BigDecimal decimalValue(Object raw, BigDecimal fallback) {
+    private static BigDecimal decimalValue(Object raw, BigDecimal fallback) {
         if (raw == null) {
             return fallback;
         }
@@ -2333,6 +3492,31 @@ public class OpsTeamService implements AuditReplayable {
                 (Supplier) action);
     }
 
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private ApiResult<Map<String, Object>> executeBound(
+            String scope,
+            String idempotencyKey,
+            String hash,
+            String readAuthority,
+            String target,
+            Supplier<ApiResult<Map<String, Object>>> action) {
+        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.executeBound(
+                scope,
+                idempotencyKey,
+                hash,
+                ApiResult.class,
+                readAuthority,
+                target,
+                (Supplier) action);
+    }
+
+    private String vRankRequestHash(String expectedRevision, Object... parts) {
+        if (expectedRevision == null) return requestHash(parts);
+        Object[] command = java.util.Arrays.copyOf(parts, parts.length + 1);
+        command[parts.length] = expectedRevision;
+        return requestHash(command);
+    }
+
     private String requestHash(Object... parts) {
         StringBuilder canonical = new StringBuilder();
         for (Object part : parts) {
@@ -2355,6 +3539,7 @@ public class OpsTeamService implements AuditReplayable {
 
     private void rejectSunsetKey(String key) {
         String normalized = requireText(key, "TEAM_CONFIG_KEY_REQUIRED");
+        if ("F.leaderboard.minComputePoints".equals(normalized)) return;
         String lower = normalized.toLowerCase(Locale.ROOT).replace("-", "").replace("_", "");
         if (lower.contains("premium") || lower.contains("points") || lower.contains("nexv2") || lower.contains("nex.v2")) {
             throw new IllegalArgumentException("Sunset capability is not an active F domain key");
@@ -2374,7 +3559,7 @@ public class OpsTeamService implements AuditReplayable {
         };
     }
 
-    private String configKey(String key) {
+    private static String configKey(String key) {
         return switch (key) {
             case "directRoyaltyPct" -> "team.direct_royalty_pct";
             case "networkRoyaltyPct" -> "team.network_royalty_pct";
@@ -2385,6 +3570,76 @@ public class OpsTeamService implements AuditReplayable {
             case "hardwareQuotaPerRank" -> "team.hardware_quota_per_rank";
             default -> throw new IllegalArgumentException("Unsupported F team policy key");
         };
+    }
+
+    /**
+     * F4 配置面键中，哪些走 updateUiConfig 的通用键值写入。动态业务键（票权、配额档、
+     * 大使状态、榜单期状态）由各自 writer 的 CAS/修订校验处理，不能在这里绑定。
+     */
+    public static boolean isF4StoredUiConfigKey(String key) {
+        if (key == null) {
+            return false;
+        }
+        return (key.startsWith("F.pool.") || key.startsWith("F.quota.")
+                || key.startsWith("F.ambassador.") || key.startsWith("F.leaderboard."))
+                && UI_CONFIG_KEYS.contains(key);
+    }
+
+    /** Raw value of a stored UI key, read from the same source as the write path. */
+    public static String proposalUiConfigValue(PlatformConfigFacade configs, String key) {
+        return configs.activeValue(uiConfigStorageKey(key)).orElseGet(() -> uiConfigDefault(key));
+    }
+
+    private static String uiConfigDefault(String key) {
+        if (AUTO_SETTLE_UI_KEY.equals(key)) return "on";
+        return PLATFORM_CAP_PCT_UI_KEY.equals(key) ? BinarySettlementPolicyProvider.DEFAULT_PLATFORM_CAP_PCT : "";
+    }
+
+    public static String proposalCurrentValue(
+            PlatformConfigFacade configs, TeamCommissionRepository rules, String operation, String key) {
+        if ("f_config".equals(operation)) {
+            return fConfigProposalCurrentValue(configs, key);
+        }
+        if ("f_unilevel_rule".equals(operation) || isUnilevelRuleKey(key)) {
+            return unilevelProposalCurrentValue(rules, key);
+        }
+        if ("f_ui_config".equals(operation)) {
+            return configs.activeValue(uiConfigStorageKey(key))
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .orElse("未知（当前值不可用）");
+        }
+        return "未知（当前值不可用）";
+    }
+
+    private static String fConfigProposalCurrentValue(PlatformConfigFacade configs, String key) {
+        return configs.activeValue(configKey(key))
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .map(value -> appendUnit(value, fConfigUnit(key)))
+                .orElse("未知（当前值不可用）");
+    }
+
+    private static String appendUnit(String value, String unit) {
+        if (!StringUtils.hasText(unit)) return value;
+        if ("%".equals(unit)) return value.endsWith("%") ? value : value + "%";
+        return value.endsWith(unit) ? value : value + " " + unit;
+    }
+
+    private static String fConfigUnit(String key) {
+        return switch (key) {
+            case "directRoyaltyPct", "networkRoyaltyPct", "binaryPairRatePct", "maxCombinedOutflowPct" -> "%";
+            case "minPayoutUsdt" -> "USDT";
+            case "rankWindowDays" -> "天";
+            case "hardwareQuotaPerRank" -> "台";
+            default -> "";
+        };
+    }
+
+    private static String unilevelProposalCurrentValue(TeamCommissionRepository rules, String key) {
+        String current = unilevelRuleValue(rules, key, true);
+        if (!StringUtils.hasText(current)) return "未知（当前值不可用）";
+        return key.startsWith("F.unilevel.nex.") ? current + " UVT/USDT" : current + "%";
     }
 
     private BigDecimal normalizeValue(String key, String raw) {
@@ -2416,7 +3671,7 @@ public class OpsTeamService implements AuditReplayable {
         return trimmed;
     }
 
-    private boolean isValidJson(String raw) {
+    private static boolean isValidJson(String raw) {
         try {
             JSON_PROBE.readTree(raw);
             return true;
@@ -2425,16 +3680,35 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
+    public static void validateBinaryUiConfig(String key, String value) {
+        switch (key) {
+            case "F.binary.threshold" -> BinarySettlementPolicyProvider.normalizeThreshold(value);
+            case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(value);
+            case "F.binary.paused", AUTO_SETTLE_UI_KEY -> {
+                if (BinarySettlementPolicyProvider.parsePaused(value) == null) {
+                    throw new IllegalArgumentException("F_TEAM_TOGGLE_INVALID");
+                }
+            }
+            case PLATFORM_CAP_PCT_UI_KEY -> {
+                if (BinarySettlementPolicyProvider.parsePlatformCapPct(value) == null) {
+                    throw new IllegalArgumentException("F3_PLATFORM_CAP_PCT_INVALID");
+                }
+            }
+            default -> { }
+        }
+    }
+
     // key-specific 校验:开关 / 数字范围 / JSON schema / 动态调度表达式。
     private void validateUiConfig(String key, String value) {
+        validateBinaryUiConfig(key, value);
         switch (key) {
-            case "F.vrank.permanent", "F.leaderboard.paused", "F.binary.paused" -> {
+            case "F.vrank.permanent", "F.leaderboard.paused" -> {
                 if (!"on".equalsIgnoreCase(value) && !"off".equalsIgnoreCase(value)) {
                     throw new IllegalArgumentException("F_TEAM_TOGGLE_INVALID");
                 }
             }
-            case "F.leaderboard.minUsd" -> {
-                if (parseDecimal(value, BigDecimal.valueOf(-1)).signum() < 0) {
+            case "F.leaderboard.minComputePoints" -> {
+                if (!LeaderboardComputePoints.valid(parseDecimal(value, BigDecimal.valueOf(-1)))) {
                     throw new IllegalArgumentException("F_TEAM_NUMBER_INVALID");
                 }
             }
@@ -2474,9 +3748,11 @@ public class OpsTeamService implements AuditReplayable {
                     throw new IllegalArgumentException("F_TEAM_PCT_OUT_OF_RANGE");
                 }
             }
+            case "F.pool.monthlyCap", "F.leaderboard.poolUsd" -> LeadershipPoolConfigGuard.parseConfiguredMoney(value);
             case "F.pool.ratio" -> LeadershipPoolConfigGuard.parseConfiguredRate(value);
+            case "F.pool.unlockVRank" -> LeadershipPoolConfigGuard.parseConfiguredUnlockRank(value);
             case "F.pool.periodPrize" -> validatePeriodPrize(value);
-            case "F.pool.settleCron" -> LeadershipPoolSettleScheduler.normalizeCron(value);
+            case "F.pool.settleCron" -> LeadershipPoolSettleScheduler.normalizeWeeklyCron(value);
             case "F.partner.tiers" -> validatePartnerTiers(value);
             case "F.vrank.titles" -> validateVrankTitles(value);
             default -> {
@@ -2577,9 +3853,10 @@ public class OpsTeamService implements AuditReplayable {
     private Map<String, String> configValues() {
         Map<String, String> values = new LinkedHashMap<>();
         for (String key : UI_CONFIG_KEYS) {
-            String canonicalKey = "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
+            String canonicalKey = uiConfigStorageKey(key);
             configFacade.activeValue(canonicalKey).ifPresent(value -> values.put(key, projectLegacyUiValue(key, value)));
         }
+        values.putIfAbsent("F.leaderboard.minComputePoints", "1");
         return values;
     }
 
@@ -2622,6 +3899,11 @@ public class OpsTeamService implements AuditReplayable {
         if (raw.containsKey("amount")) {
             item.put("amount", parseDecimal(String.valueOf(raw.get("amount")), BigDecimal.ZERO).stripTrailingZeros());
         }
+        String type = String.valueOf(item.get("type")).trim().toLowerCase(Locale.ROOT);
+        if ("usdt".equals(type) || "uvt".equals(type)) {
+            item.put("amountText", raw.get("amount") == null ? null
+                    : decimalValue(raw.get("amount"), BigDecimal.ZERO).stripTrailingZeros().toPlainString());
+        }
         copyText(raw, item, "voucherId");
         copyText(raw, item, "skuId");
         copyText(raw, item, "custom");
@@ -2648,8 +3930,10 @@ public class OpsTeamService implements AuditReplayable {
         item.put("id", requireText(id, "TEAM_VRANK_REWARD_ID_REQUIRED"));
         item.put("type", type);
         if ("usdt".equals(type) || "uvt".equals(type)) {
-            if (request.amount() == null || request.amount().compareTo(BigDecimal.ZERO) <= 0) {
-                throw new IllegalArgumentException("F1 V-Rank fund reward amount must be positive");
+            if (request.amount() == null || request.amount().signum() <= 0
+                    || request.amount().stripTrailingZeros().scale() > 6
+                    || request.amount().compareTo(new BigDecimal("999999999999.999999")) > 0) {
+                throw new IllegalArgumentException("F1 V-Rank fund reward amount must be positive and fit DECIMAL(18,6)");
             }
             item.put("amount", request.amount().stripTrailingZeros());
             return item;
@@ -2676,7 +3960,7 @@ public class OpsTeamService implements AuditReplayable {
 
     /** 判定为资金类奖励:USDT/UVT 且金额>0。资金类放大平台资金流出,写入受 B1 备付金覆盖率约束。 */
     private boolean isFundRewardItem(Map<String, Object> item) {
-        String type = String.valueOf(item.getOrDefault("type", ""));
+        String type = String.valueOf(item.getOrDefault("type", "")).trim().toLowerCase(Locale.ROOT);
         if (!"usdt".equals(type) && !"uvt".equals(type)) {
             return false;
         }
@@ -2822,8 +4106,8 @@ public class OpsTeamService implements AuditReplayable {
                 .orElse(0);
     }
 
-    private String quotaUnlock(String code) {
-        return quotaRows().stream()
+    private String quotaUnlock(List<Map<String, Object>> activeQuotaRows, String code) {
+        return activeQuotaRows.stream()
                 .filter(row -> textValue(row, "name", "").toUpperCase(Locale.ROOT).contains(code))
                 .findFirst()
                 .map(row -> "月配额 " + row.get("cap"))
@@ -2834,7 +4118,11 @@ public class OpsTeamService implements AuditReplayable {
         return configDecimal(key, BigDecimal.valueOf(fallback)).setScale(0, RoundingMode.DOWN).intValue();
     }
 
-    private String uiConfigKey(String key) {
+    private static String uiConfigStorageKey(String key) {
+        return "F.cooldown".equals(key) ? COMMISSION_COOLING_DAYS_KEY : uiConfigKey(key);
+    }
+
+    private static String uiConfigKey(String key) {
         return "team.ui." + key;
     }
 
@@ -2861,6 +4149,8 @@ public class OpsTeamService implements AuditReplayable {
                 "F.sunset.exclusions",
                 "F.binary.threshold",
                 "F.binary.matchRate",
+                AUTO_SETTLE_UI_KEY,
+                PLATFORM_CAP_PCT_UI_KEY,
                 "F.binary.spillover",
                 "F.binary.gvResetCron",
                 "F.binary.settlePeriod",
@@ -2878,7 +4168,7 @@ public class OpsTeamService implements AuditReplayable {
                 // 批1b · 中风险:开关 / 数字范围 / JSON schema(配置面存储,业务逻辑消费留后续)。
                 "F.vrank.permanent",
                 "F.leaderboard.paused",
-                "F.leaderboard.minUsd",
+                "F.leaderboard.minComputePoints",
                 "F.unilevel.depth",
                 "F.unilevel.mergeExitMaxPct",
                 "F.commission.anomalyThreshold",
@@ -2916,9 +4206,18 @@ public class OpsTeamService implements AuditReplayable {
         };
     }
 
-    private boolean coverageBelowRedline() {
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        return coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
+    private void requirePayoutIncreaseCoverage(boolean increasesPayout) {
+        if (!increasesPayout) return;
+        String reason;
+        try {
+            reason = BinarySettlementPolicyProvider.currentCoverageBlock(coverageFacade.snapshot());
+        } catch (DataAccessException failure) {
+            log.debug("Could not read coverage for F payout increase", failure);
+            reason = "B1_COVERAGE_UNRELIABLE";
+        }
+        if (reason != null) {
+            throw new AdminCommandBusinessRejection(422, reason, ApiResult.fail(422, reason));
+        }
     }
 
     private BigDecimal configDecimal(String key, BigDecimal fallback) {
@@ -2928,16 +4227,16 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private int resolveCommissionCoolingDays() {
-        return configFacade.activeValue(COMMISSION_COOLING_DAYS_KEY)
-                .map(value -> {
-                    try {
-                        return Integer.parseInt(value.trim());
-                    } catch (NumberFormatException ignored) {
-                        return null;
-                    }
-                })
-                .filter(days -> days >= 0 && days <= 90)
-                .orElse(DEFAULT_COMMISSION_COOLING_DAYS);
+        return commissionCoolingDays(configFacade.activeValue(COMMISSION_COOLING_DAYS_KEY).orElse(""));
+    }
+
+    private static int commissionCoolingDays(String value) {
+        try {
+            int days = Integer.parseInt(value.trim());
+            return days >= 0 && days <= 90 ? days : DEFAULT_COMMISSION_COOLING_DAYS;
+        } catch (NumberFormatException ignored) {
+            return DEFAULT_COMMISSION_COOLING_DAYS;
+        }
     }
 
     private String configText(String key, String fallback) {
@@ -2957,11 +4256,11 @@ public class OpsTeamService implements AuditReplayable {
                 .orElse(false);
     }
 
-    private BigDecimal parseDecimal(String raw) {
+    private static BigDecimal parseDecimal(String raw) {
         return parseDecimal(raw, null);
     }
 
-    private BigDecimal parseDecimal(String raw, BigDecimal fallback) {
+    private static BigDecimal parseDecimal(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
             if (fallback != null) {
                 return BigDecimal.ZERO;
@@ -2978,7 +4277,26 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
-    private BigDecimal percentRatio(String raw, BigDecimal fallback) {
+    /** Batch proposals share the F2 write precision boundary before creating an approval ticket. */
+    public static void validateUnilevelRatePrecision(String key, String value) {
+        if (isUnilevelRuleKey(key) && !key.startsWith("F.unilevel.nex.")) {
+            percentPointRatio(value, BigDecimal.ZERO);
+        }
+    }
+
+    /** F2 percentage points must convert exactly to the stored DECIMAL(10,6) ratio. */
+    private static BigDecimal percentPointRatio(String raw, BigDecimal fallback) {
+        if (!StringUtils.hasText(raw)) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal ratio = parseDecimal(raw, fallback).movePointLeft(2);
+        if (ratio.stripTrailingZeros().scale() > 6) {
+            throw new BizException(422, "F2_USDT_RATE_PRECISION_INVALID");
+        }
+        return ratio.setScale(6);
+    }
+
+    private static BigDecimal percentRatio(String raw, BigDecimal fallback) {
         if (!StringUtils.hasText(raw)) {
             return BigDecimal.ZERO;
         }
@@ -3193,10 +4511,7 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) {
             return guard;
         }
-        String targetV = requireText(request.targetV(), "TEAM_VRANK_REQUIRED").toUpperCase(Locale.ROOT);
-        if (!activeVRankLevels().contains(targetV)) {
-            throw new IllegalArgumentException("Unsupported F1 V-Rank level");
-        }
+        String targetV = requireVRank(request.targetV()).v();
         String direction = requireText(request.direction(), "TEAM_VRANK_DIRECTION_REQUIRED")
                 .toLowerCase(Locale.ROOT);
         if (!"promote".equals(direction) && !"rollback".equals(direction)) {
@@ -3464,7 +4779,7 @@ public class OpsTeamService implements AuditReplayable {
      * 端点 5:F1-MD4 补发(找原 payout → 重派)。
      *
      * <p>流程:① requireCommand ② 找原 payout(by payout_id,不存在 → VALIDATION_FAILED PAYOUT_NOT_FOUND)
-     * ③ 资金类(usdt/nex)走 B1 预检(coverageFacade.snapshot belowRedline → 422 COVERAGE_BELOW_REDLINE)
+     * ③ 资金类 (USDT/UVT) 补发要求 B1 覆盖率可核实且不低于红线
      *   + 新 commission_event + TreasuryLedgerPostingFacade.postLedgerEntry(IN/PENDING);
      *   权益类(voucher/sku/custom)不进 D4,直接 UPDATE payout。
      * ④ UPDATE payout status=REISSUED + operator + reason ⑤ audit F_TEAM_REWARD_REISSUED
@@ -3511,10 +4826,7 @@ public class OpsTeamService implements AuditReplayable {
         // 资金类(usdt/nex)B1 预检 + 新 commission_event + ledgerPostingFacade.postLedgerEntry
         // SKU 按原 payout 标的联动真实权益;券/custom 保留既有分支。
         if ("usdt".equals(rewardType) || "uvt".equals(rewardType)) {
-            if (amount.compareTo(BigDecimal.ZERO) > 0 && coverageBelowRedline()) {
-                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-            }
+            requirePayoutIncreaseCoverage(amount.signum() > 0);
             String currency = "usdt".equals(rewardType) ? "USDT" : "UVT";
             Long recipientUserId = sponsorUserId != null ? sponsorUserId : userId;
             Long sourceUserId = sponsorUserId != null ? userId : null;
@@ -3545,6 +4857,15 @@ public class OpsTeamService implements AuditReplayable {
 
         if ("sku".equals(rewardType)) {
             skuFulfillmentService.reissueSkuReward(userId, rankCode, textValue(original, "skuId", ""), operator);
+        }
+        if ("voucher".equals(rewardType) && userId != null
+                && StringUtils.hasText(textValue(original, "voucherId", ""))) {
+            VoucherGrantFacade.VoucherGrantResult grantResult = vRankRewardDispatcher.reissueVoucherReward(userId, rankCode,
+                    textValue(original, "voucherId", ""), payoutId.trim(), idempotencyKey.trim(), operator);
+            if (grantResult == null || !"AVAILABLE".equalsIgnoreCase(String.valueOf(grantResult.status()))) {
+                throw new BizException(409, "VOUCHER_REISSUE_GRANT_NOT_AVAILABLE: status="
+                        + (grantResult == null ? "none" : grantResult.status()));
+            }
         }
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REISSUED", operator, "[REISSUE] " + reason);
@@ -3630,6 +4951,10 @@ public class OpsTeamService implements AuditReplayable {
         String rankCode = String.valueOf(original.getOrDefault("rankCode", ""));
         String operator = resolveOperator("MANUAL", request == null ? null : actor(request.operator()));
         String reason = request.reason().trim();
+        Boolean usedVoucherClawback = request == null ? null : request.usedVoucherClawback();
+        if (usedVoucherClawback != null && !"voucher".equals(rewardType)) {
+            return ApiResult.fail(422, "F1_CLAWBACK_VOUCHER_ONLY");
+        }
 
         // 资金类 D4 红冲:UPDATE nx_commission_event.status='REVERSED' + ledgerPostingFacade 反向 OUT 条目
         // 权益类(voucher/sku/custom)无 commission_event_id,跳过 D4
@@ -3645,20 +4970,29 @@ public class OpsTeamService implements AuditReplayable {
             skuFulfillmentService.reverseSkuReward(userId, rankCode, textValue(original, "skuId", ""),
                     currentStatus, operator, reason);
         }
+        Map<String, Object> voucherClawbackResult = new LinkedHashMap<>();
+        if ("voucher".equals(rewardType) && userId != null
+                && StringUtils.hasText(textValue(original, "voucherId", ""))) {
+            voucherClawbackResult = reverseVoucherReward(userId, rankCode, textValue(original, "voucherId", ""),
+                    payoutId.trim(), usedVoucherClawback);
+        }
         boolean updated = commissionRepository.updateRewardPayoutStatus(
                 payoutId.trim(), "REVERSED", operator, "[REVERSE] " + reason);
         if (!updated) {
             throw new IllegalStateException("PAYOUT_UPDATE_FAILED");
         }
-        audit("F_TEAM_REWARD_REVERSED", "nx_v_rank_reward_payout:" + payoutId, operator, Map.of(
-                "payoutId", payoutId,
-                "userId", userId,
-                "rankCode", rankCode,
-                "rewardType", rewardType,
-                "amount", amount,
-                "commissionEventId", commissionEventId == null ? "" : commissionEventId,
-                "reason", reason,
-                "idempotencyKey", idempotencyKey.trim()));
+        Map<String, Object> reverseAudit = new LinkedHashMap<>();
+        reverseAudit.put("payoutId", payoutId);
+        reverseAudit.put("userId", userId);
+        reverseAudit.put("rankCode", rankCode);
+        reverseAudit.put("rewardType", rewardType);
+        reverseAudit.put("amount", amount);
+        reverseAudit.put("commissionEventId", commissionEventId == null ? "" : commissionEventId);
+        reverseAudit.put("reason", reason);
+        reverseAudit.put("usedVoucherClawback", usedVoucherClawback == null ? "" : usedVoucherClawback);
+        reverseAudit.put("idempotencyKey", idempotencyKey.trim());
+        reverseAudit.putAll(voucherClawbackResult);
+        audit("F_TEAM_REWARD_REVERSED", "nx_v_rank_reward_payout:" + payoutId, operator, reverseAudit);
         eventOutboxService.publish(
                 "VRANK_REWARD_PAYOUT",
                 payoutId.trim(),
@@ -3682,7 +5016,74 @@ public class OpsTeamService implements AuditReplayable {
         response.put("source", "sku".equals(rewardType)
                 ? "nx_v_rank_reward_payout + nx_user_sku_entitlement + nx_v_rank_reward_fulfillment"
                 : "nx_v_rank_reward_payout + nx_commission_event (reverse)");
+        response.putAll(voucherClawbackResult);
         return ApiResult.ok(response);
+    }
+
+    /** F1 券冲正按订单付款状态区分已结算抵扣和待付款占用。 */
+    private Map<String, Object> reverseVoucherReward(Long userId, String rankCode, String voucherId, String payoutId,
+                                                     Boolean usedVoucherClawback) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        String sourcePrefix = userId + ":" + rankCode + ":voucher";
+        Map<String, Object> grant = commissionRepository.lockLatestVrankVoucherGrant(userId, voucherId, sourcePrefix);
+        if (grant == null || grant.isEmpty()) {
+            result.put("voucherClawback", "NO_GRANT_RECORD");
+            return result;
+        }
+        String grantId = String.valueOf(grant.getOrDefault("grantId", ""));
+        String sourceId = String.valueOf(grant.getOrDefault("sourceId", ""));
+        String status = String.valueOf(grant.getOrDefault("status", "")).toUpperCase(Locale.ROOT);
+        String paymentStatus = textValue(grant, "orderPaymentStatus", "");
+        boolean paid = "PAID".equalsIgnoreCase(paymentStatus);
+        boolean available = "AVAILABLE".equals(status);
+        boolean used = "USED".equals(status);
+        if (available || (used && StringUtils.hasText(paymentStatus) && !paid)) {
+            if (commissionRepository.revokeVrankVoucherGrant(userId, voucherId, sourceId, status) != 1) {
+                throw new BizException(409, "VRANK_VOUCHER_REVOKE_CONFLICT");
+            }
+            result.put("voucherClawback", available ? "AVAILABLE_REVOKED" : "ORDER_VOUCHER_REVOKED");
+            if (used) result.put("clawbackSkippedReason", "ORDER_NOT_SETTLED");
+            return result;
+        }
+        if (used) {
+            if (usedVoucherClawback != null && !usedVoucherClawback) {
+                result.put("voucherClawback", "SKIPPED_BY_OPERATOR");
+                return result;
+            }
+            Object redeemedRaw = grant.get("redeemedAmountUsd");
+            BigDecimal amountUsd = decimalValue(redeemedRaw, BigDecimal.ZERO);
+            if (amountUsd.compareTo(BigDecimal.ZERO) <= 0) {
+                result.put("voucherClawback", "SKIPPED");
+                result.put("clawbackSkippedReason",
+                        redeemedRaw == null ? "REDEEMED_AMOUNT_UNKNOWN" : "REDEEMED_AMOUNT_ZERO");
+                return result;
+            }
+            if (!paid) {
+                result.put("voucherClawback", "SKIPPED");
+                result.put("clawbackSkippedReason", "ORDER_SETTLEMENT_UNKNOWN");
+                return result;
+            }
+            BigDecimal lockedBalance = commissionRepository.lockVrankWalletUsdt(userId);
+            if (lockedBalance == null) {
+                throw new BizException(409, "VRANK_WALLET_NOT_FOUND");
+            }
+            if (commissionRepository.debitVrankWalletUsdt(userId, amountUsd) != 1) {
+                throw new BizException(409, "VRANK_WALLET_DEBIT_CONFLICT");
+            }
+            BigDecimal balanceAfter = lockedBalance.subtract(amountUsd);
+            String billId = "F1-VRANKREWARD-REVERSE-" + payoutId.trim()
+                    + (StringUtils.hasText(grantId) ? "-" + grantId : "");
+            ledgerPostingFacade.postLedgerEntryWithBalanceAfter(billId, userId,
+                    "VRANK_REWARD_PAYOUT_REVERSED", "USDT", "OUT", amountUsd, balanceAfter, "SUCCESS",
+                    "F1 V-Rank voucher clawback | rank=" + rankCode);
+            result.put("voucherClawback", "CLAWED_BACK");
+            result.put("clawbackAmountUsdt", amountUsd);
+            result.put("balanceAfterUsdt", balanceAfter);
+            result.put("clawbackBillId", billId);
+            return result;
+        }
+        result.put("voucherClawback", "GRANT_STATUS_" + status);
+        return result;
     }
 
     /** normalize payout row:字段补全 + status 大写。 */
@@ -3709,7 +5110,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     /** 从 Map 取 Long(null 安全)。 */
-    private Long parseLongFromMap(Object raw) {
+    private static Long parseLongFromMap(Object raw) {
         if (raw == null) {
             return null;
         }
@@ -3745,6 +5146,11 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     @Override
+    public ApiResult<Void> validateReplayPermission(AuditReplayCommand command) {
+        return ambassadorMaterials.validateApprovalActor(command);
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<?> replay(AuditReplayCommand cmd, AuditReplayContext ctx) {
         Map<String, Object> p = cmd.params() == null ? Map.of() : cmd.params();
@@ -3772,19 +5178,26 @@ public class OpsTeamService implements AuditReplayable {
                 TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(str(p, "key"), str(p, "value"), reason, operator);
                 return updateConfig(idem, req);
             }
-            // f_ui_config: polymorphic UI keys,key 分发(F.binary.spillover/F.fulfillment... 等 toggle)。amplifies false。
+            // f_ui_config: polymorphic UI keys，按当前值与拟改值判定放大方向。
             case "f_ui_config" -> {
                 String key = str(p, "key");
                 TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(
                         key, str(p, "value"), reason, operator,
                         parseLongFromMap(p.containsKey("expectedMonthlyQuota")
-                                ? p.get("expectedMonthlyQuota") : p.get("expectedVersion")));
+                                ? p.get("expectedMonthlyQuota") : p.get("expectedVersion")),
+                        parseLongFromMap(p.get("expectedMaterialRevision")), null,
+                        p.get("expectedValue") instanceof String expected ? expected : null);
                 return updateUiConfig(idem, req, key);
             }
             case "f_config_batch" -> {
                 Object rawChanges = p.get("changes");
                 if (!(rawChanges instanceof List<?> changes) || changes.isEmpty() || changes.size() > 32) {
                     return ApiResult.fail(422, "F_CONFIG_BATCH_INVALID");
+                }
+                if (changes.stream().anyMatch(item -> item instanceof Map<?, ?> row
+                        && row.get("key") instanceof String key && key.trim().startsWith("F.binary."))) {
+                    // Settlement takes the automatic-switch row before any other F3 configuration row.
+                    configFacade.activeValueForUpdate(BinarySettlementPolicyProvider.AUTO_SETTLE_KEY);
                 }
                 List<Map<String, Object>> applied = new ArrayList<>();
                 for (Object item : changes) {
@@ -3794,7 +5207,8 @@ public class OpsTeamService implements AuditReplayable {
                     String key = raw.get("key") == null ? "" : String.valueOf(raw.get("key")).trim();
                     String value = raw.get("value") == null ? "" : String.valueOf(raw.get("value")).trim();
                     TeamCommissionConfigUpdateRequest req =
-                            new TeamCommissionConfigUpdateRequest(key, value, reason, operator);
+                            new TeamCommissionConfigUpdateRequest(key, value, reason, operator, null, null, null,
+                                    raw.get("expectedValue") instanceof String expected ? expected : null);
                     ApiResult<Map<String, Object>> result = updateConfigInternal(idem + ":" + applied.size(), req);
                     if (result.getCode() != 0) {
                         throw new BizException(result.getCode(), result.getMessage());
@@ -3806,7 +5220,11 @@ public class OpsTeamService implements AuditReplayable {
                 response.put("authoritativeReread", true);
                 return ApiResult.ok(response);
             }
-            // f_unilevel_rule: key 承载 layerNo + 字段(F.unilevel.L{n} usdtRate / F.unilevel.nex.L{n} nexPerUsd)。amplifies true(费率)。
+            // f_unilevel_rule: key 承载 layerNo + 字段(F.unilevel.L{n} usdtRate / F.unilevel.nex.L{n} nexPerUsd)。
+            // 方向由服务器按当前值与拟改值同单位比较：费率调低=param，调高=fund。
+            case "f_unilevel_bootstrap" -> {
+                return ApiResult.ok(initializeUnilevelRules(p, ctx));
+            }
             case "f_unilevel_rule" -> {
                 String key = str(p, "key");
                 TeamCommissionConfigUpdateRequest req = new TeamCommissionConfigUpdateRequest(key, str(p, "value"), reason, operator);
@@ -3844,8 +5262,19 @@ public class OpsTeamService implements AuditReplayable {
             case "f_reward_payout_action" -> {
                 String payoutId = str(p, "payoutId");
                 String action = str(p, "action");
+                Object rawClawback = p.get("usedVoucherClawback");
+                Boolean usedVoucherClawback = null;
+                if (rawClawback != null) {
+                    if (!(rawClawback instanceof Boolean clawback)) {
+                        return ApiResult.fail(422, "F1_CLAWBACK_VALUE_INVALID");
+                    }
+                    usedVoucherClawback = clawback;
+                }
+                if ("reissue".equalsIgnoreCase(action) && usedVoucherClawback != null) {
+                    return ApiResult.fail(422, "F1_CLAWBACK_REVERSE_ONLY");
+                }
                 VRankRewardPayoutActionRequest request =
-                        new VRankRewardPayoutActionRequest(reason, operator);
+                        new VRankRewardPayoutActionRequest(reason, operator, usedVoucherClawback);
                 if ("reissue".equalsIgnoreCase(action)) {
                     return reissueRewardPayout(payoutId, idem, request);
                 }

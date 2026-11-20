@@ -19,8 +19,11 @@ public interface AppDeveloperWebhookDeliveryMapper extends BaseMapper<Object> {
     List<DeliveryRow> due(@Param("now") LocalDateTime now, @Param("limit") int limit);
 
     /** Claims rows in the caller transaction before network I/O. */
-    @Update("UPDATE nx_developer_webhook_delivery SET status='DELIVERING',attempt_count=attempt_count+1,updated_at=NOW() WHERE id=#{id} AND status IN ('PENDING','RETRYING')")
-    int claim(@Param("id") Long id);
+    @Update("UPDATE nx_developer_webhook_delivery SET status='DELIVERING',attempt_count=attempt_count+1,updated_at=NOW() WHERE id=#{id} AND status IN ('PENDING','RETRYING') AND attempt_count=#{expectedAttempts}")
+    int claim(@Param("id") Long id, @Param("expectedAttempts") int expectedAttempts);
+
+    @Update("UPDATE nx_developer_webhook_delivery SET status=#{status},attempt_count=attempt_count-1,updated_at=NOW() WHERE id=#{id} AND status='DELIVERING' AND attempt_count=#{attempts}")
+    int releaseUnattempted(@Param("id") Long id, @Param("attempts") int attempts, @Param("status") String status);
 
     /** Returns rows stranded by a crashed worker to the durable retry queue after their lease expires. */
     @Update("UPDATE nx_developer_webhook_delivery SET status='RETRYING',last_error='DELIVERY_LEASE_EXPIRED',next_retry_at=#{now},updated_at=#{now} WHERE status='DELIVERING' AND updated_at<=#{cutoff}")
@@ -28,7 +31,7 @@ public interface AppDeveloperWebhookDeliveryMapper extends BaseMapper<Object> {
 
     default List<DeliveryRow> claimDue(int limit, LocalDateTime now, Object ignored) {
         List<DeliveryRow> rows = due(now, limit);
-        return rows.stream().filter(row -> claim(row.id()) == 1).toList();
+        return rows.stream().filter(row -> claim(row.id(), row.attemptCount()) == 1).toList();
     }
 
     @Update("UPDATE nx_developer_webhook_delivery d JOIN nx_developer_webhook w ON w.id=d.webhook_id SET d.status='SUCCEEDED',d.last_status_code=#{code},d.last_error=NULL,d.delivered_at=#{at},d.updated_at=#{at},w.delivery_status='SUCCEEDED',w.updated_at=#{at} WHERE d.id=#{id} AND d.status='DELIVERING' AND d.attempt_count=#{attempts}")

@@ -36,10 +36,12 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     private final EmergencyControlMapper mapper;
     private final ObjectMapper objectMapper;
     private final AtomicBoolean tablesEnsured = new AtomicBoolean(false);
+    private final AtomicBoolean geoBlockUserColumnEnsured = new AtomicBoolean(false);
 
     @PostConstruct
     void initializeSchema() {
         ensureTables();
+        ensureGeoBlockEventUserNoColumn();
     }
 
     @Override
@@ -62,6 +64,26 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
             mapper.createSopActionTable();
             mapper.createSopExecutionTable();
             tablesEnsured.set(true);
+        }
+    }
+
+    private void ensureGeoBlockEventUserNoColumn() {
+        if (geoBlockUserColumnEnsured.get()) {
+            return;
+        }
+        synchronized (geoBlockUserColumnEnsured) {
+            if (geoBlockUserColumnEnsured.get()) {
+                return;
+            }
+            if (mapper.geoBlockEventUserNoColumnCount() == 0) {
+                try {
+                    mapper.addGeoBlockEventUserNoColumn();
+                } catch (RuntimeException failed) {
+                    // Another instance may have added it between the count and ALTER.
+                    if (mapper.geoBlockEventUserNoColumnCount() == 0) throw failed;
+                }
+            }
+            geoBlockUserColumnEnsured.set(true);
         }
     }
 
@@ -150,6 +172,11 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
+    public Map<String, Object> geoHitSummary() {
+        return mapper.geoHitSummary();
+    }
+
+    @Override
     public Map<String, Integer> geoEndpointHits() {
         return mapper.geoEndpointHits().stream()
                 .filter(row -> row.get("endpointKey") != null)
@@ -166,9 +193,21 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
-    public void recordGeoBlockEvent(String countryCode, String countryName, String endpointKey, String source) {
+    public List<Map<String, Object>> geoBlockEventRows(
+            String countryCode, String endpointKey, int pageSize, int offset) {
+        return mapper.geoBlockEventRows(countryCode, endpointKey, pageSize, offset);
+    }
+
+    @Override
+    public long countGeoBlockEvents(String countryCode, String endpointKey) {
+        return mapper.countGeoBlockEvents(countryCode, endpointKey);
+    }
+
+    @Override
+    public void recordGeoBlockEvent(String countryCode, String countryName, String endpointKey, String source, String userNo) {
         ensureTables();
-        mapper.insertGeoBlockEvent(countryCode, countryName, endpointKey, source);
+        ensureGeoBlockEventUserNoColumn();
+        mapper.insertGeoBlockEvent(countryCode, countryName, endpointKey, source, userNo);
     }
 
     @Override
@@ -186,6 +225,11 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
             String operator) {
         ensureTables();
         mapper.upsertSetting(settingKey, settingValue, valueType, groupCode, remark, operator);
+    }
+
+    @Override
+    public boolean insertSettingIfAbsent(String settingKey, String value, String groupCode, String operator) {
+        return mapper.insertSettingIfAbsent(settingKey, value, groupCode, operator) == 1;
     }
 
     @Override
@@ -376,6 +420,15 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
+    public Optional<Map<String, Object>> playbookForDecision(String code) {
+        return mapper.playbooks().stream()
+                .filter(row -> String.valueOf(row.get("code")).equalsIgnoreCase(code))
+                .findFirst()
+                .map(row -> withSequence(row, mapper.playbookSteps().stream()
+                        .filter(step -> String.valueOf(step.get("code")).equalsIgnoreCase(code)).toList()));
+    }
+
+    @Override
     public void lockPlaybook(String code) {
         ensureTables();
         mapper.lockPlaybook(code);
@@ -491,29 +544,38 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void updateExecutionProgressIndependent(
             String executionId,
+            long executionGeneration,
             List<String> steps,
             Map<String, Object> notificationDispatch,
             List<Map<String, Object>> domainActions) {
-        updateExecutionProgress(executionId, steps, notificationDispatch, domainActions);
+        updateExecutionProgress(executionId, executionGeneration, steps, notificationDispatch, domainActions);
     }
 
     @Override
     public void updateExecutionProgress(
             String executionId,
+            long executionGeneration,
             List<String> steps,
             Map<String, Object> notificationDispatch,
             List<Map<String, Object>> domainActions) {
         ensureTables();
         if (mapper.updateExecutionProgress(
-                executionId, toJson(steps), toJson(notificationDispatch), toJson(domainActions)) != 1) {
+                executionId, executionGeneration, toJson(steps), toJson(notificationDispatch), toJson(domainActions)) != 1) {
             throw new IllegalStateException("J4_EXECUTION_PROGRESS_NOT_FOUND");
         }
     }
 
     @Override
-    public boolean claimExecutionRecovery(String executionId, LocalDateTime staleBefore) {
+    public long claimExecutionRecovery(String executionId) {
         ensureTables();
-        return mapper.claimExecutionRecovery(executionId, staleBefore) == 1;
+        if (mapper.claimExecutionRecovery(executionId) != 1) {
+            return -1L;
+        }
+        Long generation = mapper.executionGeneration(executionId);
+        if (generation == null) {
+            throw new IllegalStateException("J4_EXECUTION_GENERATION_NOT_FOUND");
+        }
+        return generation;
     }
 
     @Override

@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.domain.DeviceGenerationGateView;
 import ffdd.opsconsole.device.domain.DeviceOrderFacts;
+import ffdd.opsconsole.device.domain.DeviceOrderDetailView.OrderDevice;
 import ffdd.opsconsole.device.domain.DeviceOrderFundingView;
 import ffdd.opsconsole.device.domain.DeviceOrderHistoryView;
 import ffdd.opsconsole.device.domain.DeviceOrderView;
@@ -41,7 +42,7 @@ import org.springframework.util.StringUtils;
 
 @Repository
 public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
-    private static final Pattern FIRST_DECIMAL = Pattern.compile("[0-9]+(?:\\.[0-9]+)?");
+    private static final Pattern FIRST_DECIMAL = Pattern.compile("[0-9]+(?:,[0-9]{3})*(?:\\.[0-9]+)?");
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() {
     };
 
@@ -90,7 +91,6 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
             mapper.addSkuImagePreviewUrlColumn();
         }
         mapper.widenSkuImagePreviewUrlColumn();
-        mapper.backfillProductsFromLegacySkus();
         mapper.backfillProductUnlockPhasesFromSkuMetadata();
         mapper.createReviewTable();
         mapper.createTaskTable();
@@ -249,7 +249,16 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
         long offset = (pageNum - 1) * pageSize;
         long total = mapper.countTasks(status, keyword, taskClass);
-        List<DeviceTaskView> records = mapper.pageTasks(status, keyword, taskClass, pageSize, offset);
+        return new PageResult<>(total, pageNum, pageSize,
+                withTaskPolicies(mapper.pageTasks(status, keyword, taskClass, pageSize, offset)));
+    }
+
+    @Override
+    public List<DeviceTaskView> lockTaskCatalog() {
+        return withTaskPolicies(mapper.lockTaskCatalog());
+    }
+
+    private List<DeviceTaskView> withTaskPolicies(List<DeviceTaskView> records) {
         if (taskScheduling != null && records != null && !records.isEmpty()) {
             var policies = taskScheduling.findMany(records.stream().map(DeviceTaskView::taskId).toList()).stream()
                     .collect(java.util.stream.Collectors.toMap(
@@ -259,8 +268,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                     ? task.withScheduling(policies.get(task.taskId())) : task).toList();
         }
         var simulations=simulationPolicies.typeViews(records.stream().map(DeviceTaskView::taskId).toList());
-        records=records.stream().map(t->t.withSimulation(simulations.get(t.taskId()))).toList();
-        return new PageResult<>(total, pageNum, pageSize, records);
+        return records.stream().map(task -> task.withSimulation(simulations.get(task.taskId()))).toList();
     }
 
     @Override
@@ -372,6 +380,16 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public boolean onboardingYieldSkuAvailable(String sku) {
+        return mapper.onboardingYieldSkuAvailable(sku);
+    }
+
+    @Override
+    public boolean bindOnboardingYieldSku(String key, String productNo, long version, LocalDateTime now) {
+        return mapper.bindOnboardingYieldSku(key,productNo,version,now) == 1;
+    }
+
+    @Override
     public Optional<OnboardingYieldComparisonView> findOnboardingYieldComparison(String configKey) {
         return Optional.ofNullable(mapper.findOnboardingYieldComparison(configKey));
     }
@@ -408,6 +426,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public List<OrderDevice> listOrderDevices(String orderNo) {
+        return mapper.listOrderDevices(orderNo);
+    }
+
+    @Override
     public List<DeviceOrderHistoryView> listOrderHistory(String orderNo) {
         return mapper.listOrderHistory(orderNo);
     }
@@ -430,6 +453,13 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public void recordOrderRefundAmount(String orderNo, BigDecimal refundAmountUsdt) {
+        if (mapper.updateOrderRefundAmount(orderNo, refundAmountUsdt) != 1) {
+            throw new ffdd.opsconsole.shared.exception.BizException(409, "ORDER_REFUND_AMOUNT_CONFLICT");
+        }
+    }
+
+    @Override
     public void recordOrderCloseReason(String orderNo, String closeReasonCode) {
         mapper.updateOrderCloseReason(orderNo, closeReasonCode);
     }
@@ -448,12 +478,24 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
 
     @Override
     public boolean rollbackOrderAssets(String orderNo, LocalDateTime now) {
+        return rollbackOrderAssets(orderNo, now, false);
+    }
+
+    @Override
+    public boolean rollbackRefundedOrderAssets(String orderNo, LocalDateTime now) {
+        return rollbackOrderAssets(orderNo, now, true);
+    }
+
+    private boolean rollbackOrderAssets(String orderNo, LocalDateTime now, boolean refunded) {
         DeviceCatalogMapper.OrderRestockPlan plan = mapper.orderRestockPlan(orderNo);
         if (plan == null || plan.orderQuantity() == null || plan.orderQuantity() <= 0) {
             return false;
         }
-        if (Boolean.FALSE.equals(plan.inventoryReserved())) return true;
+        boolean restock = !Boolean.FALSE.equals(plan.inventoryReserved());
+        if (!refunded && !restock) return true;
         mapper.rollbackOrderDevices(orderNo, now);
+        if (refunded) mapper.stopRefundedOrderTasks(orderNo, now);
+        if (!restock) return true;
         String orderType = plan.orderType() == null
                 ? ""
                 : plan.orderType().trim().toUpperCase(java.util.Locale.ROOT);
@@ -649,7 +691,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.updatedAt(),
                 row.productType(),
                 row.inventoryMode(),
-                Boolean.TRUE.equals(row.trialEligible()), row.specDocumentTitle(), row.specDocumentUrl(), row.computePoints()).withTaskPolicy(simulationPolicies.productView(row.skuId()));
+                Boolean.TRUE.equals(row.trialEligible()), row.specDocumentTitle(), row.specDocumentUrl(), row.computePoints(),null,0,null,
+                row.monthlyTargetUsdt(),row.monthlyTargetBandPct(),
+                row.monthlyTargetUsdt()==null?null:ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(row.monthlyTargetUsdt()),
+                row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMin(),
+                row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMax(), row.seriesCode(), row.seriesLocked()).withTaskPolicy(simulationPolicies.productView(row.skuId()));
     }
 
     private DeviceCatalogMapper.SkuWrite skuWrite(String skuId, DeviceSkuUpsertRequest request,
@@ -703,7 +749,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 Boolean.TRUE.equals(request.trialEligible()),
                 createdAt,
                 updatedAt, blankToNull(request.specDocumentTitle()), blankToNull(request.specDocumentUrl()),
-                request.computePoints());
+                request.computePoints(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.seriesCode());
     }
 
     private BigDecimal firstDecimal(String value) {
@@ -711,7 +757,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
             return BigDecimal.ZERO;
         }
         Matcher matcher = FIRST_DECIMAL.matcher(value.trim());
-        return matcher.find() ? new BigDecimal(matcher.group()) : BigDecimal.ZERO;
+        return matcher.find() ? new BigDecimal(matcher.group().replace(",", "")) : BigDecimal.ZERO;
     }
 
     private Integer firstInteger(String value) {

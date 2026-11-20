@@ -1,5 +1,8 @@
 package ffdd.opsconsole.shared.security;
 
+import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+import ffdd.opsconsole.platform.application.AuditReplayBusinessPermissionGuard;
+
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -10,6 +13,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import java.io.IOException;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -31,6 +35,12 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     private static final String STAKING_POOL_RESTORE_PATH =
             "/api/admin/market/staking/pools/*/restore";
     private static final String STAKING_POOL_RESTORE_AUTHORITY = "emergency_j1_gate_resume";
+    private static final String RECEIPT_STATUS_PATH =
+            "/api/admin/commands/investigations/receipt-status";
+    private static final String COMMAND_DISCOVER_PATH =
+            "/api/admin/commands/investigations/by-command-key";
+    private static final String COMMAND_READ_PATH =
+            "/api/admin/commands/investigations";
     private static final String PASSWORD_CHANGE_REQUIRED = "PASSWORD_CHANGE_REQUIRED";
     private static final Set<String> PASSWORD_CHANGE_REQUIRED_STATUSES = Set.of(
             PASSWORD_CHANGE_REQUIRED,
@@ -86,6 +96,7 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             rule("/api/admin/treasury/liquidity-history", null),
             rule("/api/admin/treasury/growth-flow-history", null),
             rule("/api/admin/treasury/forecast-config", null),
+            rule("/api/admin/treasury/forecast-config/preview", null),
             rule("/api/admin/treasury/b2/liabilities/export", null),
             rule("/api/admin/treasury/dual-ledger/scope", null),
             rule("/api/admin/treasury/dual-ledger/thresholds", null),
@@ -170,12 +181,22 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         // Every signed-in console cuts and labels time by the business calendar; only changing it needs platform grants.
         boolean businessCalendarRead = HttpMethod.GET.matches(request.getMethod())
                 && "/api/admin/platform/business-calendar".equals(path);
+        boolean operatingLanguagesRead = HttpMethod.GET.matches(request.getMethod())
+                && "/api/admin/platform/config/operating-languages".equals(path);
         boolean selfAvatarRequest = isSelfAvatarRequest(path, request.getMethod());
         boolean selfInviteRequest = path.equals("/api/admin/content/support-agents/self/invite-code")
                 && (HttpMethod.GET.matches(request.getMethod()) || HttpMethod.POST.matches(request.getMethod()));
         boolean supportCommandRead = HttpMethod.GET.matches(request.getMethod())
                 && pathMatcher.match("/api/admin/content/support-workbench/commands/*",path);
-        if ((reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest || supportCommandRead || "/api/admin/auth/activity".equals(path))
+        boolean commandReceiptStatusRead = HttpMethod.GET.matches(request.getMethod())
+                && RECEIPT_STATUS_PATH.equals(path);
+        boolean commandInvestigationRead = HttpMethod.GET.matches(request.getMethod())
+                && (COMMAND_DISCOVER_PATH.equals(path) || COMMAND_READ_PATH.equals(path));
+        boolean dashboardExportRequest = HttpMethod.POST.matches(request.getMethod())
+                && "/api/admin/ops-dashboard/exports".equals(path);
+        if ((reasonPolicyRead || businessCalendarRead || operatingLanguagesRead || selfAvatarRequest || selfInviteRequest || supportCommandRead
+                || commandReceiptStatusRead || commandInvestigationRead || dashboardExportRequest
+                || "/api/admin/auth/activity".equals(path))
                 && !isTrustedAuthenticatedAdmin(authentication)) {
             auditDenial(request, authentication, "ADMIN_SUBJECT_REQUIRED", null);
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_SUBJECT_REQUIRED");
@@ -186,7 +207,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             reject(response, HttpServletResponse.SC_FORBIDDEN, "ADMIN_PASSWORD_CHANGE_REQUIRED");
             return;
         }
-        if (reasonPolicyRead || businessCalendarRead || selfAvatarRequest || selfInviteRequest || supportCommandRead) {
+        if (reasonPolicyRead || businessCalendarRead || operatingLanguagesRead || selfAvatarRequest || selfInviteRequest
+                || supportCommandRead || commandReceiptStatusRead || commandInvestigationRead) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -274,12 +296,73 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
     // POST exact so the conversations/** write gate cannot turn an M3 observer into a writer.
     private RequiredAuthority requiredAuthority(String path, String method) {
         boolean read = HttpMethod.GET.matches(method) || HttpMethod.HEAD.matches(method);
+        if (read && path.equals("/api/admin/overview/business-summary")) {
+            // B36 filters every card by its own exact grant; growth's exception is sales totals only.
+            return RequiredAuthority.exact("finance_d1_read", "finance_d2_read", "device_e4_read", "bi_l3_read",
+                    "user_c1_read", "bi_l1_read", "overview_b0_sales_read");
+        }
+        if (read && pathMatcher.match("/api/admin/finance/cregis/commands/*", path)) {
+            // Each owned receipt keeps its original writer's grants; policy/challenge also check D1 read in the controller.
+            return RequiredAuthority.exact("finance_d1_channel_manage");
+        }
+        if (HttpMethod.POST.matches(method) && path.equals("/api/admin/commissions/export")) {
+            return RequiredAuthority.exact("network_f5_export");
+        }
+        if (HttpMethod.POST.matches(method) && path.equals("/api/admin/ops-dashboard/exports")) {
+            return RequiredAuthority.exact("overview_b0_export");
+        }
+        if (read && (path.equals("/api/admin/developer/docs")
+                || path.equals("/api/admin/content/how-it-works"))) {
+            return RequiredAuthority.exact("platform_a3_read");
+        }
         if (read && pathMatcher.match("/api/admin/users/profiles/*/phone-replacement-verifications/by-idempotency-key",path)) {
             return RequiredAuthority.exact("user_c5_phone_replacement_exception_grant");
         }
+        // The controller binds business grants to their exact A2 commands.
+        if (HttpMethod.POST.matches(method)
+                && (pathMatcher.match("/api/admin/platform/audit/operations/*/approve", path)
+                    || pathMatcher.match("/api/admin/platform/audit/operations/*/reject", path))) {
+            // The A2 service shares actor/global/scope rejection codes with the current ticket read model.
+            // It also checks retained successful receipts before entering the mutation supplier.
+            return RequiredAuthority.authenticated();
+        }
+        if (HttpMethod.POST.matches(method) && path.equals("/api/admin/platform/audit/operations")) {
+            return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,
+                    AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES,
+                    "platform_a2_write", "platform_a2_proposal_create", "platform_a4_write", "growth_h7_write",
+                    "overview_b1_redline_write", "overview_b5_threshold_write", "device_e2_write",
+                    "network_f1_write", "network_f3_write", "network_f4_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
+                    "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write",
+                    "finprod_g4_dividend_rate_write", "finprod_g4_write", "finprod_g4_price_write",
+                    "finprod_g4_royalty_write", "finprod_g4_airdrop_pct_write",
+                    "finprod_g4_emission_curve_write", "finprod_g4_airdrop_lock_days_write");
+        }
+        if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-operation-id")) {
+            // The controller and service verify the F3 grant and the exact original maker.
+            return RequiredAuthority.exact("network_f3_write", "platform_a2_proposal_create", "platform_a2_write");
+        }
+        if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-idempotency-key")) {
+            // Method security and the DB policy limit legacy writers to their own C2/C5 revocation command.
+            return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,
+                    AuditReplayBusinessPermissionGuard.F5_ACTION_AUTHORITIES,
+                    "platform_a2_read", "platform_a2_proposal_create", "platform_a2_write", "platform_a4_write", "platform_a4_read", "overview_b1_redline_write", "overview_b5_threshold_write",
+                    "risk_k2_write", "content_i7_course_reward_adjust", "growth_h7_write", "emergency_j1_gate_resume",
+                    "device_e2_write", "network_f1_write", "network_f3_write", "network_f4_write", "network_f4_pool_fund", "growth_h8_write", "growth_h5_write", "growth_h3_write", "growth_h4_write", "growth_h4_read", "growth_h4_wheel_pool_write", "finprod_g3_curve_target_price_write",
+                    "finprod_g3_curve_pump_prob_write", "finprod_g3_override_price_write", "finprod_g3_write",
+                    "finprod_g4_dividend_rate_write", "finprod_g4_write", "finprod_g4_price_write",
+                    "finprod_g4_royalty_write", "finprod_g4_airdrop_pct_write",
+                    "finprod_g4_emission_curve_write", "finprod_g4_airdrop_lock_days_write", "emergency_j4_playbook_execute");
+        }
+        if (read && path.equals("/api/admin/market/nex/genesis/dividend-approval-state")) {
+            return RequiredAuthority.exact("finprod_g4_dividend_rate_write", "finprod_g4_write");
+        }
         // Method security additionally binds these grants to the requested media namespace.
         if (HttpMethod.POST.matches(method) && path.equals("/api/admin/media/uploads")) {
-            return RequiredAuthority.exact("device_e1_write", "growth_promotion_edit");
+            // Reward disposition grants may reach the endpoint; the controller binds each grant to its
+            // own purpose, so this adds no general media write.
+            return RequiredAuthority.exact("device_e1_write", "growth_promotion_edit",
+                    "growth_promotion_reward_cancel", "growth_promotion_reward_reverse",
+                    "growth_promotion_reward_resolve");
         }
         if (HttpMethod.GET.matches(method) && pathMatcher.match("/api/admin/media/uploads/*/preview-url", path)) {
             return RequiredAuthority.exact("device_e1_read", "growth_promotion_read", "growth_promotion_edit");
@@ -295,6 +378,9 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
         if (read && pathMatcher.match("/api/admin/content/support-workbench/commands/*", path)) {
             return RequiredAuthority.exact("service_m1_read", "service_m3_read", "platform_a1_read");
         }
+        if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/hosting-centers")) {
+            return RequiredAuthority.exact("device_e1_read");
+        }
         if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/phone-calibration")) {
             return RequiredAuthority.exact("device_e6_read", "device_e2_read");
         }
@@ -302,10 +388,15 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 || path.equals("/api/admin/config/phone-calibration/android-soc-presets"))) {
             return RequiredAuthority.exact("device_e6_read");
         }
-        if (HttpMethod.POST.matches(method) && path.equals("/api/admin/config/phone-calibration/preview")) {
+        if (HttpMethod.POST.matches(method) && (path.equals("/api/admin/config/phone-calibration/preview")
+                || path.equals("/api/admin/config/phone-calibration/direction"))) {
             return RequiredAuthority.exact("device_e6_read");
         }
         if (HttpMethod.GET.matches(method) && path.equals("/api/admin/config/phone-calibration/risk")) {
+            return RequiredAuthority.exact("device_e6_read");
+        }
+        if (HttpMethod.GET.matches(method)
+                && path.equals("/api/admin/config/phone-calibration/risk/receipts/by-key")) {
             return RequiredAuthority.exact("device_e6_read");
         }
         if (HttpMethod.PUT.matches(method) && path.equals("/api/admin/config/phone-calibration/risk")) {
@@ -371,21 +462,28 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
             String domainPrefix,
             boolean read,
             boolean authenticatedOnly,
-            Set<String> exactAuthorities) {
+            Set<String> exactAuthorities,
+            Set<String> allOfAlternative) {
         static RequiredAuthority domainRead(String prefix) {
-            return new RequiredAuthority(prefix, true, false, null);
+            return new RequiredAuthority(prefix, true, false, null, null);
         }
 
         static RequiredAuthority domainWrite(String prefix) {
-            return new RequiredAuthority(prefix, false, false, null);
+            return new RequiredAuthority(prefix, false, false, null, null);
         }
 
         static RequiredAuthority authenticated() {
-            return new RequiredAuthority(null, false, true, null);
+            return new RequiredAuthority(null, false, true, null, null);
         }
 
         static RequiredAuthority exact(String... authorities) {
-            return new RequiredAuthority(null, false, false, Set.of(authorities));
+            return new RequiredAuthority(null, false, false, Set.of(authorities), null);
+        }
+
+        static RequiredAuthority exactOrAll(Set<String> allOfAlternative, Set<String> extraExact, String... authorities) {
+            Set<String> exact = new HashSet<>(Set.of(authorities));
+            exact.addAll(extraExact);
+            return new RequiredAuthority(null, false, false, Set.copyOf(exact), allOfAlternative);
         }
 
         String describe() {
@@ -393,7 +491,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 return "AUTHENTICATED";
             }
             if (exactAuthorities != null) {
-                return String.join(" OR ", exactAuthorities);
+                String exact = String.join(" OR ", exactAuthorities);
+                return allOfAlternative == null ? exact : exact + " OR (" + String.join(" AND ", allOfAlternative) + ")";
             }
             return domainPrefix + (read ? "*_read" : "*_(write/high)");
         }
@@ -403,7 +502,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 return true;
             }
             if (exactAuthorities != null) {
-                return actualAuthorities.stream().anyMatch(exactAuthorities::contains);
+                return actualAuthorities.stream().anyMatch(exactAuthorities::contains)
+                        || (allOfAlternative != null && actualAuthorities.containsAll(allOfAlternative));
             }
             if (domainPrefix == null) {
                 return false;
@@ -412,7 +512,8 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                 return true;
             }
             return actualAuthorities.stream().anyMatch(authority -> authority.startsWith(domainPrefix)
-                    && (read ? authority.endsWith("_read") : !authority.endsWith("_read")));
+                    && (read ? authority.endsWith("_read")
+                            : !authority.endsWith("_read") && !"network_f5_export".equals(authority)));
         }
     }
 }

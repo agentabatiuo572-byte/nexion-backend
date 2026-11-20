@@ -1,12 +1,15 @@
 package ffdd.opsconsole.team.mapper;
 
+import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import ffdd.opsconsole.shared.config.VietnamBusinessPeriodSql;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -17,6 +20,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               FROM nx_growth_voucher v
              WHERE v.is_deleted = 0
                AND v.status = 'active'
+               AND v.wheel_only = 0
                AND (v.start_at = 0 OR v.start_at <= #{nowMillis})
                AND (v.end_at = 0 OR v.end_at >= #{nowMillis})
                AND (COALESCE(v.issuance_limit, 0) <= 0 OR
@@ -82,6 +86,20 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> vRankRows();
 
+    @Select("""
+            SELECT rank_code AS v,
+                   self_compute_points AS selfBuy,
+                   direct_refs AS directRefs,
+                   team_compute_points AS teamGv,
+                   required_downline_count AS legCount,
+                   required_downline_rank AS legRank
+              FROM nx_v_rank_config
+             WHERE rank_code = #{rank} AND is_deleted = 0 AND status = 1
+             FOR UPDATE
+            """)
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    Map<String, Object> lockVRankPolicy(@Param("rank") String rank);
+
     @Update("""
             UPDATE nx_v_rank_config
                SET self_compute_points = #{value},
@@ -135,7 +153,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    metric.tone
               FROM (
                     SELECT 'l1TriggerRate' AS id,
-                           'L1 触发率' AS label,
+                           'L1 成员占比' AS label,
                            CONCAT(ROUND(SUM(CASE WHEN level = 1 THEN 1 ELSE 0 END) * 100 / COUNT(1), 1), '%') AS value,
                            CONCAT(SUM(CASE WHEN level = 1 THEN 1 ELSE 0 END), ' / ', COUNT(1), ' 团队成员') AS sub,
                            '' AS tone,
@@ -168,8 +186,28 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE metric.sampleCount > 0
             """)
     List<Map<String, Object>> f2Metrics();
-
     @Select("""
+            SELECT UPPER(currency) AS currency,
+                   COUNT(1) AS allStatusEventCount,
+                   SUM(CASE WHEN UPPER(currency)='USDT' THEN amount_usdt ELSE amount_nex END) AS allStatusAmountRaw,
+                   SUM(CASE WHEN UPPER(status) IN ('PAID','SETTLED') THEN 1 ELSE 0 END) AS paidOrSettledEventCount,
+                   SUM(CASE WHEN UPPER(status) IN ('PAID','SETTLED')
+                            THEN CASE WHEN UPPER(currency)='USDT' THEN amount_usdt ELSE amount_nex END
+                            ELSE 0 END) AS paidOrSettledAmountRaw,
+                   SUM(CASE WHEN UPPER(status) = 'PAID' THEN 1 ELSE 0 END) AS paidEventCount,
+                   SUM(CASE WHEN UPPER(status) = 'PAID'
+                            THEN CASE WHEN UPPER(currency)='USDT' THEN amount_usdt ELSE amount_nex END
+                            ELSE 0 END) AS paidAmountRaw
+              FROM nx_commission_event
+             WHERE is_deleted = 0
+               AND UPPER(currency) IN ('USDT','UVT')
+               AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+             GROUP BY UPPER(currency)
+             ORDER BY currency
+            """)
+    List<Map<String, Object>> f2PayoutStatistics();
+
+    String UNILEVEL_RATES_SQL = """
             SELECT CONCAT('L', layer_no) AS level,
                    ROUND(usdt_rate * 100, 6) AS usdtPct,
                    nex_per_usd AS nexReward,
@@ -182,9 +220,11 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND LOWER(commission_type) = 'unilevel'
                AND layer_no IS NOT NULL
              ORDER BY layer_no ASC, id ASC
-            """)
+            """;
+
+    @Select(UNILEVEL_RATES_SQL)
     List<Map<String, Object>> unilevelRates();
-    @Select("SELECT CONCAT('L',layer_no) level,ROUND(usdt_rate*100,6) usdtPct,nex_per_usd nexReward FROM nx_commission_rule WHERE is_deleted=0 AND status=1 AND LOWER(commission_type)='unilevel' AND layer_no IS NOT NULL ORDER BY layer_no,id FOR UPDATE")
+    @Select(UNILEVEL_RATES_SQL + " FOR UPDATE")
     List<Map<String,Object>> unilevelRatesForUpdate();
 
     /** Serializes all F2 settlement attempts for one buyer before idempotency checks. */
@@ -210,6 +250,21 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND layer_no = #{layerNo}
             """)
     int updateUnilevelNexPerUsd(@Param("layerNo") int layerNo, @Param("value") Object value);
+
+    @Select("SELECT id FROM nx_commission_rule WHERE LOWER(commission_type) = 'unilevel'")
+    List<Long> allUnilevelRuleIds();
+
+    @Select("SELECT id FROM nx_commission_rule WHERE LOWER(commission_type) = 'unilevel' FOR UPDATE")
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    List<Long> lockAllUnilevelRuleIds();
+
+    @Insert("""
+            INSERT INTO nx_commission_rule(commission_type,layer_no,usdt_rate,nex_per_usd,status,is_deleted)
+            VALUES('unilevel',#{layerNo},#{usdtRate},#{nexPerUsd},1,0)
+            """)
+    int insertUnilevelRule(@Param("layerNo") int layerNo,
+            @Param("usdtRate") BigDecimal usdtRate,
+            @Param("nexPerUsd") BigDecimal nexPerUsd);
 
     /**
      * F2: userId 的 L1-L7 上级链(递归 CTE 上溯 member_user_id→user_id,限深 maxDepth)。
@@ -275,6 +330,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    voucher_id AS voucherId,
                    sku_id AS skuId,
                    custom_label AS custom,
+                   sort_order AS sortOrder,
                    'nx_v_rank_reward_rule' AS source
               FROM nx_v_rank_reward_rule
              WHERE is_deleted = 0
@@ -283,6 +339,22 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              ORDER BY sort_order ASC, id ASC
             """)
     List<Map<String, Object>> vRankRewards(@Param("rank") String rank);
+
+    @Select("""
+            SELECT reward_id AS id,
+                   reward_type AS type,
+                   amount,
+                   voucher_id AS voucherId,
+                   sku_id AS skuId,
+                   custom_label AS custom,
+                   sort_order AS sortOrder
+              FROM nx_v_rank_reward_rule
+             WHERE is_deleted = 0 AND status = 1 AND rank_code = #{rank}
+             ORDER BY sort_order ASC, id ASC
+             FOR UPDATE
+            """)
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    List<Map<String, Object>> vRankRewardsForUpdate(@Param("rank") String rank);
 
     @Insert("""
             INSERT INTO nx_v_rank_reward_rule
@@ -420,6 +492,9 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    t.quota_code AS quotaCode,
                    t.product_no AS productNo,
                    COALESCE(t.display_name, t.quota_code) AS name,
+                   COALESCE(t.note, '') AS note,
+                   t.status,
+                   t.sort_order AS sortOrder,
                    t.direct_refs AS directRefs,
                    t.month_compute_points AS monthComputePoints,
                    t.unlock_mode AS unlockMode,
@@ -436,12 +511,57 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
                AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
              WHERE t.is_deleted = 0
-               AND t.status = 1
-             GROUP BY t.id, t.display_name, t.quota_code, t.product_no, t.direct_refs,
+             GROUP BY t.id, t.display_name, t.quota_code, t.product_no, t.note, t.status, t.direct_refs,
                       t.month_compute_points, t.unlock_mode, t.monthly_quota, t.sort_order
              ORDER BY t.sort_order ASC, t.id ASC
             """)
     List<Map<String, Object>> quotaRows();
+
+    record QuotaProduct(String productNo, String unlockPhaseId, boolean sellable,
+                        String tier, String productType, String gpu, Integer vramGb, String power) { }
+
+    @Select("""
+            <script>
+            SELECT p.product_no AS productNo, p.unlock_phase AS unlockPhaseId,
+                   (p.is_deleted = 0 AND p.store_visible = 1
+                       AND UPPER(p.status) IN ('ACTIVE', 'ON_SALE') AND p.price_usdt > 0
+                       AND (p.inventory_mode = 'FINITE' AND p.stock >= 1
+                            OR p.inventory_mode = 'UNLIMITED' AND UPPER(p.product_type) = 'SHARE')
+                       AND
+            """ + StorefrontProductPublishGate.PUBLISHABLE_SQL + """
+                   ) AS sellable,
+                   p.tier, p.product_type AS productType, p.gpu_model AS gpu, p.vram_total_gb AS vramGb,
+                   s.power_text AS power
+              FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id = p.product_no AND s.is_deleted = 0
+             WHERE p.product_no = #{productNo}
+             <if test="lock">FOR UPDATE</if>
+            </script>
+            """)
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    QuotaProduct hardwareQuotaProduct(@Param("productNo") String productNo, @Param("lock") boolean lock);
+
+    @Select("""
+            <script>
+            SELECT id FROM nx_team_hardware_quota_tier
+             WHERE product_no = #{productNo} AND is_deleted = 0
+             LIMIT 1 <if test="lock">FOR UPDATE</if>
+            </script>
+            """)
+    Long hardwareQuotaTierForProduct(@Param("productNo") String productNo, @Param("lock") boolean lock);
+
+    @Select("SELECT id FROM nx_team_hardware_quota_tier WHERE quota_code = #{quotaCode}")
+    Long hardwareQuotaTierForCode(@Param("quotaCode") String quotaCode);
+
+    @Insert("""
+            INSERT INTO nx_team_hardware_quota_tier
+                (quota_code, product_no, display_name, note, direct_refs, month_compute_points,
+                 monthly_quota, unlock_mode, status, sort_order)
+            VALUES
+                (#{quotaCode}, #{productNo}, #{displayName}, #{note}, #{directRefs}, #{monthComputePoints},
+                 #{monthlyQuota}, #{unlockMode}, #{status}, #{sortOrder})
+            """)
+    void insertHardwareQuotaTier(Map<String, Object> values);
 
     @Select("""
             SELECT u.id,
@@ -469,8 +589,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE quota_code = #{quotaCode}
                AND monthly_quota = #{expectedMonthlyQuota}
                AND is_deleted = 0
-               AND status = 1
-               AND #{monthlyQuota} >= (
+               AND (#{monthlyQuota} <= monthly_quota OR #{monthlyQuota} >= (
                     SELECT COALESCE(SUM(u.quantity), 0)
                       FROM nx_team_hardware_quota_usage u
                      WHERE u.quota_tier_id = nx_team_hardware_quota_tier.id
@@ -478,7 +597,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        AND UPPER(u.status) = 'ACTIVE'
                         AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
                         AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
-               )
+               ))
             """)
     int updateHardwareQuotaTierCas(@Param("quotaCode") String quotaCode,
                                    @Param("expectedMonthlyQuota") int expectedMonthlyQuota,
@@ -565,24 +684,47 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_team_ambassador_budget_grant
               (application_id, user_id, budget_type, amount_usdt, status, operator)
-            SELECT a.id, a.user_id, budget_type,
-                   CASE
-                     WHEN budget_type = 'KOL' THEN ROUND(a.requested_budget_usdt * a.kol_budget_pct / 100, 6)
-                     ELSE ROUND((a.requested_budget_usdt - (a.requested_budget_usdt * a.kol_budget_pct / 100)) / 3, 6)
-                   END,
+            SELECT a.id, a.user_id,
+                   CASE a.application_reason WHEN 'venue' THEN 'EVENT' WHEN 'kol' THEN 'KOL'
+                     WHEN 'print' THEN 'PROMOTION' WHEN 'dev' THEN 'DEV' END,
+                   a.requested_budget_usdt,
                    'ACTIVE', #{operator}
               FROM nx_team_ambassador_application a
-              JOIN (
-                    SELECT 'KOL' AS budget_type UNION ALL SELECT 'EVENT'
-                    UNION ALL SELECT 'TRAVEL' UNION ALL SELECT 'PROMOTION'
-                   ) types
              WHERE a.id = #{applicationId}
                AND a.is_deleted = 0
                AND UPPER(a.status) = 'APPROVED'
-            ON DUPLICATE KEY UPDATE updated_at = NOW()
+               AND a.application_reason IN ('venue','kol','print','dev')
+               AND a.requested_budget_usdt > 0
             """)
     int insertAmbassadorBudgetGrants(@Param("applicationId") Long applicationId,
                                      @Param("operator") String operator);
+
+    @Select("""
+            SELECT COALESCE(
+                (SELECT s.signal_no FROM nx_risk_signal s
+                   JOIN nx_admin_risk_arbitrage_row r
+                     ON r.row_id = SUBSTRING(SUBSTRING_INDEX(s.evidence, ';', 1), 5)
+                    AND r.is_deleted = 0
+                    AND r.view_key = 'board'
+                  WHERE s.user_id = #{memberUserId}
+                    AND s.is_deleted = 0
+                    AND s.signal_no LIKE 'K2-%'
+                    AND s.signal_type = 'risk.leaderboard_velocity_flagged'
+                    AND SUBSTRING_INDEX(s.evidence, ';', 2) = CONCAT('row=', r.row_id, ';view=board')
+                    AND r.cell1 = CONCAT('U', LPAD(#{memberUserId},
+                        GREATEST(8, CHAR_LENGTH(CAST(#{memberUserId} AS CHAR))), '0'))
+                    AND s.created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+                    AND s.created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
+                  ORDER BY s.created_at DESC, s.id DESC LIMIT 1),
+                (SELECT c.cluster_id FROM nx_admin_risk_multi_account_cluster c
+                  WHERE c.is_deleted = 0
+                    AND (c.status IN ('flagged', 'frozen') OR (c.status = 'detected' AND c.threshold_hit = 1))
+                    AND JSON_CONTAINS(IF(JSON_VALID(c.nodes_json), c.nodes_json, '[]'),
+                        JSON_ARRAY(JSON_OBJECT('userNo', CONCAT('U', LPAD(#{memberUserId},
+                            GREATEST(8, CHAR_LENGTH(CAST(#{memberUserId} AS CHAR))), '0')))))
+                  ORDER BY c.id DESC LIMIT 1))
+            """)
+    String leaderboardDisqualificationEvidence(@Param("memberUserId") long memberUserId);
 
     String LEADERBOARD_PODIUM_SQL = """
             SELECT ranked.rank_no AS `rank`,
@@ -626,6 +768,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND a.is_deleted = 0
                AND a.period = 'week'
                AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+               AND a.created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+               AND a.created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
              WHERE ranked.rank_no <= #{limit}
              ORDER BY ranked.rank_no ASC
             """;
@@ -648,6 +792,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                               WHERE is_deleted = 0
                                 AND period = 'week'
                                 AND UPPER(action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+                                AND created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+                                AND created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
                              UNION
                              SELECT user_id AS member_user_id
                                FROM nx_risk_signal
@@ -670,6 +816,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                         WHERE is_deleted = 0
                           AND period = 'week'
                           AND UPPER(action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+                          AND created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+                          AND created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
                      ) > 0 THEN 'disqualified'
                      WHEN (
                        SELECT COUNT(DISTINCT user_id)
@@ -692,12 +840,31 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT s.user_id AS ownerUserId,
+                   CONCAT('BINARY-',s.user_id,'-',DATE_FORMAT(s.settlement_date,'%Y%m%d')) AS settlementNo,
                    CONCAT('U', LPAD(s.user_id, GREATEST(8, CHAR_LENGTH(CAST(s.user_id AS CHAR))), '0')) AS user,
                    DATE_FORMAT(u.created_at,'%Y-%m') AS cohort,
                    CAST(ROUND(s.left_volume, 0) AS SIGNED) AS trackA,
+                   s.left_volume AS trackARaw,
                    CAST(ROUND(s.right_volume, 0) AS SIGNED) AS trackB,
+                   s.right_volume AS trackBRaw,
                    CAST(ROUND(s.matched_volume, 0) AS SIGNED) AS matchAmount,
+                   s.matched_volume AS matchAmountRaw,
                    CAST(ROUND(s.amount_usdt, 0) AS SIGNED) AS todayPaid,
+                   s.amount_usdt AS todayPaidRaw,
+                   a.settlement_mode AS settlementMode,
+                   CASE WHEN a.settlement_mode IS NOT NULL THEN a.settled_raw_amount_usdt END AS platformRawAmountUsdt,
+                   CASE WHEN a.settlement_mode IS NOT NULL THEN s.amount_usdt END AS platformSettledAmountUsdt,
+                   CASE WHEN a.settlement_mode IS NOT NULL THEN
+                     TRUNCATE(100*(a.settled_raw_amount_usdt-s.amount_usdt)/NULLIF(a.settled_raw_amount_usdt,0),6)
+                   END AS platformReductionPct,
+                   p.cap_amount_usdt AS platformCapUsdt,
+                   CASE WHEN p.settlement_date IS NOT NULL THEN (
+                     SELECT COALESCE(SUM(z.amount_usdt),0) FROM nx_binary_commission_settlement z
+                      WHERE z.settlement_date=p.settlement_date AND z.is_deleted=0 AND EXISTS (
+                        SELECT 1 FROM nx_binary_platform_allocation x
+                         WHERE x.settlement_date=z.settlement_date AND x.user_id=z.user_id AND x.settlement_mode IS NOT NULL
+                      )
+                   ) END AS platformUsedUsdt,
                    CASE
                      WHEN UPPER(s.status) IN ('PAID', 'SETTLED', 'UNLOCKED') THEN 'paid'
                      WHEN UPPER(s.status) IN ('BLOCKED', 'REJECTED', 'FAILED', 'FROZEN') THEN 'blocked'
@@ -712,6 +879,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    'nx_binary_commission_settlement' AS source
               FROM nx_binary_commission_settlement s
               LEFT JOIN nx_user u ON u.id=s.user_id AND u.is_deleted=0
+              LEFT JOIN nx_binary_platform_allocation a ON a.settlement_date=s.settlement_date AND a.user_id=s.user_id
+              LEFT JOIN nx_binary_platform_period p ON p.settlement_date=a.settlement_date
              WHERE s.is_deleted = 0
              ORDER BY s.settlement_date DESC, s.id DESC
              LIMIT #{limit}
@@ -754,23 +923,40 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                           THEN matched_volume
                      ELSE 0
                    END), 0), 0) AS monthlyMatchedUsd,
+                   COALESCE(SUM(CASE
+                     WHEN settlement_date >= """ + VietnamBusinessPeriodSql.MONTH_DATE + """
+                          THEN matched_volume
+                     ELSE 0
+                   END), 0) AS monthlyMatchedUsdRaw,
                    COALESCE(ROUND(SUM(CASE
                      WHEN settlement_date = """ + VietnamBusinessPeriodSql.TODAY + """
                           THEN matched_volume
                      ELSE 0
                    END), 0), 0) AS dailyMatchUsd,
+                   COALESCE(SUM(CASE
+                     WHEN settlement_date = """ + VietnamBusinessPeriodSql.TODAY + """
+                          THEN matched_volume
+                     ELSE 0
+                   END), 0) AS dailyMatchUsdRaw,
                    (SELECT COUNT(1)
                       FROM nx_binary_leg_assignment a
                      WHERE """ + BinaryPlacementSourceSql.AUTOMATIC + """
                        AND a.assigned_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
                        AND a.assigned_at <= NOW()) AS autoPlacement7dCount,
                    COALESCE(ROUND(MAX(daily_cap_usdt), 0), 0) AS maxDailyCapUsd,
+                   MAX(daily_cap_usdt) AS maxDailyCapUsdRaw,
                    COALESCE(ROUND(MAX(GREATEST(left_volume, right_volume)), 0), 0) AS maxTrackGmv,
+                   MAX(GREATEST(left_volume, right_volume)) AS maxTrackGmvRaw,
                    (SELECT CASE WHEN p.policy IN ('转结','每月清零','每次对碰清零') THEN
                      (SELECT COALESCE(ROUND(SUM(GREATEST(c.track_a-COALESCE(s.matched,0),
                                                        c.track_b-COALESCE(s.matched,0),0)),0),0)
                         FROM captured c LEFT JOIN consumed s ON s.user_id=c.owner_user_id)
-                     ELSE NULL END FROM residual_settings p) AS residualPoolUsd
+                     ELSE NULL END FROM residual_settings p) AS residualPoolUsd,
+                   (SELECT CASE WHEN p.policy IN ('转结','每月清零','每次对碰清零') THEN
+                     (SELECT SUM(GREATEST(c.track_a-COALESCE(s.matched,0),
+                                           c.track_b-COALESCE(s.matched,0),0))
+                        FROM captured c LEFT JOIN consumed s ON s.user_id=c.owner_user_id)
+                     ELSE NULL END FROM residual_settings p) AS residualPoolUsdRaw
               FROM nx_binary_commission_settlement
              WHERE is_deleted = 0
             """)
@@ -821,6 +1007,38 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              LIMIT #{limit}
             """)
     List<Map<String, Object>> commissionEvents(@Param("limit") int limit);
+
+    @Select("""
+            SELECT status, version, unlock_at AS unlockAt,
+                   CONCAT('U', LPAD(user_id, GREATEST(8, CHAR_LENGTH(CAST(user_id AS CHAR))), '0')) AS user,
+                   CASE
+                     WHEN UPPER(status) = 'FROZEN' THEN 'frozen'
+                     WHEN UPPER(status) = 'REJECTED' THEN 'rejected'
+                     WHEN UPPER(status) IN ('REVERSED', 'ROLLBACK') THEN '异常回退'
+                     WHEN UPPER(status) IN ('UNLOCKED', 'AVAILABLE', 'SETTLED', 'PAID') THEN '可提'
+                     WHEN UPPER(status) IN ('COOLING', 'PENDING')
+                       AND unlock_at IS NOT NULL AND unlock_at <= NOW() THEN '可提'
+                     ELSE '计提'
+                   END AS state,
+                   (SELECT s.source_type FROM nx_direct_referral_settlement s
+                     WHERE s.usdt_event_id = nx_commission_event.id OR s.nex_event_id = nx_commission_event.id
+                     LIMIT 1) AS settlementSourceType
+              FROM nx_commission_event
+             WHERE id = #{eventId} AND is_deleted = 0
+            """)
+    Map<String, Object> commissionEventById(@Param("eventId") long eventId);
+
+    /** F5 unlock gate: whether the event's owner is suspended for that commission kind. */
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_commission_event e
+              JOIN nx_commission_user_suspension s
+                ON s.user_id = e.user_id
+               AND s.kind = LOWER(e.commission_type)
+               AND s.status = 'SUSPENDED'
+             WHERE e.id = #{eventId} AND e.is_deleted = 0
+            """)
+    int countEventUserSuspended(@Param("eventId") long eventId);
 
     @Select("""
             SELECT LOWER(commission_type) AS `key`,
@@ -877,7 +1095,13 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                SET status=#{nextStatus},
                    frozen_from_status=CASE WHEN #{nextStatus}='FROZEN' THEN #{expectedStatus}
                                            WHEN #{expectedStatus}='FROZEN' THEN NULL ELSE frozen_from_status END,
-                   unlock_at=CASE WHEN #{nextStatus}='UNLOCKED' THEN COALESCE(unlock_at,NOW()) ELSE unlock_at END,
+                   unlock_at=CASE
+                     WHEN #{nextStatus}='UNLOCKED' THEN COALESCE(unlock_at,NOW())
+                     WHEN #{nextStatus}='COOLING' AND #{expectedStatus}='FROZEN' AND unlock_at IS NOT NULL THEN
+                       DATE_ADD(NOW(), INTERVAL GREATEST(0,
+                         TIMESTAMPDIFF(SECOND, updated_at, unlock_at)) SECOND)
+                     ELSE unlock_at
+                   END,
                    version=version+1,updated_at=NOW()
              WHERE is_deleted=0 AND (CONCAT('CM-',id)=#{eventId} OR order_no=#{eventId})
                AND (UPPER(status)=#{expectedStatus}
@@ -999,6 +1223,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                       AND a.period = 'week'
                       AND a.member_user_id = m.member_user_id
                       AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
+                      AND a.created_at >= """ + VietnamBusinessPeriodSql.WEEK_START + """
+                      AND a.created_at < """ + VietnamBusinessPeriodSql.NEXT_WEEK_START + """
                )
              GROUP BY m.member_user_id
              ORDER BY SUM(m.volume) DESC, m.member_user_id ASC
@@ -1007,40 +1233,16 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     List<Map<String, Object>> leaderboardCandidates(@Param("minVolumeUsd") BigDecimal minVolumeUsd,
                                                      @Param("limit") int limit);
 
-    /** F16:按周期汇总规范业务轨的活跃用户已解锁佣金，与App生产榜资格一致。 */
-    @Select("""
-            <script>
-            SELECT e.user_id AS userId,
-                   SUM(e.amount_usdt) AS volume
-              FROM nx_commission_event e
-              JOIN nx_user u ON u.id = e.user_id
-             WHERE e.is_deleted = 0
-               AND u.is_deleted = 0 AND u.status = 'ACTIVE' AND u.sandbox = 0
-               AND UPPER(e.status) = 'UNLOCKED'
-               AND LOWER(e.commission_type) IN
-                   ('unilevel','network','binary','peer','cultivation','leadership','genesis','direct_purchase','direct_device_earning')
-               <if test="fromInclusive != null">AND e.created_at &gt;= #{fromInclusive}</if>
-               <if test="toExclusive != null">AND e.created_at &lt; #{toExclusive}</if>
-               AND NOT EXISTS (
-                    SELECT 1
-                      FROM nx_team_leaderboard_action a
-                     WHERE a.is_deleted = 0
-                       AND LOWER(a.period) = LOWER(#{period})
-                       AND a.member_user_id = e.user_id
-                       AND UPPER(a.action_type) IN ('FRAUD', 'DISQUALIFIED', 'RISK')
-               )
-             GROUP BY e.user_id
-            HAVING SUM(e.amount_usdt) &gt;= #{minVolumeUsd}
-             ORDER BY SUM(e.amount_usdt) DESC, e.user_id ASC
-             LIMIT #{limit}
-            </script>
-            """)
+    /** F4 settlement uses the identical point ranking as App and frozen display snapshots. */
+    @Select(AppTeamInsightsMapper.LEADERBOARD_ELIGIBLE_SQL)
     List<Map<String, Object>> leaderboardCandidatesByPeriod(
-            @Param("period") String period,
+            @Param("actionPeriod") String period,
             @Param("fromInclusive") java.time.LocalDateTime fromInclusive,
             @Param("toExclusive") java.time.LocalDateTime toExclusive,
-            @Param("minVolumeUsd") BigDecimal minVolumeUsd,
-            @Param("limit") int limit);
+            @Param("minComputePoints") BigDecimal minComputePoints,
+            @Param("limit") int limit,
+            @Param("sandbox") int sandbox,
+            @Param("snapshotAt") java.time.LocalDateTime snapshotAt);
 
     // ============================================================
     // F1 V-Rank 晋升引擎(Sprint 1+2)
@@ -1348,6 +1550,23 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> listLeadershipVoters(@Param("minRank") int minRank);
 
+    /** Same self-row/vote population as listLeadershipVoters, grouped by current rank for read-only estimates. */
+    @Select("""
+            SELECT CAST(SUBSTRING(m.v_rank, 2) AS UNSIGNED) AS v,
+                   c.leadership_votes AS votes,
+                   COUNT(*) AS pop
+              FROM nx_team_member m
+              JOIN nx_v_rank_config c ON c.rank_code = m.v_rank AND c.is_deleted = 0
+             WHERE m.user_id = m.member_user_id
+               AND m.v_rank REGEXP '^V[1-8]$'
+               AND CAST(SUBSTRING(m.v_rank, 2) AS UNSIGNED) >= #{minRank}
+               AND c.leadership_votes > 0
+               AND m.is_deleted = 0
+             GROUP BY m.v_rank, c.leadership_votes
+             ORDER BY v ASC, votes ASC
+            """)
+    List<Map<String, Object>> leadershipVoterRanks(@Param("minRank") int minRank);
+
     /**
      * F4: 平台某周(ISO YEARWEEK)已付订单 USDT 小计之和(领导池注入数据源)。
      * @param weekCode YEARWEEK(paid_at,1) 整数(如 202630)
@@ -1539,6 +1758,16 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                            @Param("from") String from,
                            @Param("to") String to);
 
+    @Select("""
+            SELECT COUNT(*)
+              FROM nx_user_level_log
+             WHERE is_deleted = 0 AND level_type = 'VRANK'
+               AND created_at >= #{from} AND created_at < #{until}
+               AND from_code REGEXP '^[Vv][0-9]+$' AND to_code REGEXP '^[Vv][0-9]+$'
+               AND CAST(SUBSTRING(to_code, 2) AS UNSIGNED) > CAST(SUBSTRING(from_code, 2) AS UNSIGNED)
+            """)
+    long countUpwardPromotions(@Param("from") LocalDateTime from, @Param("until") LocalDateTime until);
+
     // ============================================================
     // F1 V-Rank 派发流水查询/补发/撤销(Sprint 6):3 端点
     // ============================================================
@@ -1649,4 +1878,81 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND UPPER(status) IN ('PENDING', 'COOLING', 'UNLOCKED', 'AVAILABLE', 'FROZEN')
             """)
     int reverseCommissionEvent(@Param("commissionEventId") Long commissionEventId);
+
+    /**
+     * F1 券冲正:按 H7 发放来源定位发放记录并锁定,返回状态与券面额。
+     * 幂等/并发安全:该行在本次 payout 事务内 FOR UPDATE,后续补发/再次冲正都以同一行状态为准。
+     */
+    @Select("""
+            SELECT g.status, g.source_id AS sourceId, g.redeemed_amount_usdt AS redeemedAmountUsd
+              FROM nx_growth_voucher_grant g
+             WHERE g.user_id = #{userId}
+               AND g.voucher_id = #{voucherId}
+               AND g.source_type = 'VRANK_REWARD'
+               AND g.source_id = #{sourceId}
+               AND g.is_deleted = 0
+             LIMIT 1
+             FOR UPDATE
+            """)
+    Map<String, Object> lockVrankVoucherGrant(@Param("userId") Long userId,
+                                              @Param("voucherId") String voucherId,
+                                              @Param("sourceId") String sourceId);
+
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} FOR UPDATE")
+    Long lockVrankVoucherBuyer(@Param("userId") Long userId);
+
+    /** 锁定最新一轮 V-Rank 券及其关联订单，读取当前付款状态。 */
+    @Select("""
+            SELECT g.id AS grantId, g.status, g.source_id AS sourceId, g.redeemed_amount_usdt AS redeemedAmountUsd,
+                   o.payment_status AS orderPaymentStatus
+              FROM nx_growth_voucher_grant g
+              LEFT JOIN nx_order o ON o.order_no = g.used_order_no AND o.user_id = g.user_id AND o.is_deleted = 0
+             WHERE g.user_id = #{userId}
+               AND g.voucher_id = #{voucherId}
+               AND g.source_type = 'VRANK_REWARD'
+               AND g.source_id LIKE CONCAT(#{sourcePrefix}, '%')
+               AND g.is_deleted = 0
+             ORDER BY g.granted_at DESC, g.id DESC
+             LIMIT 1
+             FOR UPDATE
+            """)
+    Map<String, Object> lockLatestVrankVoucherGrant(@Param("userId") Long userId,
+                                                   @Param("voucherId") String voucherId,
+                                                   @Param("sourcePrefix") String sourcePrefix);
+
+    /** 作废尚未产生已结算抵扣的券，保留原订单关联。 */
+    @Update("""
+            UPDATE nx_growth_voucher_grant
+               SET status = 'REVOKED', updated_at = NOW()
+             WHERE user_id = #{userId}
+               AND voucher_id = #{voucherId}
+               AND source_type = 'VRANK_REWARD'
+               AND source_id = #{sourceId}
+               AND status = #{expectedStatus}
+               AND is_deleted = 0
+            """)
+    int revokeVrankVoucherGrant(@Param("userId") Long userId,
+                                @Param("voucherId") String voucherId,
+                                @Param("sourceId") String sourceId,
+                                @Param("expectedStatus") String expectedStatus);
+
+    /** 冲正已用券:锁定用户钱包 USDT 可用余额。 */
+    @Select("""
+            SELECT usdt_available
+              FROM nx_user_wallet
+             WHERE user_id = #{userId} AND is_deleted = 0 AND sandbox = 0
+             LIMIT 1
+             FOR UPDATE
+            """)
+    BigDecimal lockVrankWalletUsdt(@Param("userId") Long userId);
+
+    /** 已用券扣回:余额不够时允许扣成负数,不设下限。 */
+    @Update("""
+            UPDATE nx_user_wallet
+               SET usdt_available = usdt_available - #{amount},
+                   version = version + 1,
+                   updated_at = NOW()
+             WHERE user_id = #{userId} AND is_deleted = 0 AND sandbox = 0
+            """)
+    int debitVrankWalletUsdt(@Param("userId") Long userId, @Param("amount") BigDecimal amount);
 }

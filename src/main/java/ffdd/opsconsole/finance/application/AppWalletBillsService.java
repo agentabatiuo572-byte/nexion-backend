@@ -236,7 +236,7 @@ public class AppWalletBillsService {
         item.put("asset", row.asset());
         item.put("direction", row.direction());
         BigDecimal amount = nonNegative(row.amount());
-        BigDecimal balanceAfter = nonNegative(row.balanceAfter());
+        BigDecimal balanceAfter = signed(row.balanceAfter());
         item.put("amount", amount);
         item.put("balanceAfter", balanceAfter);
         item.put("amountExact", amount.toPlainString());
@@ -257,6 +257,7 @@ public class AppWalletBillsService {
         // These credits return locked principal to the wallet; they are not external payouts.
         if ("IN".equals(normalizedDirection) && ("STAKING_EARLY_WITHDRAW".equals(value)
                 || "REPURCHASE_EARLY_WITHDRAW".equals(value))) return "unstake";
+        if ("VRANK_REWARD_PAYOUT_REVERSED".equals(value)) return "clawback";
         if (value.matches(".*(WITHDRAW|PAYOUT).*$")) return "withdraw";
         if (value.matches(".*(REFERRAL|COMMISSION|UNILEVEL|BINARY|LEADERSHIP).*$")) return "refer";
         if (value.matches(".*(STAKE|STAKING).*$")) return "IN".equals(normalizedDirection) ? "unstake" : "stake";
@@ -285,7 +286,8 @@ public class AppWalletBillsService {
             case "DAILY_CHECK_IN" -> "dailyCheckIn";
             case "TRIAL_CHARGE" -> "trialCharge";
             case "TRIAL_BONUS" -> "trialBonus";
-            case "QUEST_REWARD" -> "questReward";
+            case "QUEST_REWARD" -> bizNo != null && bizNo.matches("QUEST:DAY_ONE:[1-9][0-9]*:DAY_ONE:[0-9]{8}T[0-9]{6}")
+                    ? "newcomerTaskReward" : "questReward";
             case "PURCHASE_REWARD" -> "purchaseReward";
             // 课程奖励此前落进通用 bonus 码,三笔同日 +10 UVT 在奖励账本里完全同名
             // 且无来源,用户与客服无法逐笔追溯(zentao #219)。给这一族自己的码位。
@@ -299,9 +301,10 @@ public class AppWalletBillsService {
             case "WITHDRAW_PAYOUT_NEX_REFUND" -> "withdrawPayoutNexRefund";
             case "WITHDRAW_REFUND" -> "withdrawRefund";
             case "WITHDRAW_FEE_OFFSET_REFUND" -> "withdrawFeeOffsetRefund";
+            case "VRANK_REWARD_PAYOUT_REVERSED" -> "rewardClawback";
             default -> switch (category) {
                 case "earn", "refer", "bonus", "topup", "withdraw", "purchase", "swap", "verification",
-                        "stake", "unstake", "achievement" -> category;
+                        "stake", "unstake", "clawback", "achievement" -> category;
                 default -> "other";
             };
         };

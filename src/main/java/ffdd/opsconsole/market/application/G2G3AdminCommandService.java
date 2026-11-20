@@ -7,11 +7,17 @@ import ffdd.opsconsole.market.dto.ExchangeSwapStatusRequest;
 import ffdd.opsconsole.market.dto.NexMarketAdvanceRequest;
 import ffdd.opsconsole.market.dto.NexMarketCurveUpdateRequest;
 import ffdd.opsconsole.market.dto.NexMarketValueUpdateRequest;
+import ffdd.opsconsole.market.dto.G3MarketPolicyChangeRequest;
+import ffdd.opsconsole.platform.domain.AuditLockTarget;
+import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection;
+import ffdd.opsconsole.shared.idempotency.AdminCommandOrigin;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.nio.charset.StandardCharsets;
@@ -32,17 +38,35 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class G2G3AdminCommandService {
+    private static final String QUEUE_BATCH_SCOPE = "ADMIN:G2:QUEUE_BATCH";
+    private static final String RECEIPT_OWNER = "g2QueueBatchOwnerAdminId";
     private final OpsNexMarketService market;
     private final AdminIdempotencyService idempotency;
+    private final AdminIdempotencyRecordMapper idempotencyRecords;
     private final EventOutboxService outbox;
     private final G2ExchangeQueueBatchService queueBatch;
     private final AuditLogService audit;
+    private final AuditObjectLockMapper pendingLocks;
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String,Object>> exchangeParam(String key,String paramKey,ExchangeParamUpdateRequest request) {
-        requireReason(request == null ? null : request.reason());
-        return once("G2:PARAM:" + paramKey,key,request,() -> {
-            ApiResult<Map<String,Object>> result = success(market.updateExchangeParam(key,paramKey,request));
+        String scope = "G2:PARAM:" + paramKey;
+        if (AdminCommandOrigin.g2ParameterKey("ADMIN:" + scope) == null) {
+            throw new BizException(422, "G2_EXCHANGE_PARAM_KEY_INVALID");
+        }
+        final boolean directOrigin = AdminCommandOrigin.current("ADMIN:" + scope) != null;
+        return once(scope,key,request,() -> {
+            ApiResult<Map<String,Object>> result;
+            try {
+                requireReason(request == null ? null : request.reason());
+                result = success(market.updateExchangeParam(key,paramKey,request));
+            } catch (BizException rejected) {
+                if (directOrigin && rejected.getCode() >= 400 && rejected.getCode() < 500) {
+                    throw new AdminCommandBusinessRejection(rejected.getCode(), rejected.getMessage(),
+                            ApiResult.fail(rejected.getCode(), rejected.getMessage()));
+                }
+                throw rejected;
+            }
             String event = List.of("fee","feeMin").contains(paramKey)
                     ? "admin.exchange_fee_changed" : "admin.exchange_caps_changed";
             outbox.publish("EXCHANGE_CONFIG",paramKey,event,linked("field",paramKey,"value",request.value(),
@@ -81,10 +105,11 @@ public class G2G3AdminCommandService {
     }
 
     @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
-    public ApiResult<Map<String,Object>> processQueue(String key,ExchangeQueueBatchRequest request) {
+    @SuppressWarnings("unchecked")
+    public ApiResult<Map<String,Object>> processQueue(String key, ExchangeQueueBatchRequest request, long adminId) {
         requireReason(request == null ? null : request.reason());
         int limit = request.limit() == null ? 50 : request.limit();
-        return once("G2:QUEUE_BATCH",key,request,() -> {
+        var stored = idempotency.executeRetained(QUEUE_BATCH_SCOPE, key, sha256(String.valueOf(request)), ApiResult.class, () -> {
             Map<String,Object> batch = queueBatch.process(limit);
             outbox.publish("EXCHANGE_QUEUE","daily","admin.exchange_queue_batch_processed",linked(
                     "completedCount",batch.get("completedCount"),"skippedCount",batch.get("skippedCount"),
@@ -95,19 +120,45 @@ public class G2G3AdminCommandService {
                     .actorUsername(actor(request.operator())).method("POST").path("/api/admin/market/exchange/queue/process")
                     .result("SUCCESS").riskLevel("HIGH").detail(linked("reason",request.reason().trim(),"batch",batch)).build());
             Map<String,Object> data = new LinkedHashMap<>(market.exchangeOverview().getData());
-            data.put("batch",batch);
+            data.put("batch", batch);
+            data.put(RECEIPT_OWNER, adminId);
             return ApiResult.ok(data);
         });
+        var data = new LinkedHashMap<>((Map<String,Object>) stored.getData());
+        // Legacy receipts keep the original POST replay contract. New receipts bind their owner.
+        if (data.containsKey(RECEIPT_OWNER) && !ownsQueueBatch(data, adminId)) {
+            throw new BizException(404, "G2_BATCH_RECEIPT_NOT_FOUND");
+        }
+        data.remove(RECEIPT_OWNER);
+        return ApiResult.ok(data);
+    }
+
+    public ApiResult<Map<String,Object>> queueBatchReceipt(String key, long adminId) {
+        if (!StringUtils.hasText(key) || key.trim().length() > 128) {
+            throw new BizException(400, "IDEMPOTENCY_KEY_INVALID");
+        }
+        var record = idempotencyRecords.selectCurrent(QUEUE_BATCH_SCOPE, key.trim());
+        if (record != null) {
+            var recovered = idempotency.recoveryResult(QUEUE_BATCH_SCOPE, key, record.getRequestHash(), ApiResult.class);
+            if (recovered.response() != null && recovered.response().getData() instanceof Map<?, ?> data
+                    && ownsQueueBatch(data, adminId) && data.get("batch") instanceof Map<?, ?> batch) {
+                return ApiResult.ok(Map.of("batch", batch));
+            }
+        }
+        throw new BizException(404, "G2_BATCH_RECEIPT_NOT_FOUND");
+    }
+
+    private boolean ownsQueueBatch(Map<?, ?> data, long adminId) {
+        return data.get(RECEIPT_OWNER) instanceof Number owner && owner.longValue() == adminId;
     }
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String,Object>> weeklyCurve(String key,NexMarketCurveUpdateRequest request) {
         requireReason(request == null ? null : request.reason());
         return once("G3:CURVE",key,request,() -> {
+            requireG3ObjectUnlocked(G3MarketApproval.CURVE_TARGET);
             ApiResult<Map<String,Object>> result = success(market.updateWeeklyCurve(key,request));
-            outbox.publish("NEX_MARKET","weekly","admin.nex_price_curve_changed",linked(
-                    "frameCount",request.frames() == null ? 0 : request.frames().size(),
-                    "reason",request.reason().trim(),"operator",actor(request.operator())));
+            publishWeeklyCurve(request.frames() == null ? 0 : request.frames().size(), request.reason(), request.operator());
             return result;
         });
     }
@@ -128,9 +179,7 @@ public class G2G3AdminCommandService {
         requireReason(request == null ? null : request.reason());
         return once("G3:CONTROL:" + controlKey,key,request,() -> {
             ApiResult<Map<String,Object>> result = success(market.updateControl(key,controlKey,request));
-            outbox.publish("NEX_MARKET","weekly","admin.market_schedule_changed",linked(
-                    "field",controlKey,"value",request.value(),"reason",request.reason().trim(),
-                    "operator",actor(request.operator())));
+            publishControl(controlKey, request.value(), request.reason(), request.operator());
             return result;
         });
     }
@@ -139,17 +188,58 @@ public class G2G3AdminCommandService {
     public ApiResult<Map<String,Object>> override(String key,String overrideKey,NexMarketValueUpdateRequest request) {
         requireReason(request == null ? null : request.reason());
         return once("G3:OVERRIDE:" + overrideKey,key,request,() -> {
+            if ("currentPrice".equals(overrideKey)) requireG3ObjectUnlocked(G3MarketApproval.PRICE_TARGET);
             ApiResult<Map<String,Object>> result = success(market.updateOverride(key,overrideKey,request));
-            String event = switch (overrideKey) {
-                case "oracle" -> "admin.nex_oracle_source_changed";
-                case "currentPrice" -> "admin.nex_price_overridden";
-                case "paused" -> parseBoolean(request.value()) ? "admin.market_paused" : "admin.market_resumed";
-                default -> "admin.nex_market_override_changed";
-            };
-            outbox.publish("NEX_MARKET","weekly",event,linked("field",overrideKey,"value",request.value(),
-                    "reason",request.reason().trim(),"operator",actor(request.operator())));
+            publishOverride(overrideKey, request.value(), request.reason(), request.operator());
             return result;
         });
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String,Object>> approvedMarketPolicy(String key, G3MarketPolicyChangeRequest request,
+                                                              String reason, String operator, String operationId) {
+        requireReason(reason);
+        return once("G3:APPROVED_POLICY", key, linked("values", request, "reason", reason,
+                "operator", actor(operator), "operationId", operationId), () -> {
+            ApiResult<Map<String,Object>> result = success(
+                    market.applyApprovedMarketPolicy(key, request, reason, actor(operator), operationId));
+            switch (request.action()) {
+                case "curve-cell" -> publishWeeklyCurve(7, reason, operator);
+                case "current-price" -> publishOverride("currentPrice", request.value(), reason, operator);
+                case "initial-schedule" -> publishControl("schedule", request.value(), reason, operator);
+                case "pin" -> publishControl("pin", request.value(), reason, operator);
+                case "resume" -> publishOverride("paused", request.value(), reason, operator);
+                default -> throw new BizException(422, "G3_POLICY_PROPOSAL_INVALID");
+            }
+            return result;
+        });
+    }
+
+    private void publishWeeklyCurve(int frameCount, String reason, String operator) {
+        outbox.publish("NEX_MARKET", "weekly", "admin.nex_price_curve_changed", linked(
+                "frameCount", frameCount, "reason", reason.trim(), "operator", actor(operator)));
+    }
+
+    private void publishControl(String key, String value, String reason, String operator) {
+        outbox.publish("NEX_MARKET", "weekly", "admin.market_schedule_changed", linked(
+                "field", key, "value", value, "reason", reason.trim(), "operator", actor(operator)));
+    }
+
+    private void publishOverride(String key, String value, String reason, String operator) {
+        String event = switch (key) {
+            case "oracle" -> "admin.nex_oracle_source_changed";
+            case "currentPrice" -> "admin.nex_price_overridden";
+            case "paused" -> parseBoolean(value) ? "admin.market_paused" : "admin.market_resumed";
+            default -> "admin.nex_market_override_changed";
+        };
+        outbox.publish("NEX_MARKET", "weekly", event, linked("field", key, "value", value,
+                "reason", reason.trim(), "operator", actor(operator)));
+    }
+
+    private void requireG3ObjectUnlocked(AuditLockTarget target) {
+        if (pendingLocks.countActiveByTarget(target.domain(), target.type(), target.id()) > 0) {
+            throw new BizException(409, "OBJECT_LOCKED_BY_A2");
+        }
     }
 
     private void requireReason(String reason) {

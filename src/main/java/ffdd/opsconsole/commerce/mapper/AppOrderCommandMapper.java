@@ -19,6 +19,15 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
     int countActiveDirectPaymentIntent(@Param("orderNo") String orderNo);
     @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent p JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo}")
     int countDirectPaymentIntents(@Param("orderNo") String orderNo);
+    @Select("""
+            SELECT COUNT(*) FROM nx_purchase_payment_intent p
+              JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.user_id=p.user_id
+             WHERE o.order_no=#{orderNo} AND p.kind='ORDER_PAY'
+               AND p.status NOT IN ('DELIVERED','EXPIRED')
+               AND NOT (p.status='MANUAL_REVIEW' AND p.reason='PAYMENT_LATE_REVIEW'
+                        AND p.confirmed_at IS NOT NULL AND p.receipt_json IS NULL)
+            """)
+    int countDirectPaymentIntentsBlockingExpiry(@Param("orderNo") String orderNo);
     @Update("UPDATE nx_order SET paid_at=#{paidAt} WHERE order_no=#{orderNo} AND payment_status='PAID'")
     int recordVerifiedPaidAt(@Param("orderNo") String orderNo,@Param("paidAt") java.time.LocalDateTime paidAt);
     /** The pending order is already included once; do not add its quantity again at payment. */
@@ -191,8 +200,6 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                          AND (NULLIF(TRIM(p.gpu_model),'') IS NULL
                            OR p.vram_total_gb IS NULL OR p.vram_total_gb<=0
                            OR (SELECT NULLIF(TRIM(s.power_text),'') FROM nx_admin_device_sku s
-                                WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) IS NULL
-                           OR (SELECT NULLIF(TRIM(s.datacenter),'') FROM nx_admin_device_sku s
                                 WHERE s.sku_id=p.product_no AND s.is_deleted=0 LIMIT 1) IS NULL)))
             ) THEN 1 ELSE 0 END
             """)
@@ -309,6 +316,17 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
             """)
     List<VoucherGrantRow> lockUsedVouchersForOrder(@Param("userId") Long userId,
                                                    @Param("orderNo") String orderNo);
+
+    // A V-Rank revocation cannot change the price already reserved by this order.
+    @Select("""
+            SELECT grant_id grantId
+              FROM nx_growth_voucher_grant
+             WHERE user_id=#{userId} AND used_order_no=#{orderNo}
+               AND source_type='VRANK_REWARD' AND status='REVOKED' AND is_deleted=0
+             ORDER BY grant_id FOR UPDATE
+            """)
+    List<VoucherGrantRow> lockRevokedVrankVouchersForOrder(@Param("userId") Long userId,
+                                                          @Param("orderNo") String orderNo);
 
     @Update("""
             UPDATE nx_growth_voucher_grant
@@ -490,17 +508,17 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @Insert("""
             INSERT IGNORE INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+              (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,
                ownership_status,source_channel,source_environment,run_id,status,hashrate,daily_usdt,daily_nex,
                last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
-            SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
+            SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),p.series_code,#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'UVEL accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
-                   COALESCE(NULLIF(s.datacenter,''),'UVEL DC'),
+                   #{hostingCenter},
                    CASE WHEN o.quantity > 0 THEN o.amount_usdt/o.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
@@ -513,27 +531,28 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                AND o.payment_status='PAID' AND o.order_status='COMPLETED'
                AND o.activation_status='ACTIVATED' AND #{unitIndex} >= 0 AND #{unitIndex} < o.quantity
                AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
-                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)?\\\\z'
+                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                       AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0))
             """)
     int insertDevelopmentDevice(@Param("orderNo") String orderNo,
                                 @Param("userId") Long userId,
                                 @Param("instanceNo") String instanceNo,
-                                @Param("unitIndex") Integer unitIndex);
+                                @Param("unitIndex") Integer unitIndex,
+                                @Param("hostingCenter") String hostingCenter);
 
     @Insert("""
             INSERT IGNORE INTO nx_user_device
-              (user_id,source_order_no,product_id,product_code,product_tier,instance_no,name,device_type,
+              (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,
                ownership_status,source_channel,source_environment,run_id,status,hashrate,daily_usdt,daily_nex,
                last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
-            SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),#{instanceNo},p.name,
+            SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),p.series_code,#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'UVEL accelerator'),
                    GREATEST(COALESCE(p.vram_total_gb,0),0),
                    CASE WHEN UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') THEN 0
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
-                   COALESCE(NULLIF(s.datacenter,''),'UVEL DC'),
+                   #{hostingCenter},
                    CASE WHEN oi.quantity > 0 THEN oi.line_amount_usdt/oi.quantity ELSE p.price_usdt END,
                    'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
@@ -548,14 +567,15 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
                AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
                AND o.activation_status='ACTIVATED'
                AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
-                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计)[)]))?)?\\\\z'
+                     (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                       AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0))
             """)
     int insertWalletDevice(@Param("orderNo") String orderNo,
                            @Param("userId") Long userId,
                            @Param("productId") Long productId,
                            @Param("instanceNo") String instanceNo,
-                           @Param("unitIndex") Integer unitIndex);
+                           @Param("unitIndex") Integer unitIndex,
+                                @Param("hostingCenter") String hostingCenter);
 
     @Select("""
             SELECT id deviceId,instance_no instanceNo

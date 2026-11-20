@@ -60,18 +60,41 @@ public interface EmergencyControlRepository {
 
     List<Map<String, Object>> geoHits();
 
+    default Map<String, Object> geoHitSummary() {
+        throw new UnsupportedOperationException("GEO_HIT_SUMMARY_UNAVAILABLE");
+    }
+
     Map<String, Integer> geoEndpointHits();
 
     List<Map<String, Object>> geoEdgeMetrics();
 
+    /** Per-row block facts exactly as the edge filter recorded them; no identity is invented. */
+    default List<Map<String, Object>> geoBlockEventRows(
+            String countryCode, String endpointKey, int pageSize, int offset) {
+        throw new UnsupportedOperationException("GEO_BLOCK_HIT_DETAIL_UNAVAILABLE");
+    }
+
+    default long countGeoBlockEvents(String countryCode, String endpointKey) {
+        throw new UnsupportedOperationException("GEO_BLOCK_HIT_DETAIL_UNAVAILABLE");
+    }
+
     default void recordGeoBlockEvent(
             String countryCode, String countryName, String endpointKey, String source) {
+        recordGeoBlockEvent(countryCode, countryName, endpointKey, source, null);
+    }
+
+    default void recordGeoBlockEvent(
+            String countryCode, String countryName, String endpointKey, String source, String userNo) {
         // In-memory test repositories may ignore runtime request metrics.
     }
 
     Optional<String> settingValue(String settingKey);
 
     void upsertSetting(String settingKey, String settingValue, String valueType, String groupCode, String remark, String operator);
+
+    default boolean insertSettingIfAbsent(String settingKey, String value, String groupCode, String operator) {
+        return false;
+    }
 
     default boolean compareAndSetSetting(String settingKey, String expectedValue, String newValue, String operator) {
         return false;
@@ -180,6 +203,11 @@ public interface EmergencyControlRepository {
 
     Optional<Map<String, Object>> playbook(String code);
 
+    /** Decision metadata reads must not initialize tables or acquire the execution locks. */
+    default Optional<Map<String, Object>> playbookForDecision(String code) {
+        return playbook(code);
+    }
+
     /** Locks and returns one complete current playbook definition, including its ordered steps. */
     default Optional<Map<String, Object>> playbookForUpdate(String code) {
         lockPlaybook(code);
@@ -252,6 +280,7 @@ public interface EmergencyControlRepository {
 
     default void updateExecutionProgressIndependent(
             String executionId,
+            long executionGeneration,
             List<String> steps,
             Map<String, Object> notificationDispatch,
             List<Map<String, Object>> domainActions) {
@@ -260,14 +289,16 @@ public interface EmergencyControlRepository {
 
     default void updateExecutionProgress(
             String executionId,
+            long executionGeneration,
             List<String> steps,
             Map<String, Object> notificationDispatch,
             List<Map<String, Object>> domainActions) {
         throw new UnsupportedOperationException("execution progress update is not implemented");
     }
 
-    default boolean claimExecutionRecovery(String executionId, LocalDateTime staleBefore) {
-        return false;
+    /** Returns the new generation after claiming recovery, or -1 when the row is not stale. */
+    default long claimExecutionRecovery(String executionId) {
+        return -1L;
     }
 
     default boolean requestExecutionCancellation(

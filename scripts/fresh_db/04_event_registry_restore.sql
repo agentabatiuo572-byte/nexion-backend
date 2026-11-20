@@ -1317,3 +1317,55 @@ ON DUPLICATE KEY UPDATE current_revision=GREATEST(current_revision,VALUES(curren
 DROP TEMPORARY TABLE tmp_fresh_a4_wallet_h2_eligible;
 DROP TEMPORARY TABLE tmp_fresh_a4_wallet_h2_property;
 -- END fresh wallet/H2 current metadata restore
+
+-- Restore only the C1 profile-view and G7 lottery event metadata from
+-- 20260718_c1_security_closure.sql and 20260722_g7_repurchase_closure.sql.
+-- Keep existing event rows and fill gaps only for active canonical revisions.
+START TRANSACTION;
+
+INSERT IGNORE INTO nx_event_schema_registry
+  (event_name,owner_domain,family_key,producer,consumers,is_server_authoritative,
+   sampling_policy,current_revision,status,created_by,reason,is_deleted)
+VALUES
+  ('admin.user_profile_viewed','admin','phase_admin','server','A2/L5',1,'100%',23,'ACTIVE',
+   'migration:c1','Register C1 sensitive profile-view evidence',0),
+  ('admin.repurchase_lottery_changed','admin','phase_admin','server','G7/G4/J1/A2/A4',1,'100%',74,'ACTIVE',
+   'migration:g7-repurchase','Direct G7 lottery rule command with G4 capacity snapshot',0);
+
+INSERT IGNORE INTO nx_event_schema_property
+  (schema_id,property_name,property_type,pii,required_field,registry_revision,is_deleted)
+SELECT s.id,p.property_name,p.property_type,0,1,s.current_revision,0
+  FROM nx_event_schema_registry s
+  JOIN (
+    SELECT 23 revision,'target_user_id' property_name,'id' property_type UNION ALL
+    SELECT 23,'viewer_operator','id' UNION ALL
+    SELECT 23,'viewer_role','enum' UNION ALL
+    SELECT 23,'cards_viewed','json' UNION ALL
+    SELECT 23,'occurred_at','timestamp' UNION ALL
+    SELECT 74,'param_key','string' UNION ALL
+    SELECT 74,'before','string' UNION ALL
+    SELECT 74,'after','string' UNION ALL
+    SELECT 74,'coverage_at_submit','number' UNION ALL
+    SELECT 74,'g4_capacity','number' UNION ALL
+    SELECT 74,'g4_tickets_issued','number' UNION ALL
+    SELECT 74,'g4_ref','string' UNION ALL
+    SELECT 74,'reason','string' UNION ALL
+    SELECT 74,'operator','string' UNION ALL
+    SELECT 74,'idempotency_key','id'
+  ) p ON p.revision=s.current_revision
+ WHERE (BINARY s.event_name,s.current_revision,BINARY s.consumers) IN
+       (('admin.user_profile_viewed',23,'A2/L5'),('admin.repurchase_lottery_changed',74,'G7/G4/J1/A2/A4'))
+   AND BINARY s.owner_domain='admin' AND BINARY s.family_key='phase_admin' AND BINARY s.producer='server'
+   AND s.is_server_authoritative=1 AND s.sampling_policy='100%' AND BINARY s.status='ACTIVE' AND s.is_deleted=0;
+
+INSERT IGNORE INTO nx_event_domain_extension
+  (domain_name,event_name,producer,consumer,status,created_by,reason,is_deleted)
+SELECT 'admin',s.event_name,'OpsRepurchaseAdminService','G7/G4/J1/A2/A4','REGISTERED',
+       'migration:g7-repurchase','G7 lottery change with G4 capacity evidence',0
+  FROM nx_event_schema_registry s
+ WHERE BINARY s.event_name='admin.repurchase_lottery_changed' AND s.current_revision=74
+   AND BINARY s.consumers='G7/G4/J1/A2/A4'
+   AND BINARY s.owner_domain='admin' AND BINARY s.family_key='phase_admin' AND BINARY s.producer='server'
+   AND s.is_server_authoritative=1 AND s.sampling_policy='100%' AND BINARY s.status='ACTIVE' AND s.is_deleted=0;
+
+COMMIT;

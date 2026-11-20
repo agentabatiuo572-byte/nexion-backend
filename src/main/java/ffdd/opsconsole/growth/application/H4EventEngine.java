@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 import static ffdd.opsconsole.growth.application.H4EventRuleService.*;
 
 /** H4 decisions read canonical business facts; every award and budget share one transaction. */
@@ -60,11 +61,28 @@ public class H4EventEngine {
     public List<Map<String,Object>> project(Long id,List<Map<String,Object>> rows,String locale){
         List<Map<String,Object>> projected=new ArrayList<>();
         for(var row:rows){String code=text(row.get("eventCode"));var rule=policies.find(code,false);
-            if(rule==null){var legacy=new LinkedHashMap<>(row);legacy.remove("authoredRewardName");projected.add(legacy);continue;}
+            if(rule==null){projected.add(legacyRewardDisplay(row));continue;}
             var value=project(id,row,rule,locale);
             if(!enabled(code)&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(value.get("userStatus"))))continue;
             projected.add(value);
         }return projected;
+    }
+    private Map<String,Object> legacyRewardDisplay(Map<String,Object> source){
+        var row=new LinkedHashMap<>(source);
+        if(!usesAuthoredRewardName(text(row.get("kind")),false,row.get("rewardType"),row.get("rewardAmount"))){
+            // App and Lite prepend rewardAmount to the cash reward label.
+            row.put("rewardName",text(row.get("rewardType")));
+        }
+        return row;
+    }
+    static boolean usesAuthoredRewardName(String kind,boolean hasRule,Object asset,Object amount){
+        return "wheel".equals(kind)||!hasRule
+                && !(Set.of("UVT","USDT").contains(text(asset))&&number(amount).signum()>0);
+    }
+    static String displayRewardName(String kind,Map<String,Object> rules,Object asset,Object amount,String authored,String locale){
+        if(usesAuthoredRewardName(kind,rules!=null,asset,amount))return authored;
+        if(rules!=null)return rewardSummary(rules,locale);
+        return number(amount).setScale(2,RoundingMode.HALF_UP).toPlainString()+" "+text(asset);
     }
     private Map<String,Object> project(Long id,Map<String,Object> source,Map<String,Object> rule,String locale){
         var row=new LinkedHashMap<>(source);String code=text(rule.get("event_code")),phase=phase(rule);
@@ -73,12 +91,12 @@ public class H4EventEngine {
         row.put("progressValue",progress.getOrDefault("current",0));row.put("targetValue",progress.getOrDefault("target",1));
         boolean trackable=Set.of("referral","onboarding","regional").contains(text(rule.get("kind")))||"evt-reinvest-bonus".equals(code);
         row.put("trackable",trackable);
-        if(!"wheel".equals(rule.get("kind"))){
+        String kind=text(rule.get("kind"));
+        if(!usesAuthoredRewardName(kind,true,null,null)){
             row.put("rewardType","COMPOSITE");row.put("rewardAmount",0);
-            String translated=text(source.get("authoredRewardName"));
-            row.put("rewardName", InterfaceLanguages.isAdditional(locale) && !translated.isBlank() ? translated : rewardSummary(r,locale));
         }
-        row.remove("authoredRewardName");
+        row.put("rewardName",displayRewardName(kind,r,source.get("rewardType"),source.get("rewardAmount"),
+                text(source.get("rewardName")),locale));
         boolean claimed=db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? AND claim_key='ONCE' AND status='CLAIMED'",code,id)!=null;
         Object previousStatus="CLAIMABLE".equals(source.get("userStatus"))?"JOINED":source.get("userStatus");
         row.put("userStatus",claimed?"CLAIMED":trackable&&Boolean.TRUE.equals(progress.get("eligible"))?"CLAIMABLE":previousStatus);
@@ -96,8 +114,26 @@ public class H4EventEngine {
         if(source==null)throw new BizException(404,"EVENT_NOT_FOUND");
         if(deleted){source=new LinkedHashMap<>(source);source.put("deleted",true);source.put("href","");}
         if(deleted&&rule==null&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(source.get("userStatus"))))throw new BizException(404,"EVENT_NOT_FOUND");
-        if(rule==null){source=new LinkedHashMap<>(source);source.remove("authoredRewardName");return ApiResult.ok(values("event",source,"rules",Map.of(),"enabled",!deleted,"eligible",false,"eligibilityReason",deleted?"ENDED":"IN_PROGRESS",
-                "progressValue",source.get("progressValue"),"targetValue",source.get("targetValue"),"rewards",List.of(),"results",List.of(),"myRewardAmount",null,"userStatus",source.get("userStatus")));}
+        if (rule == null) {
+            source = legacyRewardDisplay(source);
+            String status = text(source.get("userStatus"));
+            String state = text(source.get("state"));
+            var reward = !deleted && "CLAIMABLE".equals(status) ? events.findClaimableLegacyEvent(id, code) : null;
+            boolean eligible = reward != null && switch (reward.normalizedRewardType()) {
+                case "UVT", "USDT" -> reward.rewardAmount().signum() > 0;
+                case "BADGE" -> StringUtils.hasText(reward.badgeCode()) && events.canGrantAchievement(id, reward.badgeCode());
+                default -> false;
+            };
+            String reason = "IN_PROGRESS";
+            if ("CLAIMED".equals(status)) reason = "CLAIMED";
+            else if (deleted || "ended".equals(state)) reason = "ENDED";
+            else if ("upcoming".equals(state)) reason = "NOT_STARTED";
+            else if (eligible) reason = "READY";
+            else if (reward != null) reason = "NOT_ELIGIBLE";
+            return ApiResult.ok(values("event", source, "rules", Map.of(), "enabled", !deleted, "eligible", eligible,
+                    "eligibilityReason", reason, "progressValue", source.get("progressValue"), "targetValue", source.get("targetValue"),
+                    "rewards", List.of(), "results", List.of(), "myRewardAmount", null, "userStatus", status));
+        }
         var r=policies.rules(rule);var progress=progress(id,rule,r,source);var event=project(id,source,rule,locale);
         if(deleted&&!Boolean.TRUE.equals(progress.get("eligible"))&&!Set.of("JOINED","CLAIMABLE","CLAIMED").contains(text(event.get("userStatus")))
                 &&db.row("SELECT 1 FROM nx_growth_event_claim WHERE event_code=? AND user_id=? LIMIT 1",code,id)==null
@@ -287,7 +323,9 @@ public class H4EventEngine {
         if(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null
                 ||snapshot.coverageRatio().compareTo(snapshot.redlinePct())<0)throw new BizException(409,"COVERAGE_REDLINE");
         earnings.creditReward(id,"EVENT_REWARD",ref,asset,amount,"H4:"+ref+":"+("USDT".equals(asset)?"USDT":"NEX"));
-        ledger.postLedgerEntry("H4:"+ref+":"+("USDT".equals(asset)?"USDT":"NEX"),id,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Activity reward");
+        String bizNo="H4:"+ref+":"+("USDT".equals(asset)?"USDT":"NEX");
+        if("USDT".equals(asset)) ledger.postLedgerEntryWithActualBalance(bizNo,id,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Activity reward");
+        else ledger.postLedgerEntry(bizNo,id,"EVENT_REWARD",asset,"IN",amount,"SUCCESS","Activity reward");
     }
     private String country(Map<String,Object> user){return switch(text(user.get("country_code")).replace("+","")){case "84"->"VN";case "86"->"CN";default->text(user.get("country_code")).matches("[A-Z]{2}")?text(user.get("country_code")):"";};}
     private String regionFor(Map<String,Object> user,Map<String,Object> rules){

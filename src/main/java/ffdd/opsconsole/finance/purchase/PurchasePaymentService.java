@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.purchase;
 
+import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.commerce.application.AppOrderCommandService;
@@ -31,6 +32,9 @@ import static ffdd.opsconsole.finance.purchase.PurchasePaymentPolicyService.mone
 /** Durable direct purchase intents. No wallet principal transaction belongs to this rail. */
 @Service @RequiredArgsConstructor
 public class PurchasePaymentService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private HostingCenterService hostingCenters;
+
     private final PurchasePaymentMapper db;
     private final PurchasePaymentPolicyService policy;
     private final AppOrderCommandService orders;
@@ -52,6 +56,8 @@ public class PurchasePaymentService {
     private static final Set<String> KINDS=Set.of("ORDER_PAY","TRIAL_CONVERT","TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP");
     private Instant now(){return clock.instant();}
     private static final String SELECT="SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?";
+    /** 仍未终结、可能占着本人订单付款的进行中状态;报价/建单/超时与按订单只读找回共用同一谓词。 */
+    private static final String IN_PROGRESS="p.status NOT IN ('DELIVERED','EXPIRED')";
 
     private <T> T tx(java.util.function.Supplier<T> work){
         var tx=new TransactionTemplate(transactions);tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
@@ -62,15 +68,16 @@ public class PurchasePaymentService {
         if(row==null||!"ACTIVE".equals(row.get("status"))||number(row.get("sandbox"))!=0)
             throw new BizException(403,"PURCHASE_PAYMENT_USER_UNAVAILABLE");
     }
-    private static boolean cregis(Object method){return Set.of("CREGIS_USDT_BSC","CREGIS_USDT_ERC20").contains(method);}
+    private static boolean cregis(Object method){return Set.of("CREGIS_USDT_BSC","CREGIS_USDT_ERC20","CREGIS_USDT_TRC20").contains(method);}
     private static CregisNetwork network(Object method){
         return switch(text(method)){
             case "CREGIS_USDT_BSC" -> CregisNetwork.BEP20;
             case "CREGIS_USDT_ERC20" -> CregisNetwork.ERC20;
+            case "CREGIS_USDT_TRC20" -> CregisNetwork.TRC20;
             default -> throw new BizException(422,"PURCHASE_PAYMENT_METHOD_INVALID");
         };
     }
-    private static String method(CregisNetwork network){return network==CregisNetwork.BEP20?"CREGIS_USDT_BSC":"CREGIS_USDT_ERC20";}
+    private static String method(CregisNetwork network){return network==CregisNetwork.BEP20?"CREGIS_USDT_BSC":"CREGIS_USDT_"+network.network();}
     private void ready(String method){
         if("HDPAY_BANK".equals(method)){
             if(!hd.ready())throw new BizException(503,"HDPAY_CONFIGURATION_INCOMPLETE");
@@ -80,7 +87,7 @@ public class PurchasePaymentService {
             if(cr.getMode()!=CregisProperties.Mode.PROVIDER||!cr.isDepositEnabled()||!cr.isDepositCreditEnabled()||cr.getProjectId()<=0||cr.confirmations(network)<15||!cr.networkConfigured(network)||!cr.depositNetworkEnabled(network))
                 throw new BizException(503,"CREGIS_DIRECT_PAYMENT_UNAVAILABLE");
             if(crGateway.provider().projectCoins().stream().noneMatch(coin->coin.addressEnabled()
-                    &&network.chainId().equals(coin.chainId())&&network.tokenId().equalsIgnoreCase(coin.tokenId())))
+                    &&network.chainId().equals(coin.chainId())&&network.tokenMatches(coin.tokenId())))
                 throw new BizException(503,"CREGIS_DIRECT_PAYMENT_ASSET_UNAVAILABLE");
             cregisGate(network,true,false);
         }else throw new BizException(422,"PURCHASE_PAYMENT_METHOD_INVALID");
@@ -90,6 +97,9 @@ public class PurchasePaymentService {
         var gate=db.one("SELECT state,CAST(assign_enabled AS UNSIGNED) assign_enabled,CAST(credit_enabled AS UNSIGNED) credit_enabled FROM nx_cregis_provision_gate WHERE id=1"+(lock?" FOR UPDATE":""));
         if(gate==null||!"IDLE".equals(gate.get("state"))||number(gate.get("credit_enabled"))!=1||assignment&&number(gate.get("assign_enabled"))!=1)
             throw new BizException(409,"CREGIS_DIRECT_PAYMENT_PAUSED");
+        var networkGate=db.one("SELECT CAST(deposit_enabled AS UNSIGNED) deposit_enabled FROM nx_cregis_network_switch WHERE network=?"+(lock?" FOR UPDATE":""),network.network());
+        if(networkGate==null || number(networkGate.get("deposit_enabled"))!=1)
+            throw new BizException(409,"CREGIS_DIRECT_PAYMENT_PAUSED");
     }
     private Map<String,Object> dedicatedAddress(CregisNetwork network){
         var candidate=db.one("SELECT id,address FROM nx_cregis_deposit_address WHERE project_id=? AND chain_id=? AND state='UNASSIGNED' AND user_id IS NULL AND purpose='WALLET_TOPUP' ORDER BY id LIMIT 1",cr.getProjectId(),network.chainId());
@@ -98,7 +108,7 @@ public class PurchasePaymentService {
         if(!crGateway.provider().addressBelongs(network.chainId(),address)
                 ||!crGateway.provider().zeroAddressBalance(network.currency(),address)||!chain.zeroUsdtBalance(network,address))
             throw new BizException(409,"CREGIS_DIRECT_ADDRESS_REQUIRES_REVIEW");
-        var head=chain.head(network);if(!head.hash().equalsIgnoreCase(chain.blockHash(network,head.number())))throw new BizException(503,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
+        var head=chain.allocationHead(network);if(!head.hash().equalsIgnoreCase(chain.blockHash(network,head.number())))throw new BizException(503,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
         candidate.put("allocationBlock",head.number());candidate.put("allocationHash",head.hash());candidate.put("proofExpiresAt",now().plusSeconds(5));
         return candidate;
     }
@@ -126,7 +136,7 @@ public class PurchasePaymentService {
             String id=id("PPQ-");Instant deadline=deadline(kind,payload,pricingAt);
             if(!deadline.isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
             Instant expires=pricingAt.plusSeconds(900);if(expires.isAfter(deadline))expires=deadline;
-            var quote=values("paymentQuoteId",id,"kind",kind,"paymentMethod",method,"network","HDPAY_BANK".equals(method)?"VND_BANK":network(method)==CregisNetwork.BEP20?"BSC":"ERC20",
+            var quote=values("paymentQuoteId",id,"kind",kind,"paymentMethod",method,"network","HDPAY_BANK".equals(method)?"VND_BANK":network(method)==CregisNetwork.BEP20?"BSC":network(method).network(),
                     "subtotalUsdt",subtotal.toPlainString(),"businessAmountUsdt",pricing.get("businessAmountUsdt"),
                     "roundingAdjustmentUsdt",subtotal.subtract(new BigDecimal(text(pricing.get("businessAmountUsdt")))).setScale(6,RoundingMode.UNNECESSARY).toPlainString(),"channelFeeRatePct",rate.toPlainString(),"channelFeeFixed",fixed.toPlainString(),
                     "channelFeeUsdt",fee.toPlainString(),"networkConfirmFeeUsdt",network.toPlainString(),"totalUsdt",total.toPlainString(),
@@ -146,7 +156,7 @@ public class PurchasePaymentService {
     }
     private List<Map<String,Object>> activeIntents(Object owner,Object kind,String payload,String excluding){
         // Resolve legacy aliases with the actual order column's collation, not JSON/string equality.
-        return db.rows("SELECT p.intent_no FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND p.status NOT IN ('DELIVERED','EXPIRED') AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
+        return db.rows("SELECT p.intent_no,p.kind,p.status,p.reason,p.confirmed_at,p.receipt_json FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND "+IN_PROGRESS+" AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
     }
     private Instant deadline(String kind,Map<String,Object> payload,Instant pricingAt){
         if(!"ORDER_PAY".equals(kind))return pricingAt.plusSeconds(1800);
@@ -178,6 +188,7 @@ public class PurchasePaymentService {
         db.write("INSERT IGNORE INTO nx_purchase_payment_result(notification_key,intent_no,outcome,user_id,order_no) VALUES(?,?,?,?,?)",key,row.get("intent_no"),status,row.get("user_id"),orderNo);
     }
     private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,boolean legacyTrialQuote){
+        hostingCenters.requirePool();
         switch(kind){
             case "ORDER_PAY":{
                 var order=db.one("SELECT * FROM nx_order WHERE order_no=? AND user_id=? AND is_deleted=0 FOR UPDATE",text(payload.get("orderNo")),owner);
@@ -286,6 +297,25 @@ public class PurchasePaymentService {
         var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,kind,key);
         if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");return get(owner,text(row.get("intent_no")));
     }
+    /**
+     * 按本人订单号找回进行中的外部付款单:只读,不改任何付款单/订单状态,也不需要客户端留着原命令键。
+     * 订单归属沿用 ORDER_PAY 报价分支的同一判据(他人订单与不存在的订单一样只有 404);
+     * 进行中沿用 {@link #activeIntents} 的同一谓词 {@link #IN_PROGRESS}。
+     * 回包三态可分:有单回 intentNo + state=IN_PROGRESS;确定没有回 state=NONE 且 intentNo=null;
+     * 读取本身失败(非归属 404 的异常)统一 503 PURCHASE_PAYMENT_LOOKUP_UNAVAILABLE,不与「确定没有」混淆。
+     */
+    public Map<String,Object> activeByOrder(long owner,String orderNo){
+        String no=orderNo==null?"":orderNo.trim();
+        try{
+            if(db.one("SELECT order_no FROM nx_order WHERE order_no=? AND user_id=? AND is_deleted=0",no,owner)==null)
+                throw new BizException(404,"ORDER_NOT_FOUND");
+            var intent=db.one("SELECT p.intent_no FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind='ORDER_PAY' AND "+IN_PROGRESS
+                    +" AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)"
+                    +" ORDER BY p.created_at DESC,p.intent_no DESC LIMIT 1",owner,no);
+            return values("orderNo",no,"state",intent==null?"NONE":"IN_PROGRESS","intentNo",intent==null?null:intent.get("intent_no"));
+        }catch(BizException refused){throw refused;}
+        catch(RuntimeException unavailable){throw new BizException(503,"PURCHASE_PAYMENT_LOOKUP_UNAVAILABLE");}
+    }
     /** Called only after the existing callback verifier accepted the provider signature. */
     public boolean observeHdCallback(HdPayCallbackVerifier.VerifiedCallback callback){
         var row=db.one(SELECT,callback.merchantOrderId());if(row==null)return false;
@@ -296,18 +326,18 @@ public class PurchasePaymentService {
     public boolean observeBscCallback(Map<String,Object> callback){return observeCregisCallback(callback);}
     public boolean observeCregisCallback(Map<String,Object> callback){
         var network=CregisNetwork.fromAsset(text(callback.get("chain_id")),text(callback.get("token_id")));
-        var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method=? AND provider_project=?",callback.get("address"),method(network),cr.getProjectId());
+        var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=? AND payment_method=? AND provider_project=?",network.normalizeAddress(text(callback.get("address"))),method(network),cr.getProjectId());
         if(row==null)return false;refresh(row);return true;
     }
     public boolean ownsBscAddress(String address){return ownsCregisAddress(CregisNetwork.BEP20,address);}
     public boolean ownsCregisAddress(CregisNetwork network,String address){
-        return db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method=? AND provider_project=?",address,method(network),cr.getProjectId())!=null;
+        return db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE address=? AND payment_method=? AND provider_project=?",network.normalizeAddress(address),method(network),cr.getProjectId())!=null;
     }
     public Boolean materializeBscProviderRow(CregisGateway.DepositRow incoming){return materializeCregisProviderRow(incoming);}
     /** The provider asset selects the intent rail; the same hex address on another chain is a different owner. */
     public Boolean materializeCregisProviderRow(CregisGateway.DepositRow incoming){
         var network=CregisNetwork.fromAsset(incoming.chainId(),incoming.tokenId());
-        var intent=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=LOWER(?) AND payment_method=? AND provider_project=?",incoming.address(),method(network),cr.getProjectId());
+        var intent=db.one("SELECT * FROM nx_purchase_payment_intent WHERE address=? AND payment_method=? AND provider_project=?",incoming.address(),method(network),cr.getProjectId());
         if(intent==null)return null;if(incoming.status()!=1)return incoming.status()!=0;
         var matching=chain.scan(network,incoming.blockHeight(),incoming.blockHeight(),List.of(incoming.address())).stream()
                 .filter(log->log.txid().equalsIgnoreCase(incoming.txid())&&log.amount().compareTo(incoming.amount())==0).toList();
@@ -315,8 +345,8 @@ public class PurchasePaymentService {
         var log=matching.get(0);var proof=chain.verifyExact(network,log.txid(),log.logIndex(),incoming.address(),incoming.amount(),incoming.blockHeight());
         if(proof==null)return false;
         var fresh=crGateway.provider().depositsByTxid(network,incoming.txid()).stream().filter(row->row.cid()==incoming.cid()&&row.status()==1
-                &&row.address().equalsIgnoreCase(incoming.address())&&row.amount().compareTo(incoming.amount())==0
-                &&network.chainId().equals(row.chainId())&&network.tokenId().equalsIgnoreCase(row.tokenId())).toList();
+                &&network.addressEquals(row.address(),incoming.address())&&row.amount().compareTo(incoming.amount())==0
+                &&network.chainId().equals(row.chainId())&&network.tokenMatches(row.tokenId())).toList();
         if(fresh.size()!=1)return false;
         recordBscArrival(intent,log,proof);refresh(db.one(SELECT,intent.get("intent_no")));return true;
     }
@@ -336,8 +366,12 @@ public class PurchasePaymentService {
         }catch(RuntimeException unavailable){reconciliationUnknown(row);}
 
         var current=db.one(SELECT,row.get("intent_no"));
-        if(current.get("confirmed_at")!=null&&Set.of("FUNDS_CONFIRMED","MANUAL_REVIEW").contains(text(current.get("status"))))deliver(text(row.get("intent_no")),false);
-        else if(current.get("confirmed_at")==null&&!now().isBefore(graceEnd(current.get("payment_method"),deadline(current))))expire(current);
+        if(isLateOrderReview(current)||current.get("confirmed_at")==null&&!now().isBefore(graceEnd(current.get("payment_method"),deadline(current))))expire(current);
+        else if(current.get("confirmed_at")!=null&&Set.of("FUNDS_CONFIRMED","MANUAL_REVIEW").contains(text(current.get("status"))))deliver(text(row.get("intent_no")),false);
+    }
+    private static boolean isLateOrderReview(Map<String,Object> row){
+        return "ORDER_PAY".equals(row.get("kind"))&&"MANUAL_REVIEW".equals(row.get("status"))
+                &&"PAYMENT_LATE_REVIEW".equals(row.get("reason"))&&row.get("confirmed_at")!=null&&row.get("receipt_json")==null;
     }
     private void reconciliationUnknown(Map<String,Object> row){
         // Ending a commerce order never declares unresolved provider funds settled.
@@ -350,25 +384,32 @@ public class PurchasePaymentService {
         expiration.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         expiration.execute(status->{
             var row=db.one(SELECT+" FOR UPDATE",snapshot.get("intent_no"));
-            if(row==null||row.get("confirmed_at")!=null||row.get("receipt_json")!=null||"MANUAL_REVIEW".equals(row.get("status")))return null;
+            if(row==null||row.get("receipt_json")!=null)return null;
+            boolean lateReview=isLateOrderReview(row);
+            if(!lateReview&&(row.get("confirmed_at")!=null||"MANUAL_REVIEW".equals(row.get("status"))))return null;
+            String orderNo="ORDER_PAY".equals(row.get("kind"))?text(parse(row.get("payload_json")).get("orderNo")):null;
             // Match issuer/pay/cancel: every ordered participant precedes the buyer mutex.
-            if("ORDER_PAY".equals(row.get("kind")))orders.lockDirectPaymentOrderParticipants(text(parse(row.get("payload_json")).get("orderNo")));
+            if(orderNo!=null)orders.lockDirectPaymentOrderParticipants(orderNo);
             db.one("SELECT id FROM nx_user WHERE id=? FOR UPDATE",row.get("user_id"));
             Instant cutoff=deadline(row);
-            if("ORDER_PAY".equals(row.get("kind"))){
+            if(orderNo!=null){
                 // The user mutex makes this a current business-state check without reversing promotion -> order locks.
-                var order=db.one("SELECT order_no,created_at,payment_status,order_status FROM nx_order WHERE order_no=? AND user_id=?",parse(row.get("payload_json")).get("orderNo"),row.get("user_id"));
+                var order=db.one("SELECT order_no,created_at,payment_status,order_status FROM nx_order WHERE order_no=? AND user_id=?",orderNo,row.get("user_id"));
                 if(order==null)throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
                 if(!"PENDING".equals(order.get("payment_status"))||!"PENDING_PAYMENT".equals(order.get("order_status")))return null;
                 cutoff=orderDeadline(order);
             }
-            if(now().isBefore(graceEnd(row.get("payment_method"),cutoff)))return null;
+            if(now().isBefore(lateReview?cutoff:graceEnd(row.get("payment_method"),cutoff)))return null;
             // A failed attempt can have been replaced before the order deadline. Never cancel its successor.
             var active=activeIntents(row.get("user_id"),row.get("kind"),text(row.get("payload_json")),text(row.get("intent_no")));
-            if(!active.isEmpty())return null;
-            db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_TIMEOUT',expires_at=?,version=version+1,updated_at=NOW(6) WHERE intent_no=?",timestamp(cutoff),row.get("intent_no"));
-            if("ORDER_PAY".equals(row.get("kind"))&&!orders.expireDirectPaymentOrder(number(row.get("user_id")),text(parse(row.get("payload_json")).get("orderNo"))))throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
-            outcome(row,"PAYMENT_TIMEOUT");return null;
+            if(active.stream().anyMatch(intent->!isLateOrderReview(intent)))return null;
+            if(!lateReview){
+                db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_TIMEOUT',expires_at=?,version=version+1,updated_at=NOW(6) WHERE intent_no=?",timestamp(cutoff),row.get("intent_no"));
+            }
+            if(orderNo!=null&&!orders.expireDirectPaymentOrder(number(row.get("user_id")),orderNo))throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
+            // A confirmed late payment keeps its evidence and review notification.
+            if(!lateReview)outcome(row,"PAYMENT_TIMEOUT");
+            return null;
         });
     }
     private boolean observeHd(Map<String,Object> row){
@@ -399,12 +440,12 @@ public class PurchasePaymentService {
     private void observeBsc(Map<String,Object> row){
         var network=network(row.get("payment_method"));
         String address=text(row.get("address"));if(address.isBlank()||cr.getMode()!=CregisProperties.Mode.PROVIDER||number(row.get("provider_project"))!=cr.getProjectId())return;
-        long from=number(row.get("scan_block")),head=chain.head(network).number()-Math.max(15,cr.confirmations(network))+1;
+        long from=number(row.get("scan_block")),head=chain.finalizedHeight(network,Math.max(15,cr.confirmations(network)));
         if(head<from)return;long to=Math.min(head,from+Math.min(399,cr.getChainScanBlocks()-1));
         for(var incoming:chain.scan(network,from,to,List.of(address))){
             var proof=chain.verifyExact(network,incoming.txid(),incoming.logIndex(),address,incoming.amount(),incoming.blockNumber());if(proof==null)return;
             var trades=crGateway.provider().depositsByTxid(network,incoming.txid()).stream().filter(t->t.status()==1&&network.chainId().equals(t.chainId())
-                    &&network.tokenId().equalsIgnoreCase(t.tokenId())&&address.equalsIgnoreCase(t.address())&&incoming.amount().compareTo(t.amount())==0).toList();
+                    &&network.tokenMatches(t.tokenId())&&network.addressEquals(address,t.address())&&incoming.amount().compareTo(t.amount())==0).toList();
             if(trades.size()!=1)return;
             recordBscArrival(row,incoming,proof);
         }
@@ -518,7 +559,7 @@ public class PurchasePaymentService {
             var proof=chain.verifyExact(network,txid,(int)number(incoming.get("log_index")),text(intent.get("address")),amount,number(incoming.get("block_number")));
             if(proof==null||!proof.blockHash().equalsIgnoreCase(text(incoming.get("block_hash"))))return false;
             var trades=crGateway.provider().depositsByTxid(network,txid).stream().filter(t->t.status()==1&&network.chainId().equals(t.chainId())
-                    &&network.tokenId().equalsIgnoreCase(t.tokenId())&&text(intent.get("address")).equalsIgnoreCase(t.address())&&amount.compareTo(t.amount())==0).toList();
+                    &&network.tokenMatches(t.tokenId())&&network.addressEquals(text(intent.get("address")),t.address())&&amount.compareTo(t.amount())==0).toList();
             return trades.size()==1&&amount.compareTo(new BigDecimal(text(parse(intent.get("quote_json")).get("totalUsdt"))))==0;
         }catch(RuntimeException unavailable){return false;}
     }
@@ -534,8 +575,16 @@ public class PurchasePaymentService {
     }
     @Scheduled(fixedDelayString="${nexion.finance.purchase-payment-observe-ms:30000}")
     public void scheduled(){
-        // A failed intent still owns a live commerce deadline until its canonical order closes.
-        String live="p.status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED') OR (p.kind='ORDER_PAY' AND p.status='EXPIRED' AND p.confirmed_at IS NULL AND p.receipt_json IS NULL AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.user_id=p.user_id AND o.payment_status='PENDING' AND o.order_status='PENDING_PAYMENT'))";
+        // Failed and confirmed-late intents can still own a live commerce deadline.
+        String live="""
+                p.status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED') OR (
+                    p.kind='ORDER_PAY' AND p.receipt_json IS NULL
+                    AND ((p.status='EXPIRED' AND p.confirmed_at IS NULL)
+                         OR (p.status='MANUAL_REVIEW' AND p.reason='PAYMENT_LATE_REVIEW' AND p.confirmed_at IS NOT NULL))
+                    AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo'))
+                        AND o.user_id=p.user_id AND o.is_deleted=0 AND o.payment_status='PENDING' AND o.order_status='PENDING_PAYMENT')
+                )
+                """;
         observeBatch(db.rows("SELECT p.* FROM nx_purchase_payment_intent p WHERE "+live+" ORDER BY COALESCE(p.observed_at,p.created_at),p.intent_no LIMIT 50"));
         // Only finished commerce results use the separate historical financial-reconciliation quota.
         observeBatch(db.rows("SELECT p.* FROM nx_purchase_payment_intent p WHERE NOT ("+live+") ORDER BY COALESCE(p.observed_at,p.created_at),p.intent_no LIMIT 10"));
@@ -574,8 +623,18 @@ public class PurchasePaymentService {
                 "reason",row.get("reason"),"version",row.get("version"),"expiresAt",deadline(row).toString(),"deadlineAt",deadline(row).toString(),"confirmationGraceEndsAt",graceEnd(row.get("payment_method"),deadline(row)).toString()));
         if(row.get("provider_expires_at")!=null)result.put("expirationTime",instant(row.get("provider_expires_at")).toString());
         if(row.get("payment_url")!=null&&"AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)))result.put("paymentUrl",row.get("payment_url"));
-        if(row.get("address")!=null&&(admin||now().isBefore(paymentDeadline(row))))result.put("address",row.get("address"));
-        result.put("paymentAllowed","AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)));
+        boolean networkOpen=true;
+        if(cregis(row.get("payment_method"))) {
+            var network=network(row.get("payment_method"));
+            var global=db.one("SELECT state,CAST(assign_enabled AS UNSIGNED) assign_enabled,CAST(credit_enabled AS UNSIGNED) credit_enabled FROM nx_cregis_provision_gate WHERE id=1");
+            var business=db.one("SELECT CAST(deposit_enabled AS UNSIGNED) deposit_enabled FROM nx_cregis_network_switch WHERE network=?",network.network());
+            networkOpen=cr.getMode()==CregisProperties.Mode.PROVIDER && cr.isDepositEnabled() && cr.isDepositCreditEnabled()
+                    && cr.depositNetworkEnabled(network) && global!=null && "IDLE".equals(global.get("state"))
+                    && number(global.get("assign_enabled"))==1 && number(global.get("credit_enabled"))==1
+                    && business!=null && number(business.get("deposit_enabled"))==1;
+        }
+        if(row.get("address")!=null&&(admin||networkOpen&&now().isBefore(paymentDeadline(row))))result.put("address",row.get("address"));
+        result.put("paymentAllowed",networkOpen&&"AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)));
         result.put("fulfilmentStatus",row.get("receipt_json")==null?"NOT_DELIVERED":"DELIVERED");
         if(row.get("receipt_json")!=null){
             var receipt=parse(row.get("receipt_json"));

@@ -12,6 +12,7 @@ logging:
 oauth:
   # Credentials can be provisioned independently; no provider is enabled by default.
   enabled: ${OAUTH_ENABLED:false}
+  test-provider-enabled: ${OAUTH_TEST_PROVIDER_ENABLED:false}
 
 spring:
   application:
@@ -42,6 +43,10 @@ spring:
       password: ${NEXION_REDIS_PASSWORD:}
 
 nexion:
+  hardware-daily-uvt:
+    start-utc: ${NEXION_HARDWARE_DAILY_UVT_START_UTC:}
+  compute-v2:
+    refund-runtime-closed: ${NEXION_COMPUTE_V2_REFUND_RUNTIME_CLOSED:false}
   simulated-tasks:
     abandon-before: ${NEXION_SIMULATED_TASKS_ABANDON_BEFORE:}
   websocket:
@@ -111,14 +116,25 @@ nexion:
       read-timeout-ms: ${NEXION_CREGIS_READ_TIMEOUT_MS:2000}
       deposit-enabled: ${NEXION_CREGIS_DEPOSIT_ENABLED:false}
       erc20-deposit-enabled: ${NEXION_CREGIS_ERC20_DEPOSIT_ENABLED:false}
+      trc20-deposit-enabled: ${NEXION_CREGIS_TRC20_DEPOSIT_ENABLED:false}
       deposit-credit-enabled: ${NEXION_CREGIS_DEPOSIT_CREDIT_ENABLED:false}
       payout-enabled: ${NEXION_CREGIS_PAYOUT_ENABLED:false}
       erc20-payout-enabled: ${NEXION_CREGIS_ERC20_PAYOUT_ENABLED:false}
+      trc20-payout-enabled: ${NEXION_CREGIS_TRC20_PAYOUT_ENABLED:false}
       auto-forward-enabled: ${NEXION_CREGIS_AUTO_FORWARD_ENABLED:false}
+      bep20-platform-address: ${NEXION_CREGIS_BEP20_PLATFORM_ADDRESS:}
+      bep20-counterparty-address: ${NEXION_CREGIS_BEP20_COUNTERPARTY_ADDRESS:}
+      erc20-platform-address: ${NEXION_CREGIS_ERC20_PLATFORM_ADDRESS:}
+      erc20-counterparty-address: ${NEXION_CREGIS_ERC20_COUNTERPARTY_ADDRESS:}
+      trc20-platform-address: ${NEXION_CREGIS_TRC20_PLATFORM_ADDRESS:}
+      trc20-counterparty-address: ${NEXION_CREGIS_TRC20_COUNTERPARTY_ADDRESS:}
       auto-forward-poll-ms: ${NEXION_CREGIS_AUTO_FORWARD_POLL_MS:60000}
       callback-source-ips: ${NEXION_CREGIS_CALLBACK_SOURCE_IPS:}
       bsc-rpc-url: ${NEXION_CREGIS_BSC_RPC_URL:}
       ethereum-rpc-url: ${NEXION_CREGIS_ETHEREUM_RPC_URL:}
+      tron-rpc-url: ${NEXION_CREGIS_TRON_RPC_URL:}
+      tron-api-key: ${NEXION_CREGIS_TRON_API_KEY:}
+      tron-request-min-interval-ms: ${NEXION_CREGIS_TRON_REQUEST_MIN_INTERVAL_MS:500}
       deposit-confirmations: ${NEXION_CREGIS_DEPOSIT_CONFIRMATIONS:15}
       chain-scan-blocks: ${NEXION_CREGIS_CHAIN_SCAN_BLOCKS:500}
     hdpay:

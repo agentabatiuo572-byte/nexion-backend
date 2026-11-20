@@ -12,6 +12,9 @@ public record PlatformRoleOverview(List<RoleSummary> roles, int total) {
             String remark,
             Integer status,
             boolean builtin,
-            long adminCount) {
+            long adminCount,
+            long permissionCount,
+            long menuGrantCount,
+            long enabledAdminCount) {
     }
 }
