@@ -166,11 +166,9 @@ public class AppHomeOverviewService {
                     "activeDevices", activeDevices, "slotsUsed", (long) Math.max(0, mapper.activeSlotCount(userId)) + reservedSlots + trialSlots,
                     "slotCap", Math.max(1, mapper.deviceSlotCap()), "reservedSlotCount", reservedSlots, "trialSlotCount", trialSlots));
             AppHomeOverviewMapper.OnGridSummary grid = mapper.onGrid(sourceEnvironment, accountSandbox);
-            Long activeJobs = grid == null ? null : grid.activeJobs();
-            boolean includeSimulatedSlots = sharedSnapshotCache.includeRuleSlots(activeJobs);
             Map<String, Object> onGrid = linked("clients", clients(mapper.onGridClients(accountSandbox)),
                     "activeDevices", mapper.globalActiveDevices(accountSandbox),
-                    "activeJobs", activeJobs,
+                    "activeJobs", null,
                     "perSecUsdt", fact(grid == null ? null : grid.perSecUsdt(), grid == null ? null : grid.activeJobs()));
             result.put("onGrid", onGrid);
             result.put("source", PRODUCTION_SOURCE);
@@ -181,10 +179,7 @@ public class AppHomeOverviewService {
                             && snapshot.validUntil() > clock.millis() ? snapshot : null;
                     result.put("marketBoard", marketBoard(marketTasks, safe(historySnapshot == null
                             ? mapper.marketTaskPriceHistory() : historySnapshot.marketTaskPriceHistory()), marketProducts));
-                    if (includeSimulatedSlots) {
-                        onGrid.put("activeJobs", sharedSnapshotCache.activeJobsWithRuleSlots(
-                                activeJobs, sourceEnvironment, accountSandbox, snapshot));
-                    }
+                    onGrid.put("activeJobs", publicStatsService.currentActiveJobsDisplay());
                     return ApiResult.ok(result);
                 } catch (DataAccessException ex) {
                     return ApiResult.fail(503, "APP_HOME_OVERVIEW_UNAVAILABLE");
@@ -239,7 +234,7 @@ public class AppHomeOverviewService {
                 "activeDevices", mapper.sandboxActiveDevices(userId, runId)));
         result.put("onGrid", linked("clients", sandboxClients(tasks, onlineDevices),
                 "activeDevices", onlineDevices,
-                "activeJobs", (long) uniqueTaskCodes(tasks).size(),
+                "activeJobs", whole(values.get("activeJobsBase")),
                 "perSecUsdt", perSecUsdt));
         result.put("source", SANDBOX_SOURCE);
         String candidateId = runtimeCandidateId();
