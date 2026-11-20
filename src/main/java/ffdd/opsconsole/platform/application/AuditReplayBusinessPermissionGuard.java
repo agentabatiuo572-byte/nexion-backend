@@ -22,6 +22,7 @@ import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.market.application.G4ParamApproval;
 import ffdd.opsconsole.team.application.F5CommissionService;
 import ffdd.opsconsole.team.application.TeamFundApproval;
+import ffdd.opsconsole.team.application.HardwareQuotaApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import org.springframework.beans.factory.annotation.Autowired;
 
@@ -149,6 +150,8 @@ public class AuditReplayBusinessPermissionGuard {
     private E2TaskPricingApproval e2TaskPricingApproval;
     @Autowired
     private TeamFundApproval teamFundApproval;
+    @Autowired
+    private HardwareQuotaApproval hardwareQuotaApproval;
     @Autowired
     private ffdd.opsconsole.team.application.AmbassadorMaterialService ambassadorMaterials;
     @Autowired
@@ -292,6 +295,10 @@ public class AuditReplayBusinessPermissionGuard {
         return authority != null && hasAuthority(authority) && delegatedDescriptor(command) != null;
     }
 
+    public boolean canProposeHardwareQuota(AuditReplayCommand command) {
+        return HardwareQuotaApproval.supports(command) && hasAuthority(HardwareQuotaApproval.AUTHORITY);
+    }
+
     public boolean hasF5ProposalAuthority() {
         return F5_ACTION_AUTHORITIES.stream().anyMatch(this::hasAuthority);
     }
@@ -318,6 +325,10 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<Void> validateProposal(AuditReplayCommand command) {
+        if (HardwareQuotaApproval.supports(command)) {
+            return canProposeHardwareQuota(command) ? ApiResult.ok()
+                    : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + HardwareQuotaApproval.AUTHORITY);
+        }
         if (isE4Refund(command)) {
             Long actor = A2ReplayContext.authenticatedAdminId();
             boolean authorizedRole = superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
@@ -565,6 +576,16 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<AuditReplayCommand> bindProposalCommand(AuditOperationProposalRequest request) {
         AuditReplayCommand command = request.command();
+        if (HardwareQuotaApproval.supports(command)) {
+            if (!canProposeHardwareQuota(command)) {
+                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + HardwareQuotaApproval.AUTHORITY);
+            }
+            try {
+                return ApiResult.ok(hardwareQuotaApproval.prepare(command));
+            } catch (ffdd.opsconsole.shared.exception.BizException invalid) {
+                return ApiResult.fail(invalid.getCode(), invalid.getMessage());
+            }
+        }
         if ((request.target() != null && "device_datacenter".equals(request.target().type()))
                 || (request.targets() != null && request.targets().stream()
                     .anyMatch(target -> target != null && "device_datacenter".equals(target.type())))) {
@@ -720,6 +741,11 @@ public class AuditReplayBusinessPermissionGuard {
 
     /** Actor, original command and authorization binding only; safe for the A2 read model. */
     ApiResult<Void> validateDecisionPermission(AuditReplayCommand command, boolean approving) {
+        if (HardwareQuotaApproval.supports(command)) {
+            return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
+                    && hasAuthority("platform_a2_operation_approve") && hasAuthority(HardwareQuotaApproval.AUTHORITY)
+                    ? ApiResult.ok() : ApiResult.fail(403, "F4_QUOTA_CHECKER_FORBIDDEN");
+        }
         if (isE4Refund(command)) return validateRefundChecker();
         if (approving && isF5StatusUiAlias(command)) return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
         if (A4RegistryApproval.isOperation(command)) return a4RegistryApproval.validateChecker();
@@ -790,6 +816,7 @@ public class AuditReplayBusinessPermissionGuard {
 
     /** Execution preconditions stay on the actual approval path, after its shared qualification. */
     ApiResult<Void> validateApprovalPreconditions(AuditReplayCommand command) {
+        if (HardwareQuotaApproval.supports(command)) return ApiResult.ok();
         if (command != null && ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(command.op())) {
             if (legacyUnknownZeroCredit == null) return ApiResult.fail(503, "LEGACY_UNKNOWN_RESOLUTION_UNAVAILABLE");
             try {
@@ -1049,6 +1076,15 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<DelegatedProposalDescriptor> validateProposalContext(
             AuditOperationProposalRequest request, AuditReplayCommand boundCommand) {
+        if (HardwareQuotaApproval.supports(boundCommand)) {
+            var target = HardwareQuotaApproval.target(boundCommand);
+            if ((request.target() != null && !target.equals(request.target()))
+                    || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return ApiResult.ok(new DelegatedProposalDescriptor("新增购机名额档位", target.id(),
+                    "不存在", "新增档位", "F4", "param", false, target));
+        }
         if (A4RegistryApproval.supports(boundCommand)) {
             return ApiResult.ok(A4RegistryApproval.describe(boundCommand));
         }

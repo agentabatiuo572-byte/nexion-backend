@@ -206,12 +206,12 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                AND event_name IN (
                  'auth.register_completed', 'device.first_yield_received', 'app.dau',
                  'store.viewed', 'checkout.completed', 'device.purchase_completed',
-                 'referral.invite_sent', 'nova.push_sent', 'nova.push_clicked',
+                 'referral.invite_sent',
                  'referral.bound', 'commission.paid', 'genesis.purchased'
                )
                AND (
                  is_server_authoritative = 1
-                 OR event_name IN ('store.viewed', 'nova.push_clicked')
+                 OR event_name = 'store.viewed'
                )
             """;
 
@@ -220,6 +220,13 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
              ORDER BY COALESCE(event_ts, created_at) ASC, id ASC
             """)
     List<Map<String, Object>> selectL1EventFacts();
+
+    @Select("""
+            SELECT MIN(event_ts) FROM nx_event_outbox
+             WHERE event_name='app.dau' AND is_deleted=0 AND analytics_event=1
+               AND schema_registered=1 AND is_server_authoritative=1
+            """)
+    LocalDateTime selectFirstDauEventAt();
 
     String L1_REGISTRATION_WINDOW = """
              WHERE sandbox = 0 AND created_at >= #{registrationFrom} AND created_at < #{registrationToExclusive}
@@ -259,6 +266,15 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
             @Param("registrationToExclusive") LocalDateTime registrationToExclusive,
             @Param("observationEnd") LocalDateTime observationEnd);
 
+    String EVENT_PHASE_WITH_REGISTRATION_SNAPSHOT = """
+            CASE
+              WHEN event_name='auth.register_completed'
+                   AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.registration_phase')) REGEXP '^P[1-6]$'
+              THEN JSON_UNQUOTE(JSON_EXTRACT(payload, '$.registration_phase'))
+              ELSE COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase')))
+            END
+            """;
+
     @Select("""
             SELECT event_name AS eventName,
                    event_ts AS eventTs,
@@ -266,7 +282,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                    aggregate_type AS trialAggregateType,
                    aggregate_id AS trialId,
                    COALESCE(NULLIF(cohort, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.cohort'))) AS cohort,
-                   COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase'))) AS phase,
+                   """ + EVENT_PHASE_WITH_REGISTRATION_SNAPSHOT + """
+                   AS phase,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.locale')), 'und') AS locale,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.ref')), 'direct') AS refCode
               FROM nx_event_outbox
@@ -330,7 +347,8 @@ public interface BiReportMapper extends BaseMapper<BiReportEntity> {
                      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.source_user_id')), ''),
                      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.sourceUserId')), '')
                    ) AS sourceActorId,
-                   COALESCE(NULLIF(phase, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.phase'))) AS phase,
+                   """ + EVENT_PHASE_WITH_REGISTRATION_SNAPSHOT + """
+                   AS phase,
                    COALESCE(NULLIF(cohort, ''), JSON_UNQUOTE(JSON_EXTRACT(payload, '$.cohort'))) AS cohort,
                    COALESCE(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.locale')), 'und') AS locale,
                    COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.ref')), ''),

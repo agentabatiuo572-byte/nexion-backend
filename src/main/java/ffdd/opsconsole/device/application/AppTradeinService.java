@@ -83,8 +83,9 @@ public class AppTradeinService {
             "tradeinLadderCut1", "tradeinLadderCut2", "tradeinLadderCut3", "tradeinLadderCut4",
             "tradeinLadderCredit1", "tradeinLadderCredit2", "tradeinLadderCredit3",
             "tradeinLadderCredit4", "tradeinLadderCredit5",
-            "tradeinRequireHigherPrice", "tradeinMaxDevicesPerOrder",
+            "tradeinRequireHigherPrice",
             "earlyAccessEnabled", "earlyAccessLeadDays");
+    private static final int MAX_DEVICES_PER_ORDER = 1;
     private static final Set<Integer> EARLY_ACCESS_LEAD_DAY_OPTIONS = Set.of(7, 14, 30, 60, 90);
 
     @lombok.NonNull
@@ -110,7 +111,7 @@ public class AppTradeinService {
         TradeinPolicy policy = policy();
         return ApiResult.ok(new AppTradeinConfigResponse(
                 policy.enabled(), policy.eligibility(), policy.cuts(), policy.credits(),
-                policy.requireHigherPrice(), policy.maxDevicesPerOrder(),
+                policy.requireHigherPrice(), MAX_DEVICES_PER_ORDER,
                 policy.earlyAccessEnabled(), policy.earlyAccessLeadDays(), "nx_compute_e3_config"));
     }
 
@@ -685,7 +686,6 @@ public class AppTradeinService {
             Long userId, Long sourceDeviceId, Long targetProductId, String targetProductNo, boolean locked) {
         TradeinPolicy policy = policy();
         if (!policy.enabled()) throw new BizException(409, "TRADEIN_DISABLED");
-        if (policy.maxDevicesPerOrder() < 1) throw new BizException(409, "TRADEIN_DEVICE_COUNT_EXCEEDED");
         requireEligibility(mapper.userLevel(userId), policy.eligibility());
 
         AppTradeinMapper.SourceDevice source = locked
@@ -811,10 +811,8 @@ public class AppTradeinService {
                 || credits.stream().anyMatch(value -> value.signum() < 0 || value.compareTo(BigDecimal.valueOf(100)) > 0)) {
             throw new BizException(503, "E3_TRADEIN_LADDER_INVALID");
         }
-        int maxDevices;
         int earlyAccessLeadDays;
         try {
-            maxDevices = Integer.parseInt(values.get("tradeinMaxDevicesPerOrder"));
             earlyAccessLeadDays = Integer.parseInt(values.get("earlyAccessLeadDays"));
         } catch (RuntimeException ex) {
             throw new BizException(503, "E3_TRADEIN_MAX_DEVICES_INVALID");
@@ -830,7 +828,7 @@ public class AppTradeinService {
         return new TradeinPolicy(
                 bool(values.get("tradeinEnabled"), "E3_TRADEIN_ENABLED_INVALID"), eligibility,
                 cuts, credits, bool(values.get("tradeinRequireHigherPrice"), "E3_TRADEIN_PRICE_GATE_INVALID"),
-                maxDevices, bool(values.get("earlyAccessEnabled"), "E3_EARLY_ACCESS_ENABLED_INVALID"),
+                bool(values.get("earlyAccessEnabled"), "E3_EARLY_ACCESS_ENABLED_INVALID"),
                 earlyAccessLeadDays);
     }
 
@@ -879,7 +877,7 @@ public class AppTradeinService {
                 target == null ? targetProductNo : target.productNo(),
                 target == null ? null : target.name(),
                 target == null ? null : money(target.priceUsdt()),
-                policy.requireHigherPrice(), policy.maxDevicesPerOrder(), sources, "server");
+                policy.requireHigherPrice(), MAX_DEVICES_PER_ORDER, sources, "server");
     }
 
     private AppTradeinEligibilityResponse.Source eligibilitySource(
@@ -1052,7 +1050,7 @@ public class AppTradeinService {
 
     private record TradeinPolicy(
             boolean enabled, String eligibility, List<BigDecimal> cuts, List<BigDecimal> credits,
-            boolean requireHigherPrice, int maxDevicesPerOrder,
+            boolean requireHigherPrice,
             boolean earlyAccessEnabled, int earlyAccessLeadDays) {
     }
 

@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.content.domain.*;
 import ffdd.opsconsole.content.domain.ContentConversationMessagePage.*;
 import ffdd.opsconsole.content.mapper.ConversationHistoryMapper;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +20,7 @@ public class SupportConversationHistoryService {
     private final ffdd.opsconsole.content.mapper.SupportBindingMapper bindings;
     private final SupportOwnershipService ownership;
     private final ProductionSupportPathGuard production;
+    private final PlatformExperienceConfigService experience;
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public ContentConversationMessagePage page(String no,Long beforeMessageId) {
@@ -31,8 +33,11 @@ public class SupportConversationHistoryService {
         if(customer==null || customer<=0 || !Set.of("advisor","support").contains(conversation.conversationType()))throw new BizException(404,"CONVERSATION_NOT_FOUND");
         var cursor=beforeMessageId==null?null:mapper.cursor(customer,beforeMessageId);
         if(beforeMessageId!=null && (cursor==null || cursor.createdAt()==null))throw new BizException(404,"CONVERSATION_CURSOR_NOT_FOUND");
-        var identity=mapper.identity(customer);
-        if(identity==null || identity.customerId()!=customer)throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
+        var customerRow=mapper.identity(customer);
+        if(customerRow==null || customerRow.customerId()!=customer)throw new BizException(404,"SUPPORT_CUSTOMER_NOT_FOUND");
+        String language=SupportSystemMessage.effectiveLanguageTag(customerRow.language(),experience::interfaceLanguages);
+        var identity=new CustomerIdentity(customerRow.customerId(),customerRow.userNo(),customerRow.nickname(),
+                customerRow.phoneMasked(),language);
         var newest=Objects.requireNonNull(mapper.page(customer,cursor==null?null:cursor.createdAt(),beforeMessageId));
         if(newest.size()>11)throw new IllegalStateException("CONVERSATION_PAGE_LIMIT_INVALID");
         boolean more=newest.size()>10;

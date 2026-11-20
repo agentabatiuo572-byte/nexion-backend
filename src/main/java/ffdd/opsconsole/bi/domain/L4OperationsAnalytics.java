@@ -1,5 +1,6 @@
 package ffdd.opsconsole.bi.domain;
 
+import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
@@ -69,8 +70,10 @@ public final class L4OperationsAnalytics {
             }
         }
         all.sort(Comparator.comparing(Fact::ts));
-        List<Fact> selected = all.stream()
+        List<Fact> currentRows = all.stream()
                 .filter(item -> !item.ts().isBefore(range.from()) && !item.ts().isAfter(range.to()))
+                .toList();
+        List<Fact> selected = currentRows.stream()
                 .filter(item -> "ALL".equals(normalizedPhase) || normalizedPhase.equals(item.phase()))
                 .toList();
         Range previousRange = range.previous();
@@ -116,7 +119,7 @@ public final class L4OperationsAnalytics {
                 "device", device(selected),
                 "tasks", tasks(selected, actorComplete, completionVolume, normalizedPeriod),
                 "network", network(selected, actorComplete),
-                "phaseEffect", phaseEffect(selected, actorComplete, normalizedPhase),
+                "phaseEffect", phaseEffect(selected, events(currentRows, "app.dau"), actorComplete, normalizedPhase),
                 "history", history,
                 "comparison", comparison(previousSelected, previousRange, comparisonAvailable, comparisonReason, normalizedPeriod),
                 "quality", linked(
@@ -376,7 +379,8 @@ public final class L4OperationsAnalytics {
     }
 
     private static List<Map<String, Object>> phaseEffect(
-            List<Fact> rows, boolean actorComplete, String phaseFilter) {
+            List<Fact> rows, List<Fact> activity, boolean actorComplete, String phaseFilter) {
+        boolean retentionActorsComplete = actorComplete && activity.stream().allMatch(fact -> hasText(fact.actor()));
         List<Map<String, Object>> result = new ArrayList<>();
         Double previousConversion = null;
         List<String> phases = "ALL".equals(phaseFilter) ? PHASES : List.of(phaseFilter);
@@ -387,11 +391,11 @@ public final class L4OperationsAnalytics {
             List<Fact> storeFacts = events(phaseRows, "store.viewed");
             List<Fact> buyerFacts = events(phaseRows, "checkout.completed");
             long registered = distinctActors(registrations);
-            long active = distinctActors(events(phaseRows, "app.dau"));
+            long active = distinctActors(activeFacts);
             long store = distinctActors(storeFacts);
-            long retained = orderedActors(registrations, activeFacts).size();
+            long retained = returningActors(registrations, activity).size();
             long converted = orderedActors(storeFacts, buyerFacts).size();
-            Double retention = actorComplete && registered > 0 ? pct(retained, registered) : null;
+            Double retention = retentionActorsComplete && registered > 0 ? pct(retained, registered) : null;
             Double conversion = actorComplete && store > 0 ? pct(converted, store) : null;
             Double step = conversion == null || previousConversion == null ? null : round(conversion - previousConversion);
             result.add(linked(
@@ -508,6 +512,19 @@ public final class L4OperationsAnalytics {
             String key = keyValue.apply(item);
             if (!hasText(key)) continue;
             result.merge(key, item.ts(), (left, right) -> left.isBefore(right) ? left : right);
+        }
+        return result;
+    }
+
+    private static Set<String> returningActors(List<Fact> registrations, List<Fact> activity) {
+        var calendar = BusinessCalendar.legacy();
+        Map<String, LocalDateTime> starts = firstTimes(registrations, Fact::actor);
+        Set<String> result = new LinkedHashSet<>();
+        for (Fact item : activity) {
+            LocalDateTime start = starts.get(item.actor());
+            if (start != null && calendar.dateAtStorage(item.ts()).isAfter(calendar.dateAtStorage(start))) {
+                result.add(item.actor());
+            }
         }
         return result;
     }

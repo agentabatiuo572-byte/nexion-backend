@@ -178,9 +178,12 @@ public class H4EventRuleService {
         if(request==null||request.reason()==null||request.reason().trim().length()<a2.reasonMinChars())throw new BizException(422,"REASON_REQUIRED");
         var current=find(code,true);
         if(current==null)throw new BizException(404,"EVENT_RULE_NOT_FOUND");
-        if(db.row("SELECT 1 FROM nx_event_quest WHERE quest_code=? AND is_deleted=1 FOR UPDATE",code)!=null)
+        var quest=db.row("SELECT status,is_deleted FROM nx_event_quest WHERE quest_code=? FOR UPDATE",code);
+        if(quest!=null&&number(quest.get("is_deleted")).intValue()==1)
             throw new BizException(404,"EVENT_NOT_FOUND");
         if(number(current.get("revision")).longValue()!=request.expectedRevision())throw new BizException(409,"EVENT_CONFIG_STALE");
+        if(request.enabled()&&quest!=null&&number(quest.get("status")).intValue()==2)
+            throw new BizException(422,"EVENT_STATUS_TERMINAL");
         Map<String,Object> rules=request.rules()==null?Map.of():request.rules();
         LocalDateTime start=parseDate(request.startsAt()),end=parseDate(request.endsAt());
         boolean enabled=number(current.get("enabled")).intValue()==1;

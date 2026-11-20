@@ -19,6 +19,7 @@ import ffdd.opsconsole.emergency.domain.EmergencyControlRepository;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
 import ffdd.opsconsole.growth.facade.StreakPerkBusinessAvailabilityFacade;
 import ffdd.opsconsole.growth.dto.GrowthPowerUpUpdateRequest;
+import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneCreateRequest;
 import ffdd.opsconsole.growth.dto.GrowthEarnMilestoneUpdateRequest;
 import ffdd.opsconsole.growth.dto.GrowthQuestEventRequest;
 import ffdd.opsconsole.growth.dto.GrowthMissionRequest;
@@ -59,6 +60,7 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1619,6 +1621,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
+            boolean requireCompletePool = approved && !preview && questEventMapper.get().hasOpenWheelEvent();
             List<Map<String, Object>> currentPool = questEventMapper.get().wheelTiers();
             if (!wheelSignatureMatches(request.expectedSignature(), currentPool, approved)) {
                 return validation("WHEEL_CONFIG_STALE");
@@ -1638,8 +1641,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             }
             BigDecimal currentProbability = Optional.ofNullable(questEventMapper.get().activeWheelProbabilitySum())
                     .orElse(BigDecimal.ZERO);
-            if (currentProbability.add(probability).compareTo(new BigDecimal("100")) > 0) {
+            BigDecimal nextTotal = currentProbability.add(probability);
+            if (nextTotal.compareTo(new BigDecimal("100")) > 0) {
                 return validation("WHEEL_PROBABILITY_TOTAL_EXCEEDS_100");
+            }
+            if (requireCompletePool && nextTotal.setScale(4, RoundingMode.HALF_UP).compareTo(new BigDecimal("100")) != 0) {
+                return validation("WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
             }
             int realOutflow = (request.realOutflow() != null && request.realOutflow() == 1) ? 1 : 0;
             String rewardKind = normalizePlainText(StringUtils.hasText(request.rewardKind()) ? request.rewardKind() : "uvt", 64).toLowerCase(Locale.ROOT);
@@ -1854,6 +1861,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (!"H4_WHEEL".equals(questEventMapper.get().lockWheelMutation())) {
                 return validation("H4_WHEEL_MUTEX_UNAVAILABLE");
             }
+            boolean requireCompletePool = approved && !preview && questEventMapper.get().hasOpenWheelEvent();
             String tierName = normalizePlainText(tierNameRaw, 128);
             List<Map<String, Object>> tiers = growthRows(GrowthQuestEventMapper::wheelTiers);
             if (!wheelSignatureMatches(request.expectedValue(), tiers, approved)) {
@@ -1874,6 +1882,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             }
             if (parseDecimal(String.valueOf(before.get("prob")), BigDecimal.ZERO).compareTo(BigDecimal.ZERO) != 0) {
                 return validation("WHEEL_TIER_DELETE_REQUIRES_ZERO_PROBABILITY");
+            }
+            if (requireCompletePool && questEventMapper.get().activeWheelProbabilitySum().compareTo(new BigDecimal("100")) != 0) {
+                return validation("WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
             }
             boolean amplifies = !truthy(before.get("real")) && "uvt".equalsIgnoreCase(String.valueOf(before.get("kind")))
                     && increasesUvtFallback(tiers, before, parseDecimal(String.valueOf(before.get("amount")), BigDecimal.ZERO), false);
@@ -2261,6 +2272,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (!"points".equalsIgnoreCase(String.valueOf(before.get("kind")))) {
                 return validation("WHEEL_TIER_RETIRE_ONLY_POINTS");
             }
+            if (questEventMapper.get().hasOpenWheelEvent()) {
+                BigDecimal retiringProbability = parseDecimal(String.valueOf(before.get("prob")), BigDecimal.ZERO);
+                BigDecimal nextTotal = questEventMapper.get().activeWheelProbabilitySum().subtract(retiringProbability);
+                if (nextTotal.compareTo(new BigDecimal("100")) != 0) {
+                    return validation("WHEEL_PROBABILITY_TOTAL_MUST_EQUAL_100");
+                }
+            }
             if (questEventMapper.get().retirePointsWheelTier(name) != 1) {
                 return validation("WHEEL_TIER_NOT_FOUND");
             }
@@ -2301,10 +2319,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (guard != null) {
             return guard;
         }
-        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
-        if (trialGate != null) {
-            return trialGate;
-        }
         if (questEventMapper.isEmpty()) {
             return validation("GROWTH_BUSINESS_TABLE_UNAVAILABLE");
         }
@@ -2327,9 +2341,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (oldValue.equalsIgnoreCase(value)) {
                 return validation("WHEEL_GUARD_NO_CHANGE");
             }
-            boolean enablesRealPrize = "kill".equals(key) && !h4RealPrizeEnabled(oldValue) && h4RealPrizeEnabled(value);
-            boolean increasesBudget = "budget".equals(key)
-                    && numericToken(value).compareTo(numericToken(oldValue)) > 0;
+            boolean realPrizeWasEnabled = "kill".equals(key) && h4RealPrizeEnabled(oldValue);
+            boolean realPrizeWillBeEnabled = "kill".equals(key) && h4RealPrizeEnabled(value);
+            boolean enablesRealPrize = !realPrizeWasEnabled && realPrizeWillBeEnabled;
+            boolean disablesRealPrize = realPrizeWasEnabled && !realPrizeWillBeEnabled;
+            int budgetChange = "budget".equals(key) ? numericToken(value).compareTo(numericToken(oldValue)) : 0;
+            boolean increasesBudget = budgetChange > 0;
+            if (!disablesRealPrize && budgetChange >= 0) {
+                var trialGate = requireTrialGateForH4Mutation();
+                if (trialGate != null) return trialGate;
+            }
             var approval = h4ApprovalGate(enablesRealPrize || increasesBudget, approved);
             if (approval != null) return approval;
             if (preview) return ApiResult.ok(Map.of("before", oldValue, "after", value));
@@ -2651,10 +2672,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             var guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
             if (guard != null) return guard;
         }
-        ApiResult<Map<String, Object>> trialGate = requireTrialGateForH4Mutation();
-        if (trialGate != null) {
-            return trialGate;
-        }
         if (!lockH4Event()) {
             return validation("H4_EVENT_MUTEX_UNAVAILABLE");
         }
@@ -2688,6 +2705,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return validation("EVENT_STATUS_TRANSITION_INVALID");
         }
         if ("ongoing".equals(status)) {
+            var trialGate = requireTrialGateForH4Mutation();
+            if (trialGate != null) return trialGate;
             var localized = eventPublicationContent(id, approved && !preview,
                     eventPublicationFields(current.get("targetType"), current.get("rewardType"), current.get("rewardAmount"), rule));
             if (localized != null) return localized;
@@ -3178,6 +3197,33 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         Map<String, Object> response = checkIn().getData();
         response.put("updated", Map.of("powerUpId", powerUpId, "source", "nx_streak_power_up", "key", key, "value", value));
         return ApiResult.ok(response);
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> executeApprovedEarnMilestoneCreate(
+            String idempotencyKey, GrowthEarnMilestoneCreateRequest request, AuditLockTarget target) {
+        String key = request.milestoneKey();
+        if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())
+                || !new AuditLockTarget("H", "h5_earn_milestone", key).equals(target)) {
+            return ApiResult.fail(403, "H5_APPROVAL_FORBIDDEN");
+        }
+        var guard = requireCommand(idempotencyKey, request.reason());
+        if (guard != null) return guard;
+        if (questEventMapper.isEmpty()
+                || !"H5_MILESTONE".equals(questEventMapper.get().lockGrowthMutation("H5_MILESTONE"))) {
+            return validation("H5_MILESTONE_MUTEX_UNAVAILABLE");
+        }
+        var mapper = questEventMapper.get();
+        validateEarnMilestoneCreation(mapper, request);
+        requireH5Coverage();
+        mapper.insertEarnMilestoneRule(key, request.label(), request.thresholdUsd(), request.rewardNex(),
+                request.sortOrder().intValueExact());
+        audit("H5_EARN_MILESTONE_CREATED", "EARN_MILESTONE", key, null, Map.of(
+                "key", key, "label", request.label(), "sortOrder", request.sortOrder(),
+                "thresholdUsd", request.thresholdUsd(), "rewardNex", request.rewardNex(),
+                "operationId", A2ReplayContext.operationId(), "reason", request.reason().trim(),
+                "idempotencyKey", idempotencyKey.trim()));
+        return ApiResult.ok(Map.of("key", key, "source", "nx_earning_milestone_rule"));
     }
 
     @Transactional
@@ -3719,6 +3765,19 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     public record H5ConfigReview(AuditLockTarget target, String action, String before, String after) {}
 
+    public ApiResult<H5ConfigReview> previewEarnMilestoneCreateApproval(
+            GrowthEarnMilestoneCreateRequest request, AuditLockTarget target) {
+        var guard = requireCommand("H5_PREVIEW", request.reason());
+        if (guard != null) return ApiResult.fail(guard.getCode(), guard.getMessage());
+        var mapper = questEventMapper.orElseThrow(() -> new BizException(422, "H5_MILESTONE_MUTEX_UNAVAILABLE"));
+        validateEarnMilestoneCreation(mapper, request);
+        requireH5Coverage();
+        return ApiResult.ok(new H5ConfigReview(target, H5GrowthApproval.EARN_CREATE_ACTION,
+                H5GrowthApproval.EARN_CREATE_BEFORE, request.label() + " · 排序 " + request.sortOrder().toPlainString()
+                        + " · 累计收益 " + request.thresholdUsd().toPlainString() + " USDT · 奖励 "
+                        + request.rewardNex().toPlainString() + " UVT"));
+    }
+
     @Transactional
     public ApiResult<H5ConfigReview> previewPowerUpApproval(int powerUpId, GrowthPowerUpUpdateRequest request) {
         var guard = requireCommand("H5_PREVIEW", request == null ? null : request.reason());
@@ -4159,12 +4218,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     List<Map<String, Object>> lockH4WheelPool() {
+        lockH4Wheel();
+        return questEventMapper.get().wheelTiers();
+    }
+
+    void lockH4Wheel() {
         GrowthQuestEventMapper mapper = questEventMapper.orElseThrow(
                 () -> new BizException(422, "GROWTH_BUSINESS_TABLE_UNAVAILABLE"));
         if (!"H4_WHEEL".equals(mapper.lockWheelMutation())) {
             throw new BizException(409, "H4_WHEEL_MUTEX_UNAVAILABLE");
         }
-        return mapper.wheelTiers();
     }
 
     private boolean wheelSignatureMatches(String expected, List<Map<String, Object>> tiers, boolean approved) {
@@ -5532,6 +5595,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         voucher.put("startAt", longValue(row.get("startAt")));
         voucher.put("endAt", longValue(row.get("endAt")));
         voucher.put("claimSurfaces", parseJsonStringList(row.get("claimSurfacesJson")));
+        voucher.put("wheelOnly", truthy(row.get("wheelOnly")));
         voucher.put("popupEnabled", truthy(row.get("popupEnabled")));
         voucher.put("popupDelayMs", longValue(row.get("popupDelayMs")));
         voucher.put("popupCooldownHours", longValue(row.get("popupCooldownHours")));
@@ -6947,6 +7011,21 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             previous = threshold;
         }
         return true;
+    }
+
+    // Approval calls this after taking the same mutex as the H5 update command.
+    private void validateEarnMilestoneCreation(GrowthQuestEventMapper mapper, GrowthEarnMilestoneCreateRequest request) {
+        String key = request.milestoneKey();
+        if (mapper.countReservedEarnMilestoneKey(key) > 0) {
+            throw new BizException(409, "EARN_MILESTONE_KEY_ALREADY_EXISTS");
+        }
+        var rows = new ArrayList<>(mapper.earnMilestones());
+        rows.add(Map.of("key", key, "sortOrder", request.sortOrder(), "threshold", request.thresholdUsd()));
+        rows.sort(Comparator.comparingInt((Map<String, Object> row) -> rowDecimal(row, "sortOrder").intValueExact())
+                .thenComparing(this::earnMilestoneThreshold));
+        if (!earnMilestonesRemainOrdered(rows, key, request.thresholdUsd())) {
+            throw new BizException(422, "EARN_MILESTONE_THRESHOLD_ORDER_INVALID");
+        }
     }
 
     private BigDecimal rowDecimal(Map<String, Object> row, String field) {

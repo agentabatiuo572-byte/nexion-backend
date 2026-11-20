@@ -19,6 +19,7 @@ import ffdd.opsconsole.bi.domain.BiReportSnapshot;
 import ffdd.opsconsole.bi.domain.BiReportStreamDownload;
 import ffdd.opsconsole.bi.domain.BiReportView;
 import ffdd.opsconsole.bi.domain.L1ExportSelection;
+import ffdd.opsconsole.bi.domain.L1KpiAnalytics;
 import ffdd.opsconsole.bi.domain.L1RegistrationCohortQuery;
 import ffdd.opsconsole.bi.dto.BiDashboardValueRequest;
 import ffdd.opsconsole.bi.dto.BiRegulatoryTemplateRequest;
@@ -133,7 +134,8 @@ public class OpsBiService implements AuditReplayable {
 
     public ApiResult<Map<String, Object>> kpiDrilldown(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
-        if (kpiId < 1 || kpiId > 8) {
+        if (kpiId == 6) return retiredKpi();
+        if (!L1KpiAnalytics.KPI_IDS.contains(kpiId)) {
             return ApiResult.fail(400, "L1_KPI_ID_INVALID");
         }
         return ApiResult.ok(reportRepository.kpiDrilldown(kpiId, window, cohort, phase, locale, ref));
@@ -141,7 +143,8 @@ public class OpsBiService implements AuditReplayable {
 
     public ApiResult<Map<String, Object>> kpiTrend(
             int kpiId, String window, String cohort, String phase, String locale, String ref) {
-        if (kpiId < 1 || kpiId > 8) {
+        if (kpiId == 6) return retiredKpi();
+        if (!L1KpiAnalytics.KPI_IDS.contains(kpiId)) {
             return ApiResult.fail(400, "L1_KPI_ID_INVALID");
         }
         return ApiResult.ok(reportRepository.kpiTrend(kpiId, window, cohort, phase, locale, ref));
@@ -150,7 +153,8 @@ public class OpsBiService implements AuditReplayable {
     public ApiResult<Map<String, Object>> registrationKpis(Integer kpiId, String bucketKey,
             String window, String from, String to, String cohort, String phase, String locale, String ref,
             String granularity, String asOf) {
-        if (kpiId != null && (kpiId < 1 || kpiId > 8)) {
+        if (Integer.valueOf(6).equals(kpiId)) return retiredKpi();
+        if (kpiId != null && !L1KpiAnalytics.KPI_IDS.contains(kpiId)) {
             return ApiResult.fail(400, "L1_KPI_ID_INVALID");
         }
         L1RegistrationCohortQuery query;
@@ -166,7 +170,10 @@ public class OpsBiService implements AuditReplayable {
         response.put("query", query.auditFields());
         if (kpiId != null) {
             List<?> kpis = (List<?>) response.remove("kpis");
-            Map<String, Object> selected = mutableObjectMap(kpis.get(kpiId - 1));
+            Map<String, Object> selected = kpis.stream()
+                    .map(this::mutableObjectMap)
+                    .filter(item -> String.valueOf(kpiId).equals(item.get("kpiId")))
+                    .findFirst().orElseThrow();
             List<?> points = (List<?>) selected.get("points");
             response.put("kpiId", kpiId);
             response.put("selected", selected);
@@ -180,6 +187,10 @@ public class OpsBiService implements AuditReplayable {
             }
         }
         return ApiResult.ok(response);
+    }
+
+    private ApiResult<Map<String, Object>> retiredKpi() {
+        return ApiResult.fail(410, "L1_KPI_RETIRED", Map.of("reason", "站内通知点击率已下线"));
     }
 
     public ApiResult<Map<String, Object>> funnelOverview() {
@@ -260,10 +271,12 @@ public class OpsBiService implements AuditReplayable {
             rowsKey = "monthlyCohorts";
         }
         response.put("curve", curves.getOrDefault(normalizedCohort, List.of()));
-        if (dashboard.get(rowsKey) instanceof List<?> rows && rows.stream().anyMatch(item ->
-                item instanceof Map<?, ?> row && normalizedCohort.equals(row.get("w"))
-                        && Boolean.TRUE.equals(row.get("suppressed")))) {
-            response.put("suppressed", true);
+        if (dashboard.get(rowsKey) instanceof List<?> rows) {
+            rows.stream().map(this::mutableObjectMap).filter(row -> normalizedCohort.equals(row.get("w")))
+                    .findFirst().ifPresent(row -> {
+                        response.put("retentionUnavailableReasons", row.get("retentionUnavailableReasons"));
+                        if (Boolean.TRUE.equals(row.get("suppressed"))) response.put("suppressed", true);
+                    });
         }
         response.put("retentionEvent", "app.dau");
         return ApiResult.ok(response);
@@ -323,6 +336,7 @@ public class OpsBiService implements AuditReplayable {
             String ref) {
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("module", "L2");
+        response.put("retentionCollectionFrom", dashboard.get("retentionCollectionFrom"));
         response.put("available", dashboard.containsKey("funnel"));
         response.put("filters", linked(
                 "stage", trimOrDefault(stage, ""),
@@ -1144,11 +1158,11 @@ public class OpsBiService implements AuditReplayable {
                             trimOrDefault(stringValue(row.get("w")), stringValue(row.get("cohort"))),
                             stringValue(row.get("size")),
                             "",
-                            stringValue(row.get("d1")),
-                            stringValue(row.get("d7")),
-                            stringValue(row.get("d14")),
-                            stringValue(row.get("d30")),
-                            stringValue(row.get("d60")),
+                            retentionCsvValue(row, "d1"),
+                            retentionCsvValue(row, "d7"),
+                            retentionCsvValue(row, "d14"),
+                            retentionCsvValue(row, "d30"),
+                            retentionCsvValue(row, "d60"),
                             "app.dau",
                             "事件事实", sampleStatus(row))));
                 }
@@ -1167,6 +1181,11 @@ public class OpsBiService implements AuditReplayable {
             }
         }
         return csv.toString();
+    }
+
+    private String retentionCsvValue(Map<String, Object> row, String key) {
+        return "DAU_NOT_COLLECTED".equals(mutableObjectMap(row.get("retentionUnavailableReasons")).get(key))
+                ? "未采集" : stringValue(row.get(key));
     }
 
     private String sampleStatus(Map<String, Object> row) {
@@ -1246,7 +1265,7 @@ public class OpsBiService implements AuditReplayable {
             throw new L1ExportDataException();
         }
         if (raw instanceof List<?> rows && !rows.isEmpty()) {
-            if (rows.size() != 8 || !"L1".equals(dashboard.get("module"))
+            if (rows.size() != L1KpiAnalytics.KPI_IDS.size() || !"L1".equals(dashboard.get("module"))
                     || !(dashboard.get("weeks") instanceof List<?> weeks) || weeks.size() != 6
                     || weeks.stream().anyMatch(week -> !(week instanceof String label) || label.isBlank())) {
                 throw new L1ExportDataException();
@@ -1254,8 +1273,9 @@ public class OpsBiService implements AuditReplayable {
             boolean anyExportable = false;
             for (int index = 0; index < rows.size(); index++) {
                 Map<String, Object> row = mutableObjectMap(rows.get(index));
-                if (!(row.get("n") instanceof Number number) || number.doubleValue() != index + 1
-                        || !String.valueOf(index + 1).equals(String.valueOf(row.get("kpiId")))
+                int expectedId = L1KpiAnalytics.KPI_IDS.get(index);
+                if (!(row.get("n") instanceof Number number) || number.doubleValue() != expectedId
+                        || !String.valueOf(expectedId).equals(String.valueOf(row.get("kpiId")))
                         || !(row.get("available") instanceof Boolean available)
                         || !(row.get("name") instanceof String name) || name.isBlank()
                         || !(row.get("target") instanceof Number target) || !Double.isFinite(target.doubleValue())
@@ -1266,7 +1286,8 @@ public class OpsBiService implements AuditReplayable {
                     throw new L1ExportDataException();
                 }
                 boolean suppressed = Boolean.TRUE.equals(row.get("suppressed"));
-                if (suppressed ? available || row.get("numerator") != null || row.get("denominator") != null
+                boolean notCollected = "DAU_NOT_COLLECTED".equals(row.get("unavailableReason"));
+                if (suppressed || notCollected ? available || row.get("numerator") != null || row.get("denominator") != null
                         : !nonnegativeInteger(row.get("numerator")) || !nonnegativeInteger(row.get("denominator"))) {
                     throw new L1ExportDataException();
                 }
@@ -1297,7 +1318,7 @@ public class OpsBiService implements AuditReplayable {
                 || !L1RegistrationCohortQuery.CONTRACT_VERSION.equals(dashboard.get("contractVersion"))
                 || !query.granularity().equals(dashboard.get("granularity"))
                 || !asOf.equals(dashboard.get("observationAsOf"))
-                || !(dashboard.get("kpis") instanceof List<?> kpis) || kpis.size() != 8
+                || !(dashboard.get("kpis") instanceof List<?> kpis) || kpis.size() != L1KpiAnalytics.KPI_IDS.size()
                 || !"LEGACY".equals(calendar.get("track"))
                 || !(calendar.get("versions") instanceof List<?> versions) || versions.isEmpty()) {
             throw new L1ExportDataException();
@@ -1322,7 +1343,7 @@ public class OpsBiService implements AuditReplayable {
         long rowCount = 0L;
         for (int index = 0; index < kpis.size(); index++) {
             Map<String, Object> kpi = mutableObjectMap(kpis.get(index));
-            String kpiId = String.valueOf(index + 1);
+            String kpiId = String.valueOf(L1KpiAnalytics.KPI_IDS.get(index));
             if (!kpiId.equals(kpi.get("kpiId"))
                     || !(kpi.get("name") instanceof String name) || name.isBlank()
                     || !(kpi.get("target") instanceof Number target) || !Double.isFinite(target.doubleValue())

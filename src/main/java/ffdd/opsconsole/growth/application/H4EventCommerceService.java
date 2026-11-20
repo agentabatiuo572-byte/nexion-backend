@@ -114,8 +114,8 @@ public class H4EventCommerceService {
     private Map<String,Object> voucherDefinition(Map<String,Object> rules){
         return db.one("""
                 SELECT v.*, (applicable_skus IS NULL OR JSON_LENGTH(applicable_skus)=0) all_skus,
-                  (claim_surfaces IS NULL OR JSON_LENGTH(claim_surfaces)=0
-                    OR JSON_CONTAINS(claim_surfaces,JSON_QUOTE('store'))) store_claimable,
+                  (wheel_only=0 AND (claim_surfaces IS NULL OR JSON_LENGTH(claim_surfaces)=0
+                    OR JSON_CONTAINS(claim_surfaces,JSON_QUOTE('store')))) store_claimable,
                   (SELECT COUNT(*) FROM nx_growth_voucher_grant g
                     WHERE g.voucher_id=v.voucher_id AND g.is_deleted=0) issued_count
                 FROM nx_growth_voucher v WHERE voucher_id=? AND is_deleted=0

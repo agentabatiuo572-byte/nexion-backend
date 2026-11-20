@@ -49,11 +49,21 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppUserAuthService {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(AppUserAuthService.class);
+    private ffdd.opsconsole.shared.security.UserDailyActivityService dailyActivity;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setDailyActivity(ffdd.opsconsole.shared.security.UserDailyActivityService dailyActivity) {
+        this.dailyActivity = dailyActivity;
+    }
+
     private final AppPaymentPasswordService paymentPasswords;
 
     // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
@@ -515,11 +525,31 @@ public class AppUserAuthService {
         String token = issued.refreshToken() == null ? null : tokenProvider.createUserToken(user.getId(), user.getPhone() == null ? "" : user.getPhone(),
                 List.of(), session.getRefreshTokenId(), Duration.ofHours(accessHours),
                 UserAuthEnvironment.resolve(environment).orElseThrow(() -> new BizException(503,"USER_AUTH_ENVIRONMENT_FORBIDDEN")));
-        return ApiResult.ok(new UserLoginResponse(token, "Bearer",
+        var response = ApiResult.ok(new UserLoginResponse(token, "Bearer",
                 new UserLoginResponse.UserSession(user.getId(), sessionCountryCode(user), sessionPhone(user),
                         user.getNickname(), userMapper.isOnboardingComplete(user.getId())), null, null,
                 issued.refreshToken(), null, tokenProvider.sessionSyncKey(session.getSessionChainId()))
                 .withContext(session, issued.status()));
+        if (token != null) recordActivityAfterLogin(user);
+        return response;
+    }
+
+    private void recordActivityAfterLogin(UserEntity user) {
+        if (dailyActivity == null || Integer.valueOf(1).equals(user.getSandbox())) return;
+        Runnable record = () -> {
+            try {
+                dailyActivity.record(user);
+            } catch (RuntimeException failure) {
+                LOG.warn("Daily App activity write failed after login: {}", failure.getClass().getSimpleName());
+            }
+        };
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() { record.run(); }
+            });
+        } else {
+            record.run();
+        }
     }
 
     @Transactional

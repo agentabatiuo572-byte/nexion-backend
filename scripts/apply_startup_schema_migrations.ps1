@@ -17,6 +17,7 @@ $migrations = @(
   # H1 is a runtime dependency of H8 reward projection and several finance
   # gates.  Fresh schemas must receive the canonical rhythm keys before any
   # acceptance endpoint is opened; H8 also owns its permission/menu contract.
+  (Join-Path $root "scripts\migrations\20261120_lc_h1_rhythm.sql"),
   (Join-Path $root "scripts\migrations\20260711_rhythm_configurable.sql"),
   (Join-Path $root "scripts\migrations\20260722_h_domain_closure.sql"),
   (Join-Path $root "scripts\migrations\20260909_h5_legacy_milestone_reward.sql"),
@@ -44,6 +45,7 @@ $migrations = @(
   # Apply the authoritative D3 closure immediately afterwards so those retired
   # capabilities cannot be resurrected in a fresh acceptance database.
   (Join-Path $root "scripts\migrations\20260720_d3_treasury_closure.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_d3_void_legacy_opening.sql"),
   (Join-Path $root "scripts\migrations\20260807_nexion_hard_blockers.sql"),
   (Join-Path $root "scripts\migrations\20261108_earnings_release_source_ref_index.sql"),
   (Join-Path $root "scripts\migrations\20260807_k6_evidence_hardening.sql"),
@@ -163,17 +165,17 @@ $migrations = @(
   # Weekly H3 completions publish the existing strict quest.completed A4 contract.
   # Exchange/referral thresholds are prospective server-derived H3 facts; their binding rows are idempotent.
   (Join-Path $root "scripts\migrations\20260907_h3_weekly_exchange_referral.sql"),
-  # Only the currently active H3 mission set may consume new canonical facts.
-  (Join-Path $root "scripts\migrations\20260902_h3_active_mission_event_alignment.sql"),
+  # H3 reward policy is provisioned independently of existing task bindings.
+  (Join-Path $root "scripts\migrations\20261120_lc_h3_mission_alignment.sql"),
   # New registrations freeze their H3 Day-One member, binding, reward, and deadline snapshot.
   # This is create-only: legacy rows remain explicitly unverifiable.
   (Join-Path $root "scripts\migrations\20260909_h3_day_one_instance_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261016_h3_weekly_definition_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261018_h3_regional_weekly_period.sql"),
   (Join-Path $root "scripts\migrations\20261106_h3_weekly_phase_multiplier.sql"),
-  # Restore the invite task and its completion binding before validating registration.
+  # Restore missing Day One definitions and receipts without reopening existing bindings.
   (Join-Path $root "scripts\migrations\20261119_h3_invite_friend_registration_binding.sql"),
-  (Join-Path $root "scripts\migrations\20260911_h3_day_one_registration_bindings.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_h3_missing_bindings.sql"),
   # Lifetime purchase quota release must follow the reservation made by the
   # exact order line, never today's mutable SKU policy.
   (Join-Path $root "scripts\migrations\20260902_order_quota_reservation_lineage.sql"),
@@ -241,6 +243,7 @@ $migrations = @(
   # all three languages, so real pushes kept showing it. Rewrite only rows that
   # still match the whole token; the Java RetiredBrandGate now blocks new
   # publishes of the same defect.
+  (Join-Path $root "scripts\migrations\20261120_lc_i2_channels.sql"),
   (Join-Path $root "scripts\migrations\20260920_i2_nova_brand_retire.sql"),
   # E6's stored English download guide still led with test punctuation ("！！！Download
   # ..."). The page already refused to ship it, but the dirty value stayed in the
@@ -266,12 +269,6 @@ $migrations = @(
   # but not saved. Rewrite the remaining rows onto the current brand and the allowlist
   # wording; new writes are already blocked by RetiredBrandGate.
   (Join-Path $root "scripts\migrations\20260921_h2_e2_retired_brand_cleanup.sql"),
-  # The trial hero quoted "3-day trial credit $116" while the same screen's S1 card
-  # said $1.00/day. The display side already prefers the product's own daily yield,
-  # but no migration ever populated nx_product.estimated_daily_usdt, so it fell back
-  # to the stale policy value (38.52). Seed the catalogue-authoritative yield for the
-  # trial product and align the fallback policy values with it.
-  (Join-Path $root "scripts\migrations\20260921_h2_trial_product_daily_yield.sql"),
   # The payment-integration SKU "HDPay1U" is still reachable from the App store's
   # "more models" list. The publish gate would withhold it (no effective earnings),
   # so the live row must carry a nonzero yield; retire that row explicitly instead of
@@ -382,6 +379,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261029_h4_retire_legacy_events.sql")
   (Join-Path $root "scripts\migrations\20261029_trust_documents.sql")
   (Join-Path $root "scripts\migrations\20261029_l6_trust_document_routes.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_i4_trust_sections.sql"),
   (Join-Path $root "scripts\migrations\20261029_i4_trust_centre_initial_copy.sql")
   # First-batch business facts and native push receipts remain separate from inbox delivery.
   (Join-Path $root "scripts\migrations\20261029_business_notifications.sql")
@@ -404,8 +402,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261031_z_cregis_erc20_network.sql")
   (Join-Path $root "scripts\migrations\20261107_cregis_network_switches.sql")
   (Join-Path $root "scripts\migrations\20261108_cregis_trc20_network.sql")
-  (Join-Path $root "scripts\migrations\20261022_05_cregis_auto_forward.sql")
-  (Join-Path $root "scripts\migrations\20261109_cregis_multinetwork_auto_forward.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_cregis_deployment_config.sql")
   # Empty databases need the funds-preparation tables before the ERC20 ALTER.
   (Join-Path $root "scripts\migrations\20261119_cregis_00_funds_preparation_schema.sql")
   (Join-Path $root "scripts\migrations\20261119_cregis_erc20_funds_preparation.sql")
@@ -426,6 +423,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261102_simulated_task_policy_uvt_asset.sql")
   (Join-Path $root "scripts\migrations\20261102_simulated_task_runtime.sql"),
   (Join-Path $root "scripts\migrations\20261102_simulated_task_runtime_recent_read_index.sql")
+  (Join-Path $root "scripts\migrations\20261116_simulated_task_home_live_index.sql")
   (Join-Path $root "scripts\migrations\20261103_english_rule_task_catalog.sql")
   # Seed missing E2 classes only, after the catalog tables exist on fresh installs.
   (Join-Path $root "scripts\seed_e2_task_pricing.sql")
@@ -462,9 +460,12 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261106_g4_emission_item_rate_snapshot.sql"),
   (Join-Path $root "scripts\migrations\20261106_b32_user_daily_active.sql"),
   (Join-Path $root "scripts\migrations\20261106_b32_daily_flow_wallet_index.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_bi_dau.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_bi_registration_phase.sql"),
   (Join-Path $root "scripts\migrations\20261106_g2_queue_batch_event_fields.sql"),
   (Join-Path $root "scripts\migrations\20261106_g2_restore_queue_batch_event_fields.sql"),
   (Join-Path $root "scripts\migrations\20261106_zy_b31_menu_names_order.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_rbac_missing_codes.sql"),
   (Join-Path $root "scripts\migrations\20261106_zz_b30_role_scope.sql"),
   (Join-Path $root "scripts\migrations\20261106_zz_h5_tick_permission.sql"),
   (Join-Path $root "scripts\migrations\20261106_zzz_f5_export_permission.sql"),
@@ -472,6 +473,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261106_e4_refunded_device_tasks.sql"),
   (Join-Path $root "scripts\migrations\20261106_k1_last_success.sql"),
   (Join-Path $root "scripts\migrations\20261106_k1_retired_release_params.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_risk_defaults.sql"),
   (Join-Path $root "scripts\migrations\20261107_c2_impersonation_active_deadline.sql")
   (Join-Path $root "scripts\migrations\20261107_b35_withdrawal_review_route.sql")
   (Join-Path $root "scripts\migrations\20261107_be27_ambassador_materials.sql")
@@ -502,6 +504,7 @@ $migrations = @(
   # Restore it after the event governance structure and lifecycle closure above.
   (Join-Path $root "scripts\migrations\20261118_h4_wheel_award_event_registry.sql"),
   (Join-Path $root "scripts\migrations\20261118_bug456_legacy_spring_spin_status.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_wheel.sql"),
   (Join-Path $root "scripts\migrations\20261118_bug457_nova_social_wrapped_uvel_titles.sql"),
   (Join-Path $root "scripts\migrations\20261118_app_display_text_seed_names.sql"),
   # Retire the last legacy Nova brand token and page codes in preloaded copy.
@@ -529,10 +532,15 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261119_i5_be03_disclosure_gate_exchange.sql"),
   (Join-Path $root "scripts\migrations\20261120_b54_binary_platform_settlement.sql"),
   (Join-Path $root "scripts\migrations\20261120_b54_binary_platform_settlement_owner_index.sql"),
+  (Join-Path $root "scripts\migrations\20261120_lc_market_team_payment.sql"),
   # BUG-521: rename the legacy default phone comparison label to English (one-shot).
   (Join-Path $root "scripts\migrations\20261120_e6_bug521_phone_label_english.sql"),
   # BUG-522: store E3 trade-in eligibility as stable codes (known legacy values only, one-shot).
   (Join-Path $root "scripts\migrations\20261120_e6_bug522_tradein_eligibility_codes.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_tradein_rules.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_e3_capacity_defaults.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_a4_event_registry.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_h9_launch_display.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

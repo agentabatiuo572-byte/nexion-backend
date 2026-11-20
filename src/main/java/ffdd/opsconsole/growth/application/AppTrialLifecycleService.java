@@ -21,6 +21,7 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
 import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.capacity.MonthlyTargetProjection;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -184,21 +185,14 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
+        BigDecimal dailyUsdt = positiveOrNull(productDailyUsdt(product));
+        BigDecimal dailyNex = positiveOrNull(product.dailyNex());
+        if (dailyUsdt == null || dailyNex == null) {
+            return ApiResult.fail(409, "TRIAL_DAILY_YIELD_INVALID");
+        }
         if (!withinPhysicalSlotCapacity(userId, product, true)) return ApiResult.fail(409, "TRIAL_CAPACITY_FULL");
         String normalizedDevice = product.name();
         BigDecimal price = product.priceUsdt();
-        // 🔴 试用抵扣金必须与该商品的**权威日收益**同源(zentao #78)。
-        //   此前 dailyUsdt 取运营配置的 `shadowDailyUSD`(默认 38.52),与商城 S1 的
-        //   实际 $1.00/天相差约 38.5 倍,于是同一屏出现「3 天预计抵扣金 $116」和
-        //   「S1 上限 $1.00/d」。现在直接读 nx_product 的 estimated_daily_usdt / daily_nex,
-        //   配置值只在商品未配收益时兜底(并在快照里标明来源)。
-        BigDecimal productDailyUsdt = product.monthlyTargetUsdt()!=null
-                ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(product.monthlyTargetUsdt()) : positiveOrNull(product.estimatedDailyUsdt());
-        BigDecimal productDailyNex = positiveOrNull(product.dailyNex());
-        BigDecimal dailyUsdt = productDailyUsdt != null ? productDailyUsdt
-                : decimal(policy, "shadowDailyUSD", "0");
-        BigDecimal dailyNex = productDailyNex != null ? productDailyNex
-                : decimal(policy, "shadowDailyNEX", "0");
         int seatsBeforeClaim = nonNegativeInt(policy, "seatsLeftToday", 0);
         if (seatsBeforeClaim <= 0 || mapper.consumeTrialQuota(quotaDate) != 1) {
             return ApiResult.fail(409, "TRIAL_QUOTA_EXHAUSTED");
@@ -212,8 +206,9 @@ public class AppTrialLifecycleService {
         String snapshot = "paymentRail=UVEL_USDT_WALLET,productCode=" + productCode
                 + ",trialDays=" + days
                 + ",graceDays=" + graceDays + ",extensionDays=" + extensionDays
-                + ",dailyUsdtSource=" + (productDailyUsdt != null ? "nx_product.estimated_daily_usdt" : "policy.shadowDailyUSD")
-                + ",dailyNexSource=" + (productDailyNex != null ? "nx_product.daily_nex" : "policy.shadowDailyNEX")
+                + ",dailyUsdtSource=" + (product.monthlyTargetUsdt() == null
+                        ? "nx_product.estimated_daily_usdt" : "nx_product.monthly_target_usdt")
+                + ",dailyNexSource=nx_product.daily_nex"
                 + ",dailyUsdt=" + dailyUsdt + ",dailyNex=" + dailyNex
                 + ",offsetCapUsdt=" + (offsetCap == null ? "UNLIMITED" : offsetCap) + ",priceUsdt=" + price
                 + ",seatsLeftTodayBefore=" + seatsBeforeClaim + ",seatsLeftTodayAfter=" + seatsAfterClaim;
@@ -392,7 +387,7 @@ public class AppTrialLifecycleService {
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
         // Keep the claim's promised trial accrual, but require a valid current
         // product yield before any purchase or reward side effect.
-        if (positiveOrNull(product.estimatedDailyUsdt()) == null
+        if (positiveOrNull(productDailyUsdt(product)) == null
                 || positiveOrNull(product.dailyNex()) == null
                 || positiveOrNull(row.dailyUsdt()) == null
                 || positiveOrNull(row.dailyNex()) == null) {
@@ -646,6 +641,12 @@ public class AppTrialLifecycleService {
         return value != null && value.signum() > 0 ? value : null;
     }
 
+    private static BigDecimal productDailyUsdt(AppTrialLifecycleMapper.ConversionProduct product) {
+        if (product == null) return null;
+        return product.monthlyTargetUsdt() == null
+                ? product.estimatedDailyUsdt() : MonthlyTargetProjection.daily(product.monthlyTargetUsdt());
+    }
+
     private boolean validExpectedAmount(BigDecimal expected) {
         return expected != null && expected.signum() >= 0 && expected.scale() <= 2
                 && expected.compareTo(MAX_EXPECTED_AMOUNT) <= 0;
@@ -671,7 +672,16 @@ public class AppTrialLifecycleService {
                 ? null : mapper.catalogProduct(configuredProductCode);
         AppTrialLifecycleMapper.ConversionProduct startProduct = configuredProductCode == null
                 ? null : mapper.conversionProduct(configuredProductCode);
-        boolean productAvailable = availablePhysicalTrialProduct(startProduct) && productReleased(startProduct);
+        BigDecimal catalogDailyUsdt = productDailyUsdt(catalogProduct);
+        BigDecimal catalogDailyNex = catalogProduct == null ? null : catalogProduct.dailyNex();
+        boolean validCatalogYield = positiveOrNull(catalogDailyUsdt) != null
+                && positiveOrNull(catalogDailyNex) != null;
+        boolean productAvailable = availablePhysicalTrialProduct(startProduct) && productReleased(startProduct)
+                && validCatalogYield;
+        if (!validCatalogYield) {
+            catalogDailyUsdt = null;
+            catalogDailyNex = null;
+        }
         boolean quotaAvailable = nonNegativeInt(policy, "seatsLeftToday", 0) > 0;
         boolean capacityAvailable = row != null && !restartable(normalize(row.status()))
                 || withinPhysicalSlotCapacity(userId, startProduct, lockCapacity);
@@ -697,10 +707,7 @@ public class AppTrialLifecycleService {
             result.put("config", safePolicy(policy, configuredProductCode,
                     catalogProduct == null ? mapper.configuredProductName(configuredProductCode) : catalogProduct.name(),
                     catalogProduct == null ? null : catalogProduct.priceUsdt(),
-                    catalogProduct == null ? null : catalogProduct.monthlyTargetUsdt()!=null
-                            ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(catalogProduct.monthlyTargetUsdt()) : catalogProduct.estimatedDailyUsdt(),
-                    catalogProduct == null ? null : catalogProduct.dailyNex(),
-                    catalogProduct!=null && catalogProduct.monthlyTargetUsdt()!=null));
+                    catalogDailyUsdt, catalogDailyNex));
             return result;
         }
         String effectiveState = effectiveState(row, now);
@@ -765,10 +772,8 @@ public class AppTrialLifecycleService {
         Map<String, Object> config = safePolicy(policy, configuredProductCode,
                 frozenProduct ? row.deviceName() : catalogProduct == null ? mapper.configuredProductName(configuredProductCode) : catalogProduct.name(),
                 frozenProduct ? row.priceUsdt() : catalogProduct == null ? null : catalogProduct.priceUsdt(),
-                frozenProduct ? row.dailyUsdt() : catalogProduct == null ? null : catalogProduct.monthlyTargetUsdt()!=null
-                        ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(catalogProduct.monthlyTargetUsdt()) : catalogProduct.estimatedDailyUsdt(),
-                frozenProduct ? row.dailyNex() : catalogProduct == null ? null : catalogProduct.dailyNex(),
-                frozenProduct || catalogProduct!=null && catalogProduct.monthlyTargetUsdt()!=null);
+                frozenProduct ? row.dailyUsdt() : catalogDailyUsdt,
+                frozenProduct ? row.dailyNex() : catalogDailyNex);
         if (frozenProduct) {
             config.put("trialDays", Integer.toString(Math.max(1, row.durationDays() == null ? 1 : row.durationDays())));
             config.put("graceDays", Integer.toString(row.graceDaysSnapshot()));
@@ -835,18 +840,14 @@ public class AppTrialLifecycleService {
 
     private Map<String, Object> safePolicy(
             Map<String, String> policy, String productCode, String productName, BigDecimal productPrice,
-            BigDecimal productDailyUsdt, BigDecimal productDailyNex, boolean frozenOrTargetUsdt) {
+            BigDecimal dailyUsdt, BigDecimal dailyNex) {
         Map<String, Object> result = new LinkedHashMap<>();
         Map<String, String> defaults = linkedString(
                 "trialDays", "3", "graceDays", "7", "extensionDays", "3",
                 "discountCapUSD", "20",
                 "autoChargeAtEnd", "false", "highQualityThresholdUSD", "100",
                 "trialPriceUSD", "1299",
-                // 🔴 试用收益口径的兜底值不再是「像真数字」的 38.52/65(zentao #78):
-                //   真正的日收益来自该商品的 estimated_daily_usdt / daily_nex,这两个键只在
-                //   商品未配收益时兜底。给它们一个显式 0 而不是一个可观金额,运营看到
-                //   「0 + 提示」才会去查商品配置,而不是误以为 38.52 是权威值。
-                "shadowDailyUSD", "0", "shadowDailyNEX", "0", "cooldownDays", "30",
+                "cooldownDays", "30",
                 "phaseOpen", "true", "autoPushEnabled", "true", "autoPushDelayMs", "1500",
                 "autoPushCooldownHours", "24", "autoPushMaxPerSession", "1",
                 "seatsLeftToday", "0", EARLY_DISCOUNT_KEY, "0");
@@ -873,18 +874,8 @@ public class AppTrialLifecycleService {
         if (productPrice != null && productPrice.signum() > 0) {
             result.put("trialPriceUSD", productPrice.stripTrailingZeros().toPlainString());
         }
-        // 🔴 试用日收益必须与商品卡同一个数(zentao #78)。上面两个 shadow* 键只在商品未配收益时
-        //   兜底,但此前**没有任何地方**用商品值覆盖它们 —— safePolicy 只覆盖了商品名与价格,
-        //   于是 App 读到的是库里存的运营旧值(种子行 38.52),试用 hero 算出 3 × 38.52 封顶 $50,
-        //   而 S1 商品卡写的是 $1.00/天(3 天 ≈ $3)。同一次试用、两个页面、两个数,且按构造必然
-        //   对不上。claim 时的结算早已改读商品值(AppTrialLifecycleService:137-142),这里把**展示
-        //   侧**也对齐到同一权威来源,商品没配收益时才回落到 policy。
-        if (productDailyUsdt != null && (frozenOrTargetUsdt || productDailyUsdt.signum() > 0)) {
-            result.put("shadowDailyUSD", productDailyUsdt.stripTrailingZeros().toPlainString());
-        }
-        if (productDailyNex != null && productDailyNex.signum() > 0) {
-            result.put("shadowDailyNEX", productDailyNex.stripTrailingZeros().toPlainString());
-        }
+        result.put("shadowDailyUSD", dailyUsdt == null ? null : dailyUsdt.stripTrailingZeros().toPlainString());
+        result.put("shadowDailyNEX", dailyNex == null ? null : dailyNex.stripTrailingZeros().toPlainString());
         return result;
     }
 

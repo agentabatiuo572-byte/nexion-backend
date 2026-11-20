@@ -2,10 +2,8 @@
 # The Vietnam payment DDL prerequisite intentionally omits this required D6 singleton.
 fresh_db/06_d6_fx_quote_config.sql
 fresh_db/07_d5_withdrawal_config.sql
-fresh_db/08_h9_home_display_config.sql
 fresh_db/ddl-20260720_d1_finance_closure.sql
 fresh_db/ddl-20260722_f1_vrank_promotion_engine.sql
-fresh_db/ddl-20260722_g2_g3_closure.sql
 fresh_db/ddl-20260722_g7_repurchase_closure.sql
 # Raffle ticket backfill requires the G7 ticket table above, including on an empty database.
 migrations/20261025_genesis_raffle.sql
@@ -17,13 +15,18 @@ fresh_db/ddl-20260727_f4_leadership_pool_closure.sql
 fresh_db/ddl-20260727_g2_exchange_fee_allocation.sql
 fresh_db/ddl-20260727_k2_runtime_detection_closure.sql
 migrations/20260929_support_maintenance_s4.sql
-fresh_db/ddl-20261022_05_cregis_auto_forward.sql
 fresh_db/ddl-20260713_k6_janus.sql
 fresh_db/ddl-20260717_a1_admin_mfa.sql
 fresh_db/ddl-20260721_e3_user_tradein_flow.sql
 fresh_db/ddl-20260727_h7_voucher_inventory_cas.sql
 fresh_db/03_app_runtime_tables.sql
 fresh_db/04_event_registry_restore.sql
+# Install the producer contracts after the fresh event registry has been restored.
+migrations/20261120_lc_bi_dau.sql
+migrations/20261120_lc_bi_registration_phase.sql
+# The registry restore replays the older G2 batch property list.
+migrations/20261106_g2_queue_batch_event_fields.sql
+migrations/20261106_g2_restore_queue_batch_event_fields.sql
 migrations/20261028_janus_retirement.sql
 migrations/20261028_support_ticket_rbac_retirement.sql
 migrations/20261028_f5_commission_key_split.sql

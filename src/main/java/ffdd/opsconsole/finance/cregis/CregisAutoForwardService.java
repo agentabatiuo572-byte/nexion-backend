@@ -41,17 +41,25 @@ public class CregisAutoForwardService {
 
     public Map<String,Object> status(CregisNetwork network) {
         admins.require(false);
-        var result=new LinkedHashMap<>(required(db.policy(project(),network)));
+        if (config.getProjectId() <= 0) throw configurationRequired();
+        return status(network, true);
+    }
+    private Map<String,Object> status(CregisNetwork network, boolean requireReady) {
+        var policy=db.policy(project(),network);
+        boolean configured=addressesConfigured(network);
+        if (requireReady && (policy == null || network == CregisNetwork.BEP20 && !configured))
+            throw configurationRequired();
+        var result=new LinkedHashMap<>(required(policy));
         for(String field:List.of("startEventId","makerId","pendingCollection","pendingPayment","reason","proposedAt"))result.putIfAbsent(field,null);
         result.put("network",network.network());result.put("gasSymbol",network.gasSymbol());
-        result.put("configured",addressesConfigured(network));
+        result.put("configured",configured);
         result.put("runtimeApproved",config.autoForwardNetworkEnabled(network));
         result.put("collectionEnabled",on(result.get("collectionEnabled")));
         result.put("paymentEnabled",on(result.get("paymentEnabled")));
         result.put("executionEnabled",allowed(result,true,network)||allowed(result,false,network));
         result.put("amountPolicy","GROSS_COLLECTION_NET_PAYMENT_PLATFORM_GAS");
-        result.put("platformAddress",addressesConfigured(network)?network.normalizeAddress(config.autoForwardPlatform(network)):null);
-        result.put("counterpartyAddress",addressesConfigured(network)?network.normalizeAddress(config.autoForwardCounterparty(network)):null);
+        result.put("platformAddress",configured?network.normalizeAddress(config.autoForwardPlatform(network)):null);
+        result.put("counterpartyAddress",configured?network.normalizeAddress(config.autoForwardCounterparty(network)):null);
         result.put("projectId",Long.toString(project()));
         return result;
     }
@@ -88,18 +96,19 @@ public class CregisAutoForwardService {
                 default -> {if(p.get("makerId")==null)throw conflict();changed=db.cancel(project(),network,version);}
             }
             if(changed!=1)throw conflict();record("POLICY_"+action,Long.toString(project()),actor,request);
-            return status(network);
+            return status(network, false);
         }));
     }
 
     @Scheduled(fixedDelayString="${nexion.finance.cregis.auto-forward-poll-ms:60000}")
     public synchronized void tick() {
-        if(config.getMode()!=CregisProperties.Mode.PROVIDER)return;
+        if(config.getMode()!=CregisProperties.Mode.PROVIDER||config.getProjectId()<=0)return;
         for(var network:CregisNetwork.values()) tick(network);
     }
     private void tick(CregisNetwork network) {
-        var p=required(db.policy(project(),network));
-        if(config.autoForwardNetworkEnabled(network)&&on(p.get("collectionEnabled"))&&p.get("startEventId")!=null&&payout.enabled(network)) {
+        var p=db.policy(project(),network);
+        if(p==null)return;
+        if(p.get("startEventId")!=null&&allowed(p,true,network)) {
             for(long event:db.candidates(project(),network,number(p,"startEventId"))) {
                 try {tx(()->{gate();var current=required(db.lockPolicy(project(),network));
                     if(!allowed(current,true,network)||number(current,"startEventId")>=event)return null;
@@ -264,9 +273,7 @@ public class CregisAutoForwardService {
     private Map<String,Object> event(long id,CregisNetwork network){var e=required(db.lockEvent(project(),network,id));if(!"CREDITED".equals(e.get("status")))throw invalid();return e;}
     private boolean addressesConfigured(CregisNetwork network) {
         if(!config.autoForwardAddressesConfigured(network))return false;
-        if(network!=CregisNetwork.BEP20)return true;
-        var a=addresses.config(project());return a!=null&&CregisFundsPreparationService.PLATFORM.equals(a.get("platformAddress"))
-            &&CregisFundsPreparationService.COUNTERPARTY.equals(a.get("counterpartyAddress"))&&"BSC".equals(a.get("network"))&&"USDT".equals(a.get("asset"));
+        return network!=CregisNetwork.BEP20||CregisFundsConfiguration.matchesBep20(config,addresses.config(project()));
     }
     private void fixedAddresses(CregisNetwork network){if(!addressesConfigured(network))throw invalid();}
     private void snapshot(Map<String,Object> row){var network=network(row);fixedAddresses(network);
@@ -302,6 +309,7 @@ public class CregisAutoForwardService {
     static long number(Map<String,Object> row,String name){return row.get(name)==null?0:Long.parseLong(row.get(name).toString());}
     static BigDecimal decimal(Map<String,Object> row,String name){return new BigDecimal(text(row,name));}
     private static boolean on(Object v){return Boolean.TRUE.equals(v)||v instanceof Number n&&n.intValue()==1;}
+    private static BizException configurationRequired(){return new BizException(503,"CREGIS_AUTO_CONFIGURATION_REQUIRED");}
     private static BizException invalid(){return new BizException(409,"CREGIS_AUTO_EVIDENCE_OR_CONFIGURATION_INVALID");}
     private static BizException conflict(){return new BizException(409,"CREGIS_AUTO_STATE_CONFLICT");}
 }

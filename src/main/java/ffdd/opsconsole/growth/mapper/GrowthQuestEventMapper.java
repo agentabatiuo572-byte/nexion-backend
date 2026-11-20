@@ -855,8 +855,21 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
               FROM nx_growth_wheel_tier
              WHERE is_deleted = 0
                AND status = 1
+             FOR UPDATE
             """)
     BigDecimal activeWheelProbabilitySum();
+
+    @Select("""
+            SELECT EXISTS (
+              SELECT 1 FROM nx_event_quest q
+               WHERE q.is_deleted=0 AND q.status=1 AND LOWER(q.target_type)='wheel'
+                 AND (q.starts_at IS NULL OR q.starts_at<=UTC_TIMESTAMP())
+                 AND (q.ends_at IS NULL OR q.ends_at>UTC_TIMESTAMP())
+                 AND NOT EXISTS (SELECT 1 FROM nx_growth_event_rule r WHERE r.event_code=q.quest_code AND r.enabled=0)
+               FOR SHARE
+            )
+            """)
+    boolean hasOpenWheelEvent();
 
     /**
      * Awards persisted by the spin transaction itself, grouped by reward asset. A committed spin row and
@@ -1191,6 +1204,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
     @Select("""
             SELECT r.id - 1 AS id,
                    r.milestone_id AS `key`,
+                   r.label,
+                   r.sort_order AS sortOrder,
                    r.threshold_usdt AS threshold,
                    r.reward_nex AS nex,
                    (
@@ -1206,6 +1221,18 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
              ORDER BY r.sort_order ASC, r.threshold_usdt ASC
             """)
     List<Map<String, Object>> earnMilestones();
+
+    @Select("SELECT COUNT(*) FROM nx_earning_milestone_rule WHERE milestone_id = #{milestoneId}")
+    int countReservedEarnMilestoneKey(@Param("milestoneId") String milestoneId);
+
+    @Insert("""
+            INSERT INTO nx_earning_milestone_rule
+              (milestone_id, label, threshold_usdt, reward_nex, sort_order, status)
+            VALUES (#{milestoneId}, #{label}, #{thresholdUsd}, #{rewardNex}, #{sortOrder}, 1)
+            """)
+    int insertEarnMilestoneRule(@Param("milestoneId") String milestoneId, @Param("label") String label,
+            @Param("thresholdUsd") BigDecimal thresholdUsd, @Param("rewardNex") BigDecimal rewardNex,
+            @Param("sortOrder") int sortOrder);
 
     @Update("""
             UPDATE nx_earning_milestone_rule

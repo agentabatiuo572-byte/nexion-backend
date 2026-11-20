@@ -13,6 +13,10 @@ public interface CregisAutoForwardMapper extends BaseMapper<Object> {
         +"CAST(payment_cid AS CHAR) paymentCid,payment_txid paymentTxid,payment_floor paymentFloor,intent_at intentAt,last_error lastError,version";
     String POLICY="chain_id chainId,collection_enabled collectionEnabled,payment_enabled paymentEnabled,CAST(start_event_id AS CHAR) startEventId,version,"
         +"pending_collection pendingCollection,pending_payment pendingPayment,CAST(maker_id AS CHAR) makerId,reason,proposed_at proposedAt";
+    @Insert("INSERT INTO nx_cregis_auto_forward_policy(project_id,chain_id) VALUES(#{project},#{chainId}) "
+            + "ON DUPLICATE KEY UPDATE project_id=project_id")
+    void installPolicy(@Param("project") long project, @Param("chainId") String chainId);
+
     @Select("SELECT "+POLICY+" FROM nx_cregis_auto_forward_policy WHERE project_id=#{project} AND chain_id=#{network.chainId,javaType=java.lang.String}")
     Map<String,Object> policy(@Param("project") long project,@Param("network") CregisNetwork network);
     @Select("SELECT "+POLICY+" FROM nx_cregis_auto_forward_policy WHERE project_id=#{project} AND chain_id=#{network.chainId,javaType=java.lang.String} FOR UPDATE")
