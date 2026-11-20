@@ -24,6 +24,7 @@ import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
@@ -71,6 +72,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
+import org.springframework.dao.DataAccessException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.scheduling.support.CronExpression;
@@ -1471,9 +1473,7 @@ public class OpsTeamService implements AuditReplayable {
         }
         BigDecimal oldValue = currentValue(key);
         BigDecimal newValue = normalizeValue(key, request.value());
-        if (loosensPayoutControl(key, oldValue, newValue) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        requirePayoutIncreaseCoverage(loosensPayoutControl(key, oldValue, newValue));
         String configKey = configKey(key);
         configFacade.upsertAdminValue(configKey, newValue.toPlainString(), "NUMBER", "team", "F domain team commission policy");
         Long settlementConfigVersion = bumpLeadershipPoolConfigVersion(key);
@@ -1614,11 +1614,7 @@ public class OpsTeamService implements AuditReplayable {
                 pauseSnapshots.resume();
             }
         }
-        // A1 批1a 修复2:全域 B1 资金护栏接线(原 UI keys 路径完全跳过 loosensPayoutControl + coverageBelowRedline)。
-        // 资金放大类 UI key(费率/比例上调、门槛下调)在 B1 红线下阻断,范式同 updateConfig:434-436。
-        if (loosensPayoutControlUiKey(configFacade, key, effectiveOldValue, value) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        requirePayoutIncreaseCoverage(loosensPayoutControlUiKey(configFacade, key, effectiveOldValue, value));
         String persistedValue;
         if ("F.cooldown".equals(key)) {
             persistedValue = String.valueOf(
@@ -1751,10 +1747,8 @@ public class OpsTeamService implements AuditReplayable {
                 ? percentPointRatio(value, BigDecimal.ZERO)
                 : parseDecimal(value, BigDecimal.ZERO);
         String oldValue = unilevelRuleValue(commissionRepository, key);
-        // A1 批1a 修复2:unilevel 版税费率上调放大佣金流出,B1 红线下阻断(usdtRate / nexPerUsd 上调 = 放大)。
-        if (loosensPayoutControlUiKey(configFacade, key, unilevelComparisonValue(key, oldValue), value) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        requirePayoutIncreaseCoverage(
+                loosensPayoutControlUiKey(configFacade, key, unilevelComparisonValue(key, oldValue), value));
         if (!commissionRepository.updateUnilevelRule(layerNo, field, businessValue)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "UNILEVEL_RULE_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -1826,10 +1820,7 @@ public class OpsTeamService implements AuditReplayable {
             throw new BizException(409, "F2_UNILEVEL_RULES_ALREADY_CONFIGURED");
         }
         List<Map<String, Object>> rows = unilevelBootstrapLayerRates(request);
-        if (coverageBelowRedline()) {
-            throw new BizException(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        requirePayoutIncreaseCoverage(true);
         for (int index = 0; index < rows.size(); index++) {
             var row = rows.get(index);
             BigDecimal usdtRate = (BigDecimal) row.get("usdtRate");
@@ -1858,7 +1849,7 @@ public class OpsTeamService implements AuditReplayable {
      * A1 批2b 修复2:F4 票权(领导池权重)写业务表 nx_v_rank_config.leadership_votes。
      * F.pool.votes.V{n} → 解析 V{n} → UPDATE leadership_votes WHERE rank_code=V{n}。
      * 票权权重放大头部分润,B1 资金护栏 loosensPayoutControl 不直连(权重非比例/阈值,业务复杂度留后续);
-     * 当前保守策略:_votes 调高 = 放大头部虹吸,放大值时受 B1 红线阻断(见 coverageBelowRedline)。
+     * 当前策略：调高票权按放大处理，要求通过 B1 覆盖率检查。
      */
     private ApiResult<Map<String, Object>> updateVRankVotes(
             String idempotencyKey,
@@ -1879,10 +1870,7 @@ public class OpsTeamService implements AuditReplayable {
                 .findFirst()
                 .orElse(Map.of());
         String oldValue = String.valueOf(before.getOrDefault("votes", "0"));
-        // 票权权重调高 = 放大头部虹吸(领导池分配按 votes 权重),受 B1 红线阻断。
-        if (votes > parseIntSafe(oldValue, 0) && coverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-        }
+        requirePayoutIncreaseCoverage(votes > parseIntSafe(oldValue, 0));
         if (!commissionRepository.updateVRankLeadershipVotes(rankCode, votes)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_VOTES_BUSINESS_TABLE_UPDATE_FAILED");
         }
@@ -4218,9 +4206,18 @@ public class OpsTeamService implements AuditReplayable {
         };
     }
 
-    private boolean coverageBelowRedline() {
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        return coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
+    private void requirePayoutIncreaseCoverage(boolean increasesPayout) {
+        if (!increasesPayout) return;
+        String reason;
+        try {
+            reason = BinarySettlementPolicyProvider.currentCoverageBlock(coverageFacade.snapshot());
+        } catch (DataAccessException failure) {
+            log.debug("Could not read coverage for F payout increase", failure);
+            reason = "B1_COVERAGE_UNRELIABLE";
+        }
+        if (reason != null) {
+            throw new AdminCommandBusinessRejection(422, reason, ApiResult.fail(422, reason));
+        }
     }
 
     private BigDecimal configDecimal(String key, BigDecimal fallback) {
@@ -4782,7 +4779,7 @@ public class OpsTeamService implements AuditReplayable {
      * 端点 5:F1-MD4 补发(找原 payout → 重派)。
      *
      * <p>流程:① requireCommand ② 找原 payout(by payout_id,不存在 → VALIDATION_FAILED PAYOUT_NOT_FOUND)
-     * ③ 资金类(usdt/nex)走 B1 预检(coverageFacade.snapshot belowRedline → 422 COVERAGE_BELOW_REDLINE)
+     * ③ 资金类 (USDT/UVT) 补发要求 B1 覆盖率可核实且不低于红线
      *   + 新 commission_event + TreasuryLedgerPostingFacade.postLedgerEntry(IN/PENDING);
      *   权益类(voucher/sku/custom)不进 D4,直接 UPDATE payout。
      * ④ UPDATE payout status=REISSUED + operator + reason ⑤ audit F_TEAM_REWARD_REISSUED
@@ -4829,10 +4826,7 @@ public class OpsTeamService implements AuditReplayable {
         // 资金类(usdt/nex)B1 预检 + 新 commission_event + ledgerPostingFacade.postLedgerEntry
         // SKU 按原 payout 标的联动真实权益;券/custom 保留既有分支。
         if ("usdt".equals(rewardType) || "uvt".equals(rewardType)) {
-            if (amount.compareTo(BigDecimal.ZERO) > 0 && coverageBelowRedline()) {
-                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
-            }
+            requirePayoutIncreaseCoverage(amount.signum() > 0);
             String currency = "usdt".equals(rewardType) ? "USDT" : "UVT";
             Long recipientUserId = sponsorUserId != null ? sponsorUserId : userId;
             Long sourceUserId = sponsorUserId != null ? userId : null;
