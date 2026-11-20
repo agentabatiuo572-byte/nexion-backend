@@ -170,7 +170,8 @@ public class BinaryCurrentPeriodService {
     private BigDecimal paidSalesToDate(LocalDate start, Instant now) {
         try {
             return periods.paidSales(VietnamBusinessPeriod.storageBoundary(start),
-                    LocalDateTime.ofInstant(now.truncatedTo(ChronoUnit.MICROS), VietnamBusinessPeriod.STORAGE_ZONE));
+                    LocalDateTime.ofInstant(now.truncatedTo(ChronoUnit.MICROS).plus(1, ChronoUnit.MICROS),
+                            VietnamBusinessPeriod.STORAGE_ZONE));
         } catch (DataAccessException ex) {
             return null;
         }
