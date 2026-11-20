@@ -24,12 +24,13 @@ public class HomeDisplayService {
     private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(HomeDisplayService.class);
     static final String STATE_KEY = "growth.home_display.batch";
     static final String CACHE_KEY = "uvel:home-display:batch:v3";
+    private static final long CACHE_TTL_MILLIS = 60_000;
     private static final List<String> FIELDS = List.of("homeOnlineCurrent", "homeOnlineStepMin", "homeOnlineStepMax",
             "homePaidCurrent", "homePaidStepMin", "homePaidStepMax", "homeDisplayEnabled");
     private static final DefaultRedisScript<Long> CACHE_WRITE = new DefaultRedisScript<>("""
             local old = redis.call('GET', KEYS[1])
             if not old or cjson.decode(old).batch.sequence <= tonumber(ARGV[2]) then
-              redis.call('SET', KEYS[1], ARGV[1], 'EX', 60)
+              redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
               return 1
             end
             return 0
@@ -60,7 +61,7 @@ public class HomeDisplayService {
         long now = clock.millis();
         if (batch == null || now >= entry.validUntil() || batch.enabled() && now >= batch.startAt() + (batch.online().length - 1L) * 1000) {
             batch = advance();
-            entry = new CachedBatch(batch, clock.millis() + 60_000);
+            entry = new CachedBatch(batch, clock.millis() + CACHE_TTL_MILLIS);
         }
         return Map.of("enabled", batch.enabled(), "startAt", batch.startAt(), "serverNow", clock.millis(),
                 "validUntil", entry.validUntil(), "sequence", batch.sequence(), "online", batch.online(),
@@ -96,8 +97,8 @@ public class HomeDisplayService {
         HomeDisplayBatch old = stored();
         if (old != null) {
             old = withActiveJobs(old, before, now);
-            if (old.needsExtension(now)) old = extend(old, before, now);
-            int i = old.index(now);
+            // An open client may still play the published plan until its cached batch expires.
+            int i = old.index(old.enabled() ? now + CACHE_TTL_MILLIS : now);
             if (number(before, "homeOnlineCurrent").compareTo(number(next, "homeOnlineCurrent")) == 0)
                 next.put("homeOnlineCurrent", old.online()[i]);
             if (number(before, "homePaidCurrent").compareTo(number(next, "homePaidCurrent")) == 0)
@@ -149,7 +150,11 @@ public class HomeDisplayService {
     private void publishAfterCommit(HomeDisplayBatch batch) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override public void afterCommit() {
-                try { redis.execute(CACHE_WRITE, List.of(CACHE_KEY), json.writeValueAsString(new CachedBatch(batch, clock.millis() + 60_000)), String.valueOf(batch.sequence())); }
+                try {
+                    redis.execute(CACHE_WRITE, List.of(CACHE_KEY),
+                            json.writeValueAsString(new CachedBatch(batch, clock.millis() + CACHE_TTL_MILLIS)),
+                            String.valueOf(batch.sequence()), String.valueOf(CACHE_TTL_MILLIS));
+                }
                 catch (Exception ex) { LOG.warn("Home display cache refresh deferred; durable batch {} retained", batch.sequence()); }
             }
         });
