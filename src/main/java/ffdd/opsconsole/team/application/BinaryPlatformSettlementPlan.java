@@ -65,7 +65,7 @@ class BinaryPlatformSettlementPlan {
         if (previousEnd != null && !previousEnd.isBefore(start)) start = previousEnd.plusDays(1);
         BigDecimal paid = periods.paidSales(VietnamBusinessPeriod.storageBoundary(start),
                 VietnamBusinessPeriod.storageBoundary(date.plusDays(1)));
-        BigDecimal cap = paid.multiply(capPct).movePointLeft(2).setScale(6, RoundingMode.DOWN);
+        BigDecimal cap = capAmount(paid, capPct);
         NavigableMap<Long, BigDecimal> amounts = new TreeMap<>();
         amounts.put(firstOwner, firstAmount);
         long cursor = 0;
@@ -98,6 +98,10 @@ class BinaryPlatformSettlementPlan {
             allocated = next;
         }
         return new ProposedPlan(new Period(date, start, periodDays, capPct, paid, cap, total), allocations, budget);
+    }
+
+    static BigDecimal capAmount(BigDecimal paidSales, BigDecimal capPct) {
+        return paidSales.multiply(capPct).movePointLeft(2).setScale(6, RoundingMode.DOWN);
     }
 
     void freeze(ProposedPlan plan) {

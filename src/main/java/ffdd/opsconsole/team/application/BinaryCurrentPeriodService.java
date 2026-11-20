@@ -9,6 +9,7 @@ import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.time.temporal.TemporalAdjusters;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,6 +32,8 @@ public class BinaryCurrentPeriodService {
     private static final String SETTLE_PERIOD_KEY = BinarySettlementPolicyProvider.SETTLE_PERIOD_KEY;
     private static final String PLATFORM_CAP_PCT_KEY = BinarySettlementPolicyProvider.PLATFORM_CAP_PCT_KEY;
     private static final String DEFAULT_PLATFORM_CAP_PCT = BinarySettlementPolicyProvider.DEFAULT_PLATFORM_CAP_PCT;
+    private static final String ESTIMATE_BASIS = "PAID_ORDERS_TO_DATE_X_CURRENT_PCT_ESTIMATE";
+    private static final String PAID_SALES_UNAVAILABLE = "F3_PAID_SALES_UNAVAILABLE";
 
     private final BinaryPlatformSettlementMapper periods;
     private final PlatformConfigFacade config;
@@ -41,6 +45,7 @@ public class BinaryCurrentPeriodService {
         Set<String> unavailable = new LinkedHashSet<>();
         Map<String, Object> period = new LinkedHashMap<>();
         period.put("asOfUtc", now.toString());
+        putEstimate(period, null, null);
 
         LocalDate today = null;
         try {
@@ -83,23 +88,20 @@ public class BinaryCurrentPeriodService {
                 period.put("platformCapReason", "F3_PLATFORM_PERIOD_NOT_FROZEN");
                 period.put("platformUsedReason", "F3_PLATFORM_PERIOD_NOT_FROZEN");
                 period.put("planReason", "F3_PLATFORM_PERIOD_NOT_FROZEN");
-                period.put("paidSalesUsdt", periods.paidSales(
-                        VietnamBusinessPeriod.storageBoundary(start),
-                        VietnamBusinessPeriod.storageBoundary(today.plusDays(1))));
+                BigDecimal paidSales = paidSalesToDate(start, now);
+                period.put("paidSalesUsdt", paidSales);
+                if (paidSales == null) {
+                    unavailable.add(PAID_SALES_UNAVAILABLE);
+                    period.put("paidSalesReason", PAID_SALES_UNAVAILABLE);
+                }
                 period.put("paidSalesAsOfUtc", now.toString());
                 period.put("paidSalesComplete", false);
                 period.put("paidSalesBasis", "PAID_ORDERS_TO_DATE_NOT_FROZEN");
-                var capPctValue = config.activeValue(PLATFORM_CAP_PCT_KEY);
-                BigDecimal capPct = BinarySettlementPolicyProvider.parsePlatformCapPct(
-                        capPctValue.orElse(DEFAULT_PLATFORM_CAP_PCT));
-                if (capPct == null) {
-                    unavailable.add("F3_PLATFORM_CAP_PCT_INVALID");
-                    period.put("platformCapPctReason", "F3_PLATFORM_CAP_PCT_INVALID");
-                }
-                period.put("platformCapPct", capPct);
-                period.put("platformCapPctUnit", "PERCENT");
-                period.put("platformCapPctBasis", capPct == null ? null
-                        : (capPctValue.isPresent() ? "CURRENT_CONFIG_NOT_FROZEN" : "DEFAULT_CONFIG_NOT_FROZEN"));
+                BigDecimal capPct = putCurrentCapPct(period, unavailable);
+                String estimateReason = paidSales == null ? PAID_SALES_UNAVAILABLE
+                        : (String) period.get("platformCapPctReason");
+                putEstimate(period, estimateReason == null
+                        ? BinaryPlatformSettlementPlan.capAmount(paidSales, capPct) : null, estimateReason);
                 period.put("platformCapUsdt", null);
                 period.put("platformUsedUsdt", null);
                 period.put("settledPayoutUsdt", null);
@@ -145,6 +147,7 @@ public class BinaryCurrentPeriodService {
             period.put("settledSettlementCount", null);
             period.put("plannedRawTotalUsdt", null);
             period.put("platformRemainingUsdt", null);
+            putEstimate(period, null, unavailable.iterator().next());
         }
 
         putAvailability(period);
@@ -164,6 +167,43 @@ public class BinaryCurrentPeriodService {
         return response;
     }
 
+    private BigDecimal paidSalesToDate(LocalDate start, Instant now) {
+        try {
+            return periods.paidSales(VietnamBusinessPeriod.storageBoundary(start),
+                    LocalDateTime.ofInstant(now.truncatedTo(ChronoUnit.MICROS), VietnamBusinessPeriod.STORAGE_ZONE));
+        } catch (DataAccessException ex) {
+            return null;
+        }
+    }
+
+    private BigDecimal putCurrentCapPct(Map<String, Object> period, Set<String> unavailable) {
+        BigDecimal capPct = null;
+        String basis = null;
+        String reason = null;
+        try {
+            var value = config.activeValue(PLATFORM_CAP_PCT_KEY);
+            capPct = BinarySettlementPolicyProvider.parsePlatformCapPct(value.orElse(DEFAULT_PLATFORM_CAP_PCT));
+            if (capPct == null) reason = "F3_PLATFORM_CAP_PCT_INVALID";
+            else basis = value.isPresent() ? "CURRENT_CONFIG_NOT_FROZEN" : "DEFAULT_CONFIG_NOT_FROZEN";
+        } catch (DataAccessException ex) {
+            reason = "F3_PLATFORM_CAP_PCT_UNAVAILABLE";
+        }
+        if (reason != null) {
+            unavailable.add(reason);
+            period.put("platformCapPctReason", reason);
+        }
+        period.put("platformCapPct", capPct);
+        period.put("platformCapPctUnit", "PERCENT");
+        period.put("platformCapPctBasis", basis);
+        return capPct;
+    }
+
+    private static void putEstimate(Map<String, Object> period, BigDecimal amount, String reason) {
+        period.put("platformCapEstimateUsdt", amount);
+        period.put("platformCapEstimateBasis", amount == null ? null : ESTIMATE_BASIS);
+        period.put("platformCapEstimateReason", reason);
+    }
+
     /**
      * The current open cycle cannot be frozen before its closed date, so the latest frozen
      * cycle is read independently from the latest platform period before today.
@@ -171,6 +211,7 @@ public class BinaryCurrentPeriodService {
     private Map<String, Object> latestFrozenPeriod(Instant now, LocalDate today) {
         Map<String, Object> latest = new LinkedHashMap<>();
         latest.put("asOfUtc", now.toString());
+        putEstimate(latest, null, null);
         Set<String> unavailable = new LinkedHashSet<>();
         if (today == null) {
             unavailable.add("F3_BUSINESS_PERIOD_UNAVAILABLE");
@@ -295,6 +336,7 @@ public class BinaryCurrentPeriodService {
         basis.put("period", "team.ui.F.binary.settlePeriod + VietnamBusinessPeriod; same cadence and boundaries as F3 settlement");
         basis.put("paidSales", "nx_order paid statuses PAID/CONFIRMED/SUCCESS, refunded/cancelled/failed excluded, paid_at in the period; frozen value when the period is frozen");
         basis.put("platformCap", "nx_binary_platform_period.platform_cap_pct/cap_amount_usdt; frozen at the first settlement of the period");
+        basis.put("platformCapEstimate", "Open period paidSalesUsdt × platformCapPct / 100, rounded down to six decimals; display only");
         basis.put("platformUsed", "SUM(nx_binary_commission_settlement.amount_usdt) for platform allocations with settlement_mode AUTOMATIC or MANUAL");
         basis.put("plannedRawTotal", "nx_binary_platform_period.raw_total_usdt; projected raw total, not paid");
         basis.put("notCountedAsPaid", "platform allocations without settlement_mode are projections and are excluded from settled/used amounts");
