@@ -55,7 +55,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                    o.d2_net_receive netReceive,o.d2_actual_fee actualFee,o.d2_network_fee networkFee,
                    o.d2_nex_burned nexBurned,o.d2_idempotency_key idempotencyKey,o.status,
                    o.chain_tx_hash chainTxHash,o.created_at createdAt,o.completed_at completedAt,
-                   o.failed_at failedAt,o.d5_provider_cid providerCid,o.d5_payout_source payoutSource,
+                   o.failed_at failedAt,CAST(o.d5_provider_cid AS CHAR) providerCid,o.d5_payout_source payoutSource,
                    u.sandbox userSandbox,u.is_deleted userDeleted,
                    a.user_id attemptUserId,a.idempotency_key attemptKey,a.request_hash attemptHash,
                    a.status attemptStatus,a.withdrawal_no attemptWithdrawalNo,a.created_at attemptCreatedAt
