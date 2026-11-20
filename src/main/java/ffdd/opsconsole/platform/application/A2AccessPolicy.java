@@ -231,6 +231,11 @@ public class A2AccessPolicy {
         return scope.ownActorOnly() || scope.canSee(domain, ticket.getOperatorName());
     }
 
+    boolean canAccessOwnF3Proposal(AuditReplayCommand command, long actorId) {
+        return TeamFundApproval.isSettlement(command) ? canAccessOwnBusinessProposal(command, actorId)
+                : replayBusinessPermissionGuard.canRecoverF3Proposal(command, permissions.getPermissionCodes(actorId));
+    }
+
     /** H1 override maker recovery: exact maker, existing revoke authority, no A2 global read grant. */
     private boolean canReadOwnH1Override(AuditReplayCommand command, long actorId, Set<String> grants) {
         return command != null

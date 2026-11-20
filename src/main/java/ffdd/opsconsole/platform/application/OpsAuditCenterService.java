@@ -208,6 +208,23 @@ public class OpsAuditCenterService {
         return ApiResult.ok(toTicket(ticket, true));
     }
 
+    @Transactional(readOnly = true)
+    public ApiResult<AuditOperationTicket> ownF3ProposalByOperationId(String operationId) {
+        long actorId = accessPolicy.requireOriginalKeyProposalReader();
+        if (!StringUtils.hasText(operationId)) return ApiResult.fail(400, "operationId is required");
+        String originalId = operationId.trim();
+        var ticket = ticketMapper.selectActiveByOperationId(originalId);
+        if (ticket == null || !originalId.equals(ticket.getOperationId())) {
+            return ApiResult.fail(404, "A2_PROPOSAL_NOT_FOUND");
+        }
+        var command = deserializeCommand(ticket.getCommandJson());
+        if (!Long.valueOf(actorId).equals(ticketMakerId(ticket, command))
+                || !accessPolicy.canAccessOwnF3Proposal(command, actorId)) {
+            return ApiResult.fail(404, "A2_PROPOSAL_NOT_FOUND");
+        }
+        return ApiResult.ok(toTicket(ticket, true, actorId));
+    }
+
     public ApiResult<AuditCenterOverview> overview(AuditLogQueryRequest filter) {
         ensureSeedData();
         Map<String, PlatformConfigItem> configs = loadConfigMap(List.of(GROUP_A2));

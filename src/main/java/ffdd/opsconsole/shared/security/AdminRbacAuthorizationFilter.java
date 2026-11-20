@@ -337,6 +337,10 @@ public class AdminRbacAuthorizationFilter extends OncePerRequestFilter {
                     "finprod_g4_royalty_write", "finprod_g4_airdrop_pct_write",
                     "finprod_g4_emission_curve_write", "finprod_g4_airdrop_lock_days_write");
         }
+        if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-operation-id")) {
+            // The controller and service verify the F3 grant and the exact original maker.
+            return RequiredAuthority.exact("network_f3_write", "platform_a2_proposal_create", "platform_a2_write");
+        }
         if (read && path.equals("/api/admin/platform/audit/operations/proposals/by-idempotency-key")) {
             // Method security and the DB policy limit legacy writers to their own C2/C5 revocation command.
             return RequiredAuthority.exactOrAll(LearningCourseActivationApproval.MAKER_AUTHORITIES,

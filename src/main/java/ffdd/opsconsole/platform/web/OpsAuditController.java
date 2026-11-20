@@ -202,6 +202,15 @@ public class OpsAuditController {
         return auditCenterService.proposalByIdempotencyKey(idempotencyKey);
     }
 
+    @GetMapping("/operations/proposals/by-operation-id")
+    @PreAuthorize("hasAuthority('network_f3_write')"
+            + " || (hasAnyAuthority('platform_a2_proposal_create','platform_a2_write')"
+            + " && hasAnyAuthority('network_f3_match_rate','network_f3_engine_pause'))")
+    public ApiResult<AuditCenterOverview.AuditOperationTicket> ownF3ProposalByOperationId(
+            @RequestParam String operationId) {
+        return auditCenterService.ownF3ProposalByOperationId(operationId);
+    }
+
     @GetMapping("/logs/trace/{traceId}")
     public ApiResult<List<AuditLogRecord>> byTrace(@PathVariable String traceId) {
         AuditLogQueryRequest request = new AuditLogQueryRequest();
