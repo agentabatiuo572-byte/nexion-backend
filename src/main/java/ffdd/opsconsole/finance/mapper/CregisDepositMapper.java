@@ -461,7 +461,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     List<Map<String, Object>> uncertainAddresses(@Param("projectId") long projectId);
     @Select("""
-            SELECT id,chain_id AS chainId,user_id AS userId,cid,txid,address,gross_amount AS grossAmount,
+            SELECT id,chain_id AS chainId,user_id AS userId,CAST(cid AS CHAR) AS cid,txid,address,gross_amount AS grossAmount,
                    status,created_at AS createdAt
               FROM nx_cregis_deposit_event
              WHERE project_id=#{projectId} AND status IN
@@ -1020,7 +1020,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     Map<String, Object> reviewEventSnapshot(@Param("id") long id);
     @Select("""
-            SELECT c.id,c.event_id AS eventId,e.cid,e.user_id AS userId,
+            SELECT c.id,c.event_id AS eventId,CAST(e.cid AS CHAR) AS cid,e.user_id AS userId,
               e.gross_amount AS grossAmount,p.fee_usdt AS feeAmount,e.gross_amount - p.fee_usdt AS proposedNetAmount,
               e.address,e.txid,
               e.block_number AS blockNumber,e.block_hash AS blockHash,

@@ -953,7 +953,7 @@ public class CregisDepositService {
         }
 
         Map<String, Object> summary() {
-            return Map.ofEntries(Map.entry("network",network.network()),Map.entry("eventId", eventId), Map.entry("cid", cid),
+            return Map.ofEntries(Map.entry("network",network.network()),Map.entry("eventId", eventId), Map.entry("cid", Long.toString(cid)),
                     Map.entry("userId", userId), Map.entry("txid", txid),
                     Map.entry("address", address), Map.entry("grossAmount", amount),
                     Map.entry("feeAmount", feeAmount), Map.entry("policyVersion",policyVersion),
