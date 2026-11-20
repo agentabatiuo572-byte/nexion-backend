@@ -538,6 +538,7 @@ $migrations = @(
   # BUG-522: store E3 trade-in eligibility as stable codes (known legacy values only, one-shot).
   (Join-Path $root "scripts\migrations\20261120_e6_bug522_tradein_eligibility_codes.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_tradein_rules.sql")
+  (Join-Path $root "scripts\migrations\20261120_lc_e3_capacity_defaults.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_a4_event_registry.sql")
 )
 
