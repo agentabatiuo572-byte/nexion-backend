@@ -409,7 +409,10 @@ public class OpsAuditCenterService {
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
             ticket.setSos(j1Restore ? 1 : 0);
             ticket.setRoleGate(H7VoucherDisposition.isOperation(command) ? "有审批和代金券操作权限的管理员"
-                    : superAdminProposal ? "超管" : ROLE_GATE_DELEGATED_APPROVER);
+                    : superAdminProposal ? "超管"
+                    : command != null && "E".equals(command.domain())
+                        && Set.of("e1_sku_create", "e1_sku_update").contains(command.op())
+                        ? ROLE_GATE_E1_SKU : ROLE_GATE_DELEGATED_APPROVER);
             sourceDomain = descriptor.sourceDomain();
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();
@@ -2516,6 +2519,7 @@ public class OpsAuditCenterService {
      */
     private static final String ROLE_GATE_DELEGATED_APPROVER = "DELEGATED_APPROVER";
     private static final String ROLE_GATE_DELEGATED_APPROVER_LABEL = "另一位有审批批准权限和对应业务权限的管理员";
+    private static final String ROLE_GATE_E1_SKU = "另一位具备 A2 批准权限及 device_e1_write 商品管理写权限的管理员";
 
     private String normalizeRoleGate(String value) {
         if (!StringUtils.hasText(value) || "TWO_PERSON".equalsIgnoreCase(value.trim())) {

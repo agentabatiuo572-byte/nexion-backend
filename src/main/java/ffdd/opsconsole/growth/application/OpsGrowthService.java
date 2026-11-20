@@ -736,6 +736,17 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED");
     }
 
+    public ApiResult<Map<String, Object>> questEventCreateCandidates() {
+        if (questEventMapper.isEmpty()) {
+            return ApiResult.fail(503, "QUEST_EVENT_BUSINESS_TABLE_UNAVAILABLE");
+        }
+        var mapper = questEventMapper.get();
+        var candidates = H4EventRuleService.CODES.stream().sorted()
+                .map(code -> Map.of("id", code, "occupied", mapper.countReservedEventId(code) > 0))
+                .toList();
+        return ApiResult.ok(Map.of("candidates", candidates));
+    }
+
     public ApiResult<Map<String, Object>> questEvents() {
         ensureQuestEventSeedData();
         Map<String, Object> response = new LinkedHashMap<>();

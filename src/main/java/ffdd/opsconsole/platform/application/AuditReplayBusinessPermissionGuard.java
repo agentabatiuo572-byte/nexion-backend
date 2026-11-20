@@ -1203,9 +1203,7 @@ public class AuditReplayBusinessPermissionGuard {
                     || !target.equals(request.target()) || (request.targets()!=null && !request.targets().isEmpty()))
                 return ApiResult.fail(403,"A2_BUSINESS_CONTEXT_MISMATCH");
             return ApiResult.ok(new DelegatedProposalDescriptor("更换引导对比商品",review.key(),
-                    java.util.Objects.toString(review.previousSku(),"未选择"),
-                    review.product().name()+" ("+review.product().skuId()+") · "+review.product().dailyEarn()+" USDT / "
-                            +review.product().dailyEarnNex()+" UVT 每日","E6","param",false,target));
+                    review.beforeValue(),review.afterValue(),"E6","param",false,target));
         }
 
         if (H7VoucherDisposition.isOperation(command)) {
