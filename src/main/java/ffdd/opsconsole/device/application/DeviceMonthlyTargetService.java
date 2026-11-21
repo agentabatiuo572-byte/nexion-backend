@@ -67,7 +67,8 @@ public class DeviceMonthlyTargetService {
                 ||row.firstE3Version()!=policy.e3Version());
         return new Quote(cycle.start(),encode(compact),snapshot.reward(),capacity);
     }
-    @Transactional(propagation=Propagation.MANDATORY)
+    // The caller rolls back the cancellation, including when it runs in a payment command savepoint.
+    @Transactional(propagation=Propagation.MANDATORY, noRollbackFor=BizException.class)
     public void cancel(TaskRow task) {
         if(task.targetSnapshotJson()==null)return;
         var snapshot=snapshot(task.targetSnapshotJson());

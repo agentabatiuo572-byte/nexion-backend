@@ -22,7 +22,7 @@ External channel fees are fail-closed until each channel is explicitly configure
 
 ## Replacement source check (B57-BE-02)
 
-For `TRADE_IN` and `CAPACITY_REPLACE`, `POST /api/app/purchase-payment-quotes` and `POST /api/app/purchase-payment-intents` check the old device with the same read-only runtime guard used at submission. A rejection creates no quote or payment intent for that request, allocates no collection address and creates no provider payment order. If intent creation is rejected, its original quote remains under the existing validity rules.
+For `TRADE_IN` and `CAPACITY_REPLACE`, `POST /api/app/purchase-payment-quotes` and `POST /api/app/purchase-payment-intents` check that the old device runtime has drained. Active simulated devices with a current task or a scheduled next action are eligible only for wallet replacement. While an external payment is pending, a simulated task can credit earnings and move a trade-in across a credit tier. A rejection creates no quote or payment intent for that request, allocates no collection address and creates no provider payment order. If intent creation is rejected, its original quote remains under the existing validity rules.
 
 | HTTP status | Response `message` | Reason |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ For `TRADE_IN` and `CAPACITY_REPLACE`, `POST /api/app/purchase-payment-quotes` a
 | 409 | `COMPUTE_V2_OWNER_CHANGED` | The runtime ownership record no longer matches the source device and owner. |
 | 503 | `COMPUTE_V2_RUNTIME_RECOVERING` | The Compute V2 runtime is temporarily unavailable. Retry the request. |
 
-Quote requests check payment channel readiness before checking the device. Intent creation rechecks the device for a new intent. Replaying a successful creation with its original key and quote returns the existing intent. A device can become busy after an intent is created, in which case confirmed payment still enters `MANUAL_REVIEW` if delivery fails the replacement guard.
+Quote requests check payment channel readiness before checking the device. Intent creation rechecks the device for a new intent. Replaying a successful creation with its original key and quote returns the existing intent. If a simulated device starts a task after intent creation, verified delivery can cancel the current uncredited task in the replacement transaction once the existing price, source and delivery checks pass. A changed price or another delivery failure still sends confirmed payment to `MANUAL_REVIEW`.
 
 ## 2026-11-01 deadline and result contract
 

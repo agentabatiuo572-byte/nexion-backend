@@ -100,6 +100,25 @@ public class ComputeV2DeviceLifecycleService {
             throw error("COMPUTE_V2_DEVICE_BUSY");
     }
 
+    /** The App owns the user and source device locks and the replacement transaction. */
+    public void prepareAppReplacement(long user, long device, String instanceNo, boolean activated) {
+        var view = ownedView(user, device);
+        if (view.isPresent()) {
+            var event = view.get().event();
+            if (!instanceNo.equals(event.instanceNo()) || !scope.equals(event.deploymentScope())) {
+                throw error("COMPUTE_V2_OWNER_CHANGED");
+            }
+        }
+        if (mapper.hasUnresolvedComputeV1Request(user, device)) {
+            throw error("COMPUTE_V2_LEGACY_REQUEST_UNRESOLVED");
+        }
+        if (view.isPresent() && !drained(view.get())) {
+            throw error("COMPUTE_V2_DEVICE_BUSY");
+        }
+        simulated.cancelForReplacement(user, device, instanceNo, activated,
+                runtime.isPresent() && enrolled.contains(device));
+    }
+
     private Optional<RuntimeView> ownedView(long user,long device) {
         if(runtime.isEmpty() || !enrolled.contains(device))return Optional.empty();
         if(!runtime.get().isReady())throw new BizException(503,"COMPUTE_V2_RUNTIME_RECOVERING");
