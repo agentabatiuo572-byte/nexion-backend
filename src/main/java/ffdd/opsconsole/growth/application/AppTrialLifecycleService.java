@@ -363,12 +363,14 @@ public class AppTrialLifecycleService {
 
     public record ExternalPaymentClaim(String claimNo, Instant claimedAt) { }
 
-    public void requireExternalPaymentConversion(Long owner) {
+    public Instant requireExternalPaymentConversion(Long owner) {
         if (!trialGateEnabled()) throw new BizException(409, "TRIAL_KILL_SWITCH_DISABLED");
         TrialRow row = mapper.trial(owner);
-        if (row == null || !active(row.status()) || !withinConversionDeadline(row, businessNow())) {
+        LocalDateTime deadline = row == null || !active(row.status()) ? null : conversionDeadline(row);
+        if (!withinConversionDeadline(deadline, businessNow())) {
             throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
         }
+        return deadline.atZone(BUSINESS_ZONE).toInstant();
     }
 
     public void checkExternalPaymentQuota(Long owner, String requestedProductNo, LocalDateTime occurredAtUtc) {
@@ -402,7 +404,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         }
         LocalDateTime now = businessNow();
-        if (!withinConversionDeadline(row, now)) {
+        if (!withinConversionDeadline(conversionDeadline(row), now)) {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
@@ -530,11 +532,14 @@ public class AppTrialLifecycleService {
         return ApiResult.ok(detail);
     }
 
-    private boolean withinConversionDeadline(TrialRow row, LocalDateTime now) {
-        if (row.expiresAt() == null) return false;
-        LocalDateTime deadline = "EXTENDED".equals(normalize(row.status())) ? row.expiresAt()
+    private LocalDateTime conversionDeadline(TrialRow row) {
+        if (row.expiresAt() == null) return null;
+        return "EXTENDED".equals(normalize(row.status())) ? row.expiresAt()
                 : row.expiresAt().plusDays(row.graceDaysSnapshot());
-        return now.isBefore(deadline);
+    }
+
+    private boolean withinConversionDeadline(LocalDateTime deadline, LocalDateTime now) {
+        return deadline != null && now.isBefore(deadline);
     }
 
     @Transactional(rollbackFor = Exception.class)

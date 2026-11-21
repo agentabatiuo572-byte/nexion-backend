@@ -58,8 +58,8 @@ public class PurchasePaymentService {
     private static final String TRIAL_CLAIM_SNAPSHOT = "trialClaimNo";
     private Instant now(){return clock.instant();}
     private static final String SELECT="SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?";
-    /** 仍未终结、可能占着本人订单付款的进行中状态;报价/建单/超时与按订单只读找回共用同一谓词。 */
-    private static final String IN_PROGRESS="p.status NOT IN ('DELIVERED','EXPIRED')";
+    /** 报价、建单、超时和订单找回共用。已交付的付款可以进入财务核对，仍属于已完成的购买。 */
+    private static final String IN_PROGRESS="p.receipt_json IS NULL AND p.status NOT IN ('DELIVERED','EXPIRED')";
 
     private <T> T tx(java.util.function.Supplier<T> work){
         var tx=new TransactionTemplate(transactions);tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
@@ -127,7 +127,7 @@ public class PurchasePaymentService {
         return tx(()->{
             user(owner,true);
             requireNoActiveIntent(owner, kind, payload, Map.of());
-            if ("TRIAL_CONVERT".equals(kind)) trials.requireExternalPaymentConversion(owner);
+            Instant trialDeadline = "TRIAL_CONVERT".equals(kind) ? trials.requireExternalPaymentConversion(owner) : null;
             Instant pricingAt=now();
             var target=new ReplacementTarget();
             var pricing=pricing(owner,kind,payload,pricingAt,false,true,target);
@@ -141,8 +141,8 @@ public class PurchasePaymentService {
             BigDecimal rate=money(channel.get("channelFeeRatePct")),fixed=money(channel.get("channelFeeFixed")),network=money(channel.get("networkConfirmFeeUsdt"));
             BigDecimal fee=subtotal.multiply(rate).divide(new BigDecimal("100")).add(fixed).setScale(2,RoundingMode.HALF_UP);
             BigDecimal total=subtotal.add(fee).add(network).setScale(2,RoundingMode.HALF_UP);
-            String id=id("PPQ-");Instant deadline=deadline(kind,payload,pricingAt);
-            if(!deadline.isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
+            String id=id("PPQ-");Instant deadline=deadline(kind,payload,pricingAt,trialDeadline);
+            requireOpenPaymentWindow(deadline, trialDeadline);
             Instant expires=pricingAt.plusSeconds(900);if(expires.isAfter(deadline))expires=deadline;
             var quote=values("paymentQuoteId",id,"kind",kind,"paymentMethod",method,"network","HDPAY_BANK".equals(method)?"VND_BANK":network(method)==CregisNetwork.BEP20?"BSC":network(method).network(),
                     "subtotalUsdt",subtotal.toPlainString(),"businessAmountUsdt",pricing.get("businessAmountUsdt"),
@@ -234,8 +234,8 @@ public class PurchasePaymentService {
             return null;
         }
     }
-    private Instant deadline(String kind,Map<String,Object> payload,Instant pricingAt){
-        if(!"ORDER_PAY".equals(kind))return pricingAt.plusSeconds(1800);
+    private Instant deadline(String kind,Map<String,Object> payload,Instant pricingAt,Instant trialDeadline){
+        if(!"ORDER_PAY".equals(kind))return capAtTrialDeadline(pricingAt.plusSeconds(1800),trialDeadline);
         return orderDeadline(db.one("SELECT created_at,order_no FROM nx_order WHERE order_no=?",text(payload.get("orderNo"))));
     }
     private Instant orderDeadline(Map<String,Object> order){
@@ -243,9 +243,18 @@ public class PurchasePaymentService {
         var promotion=db.one("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=?",order.get("order_no"));
         return promotion!=null&&instant(promotion.get("pay_by")).isBefore(deadline)?instant(promotion.get("pay_by")):deadline;
     }
-    private Instant quoteDeadline(Map<String,Object> quote){
-        var snapshot=parse(quote.get("quote_json"));
-        return snapshot.get("deadlineAt")==null?deadline(text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(snapshot.get("pricingAsOf")))):Instant.parse(text(snapshot.get("deadlineAt")));
+    private Instant quoteDeadline(Map<String,Object> snapshot, Instant calculatedDeadline, Instant trialDeadline){
+        Instant frozenDeadline = snapshot.get("deadlineAt") == null
+                ? calculatedDeadline : Instant.parse(text(snapshot.get("deadlineAt")));
+        return capAtTrialDeadline(frozenDeadline, trialDeadline);
+    }
+    private static Instant capAtTrialDeadline(Instant deadline, Instant trialDeadline) {
+        return trialDeadline != null && trialDeadline.isBefore(deadline) ? trialDeadline : deadline;
+    }
+    private void requireOpenPaymentWindow(Instant deadline, Instant trialDeadline) {
+        Instant current = now();
+        if (trialDeadline != null && !trialDeadline.isAfter(current)) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        if (!deadline.isAfter(current)) throw new BizException(409, "ORDER_PAYMENT_EXPIRED");
     }
     static Instant graceEnd(Object method,Instant deadline){return deadline.plusSeconds("CREGIS_USDT_BSC".equals(method)?180:300);}
     private Instant deadline(Map<String,Object> row){return instant(row.get("expires_at"));}
@@ -380,23 +389,26 @@ public class PurchasePaymentService {
             String kind=text(quote.get("kind"));
             var payload=parse(quote.get("payload_json"));
             requireNoActiveIntent(owner, kind, payload, frozenQuote);
-            if(!deadline(kind,payload,Instant.parse(text(frozenQuote.get("pricingAsOf")))).isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
+            Instant trialDeadline = "TRIAL_CONVERT".equals(kind) ? trials.requireExternalPaymentConversion(owner) : null;
+            Instant pricingAt = Instant.parse(text(frozenQuote.get("pricingAsOf")));
+            Instant calculatedDeadline = deadline(kind, payload, pricingAt, trialDeadline);
+            requireOpenPaymentWindow(calculatedDeadline, trialDeadline);
             if(!instant(quote.get("expires_at")).isAfter(now()))throw new BizException(409,"PURCHASE_PAYMENT_QUOTE_EXPIRED");
             if(!Boolean.TRUE.equals(frozenQuote.get("paymentFeesConfigured")))throw new BizException(503,"PURCHASE_PAYMENT_FEES_NOT_CONFIGURED");
             // Share the policy mutex with D1 publication until this intent commits its immutable fee snapshot.
             var feeVersion=db.one("SELECT version FROM nx_purchase_payment_policy WHERE id=1 FOR SHARE");
             if(feeVersion==null||number(feeVersion.get("version"))!=number(frozenQuote.get("feePolicyVersion")))
                 throw new BizException(409,"PURCHASE_PAYMENT_FEE_POLICY_CHANGED");
-            if ("TRIAL_CONVERT".equals(kind)) trials.requireExternalPaymentConversion(owner);
             var target=new ReplacementTarget();
-            var pricing=pricing(owner,kind,payload,Instant.parse(text(frozenQuote.get("pricingAsOf"))),!frozenQuote.containsKey("trialOffsetBasis"),true,target);
+            var pricing=pricing(owner,kind,payload,pricingAt,!frozenQuote.containsKey("trialOffsetBasis"),true,target);
             if(!hash(pricing).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             ready(text(quote.get("payment_method")));
             checkPurchaseQuota(owner,kind,payload,pricing,target);
-            if(!quoteDeadline(quote).isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
+            Instant intentDeadline = quoteDeadline(frozenQuote, calculatedDeadline, trialDeadline);
+            requireOpenPaymentWindow(intentDeadline, trialDeadline);
             String no=id("PPI-");
             db.write("INSERT INTO nx_purchase_payment_intent(intent_no,quote_id,user_id,kind,payment_method,command_key,payload_json,quote_json,pricing_hash,status,expires_at,provider_project) VALUES(?,?,?,?,?,?,?,?,?,'CREATING',?,?)",
-                    no,quoteId,owner,quote.get("kind"),quote.get("payment_method"),key,quote.get("payload_json"),quote.get("quote_json"),quote.get("pricing_hash"),timestamp(quoteDeadline(quote)),cr.getProjectId());
+                    no,quoteId,owner,quote.get("kind"),quote.get("payment_method"),key,quote.get("payload_json"),quote.get("quote_json"),quote.get("pricing_hash"),timestamp(intentDeadline),cr.getProjectId());
             if(bsc){
                 var locked=db.one("SELECT id,address FROM nx_cregis_deposit_address WHERE id=? AND project_id=? AND chain_id=? AND state='UNASSIGNED' AND user_id IS NULL AND purpose='WALLET_TOPUP' FOR UPDATE",candidate.get("id"),cr.getProjectId(),network.chainId());
                 if(locked==null||!candidate.get("address").equals(locked.get("address"))||!((Instant)candidate.get("proofExpiresAt")).isAfter(now()))
