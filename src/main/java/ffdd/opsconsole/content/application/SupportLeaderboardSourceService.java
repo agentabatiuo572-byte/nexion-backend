@@ -418,10 +418,10 @@ public class SupportLeaderboardSourceService {
             Fact fact=facts.get(origin.paymentFactId());AttributionRow attribution=attributions.get(origin.paymentFactId());
             if(fact==null || fact.customerId()!=origin.customerId() || fact.kind()==Kind.DEVICE_PURCHASE_REFUND
                     || !Objects.equals(fact.succeededAt(),origin.formedAt()) || fact.fractionalSecondDigits()!=origin.fractionalSecondDigits()
-                    || !proved(attribution,fact,raw.finance()) || !savedProof(proofs.get(origin.paymentFactId()),attribution,fact)
-                    || "UNKNOWN".equals(attribution.agentStatus()) || "UNKNOWN".equals(attribution.groupStatus())
-                    || "UNKNOWN".equals(attribution.ownerStatus())
-                    || "KNOWN".equals(attribution.agentStatus()) && !agents.contains(attribution.agentAdminId())) {
+                    || !proved(attribution,fact,raw.finance()) || !savedProof(proofs.get(origin.paymentFactId()),attribution,fact,agents)
+                    || "UNKNOWN".equals(attribution.agentStatus())
+                    || "KNOWN".equals(attribution.agentStatus()) && ("UNKNOWN".equals(attribution.groupStatus())
+                        || "UNKNOWN".equals(attribution.ownerStatus()))) {
                 invalidOrigins.add(origin.contributionId());reason=Reason.ATTRIBUTION_UNKNOWN;
             }
         }
@@ -478,12 +478,25 @@ public class SupportLeaderboardSourceService {
         return at!=null && BusinessCalendar.STORAGE_ZONE.getId().equals(zone) && precision>=0 && precision<=9
             && at.getNano()%(int)Math.pow(10,9-precision)==0 && token(reference);
     }
-    private static boolean savedProof(AttributionProof proof,AttributionRow attribution,Fact fact) {
+    private static boolean savedProof(AttributionProof proof,AttributionRow attribution,Fact fact,Set<Long> agents) {
         if(proof==null || proof.captureDbUtc()==null || proof.sourceFactJson()==null || proof.attributionEvidenceJson()==null)return false;
         try {
             var reader=new ObjectMapper().reader().with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                 .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS,DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
             JsonNode source=reader.readTree(proof.sourceFactJson()),evidence=reader.readTree(proof.attributionEvidenceJson());
+            if("KNOWN".equals(attribution.agentStatus()) && !agents.contains(attribution.agentAdminId())) {
+                // A removed agent can still own a past contribution. Verify the identity and binding saved at payment.
+                boolean capturedAdmin=false,capturedBinding=false;
+                for(JsonNode admin:evidence.path("admins")) {
+                    if(jsonId(admin,"id",attribution.agentAdminId()) && jsonId(admin,"isDeleted",0L))capturedAdmin=true;
+                }
+                for(JsonNode binding:evidence.path("bindingHistory")) {
+                    if(jsonId(binding,"userId",fact.customerId()) && jsonId(binding,"agentAdminId",attribution.agentAdminId())
+                            && jsonText(binding,"status","ACTIVE") && jsonId(binding,"isDeleted",0L)
+                            && binding.path("endsAt").isNull())capturedBinding=true;
+                }
+                if(!capturedAdmin || !capturedBinding)return false;
+            }
             return source.isObject() && evidence.isObject() && jsonText(source,"factId",fact.factId())
                 && jsonId(source,"customerId",fact.customerId()) && jsonId(source,"ledgerId",fact.ledgerId())
                 && jsonText(source,"kind",fact.kind().name()) && jsonText(source,"source",fact.source().name())
