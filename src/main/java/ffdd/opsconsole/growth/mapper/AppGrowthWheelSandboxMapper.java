@@ -100,6 +100,92 @@ public interface AppGrowthWheelSandboxMapper extends BaseMapper<Object> {
             + "AND status='AVAILABLE' AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX'")
     int countAvailableTickets(@Param("runId") String runId, @Param("userId") Long userId);
 
+    /** Read-only canonical streak state; the sandbox never writes nx_user_streak or nx_daily_check_in. */
+    @Select("""
+            SELECT COALESCE(s.current_streak,0) currentStreak,
+                   COALESCE(s.longest_streak,0) longestStreak,
+                   COALESCE(s.streak_savers,0) streakSavers,
+                   s.last_check_in_date lastCheckInDate,
+                   EXISTS(SELECT 1 FROM nx_daily_check_in c
+                           WHERE c.user_id=#{userId} AND c.check_in_date=#{today} AND c.is_deleted=0) checkedInToday
+              FROM (SELECT #{userId} user_id) anchor
+              LEFT JOIN nx_user_streak s ON s.user_id=anchor.user_id AND s.is_deleted=0
+            """)
+    Map<String,Object> canonicalStreakState(@Param("userId") Long userId, @Param("today") LocalDate today);
+
+    /** Real H5 milestone rules with the same streak qualification as the production read. */
+    @Select("""
+            SELECT m.id milestoneId,m.milestone_day milestoneDay,m.reward_type rewardType,
+                   m.reward_amount rewardAmount,m.badge_achievement_code badgeCode,
+                   COALESCE(s.current_streak,0) currentStreak
+              FROM nx_streak_milestone m
+              LEFT JOIN nx_user_streak s ON s.user_id=#{userId} AND s.is_deleted=0
+             WHERE m.status=1 AND m.is_deleted=0
+             ORDER BY m.milestone_day,m.id
+            """)
+    List<Map<String,Object>> dailyMilestoneRules(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT m.id milestoneId,m.milestone_day milestoneDay,m.reward_type rewardType,
+                   m.reward_amount rewardAmount,m.badge_achievement_code badgeCode
+              FROM nx_streak_milestone m
+              JOIN nx_user_streak s ON s.user_id=#{userId} AND s.is_deleted=0 AND s.current_streak>=m.milestone_day
+             WHERE m.id=#{milestoneId} AND m.status=1 AND m.is_deleted=0
+             LIMIT 1 FOR UPDATE
+            """)
+    SandboxMilestone lockClaimableMilestone(@Param("userId") Long userId, @Param("milestoneId") Long milestoneId);
+
+    /** Same claim predicate for read and claim: new state commands, legacy tickets and persisted ledger facts. */
+    @Select("""
+            SELECT DISTINCT claimedId FROM (
+              SELECT CAST(SUBSTRING_INDEX(idempotency_key, ':', -1) AS UNSIGNED) claimedId
+                FROM nx_growth_wheel_sandbox_command
+               WHERE run_id=#{runId} AND user_id=#{userId} AND operation='DAILY_MILESTONE_STATE'
+                 AND idempotency_key LIKE 'MS:%' AND is_deleted=0
+                 AND source='mock' AND source_environment='SANDBOX'
+              UNION
+              SELECT CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(source_id, ':', 2), ':', -1) AS UNSIGNED) claimedId
+                FROM nx_growth_wheel_sandbox_ticket
+               WHERE run_id=#{runId} AND user_id=#{userId} AND source_type='DAILY_MILESTONE'
+                 AND source_id LIKE 'MILESTONE:%' AND is_deleted=0
+                 AND source='mock' AND source_environment='SANDBOX'
+              UNION
+              SELECT CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(biz_no, ':', 2), ':', -1) AS UNSIGNED) claimedId
+                FROM nx_growth_wheel_sandbox_reward_ledger
+               WHERE run_id=#{runId} AND user_id=#{userId} AND biz_no LIKE 'MILESTONE:%'
+                 AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX'
+            ) claimed
+            """)
+    List<Long> claimedMilestoneIds(@Param("runId") String runId, @Param("userId") Long userId);
+
+    @Select("SELECT COUNT(*) FROM nx_growth_wheel_sandbox_command "
+            + "WHERE run_id=#{runId} AND user_id=#{userId} AND operation='DAILY_MILESTONE_STATE' "
+            + "AND idempotency_key=CONCAT('MS:',#{milestoneId}) AND is_deleted=0 "
+            + "AND source='mock' AND source_environment='SANDBOX'")
+    int claimedMilestoneCommands(@Param("runId") String runId, @Param("userId") Long userId,
+                                 @Param("milestoneId") Long milestoneId);
+
+    @Select("SELECT COUNT(*) FROM nx_growth_wheel_sandbox_ticket "
+            + "WHERE run_id=#{runId} AND user_id=#{userId} AND source_type='DAILY_MILESTONE' "
+            + "AND source_id LIKE CONCAT('MILESTONE:',#{milestoneId},':%') AND is_deleted=0 "
+            + "AND source='mock' AND source_environment='SANDBOX'")
+    int claimedMilestoneTickets(@Param("runId") String runId, @Param("userId") Long userId,
+                                @Param("milestoneId") Long milestoneId);
+
+    @Select("SELECT COUNT(*) FROM nx_growth_wheel_sandbox_reward_ledger "
+            + "WHERE run_id=#{runId} AND user_id=#{userId} "
+            + "AND (biz_no=CONCAT('MILESTONE:',#{milestoneId}) OR biz_no LIKE CONCAT('MILESTONE:',#{milestoneId},':%')) "
+            + "AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX'")
+    int claimedMilestoneRewards(@Param("runId") String runId, @Param("userId") Long userId,
+                                @Param("milestoneId") Long milestoneId);
+
+    @Select("SELECT asset,amount,biz_no bizNo FROM nx_growth_wheel_sandbox_reward_ledger "
+            + "WHERE run_id=#{runId} AND user_id=#{userId} "
+            + "AND (biz_no=CONCAT('MILESTONE:',#{milestoneId}) OR biz_no LIKE CONCAT('MILESTONE:',#{milestoneId},':%')) "
+            + "AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX' ORDER BY id LIMIT 1")
+    Map<String,Object> milestoneRewardFact(@Param("runId") String runId, @Param("userId") Long userId,
+                                           @Param("milestoneId") Long milestoneId);
+
     @Select("SELECT ticket_id ticketId FROM nx_growth_wheel_sandbox_ticket WHERE run_id=#{runId} AND user_id=#{userId} "
             + "AND status='AVAILABLE' AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX' ORDER BY created_at,id LIMIT 1 FOR UPDATE")
     SandboxTicket lockAvailableTicket(@Param("runId") String runId, @Param("userId") Long userId);
@@ -287,6 +373,8 @@ public interface AppGrowthWheelSandboxMapper extends BaseMapper<Object> {
                        String tierName, String rewardKind, BigDecimal rewardAmount, String rewardName,
                        Boolean downgraded, String downgradeReason, java.time.LocalDateTime awardedAt) { }
     record SandboxCommand(String operation, String spinHash, String spinNo) { }
+    record SandboxMilestone(Long milestoneId, Integer milestoneDay, String rewardType,
+                            BigDecimal rewardAmount, String badgeCode) { }
     record SandboxQuest(String questCode, String questName, String layer, BigDecimal rewardNex,
                         String missionStatus, String claimIdempotencyKey) { }
 }
