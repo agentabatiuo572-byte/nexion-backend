@@ -144,7 +144,7 @@ public class SupportLeaderboardSourceService {
         LocalDateTime cutoff=captured.cutoff;
         Instant evaluatedAt=cutoff.toInstant(ZoneOffset.UTC);
         YearMonth currentMonth=BusinessCalendar.legacy().month(evaluatedAt);
-        Context context=new Context(authorizedContext.board(),authorizedContext.rankMonth(),
+        Context context=SupportLeaderboardPolicy.context(authorizedContext.board(),authorizedContext.rankMonth(),
             authorizedContext.board()==Board.customers?currentMonth:authorizedContext.referenceMonth(),authorizedContext.currency(),
             authorizedContext.scope(),authorizedContext.approvedGroupIds(),authorizedContext.definitionVersion(),evaluatedAt);
         return project(context,cutoff,captured.evidence,currentMonth);
@@ -198,11 +198,18 @@ public class SupportLeaderboardSourceService {
             LocalDateTime occurred=row.succeededAt()!=null && BusinessCalendar.STORAGE_ZONE.getId().equals(row.sourceBusinessZone())
                 ? LocalDateTime.ofInstant(row.succeededAt().atZone(BusinessCalendar.STORAGE_ZONE).toInstant(),ZoneOffset.UTC)
                 : LocalDateTime.MIN;
+            if(SupportLeaderboardPolicy.PRODUCTION_START!=null && row.succeededAt()!=null
+                    && BusinessCalendar.STORAGE_ZONE.getId().equals(row.sourceBusinessZone())
+                    && occurred.toInstant(ZoneOffset.UTC).isBefore(SupportLeaderboardPolicy.PRODUCTION_START))continue;
             earliestOwnership.merge(row.agentAdminId(),occurred,(left,right) -> left.isBefore(right)?left:right);
         }
         List<Candidate> candidates=new ArrayList<>();
         LocalDateTime monthFrom=LocalDateTime.ofInstant(period.from(),ZoneOffset.UTC);
         LocalDateTime cutover=raw.qualificationCutoverUtc();
+        if (SupportLeaderboardPolicy.PRODUCTION_START!=null) {
+            LocalDateTime launch=LocalDateTime.ofInstant(SupportLeaderboardPolicy.PRODUCTION_START,ZoneOffset.UTC);
+            if(cutover==null || launch.isBefore(cutover))cutover=launch;
+        }
         Coverage candidateCoverage=context.board()==Board.customers || cutover!=null && !monthFrom.isBefore(cutover)
             && !cutoff.isBefore(cutover)?Coverage.COMPLETE:Coverage.PARTIAL;
         for (Account a:accounts.values()) {
@@ -219,6 +226,11 @@ public class SupportLeaderboardSourceService {
             if (groupId!=null && !groups.containsKey(groupId)) throw failed();
             boolean inScope=context.scope()==Scope.all || groupId!=null && context.approvedGroupIds().contains(groupId);
             boolean attributed=net.amounts().containsKey(a.id()) || first.confirmedFirst().containsKey(a.id()) && (inScope || member==null);
+            // A closed test-only history has no bearing on completeness after the verified launch.
+            if(SupportLeaderboardPolicy.PRODUCTION_START!=null && !history.isEmpty() && customers==0 && !attributed
+                    && history.stream().allMatch(q -> q.endsAt()!=null && !q.endsAt().toInstant(ZoneOffset.UTC).isAfter(SupportLeaderboardPolicy.PRODUCTION_START))
+                    && memberHistory.stream().allMatch(m -> m.endsAt()!=null && !m.endsAt().toInstant(ZoneOffset.UTC).isAfter(SupportLeaderboardPolicy.PRODUCTION_START))
+                    && !serviceNow && a.serviceProfile()==0)continue;
             boolean needsHistory=!history.isEmpty() || !memberHistory.isEmpty() || customers>0 || attributed || a.serviceProfile()==1;
             if(context.board()!=Board.customers && needsHistory && (inScope || member==null || attributed)
                     && !completeHistory(a,history,memberHistory,groups.keySet(),monthFrom,cutoff,cutover,earliestOwnership.get(a.id())))candidateCoverage=Coverage.PARTIAL;
@@ -266,6 +278,10 @@ public class SupportLeaderboardSourceService {
 
     private static boolean completeHistory(Account account,List<QualificationInterval> qualifications,List<MemberInterval> members,
             Set<Long> groups,LocalDateTime from,LocalDateTime cutoff,LocalDateTime cutover,LocalDateTime earliestOwnership) {
+        if(SupportLeaderboardPolicy.PRODUCTION_START!=null) {
+            LocalDateTime start=LocalDateTime.ofInstant(SupportLeaderboardPolicy.PRODUCTION_START,ZoneOffset.UTC);
+            members=members.stream().filter(m -> m.endsAt()==null || m.endsAt().isAfter(start)).toList();
+        }
         MemberInterval priorMember=null;
         for(MemberInterval m:members.stream().filter(m -> !m.startsAt().isAfter(cutoff)
                 && (m.endsAt()==null || m.endsAt().isAfter(from) || m.startsAt().equals(m.endsAt()) && !m.startsAt().isBefore(from)))
@@ -410,18 +426,22 @@ public class SupportLeaderboardSourceService {
         Map<String,AttributionRow> attributions=new HashMap<>();raw.attributions().forEach(r->attributions.put(r.factId(),r));
         Map<String,AttributionProof> proofs=new HashMap<>();raw.attributionProofs().forEach(p->proofs.put(p.factId(),p));
         Map<String,ContributionOrigin> origins=new HashMap<>();Set<String> invalidOrigins=new HashSet<>();
+        Set<String> prelaunchOrigins=new HashSet<>();
         for(ContributionOrigin origin:raw.net().origins()) {
             NetCustomer customer=customers.get(origin.customerId());
             if(customer==null || customer.state()!=EvidenceState.READY || !token(origin.contributionId())
                     || origins.putIfAbsent(origin.contributionId(),origin)!=null
                     || !stamp(origin.formedAt(),origin.businessZone(),origin.fractionalSecondDigits(),origin.sourceReference()))throw failed();
             Fact fact=facts.get(origin.paymentFactId());AttributionRow attribution=attributions.get(origin.paymentFactId());
+            boolean prelaunch=SupportLeaderboardPolicy.PRODUCTION_START!=null
+                && origin.formedAt().atZone(BusinessCalendar.STORAGE_ZONE).toInstant().isBefore(SupportLeaderboardPolicy.PRODUCTION_START);
+            if(prelaunch)prelaunchOrigins.add(origin.contributionId());
             if(fact==null || fact.customerId()!=origin.customerId() || fact.kind()==Kind.DEVICE_PURCHASE_REFUND
                     || !Objects.equals(fact.succeededAt(),origin.formedAt()) || fact.fractionalSecondDigits()!=origin.fractionalSecondDigits()
-                    || !proved(attribution,fact,raw.finance()) || !savedProof(proofs.get(origin.paymentFactId()),attribution,fact,agents)
+                    || !prelaunch && (!proved(attribution,fact,raw.finance()) || !savedProof(proofs.get(origin.paymentFactId()),attribution,fact,agents)
                     || "UNKNOWN".equals(attribution.agentStatus())
                     || "KNOWN".equals(attribution.agentStatus()) && ("UNKNOWN".equals(attribution.groupStatus())
-                        || "UNKNOWN".equals(attribution.ownerStatus()))) {
+                        || "UNKNOWN".equals(attribution.ownerStatus())))) {
                 invalidOrigins.add(origin.contributionId());reason=Reason.ATTRIBUTION_UNKNOWN;
             }
         }
@@ -447,6 +467,7 @@ public class SupportLeaderboardSourceService {
                 else {reason=Reason.SOURCE_INCOMPLETE;rejectedRoots.add(origin.customerId());}
             }
             Instant occurred=change.succeededAt().atZone(BusinessCalendar.STORAGE_ZONE).toInstant();
+            if(prelaunchOrigins.contains(origin.contributionId()))continue;
             if(!context.currency().equals(change.currency()) || occurred.isBefore(period.from()) || !occurred.isBefore(period.to())
                     || occurred.isAfter(context.evaluatedAt()))continue;
             AttributionRow attribution=attributions.get(origin.paymentFactId());
