@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /** Shared F4b admission checks for quotes and settlement. */
 public final class HardwareQuotaPurchaseGuard {
@@ -18,6 +19,24 @@ public final class HardwareQuotaPurchaseGuard {
         validate(mapper, userId, tiers, HardwareQuotaPeriod.atUtc(occurredAtUtc), 1,
                 mapper::lockHardwarePurchaseUsage);
         return new Reservation(List.copyOf(tiers), occurredAtUtc);
+    }
+
+    public static List<HardwareQuotaPurchaseMapper.Tier> holdForIntent(
+            HardwareQuotaPurchaseMapper mapper, long userId, String intentNo,
+            Map<String, Integer> quantities, LocalDateTime occurredAtUtc) {
+        var tiers = mapper.findIntentPurchaseTierIds(List.copyOf(quantities.keySet())).stream()
+                .map(mapper::lockIntentPurchaseTier).toList();
+        var month = HardwareQuotaPeriod.atUtc(occurredAtUtc);
+        for (var tier : tiers) {
+            if (tier == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+            Integer quantity = quantities.get(tier.productNo());
+            if (quantity == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+            validate(mapper, userId, List.of(tier), month, quantity, mapper::lockHardwarePurchaseUsage);
+            if (mapper.recordIntentPurchaseHold(tier, userId, intentNo, quantity, occurredAtUtc) != 1) {
+                throw new BizException(409, "ORDER_MONTHLY_QUOTA_CONFLICT");
+            }
+        }
+        return tiers;
     }
 
     public static void check(HardwareQuotaPurchaseMapper mapper, Long userId, String productNo,

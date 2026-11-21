@@ -643,6 +643,9 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     private DeviceSkuView skuView(DeviceCatalogMapper.SkuRow row) {
+        var gate = purchaseGate(row.purchaseGateJson());
+        Long held = gate != null && gate.quotaCap() != null && gate.quotaSold() != null ? row.purchaseQuotaHeld() : null;
+        Long remaining = held == null ? null : Math.max(0, gate.quotaCap() - gate.quotaSold() - held);
         return new DeviceSkuView(
                 row.skuId(),
                 row.name(),
@@ -679,7 +682,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.supersededBy(),
                 row.tradeinDiscount(),
                 row.unlockPhase(),
-                purchaseGate(row.purchaseGateJson()),
+                gate,
                 row.imageAssetId(),
                 row.imageObjectKey(),
                 row.imagePreviewUrl(),
@@ -695,7 +698,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.monthlyTargetUsdt(),row.monthlyTargetBandPct(),
                 row.monthlyTargetUsdt()==null?null:ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(row.monthlyTargetUsdt()),
                 row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMin(),
-                row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMax(), row.seriesCode(), row.seriesLocked()).withTaskPolicy(simulationPolicies.productView(row.skuId()));
+                row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMax(), row.seriesCode(), row.seriesLocked(), held, remaining).withTaskPolicy(simulationPolicies.productView(row.skuId()));
     }
 
     private DeviceCatalogMapper.SkuWrite skuWrite(String skuId, DeviceSkuUpsertRequest request,

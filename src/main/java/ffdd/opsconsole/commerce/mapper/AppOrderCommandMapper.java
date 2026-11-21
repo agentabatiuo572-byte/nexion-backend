@@ -1,5 +1,6 @@
 package ffdd.opsconsole.commerce.mapper;
 
+import static ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper.HELD;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
@@ -403,7 +404,9 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
 
     String PAYMENT_INVENTORY_LINES = """
             SELECT p.id productId,p.product_no productNo,i.quantity,p.stock,p.inventory_mode inventoryMode,
-                   s.purchase_gate_json purchaseGateJson,s.purchase_gate_generation gateGeneration
+                   s.purchase_gate_json purchaseGateJson,s.purchase_gate_generation gateGeneration,
+                   i.lifetime_quota_reserved quotaReserved,""" + HELD + """
+                   AS quotaHeld
               FROM nx_order_item i JOIN nx_product p ON p.id=i.product_id AND p.is_deleted=0
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE i.order_no=#{orderNo} AND i.is_deleted=0
@@ -420,23 +423,8 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
             """)
     List<PaymentInventoryLine> findUnreservedPaymentInventoryLines(@Param("orderNo") String orderNo);
 
-    @Select("""
-            SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS `rank`,
-                   (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
-                     WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
-                       AND child.status='ACTIVE' AND child.is_deleted=0 FOR SHARE) AS activeDirect,
-                   (SELECT COALESCE(SUM(o.compute_points),0) FROM nx_team_member tm JOIN nx_user member
-                     ON member.id=tm.member_user_id AND member.sandbox=u.sandbox
-                     JOIN nx_order o ON o.user_id=tm.member_user_id AND o.is_deleted=0
-                      AND o.payment_status IN ('PAID','CONFIRMED','SUCCESS')
-                      AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
-                    WHERE tm.user_id=u.id AND tm.member_user_id<>u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0 FOR SHARE) AS teamComputePoints
-              FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1 FOR SHARE
-            """)
-    CanonicalStateMapper.PurchaseFacts paymentGateFacts(@Param("userId") Long userId);
-
     @Select(CanonicalStateMapper.PURCHASE_FACTS)
-    CanonicalStateMapper.PurchaseFacts findPaymentGateFacts(@Param("userId") Long userId);
+    CanonicalStateMapper.PurchaseFacts paymentGateFacts(@Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_product SET stock=CASE WHEN inventory_mode='FINITE' THEN stock-#{quantity} ELSE stock END,
@@ -446,12 +434,12 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
     int consumePaymentStock(@Param("productId") Long productId,@Param("quantity") Integer quantity);
 
     @Update("""
-            UPDATE nx_admin_device_sku SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
+            UPDATE nx_admin_device_sku s SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
               CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),updated_at=NOW()
              WHERE sku_id=#{productNo} AND is_deleted=0 AND purchase_gate_generation=#{generation}
                AND JSON_VALID(purchase_gate_json)=1 AND JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.enforce'))='true'
                AND (JSON_EXTRACT(purchase_gate_json,'$.quotaPeriod') IS NULL OR JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaPeriod'))='lifetime')
-               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity} + """ + HELD + """
                    <=CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
             """)
     int consumePaymentQuota(@Param("productNo") String productNo,@Param("quantity") Integer quantity,@Param("generation") Long generation);
@@ -680,7 +668,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
     }
     record DevelopmentPaymentItem(Long productId, String productNo, Integer quantity, Integer sortOrder) { }
     record PaymentInventoryLine(Long productId,String productNo,Integer quantity,Integer stock,String inventoryMode,
-                                String purchaseGateJson,Long gateGeneration) { }
+                                String purchaseGateJson, Long gateGeneration, Boolean quotaReserved, long quotaHeld) { }
     record DevelopmentWallet(BigDecimal usdtAvailable, Long version) { }
     record DevelopmentDeviceFact(Long deviceId, String instanceNo) { }
 }

@@ -13,7 +13,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, TrialSlotReservationMapper, OrderCreateReceiptMapper {
+public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, TrialSlotReservationMapper, OrderCreateReceiptMapper, PurchaseGateQuotaMapper {
     // All purchase entrypoints count unfulfilled gift promises against the same account slots.
     /** Old trial conversions already fulfilled a single device but used PAID/ACTIVE.
      * Preserve history and require the exact settled claim/device/order relationship.
@@ -273,8 +273,6 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     String RESERVED_ORDER_ITEM_QUANTITY = """
             SELECT SUM(order_item.quantity)
               FROM nx_order_item order_item
-              LEFT JOIN nx_product item_product
-                ON item_product.id=order_item.product_id AND item_product.is_deleted=0
              WHERE order_item.order_no=o.order_no AND order_item.is_deleted=0
             """;
     String RESERVED_ORDER_HEADER_QUANTITY = """
@@ -284,8 +282,6 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     String RESERVED_ORDER_SOURCE = """
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id
-              LEFT JOIN nx_product header_product
-                ON header_product.id=o.product_id AND header_product.is_deleted=0
              WHERE o.user_id=#{userId} AND o.is_deleted=0
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
                AND (o.inventory_reserved=1 OR UPPER(o.payment_status) IN ('PAID','CONFIRMED','SUCCESS'))
@@ -862,7 +858,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
 
     /** Canonical, quantity-aware lifetime quota CAS for ordinary checkout. */
     @Update("""
-            UPDATE nx_admin_device_sku
+            UPDATE nx_admin_device_sku s
                SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
                    CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),
                    updated_at=NOW()
@@ -874,7 +870,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                AND JSON_EXTRACT(purchase_gate_json,'$.quotaCap') IS NOT NULL
                AND JSON_EXTRACT(purchase_gate_json,'$.quotaSold') IS NOT NULL
                AND #{quantity} > 0
-               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity} + """ + HELD + """
                    <= CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
             """)
     int consumePurchaseQuota(@Param("productNo") String productNo, @Param("quantity") Integer quantity);

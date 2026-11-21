@@ -17,6 +17,10 @@ public class StorefrontPurchaseGatePolicy {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public Decision evaluate(String raw, Facts facts) {
+        return evaluate(raw, facts, 0);
+    }
+
+    public Decision evaluate(String raw, Facts facts, long held) {
         if (raw == null || raw.isBlank()) return Decision.open();
         try {
             JsonNode gate = objectMapper.readTree(raw);
@@ -39,7 +43,7 @@ public class StorefrontPurchaseGatePolicy {
                 return Decision.closed("PURCHASE_GATE_INVALID");
             }
             if (!gate.path("enforce").asBoolean()) return Decision.open();
-            if (cap != null && sold != null && sold >= cap) {
+            if (cap != null && sold != null && sold + held >= cap) {
                 return Decision.closed("PURCHASE_GATE_SOLD_OUT");
             }
             boolean hasRank = rank != null && rank > 0;
@@ -71,7 +75,7 @@ public class StorefrontPurchaseGatePolicy {
      * A read-only explanation of the same E1 predicate used by {@link #evaluate}.
      * It intentionally contains numbers only; the App chooses locale-specific labels.
      */
-    public Projection project(String raw, Facts facts) {
+    public Projection project(String raw, Facts facts, long held) {
         if (raw == null || raw.isBlank()) return new Projection(false, "ALL", List.of(), Decision.open());
         try {
             JsonNode gate = objectMapper.readTree(raw);
@@ -94,8 +98,8 @@ public class StorefrontPurchaseGatePolicy {
             if (rank != null && rank > 0) conditions.add(threshold("rank", BigDecimal.valueOf(rank), BigDecimal.valueOf(safeFacts.rank())));
             if (direct != null && direct > 0) conditions.add(threshold("activeDirect", BigDecimal.valueOf(direct), BigDecimal.valueOf(safeFacts.activeDirect())));
             if (volume != null && volume.signum() > 0) conditions.add(threshold("teamComputePoints", volume, safeFacts.teamComputePoints()));
-            if (cap != null) conditions.add(quota("lifetimeQuota", BigDecimal.valueOf(cap), BigDecimal.valueOf(sold)));
-            Decision decision = evaluate(raw, facts);
+            if (cap != null) conditions.add(quota("lifetimeQuota", BigDecimal.valueOf(cap), BigDecimal.valueOf(sold + held)));
+            Decision decision = evaluate(raw, facts, held);
             return new Projection(true, mode.toUpperCase(Locale.ROOT), List.copyOf(conditions), decision);
         } catch (Exception ex) {
             return new Projection(true, "ALL", List.of(), Decision.closed("PURCHASE_GATE_INVALID"));
@@ -123,11 +127,11 @@ public class StorefrontPurchaseGatePolicy {
         }
     }
 
-    public boolean lifetimeQuotaExhausted(String raw, int quantity) {
+    public boolean lifetimeQuotaExhausted(String raw, int quantity, long held) {
         if (raw == null || raw.isBlank()) return false;
         try {
             JsonNode gate = objectMapper.readTree(raw);
-            return enforcedQuota(gate) && quantity > integer(gate, "quotaCap") - integer(gate, "quotaSold");
+            return enforcedQuota(gate) && quantity > integer(gate, "quotaCap") - integer(gate, "quotaSold") - held;
         } catch (Exception ex) {
             return false;
         }

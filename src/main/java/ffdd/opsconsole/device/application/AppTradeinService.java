@@ -3,6 +3,8 @@ package ffdd.opsconsole.device.application;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
+import ffdd.opsconsole.finance.purchase.PurchaseQuotaReservation;
+import ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper.GateQuota;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.device.dto.AppTradeinConfigResponse;
 import ffdd.opsconsole.device.dto.AppCapacityReplaceQuoteRequest;
@@ -145,7 +147,7 @@ public class AppTradeinService {
             return ApiResult.ok(eligibilityResponse(policy, false, "TARGET_OUT_OF_STOCK", target,
                     targetProductNo, List.of()));
         }
-        StorefrontPurchaseGatePolicy.Decision purchaseDecision = purchaseDecision(userId, target.productNo());
+        StorefrontPurchaseGatePolicy.Decision purchaseDecision = purchaseDecision(userId, mapper.findGateQuota(target.productNo()));
         if (!purchaseDecision.allowed()) {
             return ApiResult.ok(eligibilityResponse(policy, false, purchaseDecision.code(), target,
                     targetProductNo, List.of()));
@@ -168,22 +170,32 @@ public class AppTradeinService {
 
     @Transactional(readOnly = true)
     public ApiResult<AppTradeinQuoteResponse> quote(Long userId, AppTradeinQuoteRequest request) {
+        return externalPaymentQuote(userId, request, false, null);
+    }
+
+    public ApiResult<AppTradeinQuoteResponse> externalPaymentQuote(
+            Long userId, AppTradeinQuoteRequest request, boolean locked, PurchaseQuotaReservation reservation) {
         requireCanonicalTradeinUser(userId);
         requireRequest(request == null ? null : request.sourceDeviceId(),
                 request == null ? null : request.targetProductId(), request == null ? null : request.targetProductNo());
-        Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), false);
+        Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), locked, reservation);
         return ApiResult.ok(evaluation.response());
     }
 
     @Transactional(readOnly = true)
     public ApiResult<AppCapacityReplaceQuoteResponse> capacityQuote(
             Long userId, AppCapacityReplaceQuoteRequest request) {
+        return externalCapacityQuote(userId, request, false, null);
+    }
+
+    public ApiResult<AppCapacityReplaceQuoteResponse> externalCapacityQuote(
+            Long userId, AppCapacityReplaceQuoteRequest request, boolean locked, PurchaseQuotaReservation reservation) {
         requireCanonicalTradeinUser(userId);
         String targetProductNo = requireTargetProductNo(request == null ? null : request.targetProductNo());
         if (!StringUtils.hasText(mapper.userLevel(userId))) {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
         }
-        return ApiResult.ok(evaluateCapacity(userId, targetProductNo, false));
+        return ApiResult.ok(evaluateCapacity(userId, targetProductNo, locked, reservation));
     }
 
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
@@ -213,7 +225,7 @@ public class AppTradeinService {
         AppCapacityReplaceSubmitRequest normalized = new AppCapacityReplaceSubmitRequest(
                 request.sourceDeviceId(), targetProductNo, request.expectedPayableUsdt());
         return executeCapacityOnce(userId, idempotencyKey, normalized,
-                () -> capacityReplaceInternal(userId, idempotencyKey, normalized));
+                () -> capacityReplaceInternal(userId, idempotencyKey, normalized, null));
     }
 
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
@@ -244,7 +256,7 @@ public class AppTradeinService {
         AppCapacityKeepSubmitRequest normalized = new AppCapacityKeepSubmitRequest(
                 targetProductNo, money(request.expectedPayableUsdt()));
         return executeCapacityKeepOnce(userId, idempotencyKey, normalized,
-                () -> capacityKeepInternal(userId, idempotencyKey, normalized));
+                () -> capacityKeepInternal(userId, idempotencyKey, normalized, null));
     }
 
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
@@ -271,32 +283,32 @@ public class AppTradeinService {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
         }
         return executeOnce(userId, idempotencyKey, request,
-                () -> submitInternal(userId, idempotencyKey, request));
+                () -> submitInternal(userId, idempotencyKey, request, null));
     }
 
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
     public ApiResult<?> settleVerifiedExternal(Long owner,String kind,String key,AppTradeinSubmitRequest tradein,
-            AppCapacityReplaceSubmitRequest replace,AppCapacityKeepSubmitRequest keep) {
+            AppCapacityReplaceSubmitRequest replace, AppCapacityKeepSubmitRequest keep, PurchaseQuotaReservation reservation) {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
         testCloudAdmission.lock();
         requireProductionTradeinAvailable(); requireProductionTradeinUser(owner);
         if (mapper.lockActiveUser(owner)==null) throw new BizException(404,"TRADEIN_USER_NOT_FOUND");
         return switch(kind) {
-            case "TRADE_IN" -> submitInternal(owner,key,tradein);
-            case "CAPACITY_REPLACE" -> capacityReplaceInternal(owner,key,replace);
-            case "CAPACITY_KEEP" -> capacityKeepInternal(owner,key,keep);
+            case "TRADE_IN" -> submitInternal(owner,key,tradein,reservation);
+            case "CAPACITY_REPLACE" -> capacityReplaceInternal(owner,key,replace,reservation);
+            case "CAPACITY_KEEP" -> capacityKeepInternal(owner,key,keep,reservation);
             default -> throw new BizException(422,"PURCHASE_PAYMENT_KIND_INVALID");
         };
     }
 
     private ApiResult<AppTradeinSubmitResponse> submitInternal(
-            Long userId, String idempotencyKey, AppTradeinSubmitRequest request) {
+            Long userId, String idempotencyKey, AppTradeinSubmitRequest request, PurchaseQuotaReservation reservation) {
         String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String tradeinNo = "TIN-" + nonce;
         String orderNo = "TIO-" + nonce;
         String instanceNo = "DEV-TI-" + nonce;
         var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.TRADE_IN, orderNo);
-        Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), true);
+        Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), true, reservation);
         if (evaluation.source().rowVersion() == null
                 || !request.expectedSourceVersion().equals(evaluation.source().rowVersion())) {
             throw new BizException(409, "TRADEIN_SOURCE_VERSION_CONFLICT");
@@ -319,9 +331,9 @@ public class AppTradeinService {
         RuntimeRow simulatedRuntime = lockReplacementRuntime(userId, evaluation.source());
         String hostingCenter = hostingCenters.requirePool().assign(instanceNo);
         testCloudAdmission.requireReplacementCapacity(evaluation.source().id(),evaluation.source().activated()?1:0);
-        reservePurchaseQuotaAtSettlement(userId, evaluation.target().productNo());
-        var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, evaluation.target().productNo(),
-                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+        if (reservation == null) reservePurchaseQuotaAtSettlement(userId, evaluation.target().productNo());
+        var hardwareQuota = reservation == null ? HardwareQuotaPurchaseGuard.reserve(mapper, userId, evaluation.target().productNo(),
+                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)) : null;
 
         retireTradeinSource(userId, evaluation.source(), simulatedRuntime);
 
@@ -350,7 +362,7 @@ public class AppTradeinService {
         if (mapper.insertPaidOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "TRADEIN_ORDER_CREATE_CONFLICT");
         }
-        HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
+        if (hardwareQuota != null) HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
 
         AppTradeinMapper.DeliveredDeviceWrite delivered = new AppTradeinMapper.DeliveredDeviceWrite(
                 userId, orderNo, evaluation.target().id(), evaluation.target().productNo(),
@@ -458,13 +470,13 @@ public class AppTradeinService {
     }
 
     private ApiResult<AppTradeinSubmitResponse> capacityReplaceInternal(
-            Long userId, String idempotencyKey, AppCapacityReplaceSubmitRequest request) {
+            Long userId, String idempotencyKey, AppCapacityReplaceSubmitRequest request, PurchaseQuotaReservation reservation) {
         String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String tradeinNo = "CPR-" + nonce;
         String orderNo = "CPO-" + nonce;
         String instanceNo = "DEV-CPR-" + nonce;
         var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.TRADE_IN, orderNo);
-        AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true);
+        AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true, reservation);
         if (!"REPLACE_REQUIRED".equals(quote.decision()) || quote.sourceDeviceId() == null) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_NOT_REQUIRED");
         }
@@ -493,9 +505,9 @@ public class AppTradeinService {
         }
         String hostingCenter = hostingCenters.requirePool().assign(instanceNo);
         testCloudAdmission.requireReplacementCapacity(source.id(),1);
-        reservePurchaseQuotaAtSettlement(userId, target.productNo());
-        var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
-                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+        if (reservation == null) reservePurchaseQuotaAtSettlement(userId, target.productNo());
+        var hardwareQuota = reservation == null ? HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
+                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)) : null;
 
         if (simulatedRuntime != null) computeV2Lifecycle.cancelSimulatedForReplacement(simulatedRuntime);
 
@@ -519,7 +531,7 @@ public class AppTradeinService {
         if (mapper.insertPaidOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "TRADEIN_ORDER_CREATE_CONFLICT");
         }
-        HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
+        if (hardwareQuota != null) HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.moveSourceDeviceToInventory(userId, source.id()) != 1) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CONFLICT");
         }
@@ -575,13 +587,13 @@ public class AppTradeinService {
     }
 
     private ApiResult<AppCapacityKeepSubmitResponse> capacityKeepInternal(
-            Long userId, String idempotencyKey, AppCapacityKeepSubmitRequest request) {
+            Long userId, String idempotencyKey, AppCapacityKeepSubmitRequest request, PurchaseQuotaReservation reservation) {
         String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String operationNo = "CPK-" + nonce;
         String orderNo = "CKO-" + nonce;
         String instanceNo = "DEV-CPK-" + nonce;
         var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.CAPACITY_KEEP, orderNo);
-        AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true);
+        AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true, reservation);
         if (!"CAPACITY_AVAILABLE".equals(quote.decision())) {
             throw new BizException(409, "DEVICE_SLOT_CAP_EXCEEDED");
         }
@@ -600,15 +612,15 @@ public class AppTradeinService {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
         requireTradeinReleased(target, policy());
-        requirePurchaseEligibility(userId, target.productNo());
+        requirePurchaseEligibility(userId, target, true, reservation);
         if (money(target.priceUsdt()).compareTo(quote.targetPriceUsdt()) != 0) {
             throw new BizException(409, "CAPACITY_KEEP_QUOTE_CHANGED");
         }
         String hostingCenter = hostingCenters.requirePool().assign(instanceNo);
         testCloudAdmission.requireCapacity(1);
-        reservePurchaseQuotaAtSettlement(userId, target.productNo());
-        var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
-                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+        if (reservation == null) reservePurchaseQuotaAtSettlement(userId, target.productNo());
+        var hardwareQuota = reservation == null ? HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
+                java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)) : null;
 
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(VerifiedPurchasePayment.active() ? BigDecimal.ZERO : quote.payableUsdt())
                 .setScale(6, RoundingMode.HALF_UP);
@@ -630,7 +642,7 @@ public class AppTradeinService {
         if (mapper.insertCapacityKeepOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "CAPACITY_KEEP_ORDER_CREATE_CONFLICT");
         }
-        HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
+        if (hardwareQuota != null) HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         AppTradeinMapper.DeliveredDeviceWrite delivered = new AppTradeinMapper.DeliveredDeviceWrite(
                 userId, orderNo, target.id(), target.productNo(), target.tier(), instanceNo, target.name(),
                 target.deviceType(), target.generation(), target.gpuModel(), target.vramTotalGb(),
@@ -669,7 +681,7 @@ public class AppTradeinService {
     }
 
     private AppCapacityReplaceQuoteResponse evaluateCapacity(
-            Long userId, String targetProductNo, boolean locked) {
+            Long userId, String targetProductNo, boolean locked, PurchaseQuotaReservation reservation) {
         int activeDevices = Math.max(0, locked ? mapper.lockActiveDeviceCount(userId) : mapper.countActiveDevices(userId));
         int slotCap = Math.max(1, locked ? mapper.lockDeviceSlotCap() : mapper.deviceSlotCap());
         AppTradeinMapper.TargetProduct target = locked
@@ -680,7 +692,7 @@ public class AppTradeinService {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
         }
         requireTradeinReleased(target, policy());
-        requirePurchaseEligibility(userId, target.productNo());
+        requirePurchaseEligibility(userId, target, locked, reservation);
         BigDecimal targetPrice = money(target.priceUsdt());
         BigDecimal wallet = money(nz(locked ? mapper.lockWalletBalanceUsdt(userId) : mapper.walletBalanceUsdt(userId)));
         AppTradeinMapper.SourceDevice source = null;
@@ -699,7 +711,7 @@ public class AppTradeinService {
     }
 
     private Evaluation evaluate(
-            Long userId, Long sourceDeviceId, Long targetProductId, String targetProductNo, boolean locked) {
+            Long userId, Long sourceDeviceId, Long targetProductId, String targetProductNo, boolean locked, PurchaseQuotaReservation reservation) {
         TradeinPolicy policy = policy();
         if (!policy.enabled()) throw new BizException(409, "TRADEIN_DISABLED");
         requireEligibility(mapper.userLevel(userId), policy.eligibility());
@@ -726,7 +738,7 @@ public class AppTradeinService {
             throw new BizException(409, "TRADEIN_TARGET_OUT_OF_STOCK");
         }
         requireTradeinReleased(target, policy);
-        requirePurchaseEligibility(userId, target.productNo());
+        requirePurchaseEligibility(userId, target, locked, reservation);
 
         BigDecimal sourcePaid = money(source.actualPaidUsdt());
         BigDecimal targetPrice = money(target.priceUsdt());
@@ -768,35 +780,36 @@ public class AppTradeinService {
         }
     }
 
-    private void requirePurchaseEligibility(Long userId, String productNo) {
-        StorefrontPurchaseGatePolicy.Decision decision = purchaseDecision(userId, productNo);
+    private void requirePurchaseEligibility(Long userId, AppTradeinMapper.TargetProduct target,
+                                            boolean locked, PurchaseQuotaReservation reservation) {
+        if (reservation != null) {
+            reservation.requireSingle(target.id(), target.productNo());
+            return;
+        }
+        GateQuota gate = locked ? mapper.lockGateQuota(target.productNo()) : mapper.findGateQuota(target.productNo());
+        StorefrontPurchaseGatePolicy.Decision decision = purchaseDecision(userId, gate);
         if (!decision.allowed()) throw new BizException(403, decision.code());
     }
 
     private void reservePurchaseQuotaAtSettlement(Long userId, String productNo) {
-        String raw = mapper.lockPurchaseGateJson(productNo);
-        if (!StringUtils.hasText(raw)) return;
-        StorefrontPurchaseGatePolicy.Decision decision = purchaseDecision(userId, productNo, raw);
+        GateQuota gate = mapper.lockGateQuota(productNo);
+        if (gate == null || !StringUtils.hasText(gate.gateJson())) return;
+        StorefrontPurchaseGatePolicy.Decision decision = purchaseDecision(userId, gate);
         if (!decision.allowed()) throw new BizException(403, decision.code());
-        if (purchaseGatePolicy.hasQuota(raw) && mapper.consumePurchaseQuota(productNo, 1) != 1) {
+        if (purchaseGatePolicy.hasQuota(gate.gateJson())
+                && mapper.consumePurchaseQuota(gate.skuId(), 1, gate.generation()) != 1) {
             throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
         }
     }
 
-    private StorefrontPurchaseGatePolicy.Decision purchaseDecision(Long userId, String productNo) {
-        String raw = mapper.purchaseGateJson(productNo);
-        if (!StringUtils.hasText(raw)) return StorefrontPurchaseGatePolicy.Decision.open();
-        return purchaseDecision(userId, productNo, raw);
-    }
-
-    private StorefrontPurchaseGatePolicy.Decision purchaseDecision(
-            Long userId, String productNo, String raw) {
+    private StorefrontPurchaseGatePolicy.Decision purchaseDecision(Long userId, GateQuota gate) {
+        if (gate == null || !StringUtils.hasText(gate.gateJson())) return StorefrontPurchaseGatePolicy.Decision.open();
         AppTradeinMapper.PurchaseGateFacts facts = mapper.purchaseGateFacts(userId);
         try {
-            return purchaseGatePolicy.evaluate(raw, facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
+            return purchaseGatePolicy.evaluate(gate.gateJson(), facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                     facts.rank() == null ? 0 : facts.rank(),
                     facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                    facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()));
+                    facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()), gate.held());
         } catch (IllegalArgumentException ex) {
             return StorefrontPurchaseGatePolicy.Decision.closed("PURCHASE_GATE_FACTS_INVALID");
         }
