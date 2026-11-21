@@ -150,8 +150,11 @@ public class AppTeamInsightsService {
         Scope scope = scope(userId);
         Instant snapshotAt = snapshotAt(requestedSnapshotAt);
         if ("SANDBOX".equals(scope.sourceEnvironment())) {
+            boolean sevenLayerEnabled = sevenLayerEnabled();
             return ApiResult.ok(paginateSandboxEvents(
-                    TeamSandboxFactGenerator.commissions(scope.runId(), userId), requestedPage, requestedPageSize));
+                    TeamSandboxFactGenerator.commissions(scope.runId(), userId, sevenLayerEnabled,
+                            sevenLayerEnabled ? mapper.unilevelRates() : List.of()),
+                    requestedPage, requestedPageSize));
         }
         LocalDateTime snapshotBoundary = LocalDateTime.ofInstant(snapshotAt, BUSINESS_ZONE);
         long totalRows = mapper.commissionEventCount(userId, snapshotBoundary);
@@ -220,7 +223,8 @@ public class AppTeamInsightsService {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> unilevel(
             Long userId, String requestedPeriod, long requestedPage, long requestedPageSize, String requestedSnapshotAt) {
-        if (sevenLayerEnabled()) return ApiResult.fail(422, "TEAM_SCHEMA_VERSION_UNSUPPORTED");
+        boolean sevenLayerEnabled = sevenLayerEnabled();
+        if (sevenLayerEnabled) return ApiResult.fail(422, "TEAM_SCHEMA_VERSION_UNSUPPORTED");
         String period = requestedPeriod == null ? "week" : requestedPeriod.trim().toLowerCase();
         if (!PERIODS.contains(period)) return ApiResult.fail(422, "TEAM_UNILEVEL_PERIOD_INVALID");
         if (!validPage(requestedPage, requestedPageSize)) return ApiResult.fail(422, "TEAM_UNILEVEL_PAGE_INVALID");
@@ -228,7 +232,9 @@ public class AppTeamInsightsService {
         Instant snapshotAt = snapshotAt(requestedSnapshotAt);
         if ("SANDBOX".equals(scope.sourceEnvironment())) {
             return ApiResult.ok(paginateSandboxEvents(
-                    TeamSandboxFactGenerator.unilevel(scope.runId(), userId, period), requestedPage, requestedPageSize));
+                    TeamSandboxFactGenerator.unilevel(scope.runId(), userId, period, sevenLayerEnabled,
+                            sevenLayerEnabled ? mapper.unilevelRates() : List.of()),
+                    requestedPage, requestedPageSize));
         }
         LocalDateTime snapshotBoundary = LocalDateTime.ofInstant(snapshotAt, BUSINESS_ZONE);
         SettlementWindow window = settlementWindow(period, VietnamBusinessPeriod.calendarTime(snapshotBoundary).toLocalDate());

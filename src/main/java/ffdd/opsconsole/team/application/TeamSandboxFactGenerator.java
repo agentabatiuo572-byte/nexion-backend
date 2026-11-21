@@ -1,6 +1,9 @@
 package ffdd.opsconsole.team.application;
 
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
+import ffdd.opsconsole.team.domain.VRankConfigRow;
+import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -63,19 +66,34 @@ public final class TeamSandboxFactGenerator {
         return result;
     }
 
-    static Map<String, Object> commissions(String runId, long userId) {
+    static Map<String, Object> commissions(String runId, long userId, boolean sevenLayerEnabled,
+                                             List<Map<String, Object>> rates) {
         Scope scope = scope(runId, userId, "commissions");
         List<Map<String, Object>> events = new ArrayList<>();
         for (int i = 1; i <= 3; i++) {
+            // F2 seven-layer rewards are closed until the approved cutover exists.
+            if (i <= 2 && !sevenLayerEnabled) continue;
             long ts = scope.timestamp("commission:" + i);
+            BigDecimal orderAmount = amount(scope.digest(), "order:" + i, 50, 250);
+            BigDecimal usdt;
+            BigDecimal nex;
+            if (i <= 2) {
+                usdt = commissionUsdt(orderAmount, rate(rates, i, "usdtPct"));
+                nex = commissionNex(usdt, rate(rates, i, "nexReward"));
+                if (usdt.signum() <= 0 && nex.signum() <= 0) continue;
+            } else {
+                // Binary/F3 remains an independent simulated reward when F2 is closed.
+                usdt = amount(scope.digest(), "usdt:" + i, 1, 20);
+                nex = amount(scope.digest(), "nex:" + i, 0, 100);
+            }
             Map<String, Object> event = new LinkedHashMap<>();
             event.put("id", "SB-CM-" + scope.digest().substring(i, i + 10));
             event.put("kind", i == 3 ? "binary" : "unilevel");
             event.put("sourceUserName", "Sandbox " + scope.digest().substring(i + 3, i + 7));
-            event.put("layer", i); event.put("orderId", "SB-ORD-" + i);
-            event.put("orderAmountUSD", amount(scope.digest(), "order:" + i, 50, 250));
-            event.put("amountUSDT", amount(scope.digest(), "usdt:" + i, 1, 20));
-            event.put("amountNEX", amount(scope.digest(), "nex:" + i, 0, 100));
+            event.put("layer", i <= 2 ? i : 3); event.put("orderId", "SB-ORD-" + i);
+            event.put("orderAmountUSD", orderAmount);
+            event.put("amountUSDT", usdt);
+            event.put("amountNEX", nex);
             event.put("ts", ts); event.put("unlockAt", ts + (i * 86400_000L));
             event.put("status", "SIMULATED");
             event.put("settlementState", "SIMULATED"); event.put("withdrawable", false); events.add(event);
@@ -84,30 +102,36 @@ public final class TeamSandboxFactGenerator {
         result.put("generatedAt", scope.generatedAt()); return result;
     }
 
-    static Map<String, Object> unilevel(String runId, long userId, String period) {
+    static Map<String, Object> unilevel(String runId, long userId, String period, boolean sevenLayerEnabled,
+                                            List<Map<String, Object>> rates) {
         Scope scope = scope(runId, userId, period);
         List<Map<String, Object>> events = new ArrayList<>();
         BigDecimal directUsdt = BigDecimal.ZERO, directNex = BigDecimal.ZERO;
         BigDecimal extendedUsdt = BigDecimal.ZERO, extendedNex = BigDecimal.ZERO;
-        for (int i = 1; i <= 4; i++) {
-            int layer = i <= 2 ? 1 : 2;
-            BigDecimal usdt = amount(scope.digest(), "unilevel-usdt:" + i, 1, 15);
-            BigDecimal nex = amount(scope.digest(), "unilevel-nex:" + i, 0, 90);
-            if (layer == 1) { directUsdt = directUsdt.add(usdt); directNex = directNex.add(nex); }
-            else { extendedUsdt = extendedUsdt.add(usdt); extendedNex = extendedNex.add(nex); }
-            long ts = scope.timestamp("unilevel:" + i);
-            Map<String, Object> event = new LinkedHashMap<>();
-            event.put("id", "SB-UL-" + scope.digest().substring(i, i + 10)); event.put("source", "network");
-            event.put("sourceUserName", "Sandbox " + scope.digest().substring(i + 4, i + 8));
-            event.put("cycle", "SB-" + scope.digest().substring(0, 6)); event.put("layer", layer);
-            event.put("orderId", "SB-ORD-" + i); event.put("orderAmountUSD", amount(scope.digest(), "ul-order:" + i, 50, 250));
-            event.put("amountUSDT", usdt); event.put("amountNEX", nex); event.put("currency", "USDT");
-            event.put("ts", ts); event.put("unlockAt", ts + 86400_000L); event.put("status", "SIMULATED");
-            event.put("settlementState", "SIMULATED"); event.put("withdrawable", false); events.add(event);
+        int directCount = 0, extendedCount = 0;
+        if (sevenLayerEnabled) {
+            for (int i = 1; i <= 4; i++) {
+                int layer = i <= 2 ? 1 : 2;
+                BigDecimal orderAmount = amount(scope.digest(), "ul-order:" + i, 50, 250);
+                BigDecimal usdt = commissionUsdt(orderAmount, rate(rates, layer, "usdtPct"));
+                BigDecimal nex = commissionNex(usdt, rate(rates, layer, "nexReward"));
+                if (usdt.signum() <= 0 && nex.signum() <= 0) continue;
+                if (layer == 1) { directUsdt = directUsdt.add(usdt); directNex = directNex.add(nex); directCount++; }
+                else { extendedUsdt = extendedUsdt.add(usdt); extendedNex = extendedNex.add(nex); extendedCount++; }
+                long ts = scope.timestamp("unilevel:" + i);
+                Map<String, Object> event = new LinkedHashMap<>();
+                event.put("id", "SB-UL-" + scope.digest().substring(i, i + 10)); event.put("source", "network");
+                event.put("sourceUserName", "Sandbox " + scope.digest().substring(i + 4, i + 8));
+                event.put("cycle", "SB-" + scope.digest().substring(0, 6)); event.put("layer", layer);
+                event.put("orderId", "SB-ORD-" + i); event.put("orderAmountUSD", orderAmount);
+                event.put("amountUSDT", usdt); event.put("amountNEX", nex); event.put("currency", "USDT");
+                event.put("ts", ts); event.put("unlockAt", ts + 86400_000L); event.put("status", "SIMULATED");
+                event.put("settlementState", "SIMULATED"); event.put("withdrawable", false); events.add(event);
+            }
         }
         Map<String, Object> result = provenance(scope); result.put("period", period); result.put("events", events);
-        result.put("split", Map.of("direct", Map.of("amountUSDT", directUsdt, "amountNEX", directNex, "count", 2),
-                "extended", Map.of("amountUSDT", extendedUsdt, "amountNEX", extendedNex, "count", 2)));
+        result.put("split", Map.of("direct", Map.of("amountUSDT", directUsdt, "amountNEX", directNex, "count", directCount),
+                "extended", Map.of("amountUSDT", extendedUsdt, "amountNEX", extendedNex, "count", extendedCount)));
         result.put("generatedAt", scope.generatedAt()); return result;
     }
 
@@ -172,18 +196,62 @@ public final class TeamSandboxFactGenerator {
         return result;
     }
 
-    public static Map<String, Object> currentRank(String runId, long userId) {
+    public static Map<String, Object> currentRank(String runId, long userId, List<VRankConfigRow> ranks) {
+        if (ranks == null || ranks.isEmpty()) throw new BizException(503, "VRANK_POLICY_UNAVAILABLE");
         Scope scope = scope(runId, userId, "rank");
-        int rank = number(scope.digest(), "current-rank", 0, 8);
+        VRankConfigRow target = ranks.get(number(scope.digest(), "current-rank", 0, ranks.size()));
+        long self = target.selfComputePoints();
+        long team = target.teamComputePoints();
+        Map<Integer, Integer> counts = new LinkedHashMap<>();
+        for (int i = 0; i <= 8; i++) counts.put(i, 0);
+        Integer required = VRankPromotionEngine.parseRankLevel(target.requiredDownlineRank());
+        if (target.requiredDownlineCount() > 0 && required != null) {
+            counts.put(required, target.requiredDownlineCount());
+        }
+        int legs = counts.values().stream().mapToInt(Integer::intValue).sum();
+        int direct = Math.max(target.directRefs(), legs);
+        var snapshot = new VRankEvaluationSnapshot(self, team, direct, counts);
+        int reachable = 0;
+        for (int i = 1; i < ranks.size(); i++) {
+            if (VRankPromotionEngine.meetsAllConditions(snapshot, ranks.get(i))) reachable = i;
+            else break;
+        }
+        VRankConfigRow actual = ranks.get(reachable);
+        String rankCode = actual.rankCode() == null || actual.rankCode().isBlank()
+                ? "V" + reachable : actual.rankCode();
         Map<String, Object> progress = new LinkedHashMap<>();
-        progress.put("selfComputePoints", number(scope.digest(), "self-points", 0, 20000));
-        progress.put("directRefs", number(scope.digest(), "direct-refs", 0, 12));
-        progress.put("teamComputePoints", number(scope.digest(), "team-points", 0, 100000));
-        Map<String, Object> counts = new LinkedHashMap<>();
-        for (int i = 0; i <= Math.min(rank, 4); i++) counts.put(String.valueOf(i), number(scope.digest(), "downline:" + i, 0, 4));
+        progress.put("selfComputePoints", self);
+        progress.put("directRefs", direct);
+        progress.put("teamComputePoints", team);
         progress.put("vDownlineCounts", counts);
-        Map<String, Object> result = provenance(scope); result.put("source", "server sandbox VRank facts");
-        result.put("rankCode", "V" + rank); result.put("progress", progress); return result;
+        Map<String, Object> result = provenance(scope);
+        result.put("source", "nx_v_rank_config + server sandbox VRank facts");
+        result.put("rankCode", rankCode); result.put("progress", progress); return result;
+    }
+
+    private static BigDecimal rate(List<Map<String, Object>> rates, int layer, String field) {
+        if (rates == null) return BigDecimal.ZERO;
+        String level = "L" + layer;
+        for (Map<String, Object> row : rates) {
+            if (row == null || !level.equals(String.valueOf(row.get("level")))) continue;
+            Object raw = row.get(field);
+            if (raw == null) return BigDecimal.ZERO;
+            try {
+                BigDecimal value = new BigDecimal(String.valueOf(raw));
+                return value.signum() > 0 ? value : BigDecimal.ZERO;
+            } catch (NumberFormatException ignored) {
+                return BigDecimal.ZERO;
+            }
+        }
+        return BigDecimal.ZERO;
+    }
+
+    private static BigDecimal commissionUsdt(BigDecimal orderAmount, BigDecimal percent) {
+        return orderAmount.multiply(percent).divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal commissionNex(BigDecimal usdt, BigDecimal multiplier) {
+        return usdt.multiply(multiplier).setScale(6, RoundingMode.HALF_UP);
     }
 
     private static Map<String, Object> provenance(Scope scope) {

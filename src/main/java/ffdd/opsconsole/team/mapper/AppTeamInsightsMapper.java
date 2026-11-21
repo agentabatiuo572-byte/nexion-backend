@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -63,6 +64,10 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
         )
         """;
     String PURCHASE_FILTER = " WHERE (#{filter}='all' OR (#{filter}='direct' AND layerNo=1) OR (#{filter}='extended' AND layerNo BETWEEN 2 AND 7)) ";
+
+    /** The same approved F2 rate rows used by settlement; sandbox previews must not invent them. */
+    @Select(TeamCommissionMapper.UNILEVEL_RATES_SQL)
+    List<Map<String,Object>> unilevelRates();
 
     @Select("<script>" + PURCHASE_REWARDS + """
             SELECT rewardId,sourceUserId,sourceUserName,layerNo,orderNo,cycle,orderAmountUsd,
