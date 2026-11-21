@@ -80,18 +80,6 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             """)
     PurchaseGateFacts purchaseGateFacts(@Param("userId") Long userId);
 
-    @Select("""
-            SELECT s.purchase_gate_json FROM nx_admin_device_sku s
-             WHERE s.sku_id=#{productNo} AND s.is_deleted=0 LIMIT 1
-            """)
-    String purchaseGateJson(@Param("productNo") String productNo);
-
-    @Select("""
-            SELECT s.purchase_gate_json FROM nx_admin_device_sku s
-             WHERE s.sku_id=#{productNo} AND s.is_deleted=0 LIMIT 1 FOR UPDATE
-            """)
-    String lockPurchaseGateJson(@Param("productNo") String productNo);
-
     /**
      * Atomically reserves a production purchase-gate quota unit.  The cap and
      * sold counter are read from the same canonical JSON row, so concurrent
