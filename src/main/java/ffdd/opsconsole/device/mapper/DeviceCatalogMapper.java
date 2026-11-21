@@ -1055,8 +1055,11 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),spec_document_title=VALUES(spec_document_title),spec_document_url=VALUES(spec_document_url),features_json=VALUES(features_json),
               generation=VALUES(generation),lifecycle=VALUES(lifecycle),superseded_by=VALUES(superseded_by),
               tradein_discount=VALUES(tradein_discount),unlock_phase='',unlock_phase_id=VALUES(unlock_phase_id),
-              purchase_gate_generation=CASE WHEN NOT (purchase_gate_json <=> VALUES(purchase_gate_json))
-                    THEN purchase_gate_generation+1 ELSE purchase_gate_generation END,
+              purchase_gate_generation=CASE WHEN CASE
+                    WHEN JSON_VALID(purchase_gate_json)=1 AND JSON_VALID(VALUES(purchase_gate_json))=1
+                      THEN CAST(purchase_gate_json AS JSON) <=> CAST(VALUES(purchase_gate_json) AS JSON)
+                    ELSE purchase_gate_json <=> VALUES(purchase_gate_json)
+                  END THEN purchase_gate_generation ELSE purchase_gate_generation+1 END,
               purchase_gate_json=VALUES(purchase_gate_json),image_asset_id=VALUES(image_asset_id),image_object_key=VALUES(image_object_key),
               image_preview_url=VALUES(image_preview_url),tag=VALUES(tag),status=VALUES(status),updated_at=VALUES(updated_at),is_deleted=0
             """)
