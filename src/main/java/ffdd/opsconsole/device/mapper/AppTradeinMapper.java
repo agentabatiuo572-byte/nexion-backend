@@ -177,7 +177,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.pending_deactivate=0
-             LIMIT 1 FOR UPDATE
+             LIMIT 1 FOR UPDATE OF d
             """)
     SourceDevice lockSourceDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
@@ -268,7 +268,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                   WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND t.is_deleted=0
                     AND UPPER(t.status) IN ('CLAIMED','RUNNING')
                )
-             ORDER BY d.id FOR UPDATE
+             ORDER BY d.id FOR UPDATE OF d
             """)
     List<SourceDevice> lockCapacityReplacementSources(@Param("userId") Long userId);
 

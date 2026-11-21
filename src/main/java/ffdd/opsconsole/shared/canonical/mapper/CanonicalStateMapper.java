@@ -273,8 +273,6 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     String RESERVED_ORDER_ITEM_QUANTITY = """
             SELECT SUM(order_item.quantity)
               FROM nx_order_item order_item
-              LEFT JOIN nx_product item_product
-                ON item_product.id=order_item.product_id AND item_product.is_deleted=0
              WHERE order_item.order_no=o.order_no AND order_item.is_deleted=0
             """;
     String RESERVED_ORDER_HEADER_QUANTITY = """
@@ -284,8 +282,6 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     String RESERVED_ORDER_SOURCE = """
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id
-              LEFT JOIN nx_product header_product
-                ON header_product.id=o.product_id AND header_product.is_deleted=0
              WHERE o.user_id=#{userId} AND o.is_deleted=0
                AND UPPER(o.order_status) IN ('PENDING_PAYMENT','PAID','PROCESSING','PROVISIONING')
                AND (o.inventory_reserved=1 OR UPPER(o.payment_status) IN ('PAID','CONFIRMED','SUCCESS'))

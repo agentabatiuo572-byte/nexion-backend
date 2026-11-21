@@ -212,8 +212,13 @@ public class PurchasePaymentService {
             if (claimNo == null) return null;
             return active.stream()
                     .filter(intent -> claimNo.equals(trialClaimNo(parse(intent.get("quote_json")), currentClaim)))
-                    .map(intent -> text(intent.get("intent_no")))
-                    .findFirst().orElse(null);
+                    .findFirst()
+                    .map(intent -> {
+                        var originalPayload = parse(intent.get("payload_json"));
+                        AppTrialLifecycleService.requireExternalPaymentProduct(
+                                text(payload.get("productNo")), text(originalPayload.get("productNo")));
+                        return text(intent.get("intent_no"));
+                    }).orElse(null);
         }
 
         var identity = replacementIdentity(kind, payload);

@@ -388,14 +388,18 @@ public class AppTrialLifecycleService {
 
     private String externalPaymentProduct(TrialRow row, String requestedProductNo) {
         if (row == null || !active(row.status())) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
-        if (!requestedProductNo.matches("[A-Za-z0-9._-]{2,64}")) {
+        String configured = trialProductCode(policyMap(), row);
+        requireExternalPaymentProduct(requestedProductNo, configured);
+        return configured;
+    }
+
+    public static void requireExternalPaymentProduct(String requestedProductNo, String originalProductNo) {
+        if (requestedProductNo == null || !requestedProductNo.matches("[A-Za-z0-9._-]{2,64}")) {
             throw new BizException(422, "TRIAL_PRODUCT_REQUIRED");
         }
-        String configured = trialProductCode(policyMap(), row);
-        if (configured == null || !configured.equals(canonicalTrialProductId(requestedProductNo))) {
+        if (!canonicalTrialProductId(originalProductNo).equals(canonicalTrialProductId(requestedProductNo))) {
             throw new BizException(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         }
-        return configured;
     }
 
     private ApiResult<Map<String, Object>> convertOnce(
@@ -959,7 +963,7 @@ public class AppTrialLifecycleService {
         return "";
     }
 
-    private String canonicalTrialProductId(String value) {
+    private static String canonicalTrialProductId(String value) {
         String normalized = value == null ? "" : value.trim();
         return LEGACY_TRIAL_PRODUCT_ID.equals(normalized) ? CANONICAL_TRIAL_PRODUCT_ID : normalized;
     }
