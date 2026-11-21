@@ -57,24 +57,57 @@ public class PromotionNativeContractResolver {
         return values("system",system,"resourceId",resource,"revision",revision,"contentHash",hash(data),"content",data);
     }
     private Map<String,Object> productContract(String resource,Map<String,Object> product,Map<String,Object> sku){
-        // Operational counters do not change the approved rights contract; all other source fields do.
-        var p=new TreeMap<>(product);p.keySet().removeAll(Set.of("stock","sold_count","updated_at","created_at"));
-        var s=new TreeMap<>(sku);s.keySet().removeAll(Set.of("stock_text","sold","updated_at","created_at"));
+        // Operational counters and retired rating/review remnants do not change the new rights contract.
+        var p=new TreeMap<>(product);p.keySet().removeAll(Set.of("stock","sold_count","updated_at","created_at","rating_value","review_count"));
+        var s=new TreeMap<>(sku);s.keySet().removeAll(Set.of("stock_text","sold","updated_at","created_at","rating","reviews"));
         var data=values("product",p,"sku",s);
         return values("system","E1_PRODUCT","resourceId",resource,"revision",Math.max(1,number(sku.get("purchase_gate_generation"))),"contentHash",hash(data),"content",data);
+    }
+    /**
+     * Old approved contracts hashed the retired rating/review columns. Accept the current legacy
+     * shape plus the NULL/0 variants E1 used to write, without changing the stored reference.
+     */
+    private boolean legacyContract(Map<String,Object> reference,String resource,Map<String,Object> product,Map<String,Object> sku){
+        var p=new TreeMap<>(product);p.keySet().removeAll(Set.of("stock","sold_count","updated_at","created_at"));
+        var s=new TreeMap<>(sku);s.keySet().removeAll(Set.of("stock_text","sold","updated_at","created_at"));
+        var pRating=legacyValues(p.get("rating_value"),new java.math.BigDecimal("0.00"));
+        var pReviews=legacyValues(p.get("review_count"),Integer.valueOf(0));
+        var sRating=legacyValues(s.get("rating"),new java.math.BigDecimal("0.00"));
+        var sReviews=legacyValues(s.get("reviews"),Long.valueOf(0));
+        for(Object pr:pRating)for(Object pv:pReviews)for(Object sr:sRating)for(Object sv:sReviews){
+            var pp=new TreeMap<>(p);pp.put("rating_value",pr);pp.put("review_count",pv);
+            var ss=new TreeMap<>(s);ss.put("rating",sr);ss.put("reviews",sv);
+            var data=values("product",pp,"sku",ss);
+            var candidate=values("system","E1_PRODUCT","resourceId",resource,"revision",Math.max(1,number(sku.get("purchase_gate_generation"))),"contentHash",hash(data),"content",data);
+            if(sameContract(reference,candidate))return true;
+        }
+        return false;
+    }
+    private static List<Object> legacyValues(Object current,Object zero){
+        var values=new LinkedHashSet<Object>();values.add(current);values.add(null);values.add(zero);return new ArrayList<>(values);
+    }
+    private static boolean sameContract(Map<String,Object> reference,Map<String,Object> actual){
+        return number(reference.get("revision"))==number(actual.get("revision"))
+                &&Objects.equals(reference.get("contentHash"),actual.get("contentHash"));
     }
     /** Caller already holds the ordered product/SKU locks; this method performs no stale database reads. */
     public void verifyLockedProduct(Map<String,Object> reference,Map<String,Object> product,Map<String,Object> sku){
         valid("E1_PRODUCT".equals(reference.get("system")),"PROMOTION_NATIVE_SYSTEM_MISMATCH");String resource=text(reference.get("resourceId"));
         valid(resource.equals(text(product.get("product_no")))&&resource.equals(text(sku.get("sku_id"))),"PROMOTION_DEVICE_PRODUCT_MISMATCH");
         var actual=productContract(resource,product,sku);
-        valid(number(reference.get("revision"))==number(actual.get("revision"))&&Objects.equals(reference.get("contentHash"),actual.get("contentHash")),"PROMOTION_NATIVE_CONTRACT_CHANGED");
+        valid(sameContract(reference,actual)||legacyContract(reference,resource,product,sku),"PROMOTION_NATIVE_CONTRACT_CHANGED");
         valid(giftFailure(product,sku)==null,"PROMOTION_DEVICE_RIGHTS_EXECUTOR_UNSUPPORTED");
     }
     public Map<String,Object> verify(Map<String,Object> reference,String expectedSystem) {
         valid(expectedSystem.equals(reference.get("system")),"PROMOTION_NATIVE_SYSTEM_MISMATCH");
-        var actual=nativeContract(expectedSystem,text(reference.get("resourceId")));
-        valid(number(reference.get("revision"))==number(actual.get("revision"))&&Objects.equals(reference.get("contentHash"),actual.get("contentHash")),"PROMOTION_NATIVE_CONTRACT_CHANGED");
+        String resource=text(reference.get("resourceId"));
+        var actual=nativeContract(expectedSystem,resource);
+        if(!sameContract(reference,actual)){
+            if(!"E1_PRODUCT".equals(expectedSystem))valid(false,"PROMOTION_NATIVE_CONTRACT_CHANGED");
+            var product=db.product(resource,false);
+            var sku=db.requiredRow("SELECT * FROM nx_admin_device_sku WHERE sku_id=? AND is_deleted=0",resource);
+            valid(legacyContract(reference,resource,product,sku),"PROMOTION_NATIVE_CONTRACT_CHANGED");
+        }
         return actual;
     }
     public Map<String,Object> catalogOption(String system,String resource,Map<String,Object> title,String unavailable){
