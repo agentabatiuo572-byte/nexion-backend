@@ -60,6 +60,7 @@ public class OpsSupportAgentService {
      */
     private static final List<String> SERVICE_TYPES = List.of("support", "advisor");
     private static final List<String> DEFAULT_TAGS = List.of("账户", "提现", "设备");
+    static final int DEFAULT_MAX_CONCURRENT = 25;
     private static final Set<String> SUPPORT_OPERATOR_ROLES = Set.of("support");
 
     private final SupportAgentRepository repository;
@@ -308,7 +309,9 @@ public class OpsSupportAgentService {
             serviceTypes = new ArrayList<>(preserved);
         }
         List<String> tags = normalizeTags(request.tags());
-        int maxConcurrent = boundedInt(request.maxConcurrent(), 0, 40, 10);
+        int maxConcurrent = request.maxConcurrent() == null && currentProfile != null
+                ? currentProfile.maxConcurrent()
+                : boundedInt(request.maxConcurrent(), 0, 40, DEFAULT_MAX_CONCURRENT);
         repository.ensureDefaultProfile(adminId, seatType, position, serviceTypes, tags, maxConcurrent, now);
         if (!repository.updateProfileCas(
                 adminId,
@@ -412,7 +415,7 @@ public class OpsSupportAgentService {
                 : normalizeTags(request.tags());
         int maxConcurrent = request.maxConcurrent() == null && currentProfile != null
                 ? currentProfile.maxConcurrent()
-                : boundedInt(request.maxConcurrent(), 0, 40, SEAT_DEDICATED.equals(seatType) ? 30 : 12);
+                : boundedInt(request.maxConcurrent(), 0, 40, DEFAULT_MAX_CONCURRENT);
         boolean enabled = request.enabled() == null && currentProfile != null
                 ? Boolean.TRUE.equals(currentProfile.enabled())
                 : !Boolean.FALSE.equals(request.enabled());
@@ -754,7 +757,7 @@ public class OpsSupportAgentService {
     }
 
     private int defaultMaxConcurrent() {
-        return 12;
+        return DEFAULT_MAX_CONCURRENT;
     }
 
     private boolean dedicatedSupportSeat(String seatType) {
