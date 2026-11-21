@@ -169,7 +169,8 @@ public class DirectReferralService {
         if(source.sourceOccurredAt()==null)throw new BizException(409,"DIRECT_REFERRAL_SOURCE_NOT_CONFIRMED");
         // The same revision lock serializes first-generation selection with activation and pause approvals.
         if("direct_purchase".equals(kind))policies.lockSevenLayerRevision();
-        if("direct_purchase".equals(kind)&&(policies.sevenLayerActiveForUpdate(source.sourceOccurredAt())||mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),ref)!=null||mapper.historicalNetwork(ref)>0||mapper.historicalDirect(ref)>0))return settleSeven(ref,source,scope);
+        boolean sevenLayerActive=policies.sevenLayerActiveForUpdate(source.sourceOccurredAt());
+        if("direct_purchase".equals(kind)&&(sevenLayerActive||mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),ref)!=null||mapper.historicalNetwork(ref)>0||mapper.historicalDirect(ref)>0))return settleSeven(ref,source,scope);
         String existing=mapper.existing(scope.sourceEnvironment(),scope.runId(),kind,ref);
         if(existing!=null)return 0;
         boolean purchase="direct_purchase".equals(kind);
@@ -178,6 +179,9 @@ public class DirectReferralService {
         String reason="";
         if(!Integer.valueOf(1).equals(source.valid()))reason="SOURCE_NOT_ELIGIBLE";
         else if(Integer.valueOf(1).equals(source.refunded()))reason="SOURCE_REFUNDED";
+        // Before the immutable seven-layer cutover, the legacy direct policy must not create new rewards.
+        // Existing settlements above are retained; a rejected snapshot keeps the source auditable.
+        else if(!sevenLayerActive&&policy.policyVersion()>0)reason="SEVEN_LAYER_NOT_ACTIVE";
         else if(!rule.enabled())reason="POLICY_DISABLED_OR_NOT_EFFECTIVE";
         else if(source.sponsorUserId()==null||source.sponsorUserId().equals(source.userId()))reason="NO_ELIGIBLE_DIRECT_SPONSOR";
         else if(mapper.lockUser(source.sponsorUserId(),scope.sandbox())==null||mapper.lockWallet(source.sponsorUserId(),scope.sandbox())==null)reason="SPONSOR_UNAVAILABLE";

@@ -53,6 +53,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20260808_d7_payout_vnd_config.sql"),
   (Join-Path $root "scripts\migrations\20260809_m5_content_rbac_closure.sql"),
   (Join-Path $root "scripts\migrations\20260809_bep20_withdrawal_toggle.sql"),
+  # BUG-556: repair only the factory primary/mirror pair; operator-changed rows have different timestamps.
+  (Join-Path $root "scripts\migrations\20261121_bug556_bep20_mirror_consistency.sql"),
   (Join-Path $root "scripts\migrations\20260810_e18_task_assignment_runtime.sql"),
   (Join-Path $root "scripts\migrations\20260810_f5_commission_reissue_atomicity.sql"),
   (Join-Path $root "scripts\migrations\20260810_ab_pending_closure.sql"),

@@ -14,10 +14,12 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 
@@ -55,6 +57,8 @@ public class OpsPlatformParamRegistryService {
 
     public ApiResult<PlatformParamRegistryOverview> overview() {
         LinkedHashMap<String, PlatformParamRegistryRow> rows = new LinkedHashMap<>();
+        Map<String, Boolean> configMirrors = new LinkedHashMap<>();
+        Set<String> inconsistentConfigKeys = new LinkedHashSet<>();
         int unmappedConfigCount = 0;
         for (PlatformConfigItem item : configSource.findAllActive()) {
             String key = item.configKey();
@@ -80,7 +84,8 @@ public class OpsPlatformParamRegistryService {
                 unmappedConfigCount++;
                 continue;
             }
-            merge(rows, row);
+            mergeConfig(rows, row, key != null && key.startsWith("wallet.withdrawal."),
+                    configMirrors, inconsistentConfigKeys);
         }
         for (String field : List.of("allowReplacement", "minReplacementIntervalDays", "replacementWindowDays", "maxReplacementsInWindow")) {
             String key = ComputeConfigRegistry.phoneBindingKey(field);
@@ -116,13 +121,12 @@ public class OpsPlatformParamRegistryService {
                 .toList();
         int domainCount = (int) ordered.stream().map(PlatformParamRegistryRow::domain).distinct().count();
         int highSensitivityCount = (int) ordered.stream().filter(PlatformParamRegistryRow::operationConfirm).count();
+        boolean configPartial = unmappedConfigCount > 0 || !inconsistentConfigKeys.isEmpty();
         List<PlatformParamRegistrySourceState> sources = List.of(
                 new PlatformParamRegistrySourceState(
                         "config", "系统参数",
-                        unmappedConfigCount > 0 ? "PARTIAL" : configCount == 0 ? "EMPTY" : "READY", configCount,
-                        unmappedConfigCount > 0
-                                ? "有 " + unmappedConfigCount + " 项参数还没登记所属页面，暂不显示它们的值；请联系平台运维补登记。"
-                                : "所有启用中的参数；手机换绑项没有设置时显示默认值"),
+                        configPartial ? "PARTIAL" : configCount == 0 ? "EMPTY" : "READY", configCount,
+                        configSourceDetail(unmappedConfigCount, inconsistentConfigKeys.size())),
                 new PlatformParamRegistrySourceState(
                         "emergency", "紧急开关当前状态", emergencyPartial ? "PARTIAL" : "READY", emergencyCount,
                         emergencyPartial ? "部分紧急开关或地区限制状态加载失败，未知状态不会显示成正常" : "紧急停用开关和地区访问限制的当前状态"));
@@ -333,6 +337,55 @@ public class OpsPlatformParamRegistryService {
         if ("未知".equals(existing.updatedAt()) && !"未知".equals(candidate.updatedAt())) {
             rows.put(candidate.canonicalKey(), candidate);
         }
+    }
+
+    /**
+     * A canonical key and its wallet.withdrawal.* mirror are one row. Prefer the canonical
+     * primary value; if the pair disagrees, keep the primary value and mark that row PARTIAL
+     * instead of failing the whole registry read.
+     */
+    private void mergeConfig(Map<String, PlatformParamRegistryRow> rows, PlatformParamRegistryRow candidate,
+                             boolean candidateMirror, Map<String, Boolean> mirrors,
+                             Set<String> inconsistentKeys) {
+        String key = candidate.canonicalKey();
+        PlatformParamRegistryRow existing = rows.get(key);
+        if (existing == null) {
+            rows.put(key, candidate);
+            mirrors.put(key, candidateMirror);
+            return;
+        }
+        boolean existingMirror = Boolean.TRUE.equals(mirrors.get(key));
+        boolean conflict = !Objects.equals(existing.currentValue(), candidate.currentValue())
+                || !Objects.equals(existing.ownerCode(), candidate.ownerCode());
+        PlatformParamRegistryRow chosen = existing;
+        if (!candidateMirror && existingMirror) {
+            chosen = candidate;
+            mirrors.put(key, false);
+        }
+        if (conflict) {
+            chosen = inconsistent(chosen);
+            inconsistentKeys.add(key);
+        }
+        rows.put(key, chosen);
+    }
+
+    private PlatformParamRegistryRow inconsistent(PlatformParamRegistryRow row) {
+        return new PlatformParamRegistryRow(
+                row.canonicalKey(), row.displayName(), row.description(), row.domain(), row.domainLabel(),
+                row.ownerCode(), row.ownerLabel(), row.ownerRoute(), row.currentValue(), row.valueType(),
+                row.unit(), row.source(), "PARTIAL", row.updatedAt(), row.operationConfirm(),
+                row.serverCanonical(), row.live(), row.observedAt(), true);
+    }
+
+    private String configSourceDetail(int unmapped, int inconsistent) {
+        List<String> parts = new ArrayList<>();
+        if (inconsistent > 0) {
+            parts.add("有 " + inconsistent + " 项参数的主值与钱包镜像值不一致，已显示主值并标为部分可用；请到所属页面保存一次以同步。");
+        }
+        if (unmapped > 0) {
+            parts.add("有 " + unmapped + " 项参数还没登记所属页面，暂不显示它们的值；请联系平台运维补登记。");
+        }
+        return parts.isEmpty() ? "所有启用中的参数；手机换绑项没有设置时显示默认值" : String.join(" ", parts);
     }
 
     private String canonicalConfigKey(String key) {
