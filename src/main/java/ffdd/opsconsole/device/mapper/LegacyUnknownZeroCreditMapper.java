@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.mapper;
 
+import ffdd.opsconsole.shared.config.BusinessPeriodSql;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -65,7 +66,9 @@ public interface LegacyUnknownZeroCreditMapper extends BaseMapper<Object> {
                AND l.asset='UVT' AND l.direction='IN' AND l.status='SUCCESS'
                AND other.reward_nex>0 AND other.reward_nex=l.amount AND ot.status='COMPLETED'
                AND other.earning_status IN ('CREDITED','SETTLED','SUCCESS')
-               AND l.biz_no=CONCAT('CLOUD_SHARE_DAILY:',#{device},':',DATE(DATE_SUB(other.completed_at,INTERVAL 8 HOUR))))
+               AND l.biz_no=CONCAT('CLOUD_SHARE_DAILY:',#{device},':',DATE(DATE_SUB(other.completed_at,INTERVAL
+        """ + BusinessPeriodSql.STORAGE_OFFSET_MINUTES + """
+               MINUTE))))
          FOR UPDATE
         """)
     List<Long> unattributedDailyLedgers(@Param("owner")long owner,@Param("device")long device,@Param("task")String task);

@@ -13,8 +13,8 @@ import java.util.Map;
 import java.util.Locale;
 
 /**
- * R-1: versioned business calendar. Storage timestamps stay Asia/Shanghai local time; only day/week/month
- * cutting follows the business time zone in effect. Each track keeps its own history (LEGACY = Beijing time,
+ * R-1: versioned business calendar. Storage timestamps use the deployment's storage zone; day/week/month
+ * cutting follows the business time zone in effect. Each track keeps its own history (LEGACY = installation default,
  * GROWTH_TEAM = Beijing until 2026-10-19 then Vietnam); a GLOBAL version set by the super admin applies to
  * every track from its effective date, so settled periods keep their original meaning.
  *
@@ -24,8 +24,7 @@ import java.util.Locale;
  * back lengthens the last old day and moving it forward shortens it: no gap, no overlap.
  */
 public final class BusinessCalendar {
-    /** Same as DateTimeFormatConfig.BUSINESS_ZONE: storage stays Beijing time (fixed +8). */
-    public static final ZoneId STORAGE_ZONE = ZoneId.of("Asia/Shanghai");
+    public static final ZoneId STORAGE_ZONE = StorageTime.ZONE;
     public static final String LEGACY = "LEGACY";
     public static final String GROWTH_TEAM = "GROWTH_TEAM";
     public static final String GLOBAL = "GLOBAL";
@@ -44,11 +43,13 @@ public final class BusinessCalendar {
 
     /** Matches the seed rows of nx_business_calendar; used until the database copy is loaded (and in unit tests). */
     public static List<Version> seed() {
-        ZoneId shanghai = ZoneId.of("Asia/Shanghai");
+        ZoneId shanghai = ZoneId.of(StorageTime.SHANGHAI);
+        ZoneId vietnam = ZoneId.of(StorageTime.VIETNAM);
         return List.of(
-                new Version(LEGACY, shanghai, EPOCH, EPOCH.atStartOfDay()),
+                new Version(LEGACY, vietnam, EPOCH, EPOCH.atStartOfDay()),
                 new Version(GROWTH_TEAM, shanghai, EPOCH, EPOCH.atStartOfDay()),
-                new Version(GROWTH_TEAM, ZoneId.of("Asia/Ho_Chi_Minh"), FIRST_VIETNAM_DATE, FIRST_VIETNAM_DATE.atStartOfDay()));
+                new Version(GROWTH_TEAM, vietnam, FIRST_VIETNAM_DATE,
+                        switchStorageAt(FIRST_VIETNAM_DATE, vietnam, List.of(shanghai))));
     }
 
     public static List<Version> versions() { return versions; }
@@ -108,7 +109,7 @@ public final class BusinessCalendar {
 
         public ZoneId currentZone(Clock clock) { return zoneAt(clock.instant()); }
 
-        /** Business wall-clock time for a stored (Shanghai local) timestamp. */
+        /** Business wall-clock time for a stored timestamp. */
         public LocalDateTime calendarTime(LocalDateTime storageTime) {
             return storageTime.atZone(STORAGE_ZONE).withZoneSameInstant(versionAtStorage(storageTime).zone()).toLocalDateTime();
         }
@@ -130,7 +131,7 @@ public final class BusinessCalendar {
         /** Start of a business date as an instant. */
         public Instant startOf(LocalDate date) { return date.atStartOfDay(versionOnDate(date).zone()).toInstant(); }
 
-        /** Start of a business date as a stored (Shanghai local) timestamp, for SQL range bounds. */
+        /** Start of a business date on the storage clock, for SQL range bounds. */
         public LocalDateTime storageStart(LocalDate date) { return storageTime(startOf(date)); }
 
         public LocalDateTime storageStart(YearMonth month) { return storageStart(month.atDay(1)); }

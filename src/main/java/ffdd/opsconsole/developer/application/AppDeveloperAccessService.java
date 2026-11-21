@@ -2,6 +2,7 @@ package ffdd.opsconsole.developer.application;
 
 import ffdd.opsconsole.developer.mapper.AppDeveloperAccessMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.StorageTime;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.ZoneId;
@@ -21,7 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class AppDeveloperAccessService {
     private static final Pattern EMAIL = Pattern.compile("^[^\\s@]{1,128}@[^\\s@]{1,190}\\.[^\\s@]{2,63}$");
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = StorageTime.ZONE;
     private static final Set<String> PUBLIC_REVIEW_REASONS = Set.of(
             "IDENTITY_VERIFICATION_REQUIRED", "BUSINESS_INFORMATION_INSUFFICIENT",
             "POLICY_REQUIREMENTS_NOT_MET", "ACCESS_REVOKED_BY_POLICY");

@@ -5,18 +5,18 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.YearMonth;
 
-/** F4b usage stays UTC; paid-order DATETIME stays +08. Existing month starts are immutable.
+/** F4b usage stays UTC; paid-order DATETIME uses the storage zone. Existing month starts are immutable.
  * Months before 2026-10-19 are UTC months; later months follow the GROWTH_TEAM business calendar (R-1). */
 public record HardwareQuotaPeriod(LocalDateTime fromUtc, LocalDateTime untilUtc) {
     private static final String SQL_MONTH = "DATE_FORMAT(CASE WHEN UTC_TIMESTAMP() < '2026-10-18 17:00:00'"
             + " THEN UTC_TIMESTAMP() ELSE " + BusinessPeriodSql.GrowthTeam.NOW + " END, '%Y-%m-01')";
     private static final String SQL_NEXT_MONTH = "DATE_ADD(" + SQL_MONTH + ", INTERVAL 1 MONTH)";
     public static final String SQL_MONTH_START_UTC = "(CASE WHEN " + SQL_MONTH
-            + " < '2026-10-19' THEN " + SQL_MONTH + " ELSE DATE_SUB(" + BusinessPeriodSql.GrowthTeam.MONTH_START + ", INTERVAL 8 HOUR) END)";
+            + " < '2026-10-19' THEN " + SQL_MONTH + " ELSE DATE_SUB(" + BusinessPeriodSql.GrowthTeam.MONTH_START + ", INTERVAL " + BusinessPeriodSql.STORAGE_OFFSET_MINUTES + " MINUTE) END)";
     public static final String SQL_NEXT_MONTH_START_UTC = "(CASE WHEN " + SQL_NEXT_MONTH
-            + " < '2026-10-19' THEN " + SQL_NEXT_MONTH + " ELSE DATE_SUB(" + BusinessPeriodSql.GrowthTeam.NEXT_MONTH_START + ", INTERVAL 8 HOUR) END)";
-    public static final String SQL_MONTH_START_ORDER_STORAGE = "DATE_ADD(" + SQL_MONTH_START_UTC + ", INTERVAL 8 HOUR)";
-    public static final String SQL_NEXT_MONTH_START_ORDER_STORAGE = "DATE_ADD(" + SQL_NEXT_MONTH_START_UTC + ", INTERVAL 8 HOUR)";
+            + " < '2026-10-19' THEN " + SQL_NEXT_MONTH + " ELSE DATE_SUB(" + BusinessPeriodSql.GrowthTeam.NEXT_MONTH_START + ", INTERVAL " + BusinessPeriodSql.STORAGE_OFFSET_MINUTES + " MINUTE) END)";
+    public static final String SQL_MONTH_START_ORDER_STORAGE = "DATE_ADD(" + SQL_MONTH_START_UTC + ", INTERVAL " + BusinessPeriodSql.STORAGE_OFFSET_MINUTES + " MINUTE)";
+    public static final String SQL_NEXT_MONTH_START_ORDER_STORAGE = "DATE_ADD(" + SQL_NEXT_MONTH_START_UTC + ", INTERVAL " + BusinessPeriodSql.STORAGE_OFFSET_MINUTES + " MINUTE)";
 
     public static HardwareQuotaPeriod atUtc(LocalDateTime occurredAtUtc) {
         var instant = occurredAtUtc.toInstant(ZoneOffset.UTC);

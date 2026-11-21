@@ -8,6 +8,10 @@ import org.apache.ibatis.annotations.*;
 /** SQL authority for one current simulated task per device and immutable task quotes. */
 @Mapper
 public interface SimulatedTaskMapper {
+    String REPLACEMENT_STOP_REASON = "DEVICE_REPLACED";
+    String STOPPED_ERROR_WRITE_GUARD = " AND NOT (state='STOPPED' AND COALESCE(last_error,'') IN "
+            + "('PROMOTION_REFUND','ORDER_REFUND','" + REPLACEMENT_STOP_REASON + "'))";
+
     record TaskRow(String taskNo,String receiptNo,long userId,long deviceId,String instanceNo,long generation,
             Long productId,String productCode,String productTier,String deviceName,String deviceType,String gpuModel,Integer vramTotalGb,
             String taskTypeId,long taskTypeVersion,long productPolicyVersion,long e3Version,String taskName,String taskClass,
@@ -208,6 +212,15 @@ public interface SimulatedTaskMapper {
             """)
     int unresolvedV2(@Param("userId")long userId,@Param("deviceId")long deviceId);
 
+    @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_compute_task
+              WHERE user_device_id=#{deviceId} AND is_deleted=0 AND UPPER(status) IN ('CLAIMED','RUNNING','PAUSED')
+                AND (#{blockLegacy} OR UPPER(status)='PAUSED' OR user_id<>#{userId}
+                  OR NOT (source_environment <=> 'PRODUCTION') OR task_no LIKE 'CV2-%' OR task_no LIKE 'SIM-%'))
+            """)
+    boolean hasUncancellableReplacementTask(@Param("userId") long userId, @Param("deviceId") long deviceId,
+            @Param("blockLegacy") boolean blockLegacy);
+
     @Insert("""
             INSERT INTO nx_simulated_device_runtime(user_device_id,user_id,instance_no,product_code,phone,generation,
               interval_started_at,phone_valid_until,stop_at,stop_after_current,finish_after_at,next_start_at,current_task_no,next_action_at,state,last_error)
@@ -244,14 +257,12 @@ public interface SimulatedTaskMapper {
     @Update("""
             UPDATE nx_simulated_device_runtime SET state='ERROR',last_error=#{error},next_action_at=#{retryAt}
             WHERE user_device_id=#{deviceId}
-              AND NOT (state='STOPPED' AND COALESCE(last_error,'') IN ('PROMOTION_REFUND','ORDER_REFUND'))
-            """)
+            """+STOPPED_ERROR_WRITE_GUARD)
     int recordError(@Param("deviceId")long deviceId,@Param("error")String error,@Param("retryAt")LocalDateTime retryAt);
     @Update("""
             UPDATE nx_simulated_device_runtime SET state='ERROR',last_error=#{error},next_action_at=#{retryAt}
             WHERE user_device_id=#{due.deviceId} AND user_id=#{due.userId} AND generation=#{due.generation}
               AND current_task_no <=> #{due.currentTaskNo} AND next_action_at=#{due.nextActionAt}
-              AND NOT (state='STOPPED' AND COALESCE(last_error,'') IN ('PROMOTION_REFUND','ORDER_REFUND'))
-            """)
+            """+STOPPED_ERROR_WRITE_GUARD)
     int recordDueError(@Param("due")DueCandidate due,@Param("error")String error,@Param("retryAt")LocalDateTime retryAt);
 }

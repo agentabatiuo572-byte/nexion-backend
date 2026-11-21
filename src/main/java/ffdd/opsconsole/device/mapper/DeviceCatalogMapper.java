@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.mapper;
 
+import static ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper.HELD;
 import ffdd.opsconsole.shared.canonical.mapper.TrialConversionReadSql;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
@@ -116,7 +117,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct,
             p.series_code AS seriesCode,
             """ + SERIES_LOCKED + """
-             AS seriesLocked
+             AS seriesLocked,
+            """ + HELD + """
+             AS purchaseQuotaHeld
             """;
 
     String TASK_COLUMNS = """
@@ -1944,7 +1947,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean publishBlocked,
             String publishBlockReason,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode, boolean seriesLocked) {
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode, boolean seriesLocked, long purchaseQuotaHeld) {
     public SkuRow(
             String skuId,
             String name,
@@ -1994,7 +1997,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String publishBlockReason,
             LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
-        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,false);
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,false,0L);
     }
 
     /** Callers that do not set computePoints leave it unset. */

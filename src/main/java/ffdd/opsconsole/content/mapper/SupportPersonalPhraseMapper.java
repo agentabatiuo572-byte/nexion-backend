@@ -22,7 +22,7 @@ public interface SupportPersonalPhraseMapper extends BaseMapper<Object> {
             """)
     void ensureTable();
 
-    @Select("SELECT id,content,DATE_FORMAT(CONVERT_TZ(updated_at,'+08:00','+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ') updatedAt FROM nx_support_personal_phrase WHERE admin_id=#{admin} AND is_deleted=0 ORDER BY id DESC")
+    @Select("SELECT id,content,DATE_FORMAT(CONVERT_TZ(updated_at,@@session.time_zone,'+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ') updatedAt FROM nx_support_personal_phrase WHERE admin_id=#{admin} AND is_deleted=0 ORDER BY id DESC")
     List<Map<String, Object>> list(@Param("admin") Long admin);
 
     @Select("SELECT COUNT(*) FROM nx_support_personal_phrase WHERE admin_id=#{admin} AND is_deleted=0")

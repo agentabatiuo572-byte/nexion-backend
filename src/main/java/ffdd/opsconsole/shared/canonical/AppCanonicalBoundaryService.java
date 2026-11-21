@@ -18,6 +18,7 @@ import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -60,7 +61,7 @@ public class AppCanonicalBoundaryService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
 
-    private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId SERVER_ZONE = StorageTime.ZONE;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Pattern SANDBOX_RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
@@ -501,7 +502,7 @@ public class AppCanonicalBoundaryService {
                 "realizedTodayNex", realizedTodayNex,
                 "walletUsdt", zero(profile.usdtAvailable()).setScale(6, RoundingMode.HALF_UP),
                 "walletNex", zero(profile.nexAvailable()).setScale(6, RoundingMode.HALF_UP),
-                "userJoinedAt", profile.joinedAt().atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli(),
+                "userJoinedAt", epochMillis(profile.joinedAt()),
                 "serverNow", capacityNow.atZone(SERVER_ZONE).toInstant().toEpochMilli(),
                 "timezone", SERVER_ZONE.getId(),
                 "slotCap", Math.max(1, mapper.deviceSlotCap()),
@@ -1058,23 +1059,28 @@ public class AppCanonicalBoundaryService {
     }
 
     private boolean purchaseGateAllowed(String rawGate, CanonicalStateMapper.PurchaseFacts facts) {
+        return purchaseGateAllowed(rawGate, facts, 0, 1);
+    }
+
+    private boolean purchaseGateAllowed(String rawGate, CanonicalStateMapper.PurchaseFacts facts,
+                                        long held, int quantity) {
         if (!StringUtils.hasText(rawGate)) return true;
         try {
             StorefrontPurchaseGatePolicy.Decision decision = purchaseGatePolicy.evaluate(rawGate,
                     facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                             facts.rank() == null ? 0 : facts.rank(),
                             facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                            facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()));
-            return decision.allowed();
+                            facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()), held);
+            return decision.allowed() && !purchaseGatePolicy.lifetimeQuotaExhausted(rawGate, quantity, held);
         } catch (IllegalArgumentException ex) {
             return false;
         }
     }
 
-    private void validateCanonicalPurchaseGate(Long userId, String productNo) {
-        String rawGate = mapper.purchaseGateJson(productNo);
-        if (!StringUtils.hasText(rawGate)) return;
-        if (!purchaseGateAllowed(rawGate, mapper.purchaseFacts(userId))) {
+    private void validateCanonicalPurchaseGate(Long userId, String productNo, int quantity) {
+        var gate = mapper.lockGateQuota(productNo);
+        if (gate == null || !StringUtils.hasText(gate.gateJson())) return;
+        if (!purchaseGateAllowed(gate.gateJson(), mapper.purchaseFacts(userId), gate.held(), quantity)) {
             throw new BizException(409, "PURCHASE_GATE_BLOCKED");
         }
     }
@@ -1135,6 +1141,8 @@ public class AppCanonicalBoundaryService {
                 .filter(row -> normalized.contains(row.productNo()))
                 .collect(Collectors.toMap(CanonicalStateMapper.ProductStock::productNo, row -> row,
                         (first, ignored) -> first, LinkedHashMap::new));
+        var gates = mapper.findGateQuotas(normalized).stream().collect(Collectors.toMap(
+                ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper.GateQuota::skuId, row -> row));
         Map<String, PurchaseEligibilityDecision> preliminary = new LinkedHashMap<>();
         Map<String, String> releaseCandidates = new LinkedHashMap<>();
         Map<String, List<CanonicalStateMapper.HardwareQuota>> hardwareQuotas = new LinkedHashMap<>();
@@ -1174,14 +1182,17 @@ public class AppCanonicalBoundaryService {
             CanonicalStateMapper.ProductStock product = products.get(candidate);
             if (product == null) continue;
             PurchaseEligibilityDecision decision = preliminary.get(candidate);
+            var gate = gates.get(candidate);
+            String rawGate = gate == null ? null : gate.gateJson();
+            long held = gate == null ? 0 : gate.held();
             PurchaseEligibilityDecision e1Decision = decision != null ? decision : purchaseGateDecision(
-                    product.productNo(), product.purchaseGateJson(),
+                    product.productNo(), rawGate,
                     facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                             facts.rank() == null ? 0 : facts.rank(),
                             facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                            facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()));
+                            facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()), held);
             decisions.put(candidate, combinePurchasePolicies(e1Decision,
-                    e1Policy(product.purchaseGateJson(), facts, e1Decision),
+                    e1Policy(rawGate, facts, e1Decision, held),
                     hardwareQuotaPolicies(hardwareQuotas.get(candidate), quotaActiveDirect, quotaMonthlyComputePoints)));
         }
         return ApiResult.ok(decisions);
@@ -1235,7 +1246,7 @@ public class AppCanonicalBoundaryService {
                     facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                             facts.rank() == null ? 0 : facts.rank(),
                             facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                            facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints())));
+                            facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()), 0));
         }
         return ApiResult.ok(decisions);
     }
@@ -1257,11 +1268,11 @@ public class AppCanonicalBoundaryService {
     }
 
     private PurchaseEligibilityPolicy e1Policy(String rawGate, CanonicalStateMapper.PurchaseFacts facts,
-                                                PurchaseEligibilityDecision decision) {
+                                                PurchaseEligibilityDecision decision, long held) {
         StorefrontPurchaseGatePolicy.Projection projection = purchaseGatePolicy.project(rawGate,
                 facts == null ? null : new StorefrontPurchaseGatePolicy.Facts(
                         facts.rank() == null ? 0 : facts.rank(), facts.activeDirect() == null ? 0 : facts.activeDirect(),
-                        facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()));
+                        facts.teamComputePoints() == null ? BigDecimal.ZERO : facts.teamComputePoints()), held);
         boolean eligible = decision.eligible();
         String code = eligible ? "ELIGIBLE" : decision.decisionCode();
         return new PurchaseEligibilityPolicy("E1", eligible, code, projection.mode(), projection.conditions());
@@ -1328,10 +1339,10 @@ public class AppCanonicalBoundaryService {
     }
 
     private PurchaseEligibilityDecision purchaseGateDecision(
-            String productNo, String purchaseGateJson, StorefrontPurchaseGatePolicy.Facts facts) {
+            String productNo, String purchaseGateJson, StorefrontPurchaseGatePolicy.Facts facts, long held) {
         StorefrontPurchaseGatePolicy.Decision decision;
         try {
-            decision = purchaseGatePolicy.evaluate(purchaseGateJson, facts);
+            decision = purchaseGatePolicy.evaluate(purchaseGateJson, facts, held);
         } catch (IllegalArgumentException ex) {
             decision = StorefrontPurchaseGatePolicy.Decision.closed("PURCHASE_GATE_FACTS_INVALID");
         }
@@ -1409,7 +1420,7 @@ public class AppCanonicalBoundaryService {
     }
 
     private Long epochMillis(LocalDateTime value) {
-        return value == null ? null : value.atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli();
+        return value == null ? null : value.atZone(SERVER_ZONE).toInstant().toEpochMilli();
     }
 
     private boolean isCommerceSandboxUser(Long userId) {
@@ -1529,8 +1540,9 @@ public class AppCanonicalBoundaryService {
                 product.power());
         if (configurationBlock != null) return ApiResult.fail(409, configurationBlock);
         ProductInventoryMode inventoryMode = ProductInventoryMode.parse(product.inventoryMode());
-        if (StringUtils.hasText(product.purchaseGateJson())
-                && !purchaseGateAllowed(product.purchaseGateJson(), mapper.purchaseFacts(userId))) {
+        var gate = mapper.lockGateQuota(product.productNo());
+        if (gate != null && StringUtils.hasText(gate.gateJson())
+                && !purchaseGateAllowed(gate.gateJson(), mapper.purchaseFacts(userId), gate.held(), qty)) {
             return ApiResult.fail(409, "PURCHASE_GATE_BLOCKED");
         }
         StorefrontProductReleasePolicy.Decision release =
@@ -1574,7 +1586,7 @@ public class AppCanonicalBoundaryService {
             discount = promotionPlan.price("discountUsdt");
         }
         BigDecimal amount = subtotal.subtract(discount).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
-        validateCanonicalPurchaseGate(userId, product.productNo());
+        validateCanonicalPurchaseGate(userId, product.productNo(), qty);
         if (mapper.insertOrder(userId, orderNo, product.id(), qty, subtotal, discount, amount) != 1) {
             throw new BizException(409, "ORDER_CREATE_CONFLICT");
         }

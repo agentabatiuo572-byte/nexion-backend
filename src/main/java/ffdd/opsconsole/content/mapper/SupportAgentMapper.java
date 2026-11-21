@@ -242,7 +242,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
             """)
     int dropAssignmentTypeColumn();
 
-    // Assignment clocks are UTC (SupportBindingMapper writes UTC_TIMESTAMP), so the cleanup must not stamp UTC+8 local time.
+    // Assignment clocks are UTC, as written by SupportBindingMapper.
     @Update("""
             UPDATE nx_support_agent_user_assignment stale
               JOIN (

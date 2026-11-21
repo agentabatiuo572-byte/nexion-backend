@@ -7,6 +7,17 @@
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 FRESH=$BACKEND/scripts/fresh_db
+storage_zone=${NEXION_TIME_STORAGE_ZONE:-}
+storage_zone=${storage_zone#"${storage_zone%%[![:space:]]*}"}
+storage_zone=${storage_zone%"${storage_zone##*[![:space:]]}"}
+case "$storage_zone" in
+  ""|Asia/Shanghai) storage_offset="+08:00" ;;
+  Asia/Ho_Chi_Minh) storage_offset="+07:00" ;;
+  *) echo "NEXION_TIME_STORAGE_ZONE must be Asia/Shanghai or Asia/Ho_Chi_Minh" >&2; exit 1 ;;
+esac
+storage_session="SET SESSION time_zone = '$storage_offset'"
+
+mysql_storage() { mysql_nexion --init-command="$storage_session" "$@"; }
 
 LOGS=${NEXION_BOOTSTRAP_LOGS:-$BACKEND/target/bootstrap-logs}/$(date +%Y%m%dT%H%M%S)
 mkdir -p "$LOGS"
@@ -18,11 +29,11 @@ run_file() { # label path [db]  (schema.sql creates the database, so it passes d
   echo "-> $label"
   if [[ ${file##*/} == 20261011_support_fund_schema_reader.sql ]]; then
     local mode
-    mode=$(mysql_nexion -N -B "$db" < "$BACKEND/scripts/local/support_fund_reader_replay.sql")
+    mode=$(mysql_storage -N -B "$db" < "$BACKEND/scripts/local/support_fund_reader_replay.sql")
     if [[ ${mode%$'\r'} == UPGRADE ]]; then
       MYSQL_PWD="$NEXION_DB_PASSWORD" python3 -B "$BACKEND/scripts/local/retire_h4_support_reader.py" \
         mysql --default-character-set=utf8mb4 --protocol=tcp -h "$NEXION_DB_HOST" -P "$NEXION_DB_PORT" \
-        -u "$NEXION_DB_USERNAME" "$db" > "$LOGS/$label.log" 2>&1 || {
+        -u "$NEXION_DB_USERNAME" --init-command="$storage_session" "$db" > "$LOGS/$label.log" 2>&1 || {
           echo "FAILED: $label (log: $LOGS/$label.log)"; tail -5 "$LOGS/$label.log"; exit 1
         }
       return
@@ -30,19 +41,19 @@ run_file() { # label path [db]  (schema.sql creates the database, so it passes d
       echo "FAILED: $label (unexpected reader replay mode)"; exit 1
     fi
   fi
-  if ! mysql_nexion $db < "$file" > "$LOGS/$label.log" 2>&1; then
+  if ! mysql_storage ${db:+"$db"} < "$file" > "$LOGS/$label.log" 2>&1; then
     echo "FAILED: $label (log: $LOGS/$label.log)"; tail -5 "$LOGS/$label.log"; exit 1
   fi
 }
 
-scalar() { mysql_nexion -N -B nexion -e "$1"; }
+scalar() { mysql_storage -N -B nexion -e "$1"; }
 
 if [[ "${1:-}" == "--baseline" ]]; then
   run_file 01-schema "$BACKEND/scripts/schema.sql" ""
   run_file 02-seed "$BACKEND/scripts/seed.sql" ""
 fi
 
-owner_preflight() { mysql_nexion -N -B nexion < "$BACKEND/scripts/support_ticket_owner_preflight.sql"; }
+owner_preflight() { mysql_storage -N -B nexion < "$BACKEND/scripts/support_ticket_owner_preflight.sql"; }
 
 if [[ "$(owner_preflight)" != "READY" ]]; then
   echo "Support owner schema not READY -> fresh S3 bootstrap"
@@ -62,9 +73,9 @@ while IFS= read -r f; do files+=("$f"); done < <(awk '/^\$migrations = @\(/{on=1
 echo "Startup migrations: ${#files[@]}"
 nickname_preflight() {
   local table rows
-  table=$(mysql_nexion -N -B nexion -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user';")
+  table=$(scalar "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_user';")
   [[ "$table" == "0" ]] && return 0
-  rows=$(mysql_nexion -N -B nexion -e "
+  rows=$(scalar "
 WITH ranked AS (
   SELECT id, nickname AS original_nickname, is_deleted, created_at,
          ROW_NUMBER() OVER (PARTITION BY nickname ORDER BY is_deleted, created_at, id) AS holder_rank

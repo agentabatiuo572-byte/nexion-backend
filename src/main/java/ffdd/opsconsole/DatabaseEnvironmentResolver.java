@@ -1,12 +1,11 @@
 package ffdd.opsconsole;
 
+import ffdd.opsconsole.shared.config.StorageTime;
 import java.util.Map;
 import java.util.Objects;
 
 final class DatabaseEnvironmentResolver {
 
-    static final String DEFAULT_JDBC_URL = "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true"
-            + "&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true";
     static final String DEFAULT_USERNAME = "root";
 
     private DatabaseEnvironmentResolver() {}
@@ -16,6 +15,9 @@ final class DatabaseEnvironmentResolver {
     }
 
     static ResolvedDatabase resolve(Map<String, String> environment, boolean requireExplicitBundle) {
+        String defaultJdbcUrl = "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true"
+                + "&characterEncoding=utf8&connectionTimeZone=" + StorageTime.resolveZone(environment.get(StorageTime.ENV_KEY))
+                + "&useSSL=false&allowPublicKeyRetrieval=true";
         String nexionUrl = environment.get("NEXION_DB_URL");
         String nexionUsername = environment.get("NEXION_DB_USERNAME");
         String nexionPassword = environment.get("NEXION_DB_PASSWORD");
@@ -60,7 +62,7 @@ final class DatabaseEnvironmentResolver {
         if (nexionPresent) {
             return new ResolvedDatabase(
                     "NEXION_DB",
-                    present(nexionUrl) ? nexionUrl : DEFAULT_JDBC_URL,
+                    present(nexionUrl) ? nexionUrl : defaultJdbcUrl,
                     present(nexionUsername) ? nexionUsername : DEFAULT_USERNAME,
                     nexionPassword == null ? "" : nexionPassword);
         }
@@ -68,7 +70,7 @@ final class DatabaseEnvironmentResolver {
             return new ResolvedDatabase(
                     "SPRING_DATASOURCE_COMPATIBILITY", springUrl, springUsername, springPassword);
         }
-        return new ResolvedDatabase("NEXION_DB", DEFAULT_JDBC_URL, DEFAULT_USERNAME, "");
+        return new ResolvedDatabase("NEXION_DB", defaultJdbcUrl, DEFAULT_USERNAME, "");
     }
 
     private static boolean present(String value) {

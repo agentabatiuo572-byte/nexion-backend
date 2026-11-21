@@ -1,5 +1,6 @@
 package ffdd.opsconsole.bi.domain;
 
+import ffdd.opsconsole.shared.config.StorageTime;
 import static ffdd.opsconsole.bi.domain.BiSampleSuppression.belowThreshold;
 import static ffdd.opsconsole.bi.domain.BiSampleSuppression.protect;
 import java.math.BigDecimal;
@@ -7,7 +8,7 @@ import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
@@ -29,7 +30,7 @@ import java.util.stream.Collectors;
  * keeps every conversion numerator inside the previous stage's same-user set.
  */
 public final class L2FunnelAnalytics {
-    private static final ZoneOffset BUSINESS_TIME_OFFSET = ZoneOffset.ofHours(8);
+    private static final ZoneId STORAGE_ZONE = StorageTime.ZONE;
     private static final List<String> MAIN_EVENTS = List.of(
             "auth.register_completed",
             "checkout.completed",
@@ -153,7 +154,7 @@ public final class L2FunnelAnalytics {
                 .collect(Collectors.groupingBy(EventFact::actor,
                         Collectors.mapping(event -> businessDay(event.at()), Collectors.toSet())));
         Retention retention = new Retention(activeDays, registered, collectionFrom,
-                businessDay(LocalDateTime.now(BUSINESS_TIME_OFFSET)));
+                businessDay(LocalDateTime.now(STORAGE_ZONE)));
         List<Map<String, Object>> cohorts = cohortRows(registered, retention, false);
         Map<String, Object> curves = cohortCurves(registered, cohorts, retention, false);
         List<Map<String, Object>> monthlyCohorts = cohortRows(registered, retention, true);
@@ -323,7 +324,7 @@ public final class L2FunnelAnalytics {
         }
     }
 
-    /** R-1: business calendar date of a stored (Beijing) timestamp. */
+    /** R-1: business calendar date of a storage-zone timestamp. */
     private static LocalDate businessDay(LocalDateTime storageTime) { return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(storageTime); }
 
     private static String retentionReason(Map<String, Object> row, String key) {

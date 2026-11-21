@@ -30,8 +30,8 @@ public interface QuestCompletionFactMapper {
               JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
               LEFT JOIN (nx_growth_account_weekly_period wp
                 JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
-                 AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                 AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00'))
+                 AND wh.eligible_from<=NOW(6)
+                 AND wh.eligible_until>NOW(6))
                 ON wp.user_id=u.id
               LEFT JOIN nx_growth_weekly_definition_item wi
                 ON wi.instance_key=wh.instance_key AND wi.source_mission_id=m.id AND wi.quest_code=m.mission_code
@@ -66,10 +66,10 @@ public interface QuestCompletionFactMapper {
               JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
               LEFT JOIN (nx_growth_account_weekly_period wp
                 JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
-                 AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                 AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                 AND wh.eligible_from<=NOW(6)
+                 AND wh.eligible_until>NOW(6)
                  AND wh.eligible_from<=#{occurredAt} AND wh.eligible_until>#{occurredAt}
-                 AND #{occurredAt}<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00'))
+                 AND #{occurredAt}<=NOW(6))
                 ON wp.user_id=u.id
               LEFT JOIN nx_growth_weekly_definition_item wi
                 ON wi.instance_key=wh.instance_key AND wi.source_mission_id=m.id AND wi.quest_code=m.mission_code

@@ -4,6 +4,7 @@ import ffdd.opsconsole.commerce.mapper.AppStorefrontActivityMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
@@ -30,7 +31,7 @@ public class AppStorefrontActivityService {
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 50;
     private static final List<Integer> WINDOWS = List.of(7, 30, 90);
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = StorageTime.ZONE;
 
     private final AppStorefrontActivityMapper mapper;
     private final CommerceAcceptanceRun acceptanceRun;

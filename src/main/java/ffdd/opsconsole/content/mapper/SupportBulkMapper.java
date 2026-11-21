@@ -21,7 +21,7 @@ public interface SupportBulkMapper {
 
     @Select("<script>" + SupportWorkbenchMapper.PROJECTION + """
         SELECT c.*,c.activityStatus accountState,COALESCE(NULLIF(u.v_rank,''),NULLIF(u.user_level,'')) level,
-          CONVERT_TZ(u.created_at,'+08:00','+00:00') registeredAt,(#{maintenanceDays} IS NOT NULL) maintenanceConfigured,
+          CONVERT_TZ(u.created_at,@@session.time_zone,'+00:00') registeredAt,(#{maintenanceDays} IS NOT NULL) maintenanceConfigured,
           (#{keyword} IS NULL OR c.nickname LIKE CONCAT('%',#{keyword},'%')
             OR c.customerNo LIKE CONCAT('%',#{keyword},'%')
             OR CONCAT('U',LPAD(c.customerNo,GREATEST(8,LENGTH(c.customerNo)),'0')) LIKE CONCAT('%',#{keyword},'%')

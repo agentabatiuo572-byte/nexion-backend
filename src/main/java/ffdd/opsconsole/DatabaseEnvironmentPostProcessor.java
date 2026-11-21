@@ -1,5 +1,6 @@
 package ffdd.opsconsole;
 
+import ffdd.opsconsole.shared.config.StorageTime;
 import java.util.Map;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.env.EnvironmentPostProcessor;
@@ -21,6 +22,7 @@ public final class DatabaseEnvironmentPostProcessor implements EnvironmentPostPr
                 processEnvironment, RuntimeProfile.PROD.equals(RuntimeProfile.requireSingle(environment))
                         || environment.getProperty("nexion.deployment.public-test", Boolean.class, false));
         MapPropertySource propertySource = new MapPropertySource(PROPERTY_SOURCE_NAME, Map.of(
+                "nexion.time.storage-offset", StorageTime.offset().getId(),
                 "spring.datasource.url", resolved.jdbcUrl(),
                 "spring.datasource.username", resolved.username(),
                 "spring.datasource.password", resolved.password()));

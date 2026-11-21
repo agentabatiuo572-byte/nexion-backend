@@ -298,7 +298,8 @@ public class SupportGroupService {
         LocalDateTime at=mapper.now();
         replaceQualification(admin,"SERVICE","ENABLED",null,at,key,reason);
         changed(mapper.insertMember(admin,null,at,1L,ownership.actorId(),reason.trim(),operation(key)));
-        changed(profiles.ensureDefaultProfile(admin,"GENERAL","通用客服","support","账户,提现,设备",12,at));
+        changed(profiles.ensureDefaultProfile(admin,"GENERAL","通用客服","support","账户,提现,设备",
+                OpsSupportAgentService.DEFAULT_MAX_CONCURRENT,at));
         record("ACCOUNT_QUALIFICATIONS_CREATED",admin,key,Map.of("qualificationKind","SERVICE","state","ENABLED"));
     }
 

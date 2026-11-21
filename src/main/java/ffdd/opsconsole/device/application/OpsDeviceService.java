@@ -171,6 +171,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     /** Server-side release configuration; the E6 operator API cannot change this allow-list. */
     private static final String DOWNLOAD_ALLOWED_TARGETS_CONFIG_KEY = "platform.compute.download.allowedTargets";
     private static final String E1_PHASE_SCOPE = "E1";
+    private static final int SKU_NAME_MAX_LENGTH = 128;
     private static final int SKU_IMAGE_ASSET_ID_MAX_LENGTH = 512;
     private static final int SKU_IMAGE_OBJECT_KEY_MAX_LENGTH = 255;
     private static final int SKU_IMAGE_PREVIEW_URL_MAX_LENGTH = 4096;
@@ -256,6 +257,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private DeviceOrderRefundImpactService refundImpacts;
     @org.springframework.beans.factory.annotation.Autowired
     private SimulatedTaskWakeService simulationWakes;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper auditTickets;
 
     public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
             DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
@@ -540,6 +543,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (listingGuard != null) {
                 return listingGuard;
             }
+            if (effectiveWriteRequest.monthlyTargetUsdt() != null && firstPublishedTargetListingBelowRedline(before)) {
+                return ApiResult.fail(409, "COVERAGE_BELOW_REDLINE");
+            }
         }
         boolean legacyOnSaleMaintenance="on".equals(before.status()) && !newlyListed && !targetChanged && !scopeChanged
                 && !ProductSeries.valid(effectiveWriteRequest.seriesCode());
@@ -645,6 +651,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             ApiResult<DeviceSkuView> listingGuard = requireE1SkuListingAllowed(normalized);
             if (listingGuard != null) {
                 return listingGuard;
+            }
+            if (firstPublishedTargetListingBelowRedline(before)) {
+                return ApiResult.fail(409, "COVERAGE_BELOW_REDLINE");
             }
         }
         DeviceSkuView updated = catalogRepository.updateSkuStatus(
@@ -2699,8 +2708,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private String onboardingYieldSnapshot(DeviceSkuView product) {
         String name = product.name() == null || product.name().isBlank() ? "未提供" : product.name().trim();
         String sku = product.skuId() == null || product.skuId().isBlank() ? "未提供" : product.skuId().trim();
-        String usdt = product.dailyEarn() == null ? "未提供" : product.dailyEarn().toPlainString();
-        String nex = product.dailyEarnNex() == null ? "未提供" : product.dailyEarnNex().toPlainString();
+        String usdt = product.dailyEarn() == null ? "未提供"
+                : product.dailyEarn().stripTrailingZeros().toPlainString();
+        String nex = product.dailyEarnNex() == null ? "未提供"
+                : product.dailyEarnNex().stripTrailingZeros().toPlainString();
         return name + " · " + sku + " · " + usdt + " USDT/天 · " + nex + " UVT/天";
     }
 
@@ -3706,6 +3717,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private static void requireSkuDisplayText(DeviceSkuUpsertRequest request) {
         if (request == null) return;
+        if (request.name() != null && request.name().codePointCount(0, request.name().length()) > SKU_NAME_MAX_LENGTH)
+            throw new BizException(422, "SKU_NAME_TOO_LONG");
         AppDisplayText.requireNoHan("name", request.name());
         AppDisplayText.requireNoHan("badge", request.badge());
         AppDisplayText.requireNoHan("tagline", request.tagline());
@@ -5372,6 +5385,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
                 || coverage.redlinePct() == null
                 || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
+    }
+
+    private boolean firstPublishedTargetListingBelowRedline(DeviceSkuView sku) {
+        // An ordinary off-sale E1 draft has no published policy. Launch seeds already
+        // carry one, so check coverage before their first successful listing.
+        return sku.monthlyTargetUsdt() != null && sku.productTaskPolicyVersion() > 0
+                && !auditTickets.hasApprovedSkuListing(sku.skuId()) && coverageBelowRedline();
     }
 
     static boolean e2TaskPricingAmplifiesFinancialOutflow(

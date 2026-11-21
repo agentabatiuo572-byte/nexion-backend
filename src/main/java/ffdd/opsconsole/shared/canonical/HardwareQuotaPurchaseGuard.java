@@ -6,19 +6,52 @@ import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
-/** The caller holds its product lock and a READ_COMMITTED settlement transaction. */
+/** Shared F4b admission checks for quotes and settlement. */
 public final class HardwareQuotaPurchaseGuard {
     private HardwareQuotaPurchaseGuard() { }
 
+    /** The caller holds its product lock and a READ_COMMITTED settlement transaction. */
     public static Reservation reserve(HardwareQuotaPurchaseMapper mapper, Long userId,
                                       String productNo, LocalDateTime occurredAtUtc) {
         var tiers = mapper.lockHardwarePurchaseTiers(productNo);
-        if (tiers == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+        validate(mapper, userId, tiers, HardwareQuotaPeriod.atUtc(occurredAtUtc), 1,
+                mapper::lockHardwarePurchaseUsage);
+        return new Reservation(List.copyOf(tiers), occurredAtUtc);
+    }
+
+    public static List<HardwareQuotaPurchaseMapper.Tier> holdForIntent(
+            HardwareQuotaPurchaseMapper mapper, long userId, String intentNo,
+            Map<String, Integer> quantities, LocalDateTime occurredAtUtc) {
+        var tiers = mapper.findIntentPurchaseTierIds(List.copyOf(quantities.keySet())).stream()
+                .map(mapper::lockIntentPurchaseTier).toList();
+        var month = HardwareQuotaPeriod.atUtc(occurredAtUtc);
+        for (var tier : tiers) {
+            if (tier == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+            Integer quantity = quantities.get(tier.productNo());
+            if (quantity == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
+            validate(mapper, userId, List.of(tier), month, quantity, mapper::lockHardwarePurchaseUsage);
+            if (mapper.recordIntentPurchaseHold(tier, userId, intentNo, quantity, occurredAtUtc) != 1) {
+                throw new BizException(409, "ORDER_MONTHLY_QUOTA_CONFLICT");
+            }
+        }
+        return tiers;
+    }
+
+    public static void check(HardwareQuotaPurchaseMapper mapper, Long userId, String productNo,
+                             long quantity, LocalDateTime occurredAtUtc) {
+        validate(mapper, userId, mapper.findHardwarePurchaseTiers(productNo),
+                HardwareQuotaPeriod.atUtc(occurredAtUtc), quantity, mapper::findHardwarePurchaseUsage);
+    }
+
+    private static void validate(HardwareQuotaPurchaseMapper mapper, Long userId,
+                                 List<HardwareQuotaPurchaseMapper.Tier> tiers, HardwareQuotaPeriod month,
+                                 long quantity, UsageReader readUsage) {
+        if (tiers == null || quantity <= 0) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
         boolean needsFacts = tiers.stream().anyMatch(tier -> tier != null
                 && ((tier.directRefs() != null && tier.directRefs() > 0)
                 || (tier.monthComputePoints() != null && tier.monthComputePoints().signum() > 0)));
-        var month = HardwareQuotaPeriod.atUtc(occurredAtUtc);
         var facts = needsFacts ? mapper.hardwarePurchaseFacts(userId, month.fromOrderStorage(), month.untilOrderStorage()) : null;
         if (needsFacts && facts == null) throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
         for (var tier : tiers) {
@@ -30,15 +63,19 @@ public final class HardwareQuotaPurchaseGuard {
                     facts == null ? null : facts.activeDirect(), facts == null ? null : facts.monthlyComputePoints())) {
                 throw new BizException(409, "ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET");
             }
-            var usage = mapper.lockHardwarePurchaseUsage(tier.id(), month.fromUtc(), month.untilUtc());
+            var usage = readUsage.read(tier.id(), month.fromUtc(), month.untilUtc());
             if (usage == null || usage.stream().anyMatch(value -> value == null || value < 0)) {
                 throw new BizException(503, "ORDER_MONTHLY_QUOTA_UNAVAILABLE");
             }
-            if (usage.stream().mapToLong(Integer::longValue).sum() >= tier.monthlyQuota()) {
+            if (usage.stream().mapToLong(Integer::longValue).sum() + quantity > tier.monthlyQuota()) {
                 throw new BizException(409, "ORDER_MONTHLY_QUOTA_EXHAUSTED");
             }
         }
-        return new Reservation(List.copyOf(tiers), occurredAtUtc);
+    }
+
+    @FunctionalInterface
+    private interface UsageReader {
+        List<Integer> read(Long tierId, LocalDateTime from, LocalDateTime until);
     }
 
     public static void record(HardwareQuotaPurchaseMapper mapper, Reservation reservation,

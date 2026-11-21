@@ -10,7 +10,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReservationMapper, OrderCreateReceiptMapper {
+public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReservationMapper, OrderCreateReceiptMapper, PurchaseGateQuotaMapper {
     @Select("SELECT id,sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 FOR UPDATE")
     UserLock lockUser(@Param("userId") Long userId);
 
@@ -124,7 +124,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
 
     /** Same canonical quantity-aware lifetime quota CAS used by bundle items. */
     @Update("""
-            UPDATE nx_admin_device_sku
+            UPDATE nx_admin_device_sku s
                SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
                    CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),
                    updated_at=NOW()
@@ -136,7 +136,7 @@ public interface AppBundleOrderMapper extends BaseMapper<Object>, TrialSlotReser
                AND JSON_EXTRACT(purchase_gate_json,'$.quotaCap') IS NOT NULL
                AND JSON_EXTRACT(purchase_gate_json,'$.quotaSold') IS NOT NULL
                AND #{quantity} > 0
-               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity} + """ + HELD + """
                    <= CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
             """)
     int consumePurchaseQuota(@Param("productNo") String productNo, @Param("quantity") Integer quantity);

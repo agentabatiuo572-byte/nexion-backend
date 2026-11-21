@@ -499,6 +499,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    t.month_compute_points AS monthComputePoints,
                    t.unlock_mode AS unlockMode,
                    COALESCE(SUM(CASE WHEN u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE' THEN u.quantity ELSE 0 END), 0) AS current,
+                   COALESCE(SUM(CASE WHEN u.is_deleted=0 AND UPPER(u.status)='ACTIVE' AND u.usage_type='SOLD'
+                                     THEN u.quantity ELSE 0 END),0) AS soldThisMonth,
+                   COALESCE(SUM(CASE WHEN u.is_deleted=0 AND UPPER(u.status)='ACTIVE' AND u.usage_type='RESERVED'
+                                      AND u.purchase_intent_no IS NOT NULL THEN u.quantity ELSE 0 END),0) AS pendingThisMonth,
                    t.monthly_quota AS cap,
                    CASE
                      WHEN t.monthly_quota <= 0 THEN FALSE
@@ -576,6 +580,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
               JOIN nx_team_hardware_quota_tier t ON t.id = u.quota_tier_id
              WHERE u.is_deleted = 0
                AND UPPER(u.status) = 'ACTIVE'
+               AND (u.purchase_intent_no IS NULL OR u.usage_type<>'RESERVED')
                AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
                AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
              ORDER BY u.occurred_at DESC, u.id DESC
@@ -609,6 +614,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE id = #{usageId}
                AND is_deleted = 0
                AND UPPER(status) = 'ACTIVE'
+               AND (purchase_intent_no IS NULL OR usage_type<>'RESERVED')
             """)
     int recycleHardwareQuotaUsage(@Param("usageId") Long usageId,
                                   @Param("reason") String reason);

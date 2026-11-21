@@ -76,8 +76,8 @@ public interface AppGrowthEngagementMapper {
                    NULLIF(JSON_UNQUOTE(JSON_EXTRACT(item.name_translations_json, '$.en.name')),'') englishName,
                    item.category category,item.action_route actionRoute,
                    item.reward_points rewardNex,i.instance_key instanceKey,
-                   DATE_FORMAT(i.entered_at,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,
-                   DATE_FORMAT(i.eligible_until,'%Y-%m-%dT%H:%i:%s+08:00') eligibleUntil,
+                   CONCAT(DATE_FORMAT(i.entered_at,'%Y-%m-%dT%H:%i:%s'),@@session.time_zone) eligibleFrom,
+                   CONCAT(DATE_FORMAT(i.eligible_until,'%Y-%m-%dT%H:%i:%s'),@@session.time_zone) eligibleUntil,
                    CASE WHEN NOW()<i.eligible_until THEN 1 ELSE 0 END eligible,
                    CASE WHEN NOW()>=i.eligible_until
                              AND UPPER(COALESCE(um.mission_status,'PENDING'))<>'CLAIMED' THEN 'EXPIRED'
@@ -177,7 +177,7 @@ public interface AppGrowthEngagementMapper {
                          ON proof_period.user_id=cf.user_id AND proof_period.instance_key=cf.instance_key
                        JOIN nx_growth_weekly_definition proof_week ON proof_week.instance_key=proof_period.instance_key
                          AND proof_week.eligible_from<=o.event_ts AND proof_week.eligible_until>o.event_ts
-                         AND o.event_ts<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                         AND o.event_ts<=NOW(6)
                        WHERE cf.user_id=um.user_id AND cf.mission_id=um.mission_id
                          AND cf.instance_key=um.instance_key AND cf.quest_code=m.mission_code
                          AND cf.event_id LIKE CONCAT(o.event_id,':%')
@@ -185,8 +185,8 @@ public interface AppGrowthEngagementMapper {
               JOIN nx_user u ON u.id=um.user_id AND u.status='ACTIVE' AND u.is_deleted=0
               LEFT JOIN nx_growth_account_weekly_period wp ON wp.user_id=um.user_id AND wp.instance_key=um.instance_key
               LEFT JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
-                AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                AND wh.eligible_from<=NOW(6)
+                AND wh.eligible_until>NOW(6)
              WHERE um.user_id=#{userId} AND m.mission_code=#{questCode}
                AND um.instance_key=#{instanceKey}
                AND um.instance_key=CASE
@@ -230,8 +230,8 @@ public interface AppGrowthEngagementMapper {
               JOIN nx_user u ON u.id=um.user_id AND u.status='ACTIVE' AND u.is_deleted=0
               LEFT JOIN nx_growth_account_weekly_period wp ON wp.user_id=um.user_id AND wp.instance_key=um.instance_key
               LEFT JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
-                AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                AND wh.eligible_from<=NOW(6)
+                AND wh.eligible_until>NOW(6)
              WHERE um.user_id=#{userId} AND m.mission_code=#{questCode}
                AND um.instance_key=#{instanceKey} AND um.is_deleted=0
              LIMIT 1 FOR UPDATE
@@ -280,29 +280,29 @@ public interface AppGrowthEngagementMapper {
                    LOWER(q.mission_category) category,
                    q.action_route actionRoute,
                    q.instance_key instanceKey,
-                   DATE_FORMAT(q.eligible_from,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,
-                   DATE_FORMAT(q.eligible_until,'%Y-%m-%dT%H:%i:%s+08:00') eligibleUntil,
+                   CONCAT(DATE_FORMAT(q.eligible_from,'%Y-%m-%dT%H:%i:%s'),@@session.time_zone) eligibleFrom,
+                   CONCAT(DATE_FORMAT(q.eligible_until,'%Y-%m-%dT%H:%i:%s'),@@session.time_zone) eligibleUntil,
                    CASE WHEN q.definition_status<>1 AND q.paused_claim_verified=1
-                                  AND q.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                                  AND q.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                                  AND q.eligible_from<=NOW(6)
+                                  AND q.eligible_until>NOW(6)
                                   AND UPPER(COALESCE(um.mission_status,'PENDING')) IN ('COMPLETED','CLAIMABLE') THEN 1
                         WHEN q.definition_status<>1 THEN 0
                         WHEN q.mission_type='DAY_ONE' AND NOW()>=q.eligible_until THEN 0
                         WHEN q.mission_type<>'DAY_ONE' AND (q.instance_key IS NULL
-                             OR q.eligible_from>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                             OR q.eligible_until<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')) THEN 0 ELSE 1 END eligible,
+                             OR q.eligible_from>NOW(6)
+                             OR q.eligible_until<=NOW(6)) THEN 0 ELSE 1 END eligible,
                    CASE WHEN q.definition_status<>1 THEN CASE
                           WHEN UPPER(COALESCE(um.mission_status,'PENDING'))='CLAIMED' THEN 'CLAIMED'
                           WHEN q.paused_claim_verified=1
-                               AND q.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                               AND q.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                               AND q.eligible_from<=NOW(6)
+                               AND q.eligible_until>NOW(6)
                                AND UPPER(COALESCE(um.mission_status,'PENDING')) IN ('COMPLETED','CLAIMABLE') THEN 'CLAIMABLE'
                           ELSE 'EXPIRED' END
                         WHEN q.mission_type='DAY_ONE' AND NOW()>=q.eligible_until
                                   AND UPPER(COALESCE(um.mission_status, 'PENDING'))<>'CLAIMED' THEN 'EXPIRED'
                         WHEN q.mission_type<>'DAY_ONE' AND (q.instance_key IS NULL
-                             OR q.eligible_from>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                             OR q.eligible_until<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00'))
+                             OR q.eligible_from>NOW(6)
+                             OR q.eligible_until<=NOW(6))
                              AND UPPER(COALESCE(um.mission_status,'PENDING'))<>'CLAIMED' THEN 'EXPIRED'
                         ELSE CASE UPPER(COALESCE(um.mission_status, 'PENDING'))
                           WHEN 'COMPLETED' THEN 'COMPLETED'
@@ -330,7 +330,7 @@ public interface AppGrowthEngagementMapper {
                                          ON proof_period.user_id=cf.user_id AND proof_period.instance_key=cf.instance_key
                                        JOIN nx_growth_weekly_definition proof_week ON proof_week.instance_key=proof_period.instance_key
                                          AND proof_week.eligible_from<=o.event_ts AND proof_week.eligible_until>o.event_ts
-                                         AND o.event_ts<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                                         AND o.event_ts<=NOW(6)
                                       WHERE cf.user_id=u.id AND cf.mission_id=m.id
                                         AND cf.instance_key=historical.instance_key AND cf.quest_code=m.mission_code
                                         AND cf.event_id LIKE CONCAT(o.event_id,':%')
@@ -371,8 +371,8 @@ public interface AppGrowthEngagementMapper {
                       JOIN nx_user u ON u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0
                       LEFT JOIN (nx_growth_account_weekly_period current_period
                         JOIN nx_growth_weekly_definition current_week ON current_week.instance_key=current_period.instance_key
-                         AND current_week.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                         AND current_week.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00'))
+                         AND current_week.eligible_from<=NOW(6)
+                         AND current_week.eligible_until>NOW(6))
                         ON current_period.user_id=u.id
                       LEFT JOIN nx_user_mission historical
                         ON historical.id=(SELECT candidate.id FROM nx_user_mission candidate
@@ -498,8 +498,8 @@ public interface AppGrowthEngagementMapper {
                AND (instance_key LIKE 'DAY_ONE:%' OR EXISTS (
                  SELECT 1 FROM nx_growth_account_weekly_period wp
                  JOIN nx_growth_weekly_definition wh ON wh.instance_key=wp.instance_key
-                  AND wh.eligible_from<=CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
-                  AND wh.eligible_until>CONVERT_TZ(UTC_TIMESTAMP(6),'+00:00','+08:00')
+                  AND wh.eligible_from<=NOW(6)
+                  AND wh.eligible_until>NOW(6)
                  WHERE wp.user_id=#{userId} AND wp.instance_key=#{instanceKey}))
             """)
     int claimQuest(

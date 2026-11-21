@@ -114,7 +114,8 @@ public class CregisPayoutControl {
         }).toList();
     }
     public int requiredConfirmations() { return Math.max(15, config.getDepositConfirmations()); }
-    private static boolean on(Object value) {
+    /** 闸位/开关的既有语义：布尔真或数值 1 视为打开。异常退款派发复用同一判断。 */
+    static boolean on(Object value) {
         return Boolean.TRUE.equals(value) || value instanceof Number number && number.intValue() == 1;
     }
 }

@@ -54,9 +54,9 @@ public class OpsPlatformConfigService {
                     "手机号与第三方新注册共用限额。0 关闭设备限制，同 IP 上限继续生效","个",0,100,
                     "H5 注册",List.of("SUPER_ADMIN")),
             "auth.risk.h5_freeze_newcomer_gift",
-            new ParamDefinition("auth.risk.h5_freeze_newcomer_gift","H5 新人礼首购解冻",
-                    "1 为首笔非零购买付款后可发，0 沿用普通审核条件。仅影响新注册账号","0/1",0,1,
-                    "H5 新人奖励",List.of("SUPER_ADMIN")));
+            new ParamDefinition("auth.risk.h5_freeze_newcomer_gift","新人礼首购解冻",
+                    "1 为全渠道新人礼在首笔非零实付订单后可发，0 沿用普通审核条件。仅影响新注册账号","0/1",0,1,
+                    "全渠道新人奖励",List.of("SUPER_ADMIN")));
     private static final Map<String, ParamDefinition> PARAM_DEFINITIONS = Map.of(
             "platform.global_rate_limit_per_minute",
             new ParamDefinition("platform.global_rate_limit_per_minute", "全球限流上限",

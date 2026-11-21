@@ -834,8 +834,8 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     int freezeUser(@Param("userId") long userId, @Param("sourceRef") String sourceRef,
                    @Param("reason") String reason);
     @Update("""
-            UPDATE nx_user_session SET revoked_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),
-              updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+            UPDATE nx_user_session SET revoked_at=NOW(),
+              updated_at=NOW()
              WHERE user_id=#{userId} AND revoked_at IS NULL AND is_deleted=0
             """)
     int revokeUserSessions(@Param("userId") long userId);

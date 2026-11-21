@@ -147,8 +147,8 @@ public interface WeeklyQuestSnapshotMapper extends BaseMapper<Object> {
                        CONCAT('$.mission."',i.quest_code,'"."','en','".name'))),'') englishName,
                    i.layer,i.reward_points rewardNex,LOWER(i.category) category,i.action_route actionRoute,
                    h.instance_key instanceKey,h.business_timezone businessTimezone,
-                   DATE_FORMAT(h.eligible_from,'%Y-%m-%dT%H:%i:%s+08:00') eligibleFrom,
-                   DATE_FORMAT(h.eligible_until,'%Y-%m-%dT%H:%i:%s+08:00') eligibleUntil,
+                   CONCAT(DATE_FORMAT(h.eligible_from,'%Y-%m-%dT%H:%i:%s'),@@session.time_zone) eligibleFrom,
+                   CONCAT(DATE_FORMAT(h.eligible_until,'%Y-%m-%dT%H:%i:%s'),@@session.time_zone) eligibleUntil,
                    1 eligible,CASE UPPER(COALESCE(um.mission_status,'PENDING'))
                      WHEN 'COMPLETED' THEN 'COMPLETED' WHEN 'CLAIMABLE' THEN 'CLAIMABLE'
                      WHEN 'CLAIMED' THEN 'CLAIMED' ELSE 'PENDING' END status,h.created_at updatedAt

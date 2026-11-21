@@ -7,18 +7,40 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
-/** Inherited by device settlement mappers so every purchase holds the same F4b tier lock. */
+/** Shared F4b reads and locking settlement statements. */
 // Statement-only mixin across quota, member and order tables; it has no single CRUD entity.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface HardwareQuotaPurchaseMapper {
-    @Select("""
+    String PURCHASE_TIERS = """
             SELECT id,quota_code AS quotaCode,product_no AS productNo,direct_refs AS directRefs,
                    month_compute_points AS monthComputePoints,monthly_quota AS monthlyQuota,
                    unlock_mode AS unlockMode,status
               FROM nx_team_hardware_quota_tier
-             WHERE product_no=#{productNo} AND is_deleted=0 ORDER BY id FOR UPDATE
-            """)
+             WHERE product_no=#{productNo} AND is_deleted=0 ORDER BY id
+            """;
+
+    @Select(PURCHASE_TIERS + " FOR UPDATE")
     List<Tier> lockHardwarePurchaseTiers(@Param("productNo") String productNo);
+
+    @Select("""
+            <script>
+            SELECT id FROM nx_team_hardware_quota_tier
+             WHERE is_deleted=0 AND product_no IN
+              <foreach collection="productNos" item="no" open="(" separator="," close=")">#{no}</foreach>
+             ORDER BY id
+            </script>
+            """)
+    List<Long> findIntentPurchaseTierIds(@Param("productNos") List<String> productNos);
+
+    @Select("""
+            SELECT id,quota_code quotaCode,product_no productNo,direct_refs directRefs,
+                   month_compute_points monthComputePoints,monthly_quota monthlyQuota,unlock_mode unlockMode,status
+              FROM nx_team_hardware_quota_tier WHERE id=#{id} AND is_deleted=0 FOR UPDATE
+            """)
+    Tier lockIntentPurchaseTier(@Param("id") Long id);
+
+    @Select(PURCHASE_TIERS)
+    List<Tier> findHardwarePurchaseTiers(@Param("productNo") String productNo);
 
     @Select("""
             WITH RECURSIVE subtree AS (
@@ -55,12 +77,18 @@ public interface HardwareQuotaPurchaseMapper {
     Facts hardwarePurchaseFacts(@Param("userId") Long userId,
             @Param("from") LocalDateTime from, @Param("until") LocalDateTime until);
 
-    @Select("""
+    String PURCHASE_USAGE = """
             SELECT quantity FROM nx_team_hardware_quota_usage
              WHERE quota_tier_id=#{tierId} AND status='ACTIVE' AND is_deleted=0
-               AND occurred_at>=#{from} AND occurred_at<#{until} ORDER BY id FOR UPDATE
-            """)
+               AND occurred_at>=#{from} AND occurred_at<#{until} ORDER BY id
+            """;
+
+    @Select(PURCHASE_USAGE + " FOR UPDATE")
     List<Integer> lockHardwarePurchaseUsage(@Param("tierId") Long tierId,
+            @Param("from") LocalDateTime from, @Param("until") LocalDateTime until);
+
+    @Select(PURCHASE_USAGE)
+    List<Integer> findHardwarePurchaseUsage(@Param("tierId") Long tierId,
             @Param("from") LocalDateTime from, @Param("until") LocalDateTime until);
 
     @Insert("""
@@ -70,6 +98,16 @@ public interface HardwareQuotaPurchaseMapper {
             """)
     int recordHardwarePurchase(@Param("tier") Tier tier, @Param("userId") Long userId,
             @Param("orderNo") String orderNo, @Param("occurredAt") LocalDateTime occurredAt);
+
+    @Insert("""
+            INSERT INTO nx_team_hardware_quota_usage
+              (quota_tier_id,quota_code,product_no,user_id,purchase_intent_no,usage_type,quantity,status,occurred_at,remark)
+            VALUES (#{tier.id},#{tier.quotaCode},#{tier.productNo},#{userId},#{intentNo},
+                    'RESERVED',#{quantity},'ACTIVE',#{occurredAt},'External purchase commitment')
+            """)
+    int recordIntentPurchaseHold(@Param("tier") Tier tier, @Param("userId") long userId,
+                                 @Param("intentNo") String intentNo, @Param("quantity") int quantity,
+                                 @Param("occurredAt") LocalDateTime occurredAt);
 
     record Tier(Long id, String quotaCode, String productNo, Integer directRefs,
                 BigDecimal monthComputePoints, Integer monthlyQuota, String unlockMode, Integer status) { }

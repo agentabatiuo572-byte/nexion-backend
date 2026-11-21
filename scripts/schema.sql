@@ -4,6 +4,20 @@ USE nexion;
 
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
+-- Record a fresh installation before any baseline tables or seeds are written.
+SET @lc2_tz_empty = NOT EXISTS (
+  SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()
+);
+CREATE TABLE IF NOT EXISTS nx_schema_migration_state (
+  migration_key VARCHAR(128) PRIMARY KEY,
+  phase VARCHAR(32) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT IGNORE INTO nx_schema_migration_state (migration_key, phase)
+SELECT '20261121_lc2_storage_timezone', 'FRESH'
+ WHERE @lc2_tz_empty;
+
 CREATE TABLE IF NOT EXISTS nx_user (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   country_code VARCHAR(8) NULL,
@@ -3409,6 +3423,7 @@ CREATE TABLE IF NOT EXISTS nx_team_hardware_quota_usage (
   product_no VARCHAR(64) NOT NULL,
   user_id BIGINT NOT NULL,
   order_no VARCHAR(64) NULL,
+  purchase_intent_no VARCHAR(48) NULL,
   usage_type VARCHAR(32) NOT NULL DEFAULT 'RESERVED',
   quantity INT NOT NULL DEFAULT 1,
   status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
@@ -3417,10 +3432,39 @@ CREATE TABLE IF NOT EXISTS nx_team_hardware_quota_usage (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
+  UNIQUE KEY uk_hardware_usage_intent_tier (purchase_intent_no,quota_tier_id),
   KEY idx_team_hardware_quota_usage_tier (quota_tier_id, status, occurred_at),
   KEY idx_team_hardware_quota_usage_user (user_id, occurred_at),
   KEY idx_team_hardware_quota_usage_order (order_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_purchase_payment_intent (
+ intent_no VARCHAR(48) PRIMARY KEY,quote_id VARCHAR(48) NOT NULL,user_id BIGINT NOT NULL,kind VARCHAR(24) NOT NULL,
+ payment_method VARCHAR(24) NOT NULL,command_key VARCHAR(128) NOT NULL,payload_json JSON NOT NULL,quote_json JSON NOT NULL,
+ pricing_hash CHAR(64) NOT NULL,status VARCHAR(24) NOT NULL,reason VARCHAR(128) NOT NULL DEFAULT '',
+ provider_reference VARCHAR(128) NULL,provider_actual_fee_usdt DECIMAL(24,6) NULL,payment_url VARCHAR(2048) NULL,
+ address VARCHAR(64) NULL,scan_block BIGINT NULL,provider_project BIGINT NULL,receipt_json JSON NULL,quota_reservation_json JSON NULL,
+ provider_expires_at DATETIME(6) NULL,paid_at DATETIME(6) NULL,reconciliation_status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+ expires_at DATETIME(6) NOT NULL,confirmed_at DATETIME(6) NULL,observed_at DATETIME(6) NULL,version BIGINT NOT NULL DEFAULT 0,
+ created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ UNIQUE KEY uk_purchase_quote(quote_id),UNIQUE KEY uk_purchase_command(user_id,kind,command_key),UNIQUE KEY uk_purchase_address(address),
+ KEY idx_purchase_status(status,updated_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS nx_purchase_e1_hold (
+  intent_no VARCHAR(48) NOT NULL,
+  line_no INT NOT NULL,
+  product_no VARCHAR(64) NOT NULL,
+  sku_id VARCHAR(64) NOT NULL,
+  gate_generation BIGINT NOT NULL,
+  quantity INT NOT NULL,
+  status VARCHAR(24) NOT NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (intent_no,line_no),
+  UNIQUE KEY uk_purchase_e1_hold_intent_sku (intent_no,sku_id),
+  KEY idx_purchase_e1_hold_sku_generation (sku_id,gate_generation,status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS nx_team_leaderboard_action (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

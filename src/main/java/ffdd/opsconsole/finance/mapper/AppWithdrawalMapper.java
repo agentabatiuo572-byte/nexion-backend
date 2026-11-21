@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.mapper;
 
+import ffdd.opsconsole.shared.config.BusinessPeriodSql;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -176,14 +177,23 @@ public interface AppWithdrawalMapper {
                          @Param("fromInclusive") LocalDateTime fromInclusive,
                          @Param("toExclusive") LocalDateTime toExclusive);
 
-    /** Vietnam UTC+7 business date, stored in Shanghai UTC+8, as in WithdrawalDayWindow. */
+    // Convert the order to Vietnam time to find its date, then return that midnight to storage time.
+    String VIETNAM_TO_STORAGE_MINUTES = "(" + BusinessPeriodSql.STORAGE_OFFSET_MINUTES + "-420)";
+    String VIETNAM_DAY_START_IN_STORAGE = "DATE_ADD(DATE(DATE_SUB(current_order.created_at, INTERVAL "
+            + VIETNAM_TO_STORAGE_MINUTES + " MINUTE)), INTERVAL " + VIETNAM_TO_STORAGE_MINUTES + " MINUTE)";
+
+    /** Same half-open Vietnam day as WithdrawalDayWindow, for the day of the order. */
     @Select("""
             SELECT COUNT(1) FROM nx_withdrawal_order w
             JOIN nx_withdrawal_order current_order ON current_order.withdrawal_no=#{withdrawalNo}
              AND current_order.user_id=#{userId} AND current_order.is_deleted=0
             WHERE w.user_id=current_order.user_id AND w.is_deleted=0
-              AND w.created_at>=DATE(current_order.created_at-INTERVAL 1 HOUR)+INTERVAL 1 HOUR
-              AND w.created_at<DATE(current_order.created_at-INTERVAL 1 HOUR)+INTERVAL 25 HOUR
+              AND w.created_at >=
+            """ + VIETNAM_DAY_START_IN_STORAGE + """
+
+              AND w.created_at < DATE_ADD(
+            """ + VIETNAM_DAY_START_IN_STORAGE + """
+              , INTERVAL 1 DAY)
               AND w.id<=current_order.id
             """)
     int businessDayOrdinal(@Param("userId") Long userId, @Param("withdrawalNo") String withdrawalNo);

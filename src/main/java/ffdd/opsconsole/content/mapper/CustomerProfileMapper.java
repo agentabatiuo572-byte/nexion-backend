@@ -33,8 +33,8 @@ public interface CustomerProfileMapper {
 
     // 列别名 ts/text 对齐 CustomerNote record 构造器参数(id BIGINT→String, ts 毫秒 epoch)
     @Select("""
-            SELECT id, TIMESTAMPDIFF(MICROSECOND,'1970-01-01 00:00:00',CONVERT_TZ(created_at,'+08:00','+00:00')) DIV 1000 AS ts, author, content AS text,
-             author_admin_id AS authorId,author AS authorName,DATE_FORMAT(CONVERT_TZ(created_at,'+08:00','+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ') AS createdAt
+            SELECT id, TIMESTAMPDIFF(MICROSECOND,'1970-01-01 00:00:00',CONVERT_TZ(created_at,@@session.time_zone,'+00:00')) DIV 1000 AS ts, author, content AS text,
+             author_admin_id AS authorId,author AS authorName,DATE_FORMAT(CONVERT_TZ(created_at,@@session.time_zone,'+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ') AS createdAt
               FROM nx_customer_note
              WHERE user_id=#{userId} AND is_deleted=0
              ORDER BY created_at ASC, id ASC

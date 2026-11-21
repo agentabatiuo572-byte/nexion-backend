@@ -307,6 +307,11 @@ public class CregisExceptionRefundService {
         if(db.otherUnresolved(network(row).chainId(),project(),number(row,"depositCid"),text(row,"txid"),(int)number(row,"logIndex"),
                 text(row,"depositAddress"),decimal(row,"grossAmount"))!=0)
             throw new BizException(409,"CREGIS_REFUND_DISPATCH_RISK_HOLD");
+        // BUG-559: 全局链上出款总闸(nx_cregis_provision_gate.payout_enabled)关闭时不派发。
+        // 抛明确的拒绝码，worker 的 dispatchBlocked 会保留 APPROVED 等待状态并把它写进 last_error，
+        // 总闸打开后由同一轮询按原有「单次派发 + 幂等」合同继续；上面的既有风险/配置判定优先级不变。
+        if(!CregisPayoutControl.on(gate.get("payoutEnabled")))
+            throw new BizException(409,"CREGIS_REFUND_PAYOUT_GATE_CLOSED");
     }
     private void lockGate() { if(deposits.lockProvisionGate()==null)throw new BizException(503,"CREGIS_RISK_GATE_MISSING"); }
     private void checkLocks(CregisExceptionSourceService.Source source,Long user) {

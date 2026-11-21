@@ -2951,7 +2951,12 @@ public class OpsTeamService implements AuditReplayable {
         pool.put("quotaMonthlyStockLabel", String.valueOf(quotaCap));
         pool.put("quotaMonthlyStockTotal", quotaCap);
         pool.put("quotaMonthlyStockUsed", quotaCurrent);
-        pool.put("quotaMonthlyStockRemaining", Math.max(0, quotaCap - quotaCurrent));
+        pool.put("quotaMonthlyStockRemaining", activeQuotaRows.stream()
+                .mapToInt(row -> intValue(row.get("remaining"), 0)).sum());
+        pool.put("quotaMonthlyStockSold", activeQuotaRows.stream()
+                .mapToInt(row -> intValue(row.get("soldThisMonth"), 0)).sum());
+        pool.put("quotaMonthlyStockPending", activeQuotaRows.stream()
+                .mapToInt(row -> intValue(row.get("pendingThisMonth"), 0)).sum());
         pool.put("proUnlock", quotaUnlock(activeQuotaRows, "PRO"));
         pool.put("rackUnlock", quotaUnlock(activeQuotaRows, "RACK"));
         pool.put("ambassadorBands", ambassadorBands());
@@ -3088,7 +3093,8 @@ public class OpsTeamService implements AuditReplayable {
 
     private Map<String, Object> normalizeQuotaRow(Map<String, Object> raw) {
         int current = intValue(raw.get("current"), 0);
-        int cap = Math.max(current, intValue(raw.get("cap"), current));
+        int monthlyQuota = intValue(raw.get("cap"), current);
+        int cap = Math.max(current, monthlyQuota);
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", parseLongFromMap(raw.get("id")));
         row.put("quotaCode", String.valueOf(raw.getOrDefault("quotaCode", "")));
@@ -3105,6 +3111,9 @@ public class OpsTeamService implements AuditReplayable {
         row.put("monthComputePointsText", monthComputePoints.toPlainString());
         row.put("unlockMode", "EITHER".equalsIgnoreCase(String.valueOf(raw.get("unlockMode"))) ? "EITHER" : "ALL");
         row.put("current", current);
+        row.put("soldThisMonth", intValue(raw.get("soldThisMonth"), 0));
+        row.put("pendingThisMonth", intValue(raw.get("pendingThisMonth"), 0));
+        row.put("remaining", Math.max(0, monthlyQuota - current));
         row.put("cap", cap);
         row.put("tight", boolValue(raw.get("tight"), cap > 0 && current * 100 / cap >= 85));
         return row;

@@ -71,10 +71,10 @@ public class NotificationTimeCorrectionService {
                     .actorType("ADMIN").result("SUCCESS").riskLevel("HIGH")
                     .detail(Map.of("reason", reason, "idempotencyKey", key.trim(),
                             "previousCreatedAt", row.createdAt().toString(), "correctedCreatedAt", corrected.toString(),
-                            "timeZone", "Asia/Shanghai", "facts", checked.facts(),
+                            "timeZone", checked.timeZone(), "facts", checked.facts(),
                             "basis", "DISPLAY_TIME_FROM_AUTHORITATIVE_DELIVERY"))
                     .build());
-            return new CorrectionView(notificationId, "CORRECTED", row.createdAt(), corrected, "Asia/Shanghai");
+            return new CorrectionView(notificationId, "CORRECTED", row.createdAt(), corrected, checked.timeZone());
         });
     }
 

@@ -1,10 +1,12 @@
 package ffdd.opsconsole.market.application;
 
 import ffdd.opsconsole.market.mapper.G3ScheduleExecutionMapper;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -22,7 +24,7 @@ public class G3ScheduledAdvanceService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> advanceIfDue() {
-        LocalDate runDate = LocalDate.now(clock.withZone(ZoneOffset.UTC));
+        LocalDate runDate = LocalDate.ofInstant(clock.instant(), runDateZone());
         if (executions.claimRunDate(runDate) != 1) {
             return Map.of("runDate", runDate.toString(), "claimed", false, "frameApplied", false,
                     "frameAdvanced", false, "priceChanged", false, "outcome", "SKIPPED",
@@ -80,10 +82,17 @@ public class G3ScheduledAdvanceService {
         result.put("attemptSelection", "LATEST_PERSISTED_COMPLETION_BY_AUDIT_ID");
         result.put("attemptTimestampBasis", "UTC_APPLICATION_CLOCK");
         result.put("executionTimestampBasis", "DB_SESSION_TIME");
-        result.put("runDateBasis", "UTC_CLAIM_DAY");
+        result.put("runDateBasis", runDateZone().normalized().equals(ZoneOffset.UTC)
+                ? "UTC_CLAIM_DAY" : "SCHEDULE_ZONE_CLAIM_DAY");
         result.put("reason", attempt != null ? null : execution == null
                 ? "NO_PERSISTED_SCHEDULE_EXECUTION" : "LEGACY_MARK_ONLY");
         result.put("sources", java.util.List.of("nx_g3_schedule_execution", "nx_audit_log", "nx_audit_log_archive"));
         return result;
+    }
+
+    private ZoneId runDateZone() {
+        // Existing Shanghai deployments retain their UTC claim keys.
+        return StorageTime.VIETNAM.equals(StorageTime.ZONE.getId())
+                ? market.currentSchedule().zoneId() : ZoneOffset.UTC;
     }
 }

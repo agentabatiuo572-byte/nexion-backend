@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.config.BusinessCalendar;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import jakarta.annotation.PostConstruct;
@@ -82,9 +83,15 @@ public class BusinessCalendarService {
         try {
             mapper.ensureTable();
             for (BusinessCalendar.Version seed : BusinessCalendar.seed()) {
-                mapper.seed(seed.track(), seed.zone().getId(), "Asia/Shanghai".equals(seed.zone().getId()) ? "CN" : "VN",
+                boolean vietnam = StorageTime.VIETNAM.equals(seed.zone().getId());
+                String reason = "历史数据按北京时间";
+                if (vietnam) {
+                    reason = BusinessCalendar.LEGACY.equals(seed.track()) ? "首装默认按越南时间切分"
+                            : "增长与团队自 2026-10-19 起按越南时间切分";
+                }
+                mapper.seed(seed.track(), seed.zone().getId(), vietnam ? "VN" : "CN",
                         offsetMinutes(seed.zone()), seed.effectiveDate(), seed.effectiveStorageAt(),
-                        "Asia/Shanghai".equals(seed.zone().getId()) ? "历史数据按北京时间" : "增长与团队自 2026-10-19 起按越南时间切分");
+                        reason);
             }
             refresh();
         } catch (RuntimeException ex) {

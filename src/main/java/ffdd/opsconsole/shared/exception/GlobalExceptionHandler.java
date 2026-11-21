@@ -74,6 +74,15 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
     }
 
+    /** B58-BE-01: 已有在途外部付款单的 409 带上已核对的原付款单号，供客户端读回原单。 */
+    @ExceptionHandler(ffdd.opsconsole.finance.purchase.ExistingPurchasePaymentIntentException.class)
+    public ApiResult<Map<String, Object>> handleExistingPurchasePaymentIntent(
+            ffdd.opsconsole.finance.purchase.ExistingPurchasePaymentIntentException ex,
+            HttpServletResponse response) {
+        response.setStatus(normalizeHttpStatus(ex.getCode()));
+        return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
+    }
+
     @ExceptionHandler(BizException.class)
     public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
         response.setStatus(normalizeHttpStatus(ex.getCode()));

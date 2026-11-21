@@ -2,6 +2,7 @@ package ffdd.opsconsole.promotion.domain;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -14,7 +15,7 @@ import java.time.ZoneId;
 import java.util.*;
 
 public final class PromotionValues {
-    private static final ZoneId DATABASE_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId DATABASE_ZONE = StorageTime.ZONE;
     private static final ObjectMapper JSON = new ObjectMapper().findAndRegisterModules();
     private PromotionValues() {}
     public static Map<String,Object> map(Object value) {

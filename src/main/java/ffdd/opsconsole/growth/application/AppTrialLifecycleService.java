@@ -4,6 +4,7 @@ import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
+import ffdd.opsconsole.finance.purchase.PurchaseQuotaReservation;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
@@ -22,6 +23,8 @@ import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
 import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.capacity.MonthlyTargetProjection;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -75,7 +78,7 @@ public class AppTrialLifecycleService {
             Clock clock, TestCloudActivationAdmission testCloudAdmission) {
         this(null,paymentAttribution,mapper,earningsReleaseService,idempotency,coverageFacade,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,clock,testCloudAdmission);
     }
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = DateTimeFormatConfig.BUSINESS_ZONE;
     private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
     private static final String TRIAL_CONVERSION_SOURCE = "nx_trial_claim + nx_order + nx_order_item";
@@ -113,7 +116,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
         LocalDateTime now = businessNow();
-        Map<String, String> policy = policyMap();
+        Map<String, String> policy = policyMap(false, BusinessCalendar.legacy().dateAtStorage(now));
         return ApiResult.ok(project(userId, mapper.trial(userId), policy, now, false));
     }
 
@@ -152,7 +155,7 @@ public class AppTrialLifecycleService {
             Long userId, Long paymentMethodId, String deviceName, String idempotencyKey) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         LocalDateTime now = businessNow();
-        LocalDate quotaDate = now.toLocalDate();
+        LocalDate quotaDate = BusinessCalendar.legacy().dateAtStorage(now);
         Map<String, String> policy = policyMap(true, quotaDate);
         if (!flag(policy, "phaseOpen", true)) return ApiResult.fail(409, "TRIAL_PHASE_CLOSED");
         if (mapper.trialCycleSignalCount(userId) > 0) return ApiResult.fail(409, "TRIAL_CYCLE_RISK_BLOCKED");
@@ -324,19 +327,19 @@ public class AppTrialLifecycleService {
                     testCloudAdmission.lock();
                     requireUser(userId);
                     return once("TRIAL_CONVERT:PRODUCTION",userId,idempotencyKey,request,
-                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote,false));
+                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote,false,null));
                 });
     }
 
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version) {
-        return settleVerifiedExternal(owner,product,expected,version,false);
+        return settleVerifiedExternal(owner,product,expected,version,false,null);
     }
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
-    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version,boolean legacyQuote) {
+    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version,boolean legacyQuote, PurchaseQuotaReservation reservation) {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
         testCloudAdmission.lock();
-        requireUser(owner); return convertOnce(owner,product,expected,StringUtils.hasText(version)?version:null,legacyQuote);
+        requireUser(owner); return convertOnce(owner,product,expected,StringUtils.hasText(version)?version:null,legacyQuote,reservation);
     }
     @Transactional(readOnly=true)
     public ApiResult<Map<String,Object>> externalPaymentPricing(Long owner,Instant pricingInstant) {
@@ -356,8 +359,54 @@ public class AppTrialLifecycleService {
         return ApiResult.ok(frozen);
     }
 
+    public ExternalPaymentClaim currentExternalPaymentClaim(Long owner) {
+        TrialRow row = mapper.trial(owner);
+        return row == null ? null : new ExternalPaymentClaim(row.claimNo(), row.claimedAt().atZone(BUSINESS_ZONE).toInstant());
+    }
+
+    public record ExternalPaymentClaim(String claimNo, Instant claimedAt) { }
+
+    public Instant requireExternalPaymentConversion(Long owner) {
+        if (!trialGateEnabled()) throw new BizException(409, "TRIAL_KILL_SWITCH_DISABLED");
+        TrialRow row = mapper.trial(owner);
+        LocalDateTime deadline = row == null || !active(row.status()) ? null : conversionDeadline(row);
+        if (!withinConversionDeadline(deadline, businessNow())) {
+            throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        }
+        return deadline.atZone(BUSINESS_ZONE).toInstant();
+    }
+
+    public void checkExternalPaymentQuota(Long owner, String requestedProductNo, LocalDateTime occurredAtUtc) {
+        HardwareQuotaPurchaseGuard.check(mapper, owner, externalPaymentProduct(mapper.trial(owner), requestedProductNo),
+                1, occurredAtUtc);
+    }
+
+    public AppTrialLifecycleMapper.ConversionProduct lockExternalPaymentProduct(Long owner, String requestedProductNo) {
+        String configured = externalPaymentProduct(mapper.lockTrial(owner), requestedProductNo);
+        var product = mapper.lockConversionProduct(configured);
+        if (!availablePhysicalTrialProduct(product)) throw new BizException(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+        return product;
+    }
+
+    private String externalPaymentProduct(TrialRow row, String requestedProductNo) {
+        if (row == null || !active(row.status())) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        String configured = trialProductCode(policyMap(), row);
+        requireExternalPaymentProduct(requestedProductNo, configured);
+        return configured;
+    }
+
+    public static void requireExternalPaymentProduct(String requestedProductNo, String originalProductNo) {
+        if (requestedProductNo == null || !requestedProductNo.matches("[A-Za-z0-9._-]{2,64}")) {
+            throw new BizException(422, "TRIAL_PRODUCT_REQUIRED");
+        }
+        if (!canonicalTrialProductId(originalProductNo).equals(canonicalTrialProductId(requestedProductNo))) {
+            throw new BizException(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
+        }
+    }
+
     private ApiResult<Map<String, Object>> convertOnce(
-            Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote) {
+            Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote,
+            PurchaseQuotaReservation reservation) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
         if (!validExpectedAmount(expectedAmountUsdt)) {
@@ -374,10 +423,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         }
         LocalDateTime now = businessNow();
-        LocalDateTime conversionDeadline = row.expiresAt() == null ? null
-                : "EXTENDED".equals(normalize(row.status())) ? row.expiresAt()
-                : row.expiresAt().plusDays(row.graceDaysSnapshot());
-        if (conversionDeadline == null || !now.isBefore(conversionDeadline)) {
+        if (!withinConversionDeadline(conversionDeadline(row), now)) {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
@@ -421,8 +467,9 @@ public class AppTrialLifecycleService {
         String hostingCenter = hostingCenters.requirePool().assign("trial:" + row.claimNo());
         testCloudAdmission.requireCapacity(1);
         requireCoverage(quote.remainderUsdt(), quote.rewardNex());
-        var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, product.productNo(),
-                LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC));
+        if (reservation != null) reservation.requireSingle(product.id(), product.productNo());
+        var hardwareQuota = reservation == null ? HardwareQuotaPurchaseGuard.reserve(mapper, userId, product.productNo(),
+                LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC)) : null;
         WalletRow wallet = mapper.lockWallet(userId);
         if (wallet == null) return ApiResult.fail(409, "TRIAL_WALLET_UNAVAILABLE");
         if (VerifiedPurchasePayment.active()) VerifiedPurchasePayment.require(userId,amount);
@@ -462,7 +509,7 @@ public class AppTrialLifecycleService {
         }
         String instanceNo = "TRIAL-DEV-" + UUID.randomUUID().toString().replace("-", "")
                 .substring(0, 20).toUpperCase(Locale.ROOT);
-        HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
+        if (hardwareQuota != null) HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
                 "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : normalize(product.productType()),
                 instanceNo, row.deviceName(), subtotal, hostingCenter) != 1) {
@@ -503,6 +550,16 @@ public class AppTrialLifecycleService {
         if (!VerifiedPurchasePayment.active()) paymentAttribution.record(prepared);
         if (!VerifiedPurchasePayment.active()) detail.put("paidTotalUsdt",amount.setScale(2,RoundingMode.HALF_UP).toPlainString());
         return ApiResult.ok(detail);
+    }
+
+    private LocalDateTime conversionDeadline(TrialRow row) {
+        if (row.expiresAt() == null) return null;
+        return "EXTENDED".equals(normalize(row.status())) ? row.expiresAt()
+                : row.expiresAt().plusDays(row.graceDaysSnapshot());
+    }
+
+    private boolean withinConversionDeadline(LocalDateTime deadline, LocalDateTime now) {
+        return deadline != null && now.isBefore(deadline);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -908,7 +965,7 @@ public class AppTrialLifecycleService {
         return "";
     }
 
-    private String canonicalTrialProductId(String value) {
+    private static String canonicalTrialProductId(String value) {
         String normalized = value == null ? "" : value.trim();
         return LEGACY_TRIAL_PRODUCT_ID.equals(normalized) ? CANONICAL_TRIAL_PRODUCT_ID : normalized;
     }
@@ -1029,7 +1086,7 @@ public class AppTrialLifecycleService {
     }
 
     private LocalDate businessDate() {
-        return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock);
+        return BusinessCalendar.legacy().today(clock);
     }
 
     private LocalDateTime businessNow() {

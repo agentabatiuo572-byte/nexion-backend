@@ -71,6 +71,11 @@ public class AppTeamQuotaService {
             tier.put("productId", row.productNo()); tier.put("quotaCode", row.quotaCode());
             tier.put("name", row.name()); tier.put("price", product.get("price"));
             tier.put("monthlyStock", row.monthlyQuota()); tier.put("soldThisMonth", Math.max(0L, value(row.soldThisMonth())));
+            long used = Math.max(0, value(row.usedThisMonth()));
+            long remaining = Math.max(0, row.monthlyQuota() - used);
+            tier.put("usedThisMonth", used);
+            tier.put("pendingThisMonth", Math.max(0, value(row.pendingThisMonth())));
+            tier.put("remaining", remaining);
             tier.put("unlockKind", unlockKind(row.unlockMode()));
             List<Map<String, Object>> conditions = new ArrayList<>();
             if (row.directRefs() != null && row.directRefs() > 0) {
@@ -82,7 +87,7 @@ public class AppTeamQuotaService {
                 conditions.add(condition("teamComputePoints", row.monthComputePoints(), factMap.get("teamComputePoints")));
             }
             tier.put("conditions", conditions); tier.put("perks", perks(product));
-            tier.put("available", Boolean.TRUE.equals(product.get("available")));
+            tier.put("available", Boolean.TRUE.equals(product.get("available")) && remaining > 0);
             tiers.add(tier);
         }
         Map<String, Object> result = new LinkedHashMap<>();
