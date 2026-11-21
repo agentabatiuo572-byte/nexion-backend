@@ -132,6 +132,11 @@ public class PlatformExperienceConfigService {
         // clients render a closed state; never synthesize a download URL.
         PlatformComputeConfigView.ShareConfig value = share.orElseGet(this::unavailableShare);
         PlatformComputeConfigView.AppDownload download = value.appDownload();
+        if ("unavailable".equals(download.source())) {
+            return ApiResult.ok(new PlatformComputeConfigView.ShareConfig(value.baseUrl(), value.channels(),
+                    new PlatformComputeConfigView.AppDownload(download.officialUrl(), "", "", download.apkUrl(),
+                            download.version(), download.releaseNotes(), download.source())));
+        }
         // Released clients reject fragments while parsing the entire platform config.
         // Keep their landing page usable until they opt in; never change stored A3 data.
         if (!officialLinkFragments && StringUtils.hasText(download.officialUrl()) && download.officialUrl().contains("#")) {
@@ -282,12 +287,10 @@ public class PlatformExperienceConfigService {
         if (!"unavailable".equals(source) && !validUrl(officialUrl, false, true)) {
             return "PLATFORM_EXPERIENCE_OFFICIAL_URL_INVALID";
         }
+        if (StringUtils.hasText(download.iosUrl()) && !validUrl(download.iosUrl(), false)) return "PLATFORM_EXPERIENCE_IOS_URL_INVALID";
+        if (StringUtils.hasText(download.androidUrl()) && !validUrl(download.androidUrl(), false)) return "PLATFORM_EXPERIENCE_ANDROID_URL_INVALID";
         if (!"unavailable".equals(source)) {
-            if (StringUtils.hasText(download.iosUrl()) && !validUrl(download.iosUrl(), false)) return "PLATFORM_EXPERIENCE_IOS_URL_INVALID";
-            if (StringUtils.hasText(download.androidUrl()) && !validUrl(download.androidUrl(), false)) return "PLATFORM_EXPERIENCE_ANDROID_URL_INVALID";
             if (StringUtils.hasText(download.apkUrl()) && !validUrl(download.apkUrl(), false)) return "PLATFORM_EXPERIENCE_APK_URL_INVALID";
-        }
-        if (!"unavailable".equals(source)) {
             String englishNotes = download.releaseNotes() == null ? null : download.releaseNotes().get("en");
             if (!StringUtils.hasText(download.version()) || isLocalizedBlank(englishNotes) || !StringUtils.hasText(englishNotes)) {
                 return "PLATFORM_EXPERIENCE_RELEASE_METADATA_REQUIRED";
@@ -312,8 +315,8 @@ public class PlatformExperienceConfigService {
                 trim(request.baseUrl()) == null ? "" : trim(request.baseUrl()), channels,
                 new PlatformComputeConfigView.AppDownload(
                         available && trim(download.officialUrl()) != null ? trim(download.officialUrl()) : "",
-                        available && trim(download.iosUrl()) != null ? trim(download.iosUrl()) : "",
-                        available && trim(download.androidUrl()) != null ? trim(download.androidUrl()) : "",
+                        download.iosUrl() == null ? "" : trim(download.iosUrl()),
+                        download.androidUrl() == null ? "" : trim(download.androidUrl()),
                         available && trim(download.apkUrl()) != null ? trim(download.apkUrl()) : "",
                         available && trim(download.version()) != null ? trim(download.version()) : "",
                         notes,
@@ -374,17 +377,16 @@ public class PlatformExperienceConfigService {
         if (download == null || !SOURCES.contains(download.source())) return false;
         if (!"unavailable".equals(download.source())
                 && !validUrl(download.officialUrl(), false, true)) return false;
-        if (!"unavailable".equals(download.source())
-                && ((StringUtils.hasText(download.iosUrl()) && !validUrl(download.iosUrl(), false))
-                || (StringUtils.hasText(download.androidUrl()) && !validUrl(download.androidUrl(), false))
-                || (StringUtils.hasText(download.apkUrl()) && !validUrl(download.apkUrl(), false)))) return false;
+        if ((StringUtils.hasText(download.iosUrl()) && !validUrl(download.iosUrl(), false))
+                || (StringUtils.hasText(download.androidUrl()) && !validUrl(download.androidUrl(), false))) return false;
+        if (!"unavailable".equals(download.source()) && StringUtils.hasText(download.apkUrl())
+                && !validUrl(download.apkUrl(), false)) return false;
         if (!"unavailable".equals(download.source())
                 && (!StringUtils.hasText(download.version()) || download.releaseNotes() == null
                 || !StringUtils.hasText(download.releaseNotes().get("zh"))
                 || !StringUtils.hasText(download.releaseNotes().get("en")))) return false;
         if ("unavailable".equals(download.source())
-                && (StringUtils.hasText(download.officialUrl()) || StringUtils.hasText(download.iosUrl())
-                || StringUtils.hasText(download.androidUrl()) || StringUtils.hasText(download.apkUrl())
+                && (StringUtils.hasText(download.officialUrl()) || StringUtils.hasText(download.apkUrl())
                 || StringUtils.hasText(download.version()))) return false;
         return true;
     }
