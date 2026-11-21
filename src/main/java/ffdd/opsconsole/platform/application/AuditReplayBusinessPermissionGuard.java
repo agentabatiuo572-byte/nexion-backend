@@ -1868,7 +1868,11 @@ public class AuditReplayBusinessPermissionGuard {
         return switch (operation) {
             case "e1_sku_create", "e1_sku_update" -> {
                 var review=devices.skuProposalReview(new AuditReplayCommand("E",operation,params));
-                yield new DelegatedProposalDescriptor("调整设备型号",review.skuId(),"以服务器型号快照为准","批准后新任务生效","E1",
+                String verb = "e1_sku_create".equals(operation) ? "新增商品" : "编辑商品";
+                // nx_product.name is VARCHAR(128); the 7-character prefix still fits action VARCHAR(160).
+                String name = org.springframework.util.StringUtils.hasText(review.after().name())
+                        ? review.after().name().trim() : review.skuId();
+                yield new DelegatedProposalDescriptor(verb + " · " + name,review.skuId(),"以服务器型号快照为准","批准后新任务生效","E1",
                         review.amplifies()?"fund":"param",review.amplifies(),new AuditLockTarget("E","device_sku",review.skuId()));
             }
             case "e1_legacy_unknown_zero_credit_cancel" -> legacyUnknownDescriptor(params);
