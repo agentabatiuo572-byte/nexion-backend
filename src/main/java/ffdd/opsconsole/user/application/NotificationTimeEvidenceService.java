@@ -134,7 +134,7 @@ public class NotificationTimeEvidenceService {
     private static void check(boolean valid) { if (!valid) throw new EvidenceConflict(); }
     private static final class EvidenceConflict extends RuntimeException {}
     private static EvidenceView view(NotificationRow row, String status, String reason, LocalDateTime deliveryTime, List<FactView> facts) {
-        return new EvidenceView(row.notificationId(), status, reason, row.createdAt(), deliveryTime, "Asia/Shanghai", facts);
+        return new EvidenceView(row.notificationId(), status, reason, row.createdAt(), deliveryTime, DateTimeFormatConfig.BUSINESS_ZONE.getId(), facts);
     }
     public record FactView(String eventId, String eventName, long timestampMillis) {}
     public record EvidenceView(Long notificationId, String status, String reason, LocalDateTime storedCreatedAt,

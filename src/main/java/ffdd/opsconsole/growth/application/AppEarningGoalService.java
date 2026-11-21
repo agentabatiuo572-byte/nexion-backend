@@ -5,6 +5,7 @@ import ffdd.opsconsole.growth.mapper.AppEarningGoalMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
 import ffdd.opsconsole.shared.canonical.AppProductCatalogService;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -30,7 +31,7 @@ import java.util.function.Supplier;
 public class AppEarningGoalService {
     private static final BigDecimal MIN_TARGET = new BigDecimal("100");
     private static final int MAX_DEADLINE_DAYS = 3650;
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = StorageTime.ZONE;
 
     private final AppEarningGoalMapper mapper;
     private final AppProductCatalogService productCatalogService;

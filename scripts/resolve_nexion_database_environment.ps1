@@ -4,7 +4,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$defaultJdbcUrl = "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
+$storageZone = $env:NEXION_TIME_STORAGE_ZONE
+if ([string]::IsNullOrWhiteSpace($storageZone)) { $storageZone = "Asia/Shanghai" }
+$storageZone = $storageZone.Trim()
+if ($storageZone -cnotin @("Asia/Shanghai", "Asia/Ho_Chi_Minh")) {
+  throw "NEXION_TIME_STORAGE_ZONE must be Asia/Shanghai or Asia/Ho_Chi_Minh."
+}
+$storageOffset = if ($storageZone -ceq "Asia/Ho_Chi_Minh") { "+07:00" } else { "+08:00" }
+$defaultJdbcUrl = "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&connectionTimeZone=$storageZone&useSSL=false&allowPublicKeyRetrieval=true"
 $defaultUsername = "root"
 
 function Get-ProcessEnvironmentValue {
@@ -67,6 +74,7 @@ if ($nexionPresent) {
     JdbcUrl = $(if (Test-EnvironmentValuePresent $nexionUrl) { $nexionUrl } else { $defaultJdbcUrl })
     Username = $(if (Test-EnvironmentValuePresent $nexionUsername) { $nexionUsername } else { $defaultUsername })
     Password = $(if ($null -eq $nexionPassword) { "" } else { $nexionPassword })
+    StorageOffset = $storageOffset
   }
   return
 }
@@ -77,6 +85,7 @@ if ($springPresent) {
     JdbcUrl = $springUrl
     Username = $springUsername
     Password = $springPassword
+    StorageOffset = $storageOffset
   }
   return
 }
@@ -90,4 +99,5 @@ if ($RequireExplicit) {
   JdbcUrl = $defaultJdbcUrl
   Username = $defaultUsername
   Password = ""
+  StorageOffset = $storageOffset
 }

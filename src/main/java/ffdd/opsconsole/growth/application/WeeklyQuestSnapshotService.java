@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.growth.domain.AccountWeeklyPeriod;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.user.facade.UserWeeklyRegionFacade;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import org.springframework.core.env.Environment;
@@ -23,7 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 /** A published week is immutable; completion and claims remain individual user progress. */
 @Service
 public class WeeklyQuestSnapshotService {
-    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId ZONE = StorageTime.ZONE;
     private final WeeklyQuestSnapshotMapper mapper;
     private final GrowthRhythmFacade rhythm;
     private final Clock clock;
@@ -55,7 +56,7 @@ public class WeeklyQuestSnapshotService {
         this.environment=environment;
     }
 
-    /** R-1: ISO week of a stored (Beijing) timestamp, cut by the business calendar. */
+    /** R-1: ISO week of a storage-zone timestamp, cut by the business calendar. */
     public static String weekKey(LocalDateTime time) {
         return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().weekKey(time);
     }

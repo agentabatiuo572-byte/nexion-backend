@@ -25,7 +25,7 @@ public interface SupportUnboundPolicyMapper extends BaseMapper<Object> {
     @Insert("INSERT IGNORE INTO nx_support_unbound_policy(id,alert_minutes,fallback_minutes,default_group_id,version,updated_by,reason) VALUES(1,#{alert},#{fallback},NULL,1,'system','系统默认待分配策略')")
     int insertDefault(@Param("alert") int alert, @Param("fallback") int fallback);
 
-    @Select("SELECT p.alert_minutes alertMinutes,p.fallback_minutes fallbackMinutes,p.default_group_id defaultGroupId,g.name defaultGroupName,p.version,p.updated_by updatedBy,p.reason,DATE_FORMAT(CONVERT_TZ(p.updated_at,'+08:00','+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ') updatedAt FROM nx_support_unbound_policy p LEFT JOIN nx_support_group g ON g.id=p.default_group_id WHERE p.id=1")
+    @Select("SELECT p.alert_minutes alertMinutes,p.fallback_minutes fallbackMinutes,p.default_group_id defaultGroupId,g.name defaultGroupName,p.version,p.updated_by updatedBy,p.reason,DATE_FORMAT(CONVERT_TZ(p.updated_at,@@session.time_zone,'+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ') updatedAt FROM nx_support_unbound_policy p LEFT JOIN nx_support_group g ON g.id=p.default_group_id WHERE p.id=1")
     Map<String, Object> read();
 
     @Update("UPDATE nx_support_unbound_policy SET alert_minutes=#{alert},fallback_minutes=#{fallback},default_group_id=#{group},version=version+1,updated_by=#{actor},reason=#{reason} WHERE id=1 AND version=#{version}")

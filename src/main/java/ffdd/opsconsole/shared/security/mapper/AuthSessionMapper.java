@@ -41,8 +41,8 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     @Select("SELECT session_group sessionGroup,installation_id installationId,app_session_version appSessionVersion,"
             +"execution_supported executionSupported,COUNT(*) sessionCount,MAX(last_active_at) lastActiveAt FROM nx_user_session "
             +"WHERE user_id=#{userId} AND is_deleted=0 AND revoked_at IS NULL AND session_ended_reason IS NULL "
-            +"AND expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) "
-            +"AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY) "
+            +"AND expires_at>NOW() "
+            +"AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY) "
             +"AND (session_group='H5' OR (session_group='APP' AND EXISTS(SELECT 1 FROM nx_app_session_state a "
             +"WHERE a.user_id=nx_user_session.user_id AND a.app_session_version=nx_user_session.app_session_version "
             +"AND a.session_chain_id=nx_user_session.session_chain_id AND a.installation_id=nx_user_session.installation_id "
@@ -97,8 +97,8 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             @Param("executionSupported") boolean executionSupported);
 
     @Update("""
-        UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)),
-          session_ended_reason='APP_REPLACED',updated_at=DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)
+        UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,NOW()),
+          session_ended_reason='APP_REPLACED',updated_at=NOW()
         WHERE user_id=#{userId} AND session_group='APP' AND is_deleted=0
           AND session_ended_reason IS NULL
         """)
@@ -113,9 +113,9 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     String FIXED_CONTEXT = FIXED_CONTEXT_MATCH + " FOR UPDATE)))";
     String READ_SESSION_CONTEXT = "refresh_token_id=#{sessionId} AND user_id=#{userId} AND is_deleted=0 "
             + "AND session_ended_reason IS NULL AND " + FIXED_CONTEXT_MATCH + ")))";
-    String LIVE_SESSION = "revoked_at IS NULL AND expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) "
-            + "AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)";
-    String RECENT_ROTATION = "rotation_redeemed_at>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 10 SECOND)";
+    String LIVE_SESSION = "revoked_at IS NULL AND expires_at>NOW() "
+            + "AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)";
+    String RECENT_ROTATION = "rotation_redeemed_at>DATE_SUB(NOW(),INTERVAL 10 SECOND)";
 
     @Select("SELECT EXISTS(SELECT 1 FROM nx_user_session WHERE " + READ_SESSION_CONTEXT
             + " AND (" + LIVE_SESSION + " OR (" + RECENT_ROTATION + " AND rotated_to_id IS NOT NULL"
@@ -139,29 +139,29 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
 
     @Select("SELECT * FROM nx_user_session WHERE refresh_token_id=#{sessionId} AND user_id=#{userId} "
             + "AND is_deleted=0 AND session_ended_reason IS NULL AND " + FIXED_CONTEXT
-            + " AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)"
-            + " AND ((revoked_at IS NULL AND expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR)) "
-            + "OR (rotation_redeemed_at>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL 10 SECOND) "
+            + " AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)"
+            + " AND ((revoked_at IS NULL AND expires_at>NOW()) "
+            + "OR (rotation_redeemed_at>DATE_SUB(NOW(),INTERVAL 10 SECOND) "
             + "AND EXISTS(SELECT 1 FROM nx_user_session live WHERE live.user_id=nx_user_session.user_id "
             + "AND live.session_chain_id=nx_user_session.session_chain_id AND live.revoked_at IS NULL "
-            + "AND live.is_deleted=0 AND live.expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) FOR UPDATE))) FOR UPDATE")
+            + "AND live.is_deleted=0 AND live.expires_at>NOW() FOR UPDATE))) FOR UPDATE")
     UserSessionEntity findAuthorizedSession(@Param("sessionId") String sessionId, @Param("userId") long userId, @Param("idleDays") int idleDays);
 
     @Select("SELECT COUNT(*) FROM nx_user_session WHERE user_id=#{userId} AND installation_id=#{installationId} "
             + "AND session_group='APP' AND execution_supported=1 AND revoked_at IS NULL AND is_deleted=0 "
-            + "AND expires_at>DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR) "
-            + "AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(),INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY) "
+            + "AND expires_at>NOW() "
+            + "AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY) "
             + "AND session_ended_reason IS NULL AND " + FIXED_CONTEXT + " FOR UPDATE")
     int countExecutionOwner(@Param("userId") long userId, @Param("installationId") String installationId, @Param("idleDays") int idleDays);
 
-    // nx_user_session DATETIME values use UTC+08; SQL session time_zone can differ on a host.
+    // The connection pool sets the MySQL session clock to the storage zone of nx_user_session.
     @Select("""
             SELECT * FROM nx_user_session
              WHERE user_id=#{userId}
                AND session_chain_id=(SELECT session_chain_id FROM nx_user_session
                      WHERE user_id=#{userId} AND refresh_token_id=#{currentSessionId} AND is_deleted=0 LIMIT 1)
-               AND revoked_at IS NULL AND expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR) AND is_deleted=0
-               AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
+               AND revoked_at IS NULL AND expires_at>NOW() AND is_deleted=0
+               AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
              ORDER BY id DESC LIMIT 1
             """)
     UserSessionEntity currentUserSession(@Param("userId") Long userId,
@@ -172,8 +172,8 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
              WHERE user_id=#{userId}
                AND session_chain_id<>(SELECT session_chain_id FROM nx_user_session
                      WHERE user_id=#{userId} AND refresh_token_id=#{currentSessionId} AND is_deleted=0 LIMIT 1)
-               AND revoked_at IS NULL AND expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR) AND is_deleted=0
-               AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
+               AND revoked_at IS NULL AND expires_at>NOW() AND is_deleted=0
+               AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
                AND (#{beforeId} IS NULL OR id < #{beforeId})
              ORDER BY id DESC LIMIT 21
             """)
@@ -200,14 +200,14 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
 
     @Update("""
             UPDATE nx_user_session
-               SET rotated_to_id=#{rotatedToId},rotation_redeemed_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),revoked_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               SET rotated_to_id=#{rotatedToId},rotation_redeemed_at=NOW(),revoked_at=NOW(),updated_at=NOW()
              WHERE id=#{id} AND rotation_redeemed_at IS NULL AND revoked_at IS NULL AND is_deleted=0
             """)
     int markRefreshRotated(
             @Param("id") Long id,
             @Param("rotatedToId") String rotatedToId);
 
-    @Update("UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)),updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR) WHERE session_chain_id=#{chainId} AND is_deleted=0")
+    @Update("UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,NOW()),updated_at=NOW() WHERE session_chain_id=#{chainId} AND is_deleted=0")
     int revokeRefreshChain(@Param("chainId") String chainId);
     @Select("""
             SELECT COUNT(1)
@@ -215,7 +215,7 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
              WHERE refresh_token_id = #{sessionId}
                AND user_id = #{userId}
                AND revoked_at IS NULL
-               AND expires_at > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               AND expires_at > NOW()
                AND is_deleted = 0
             """)
     int countActiveUserSession(@Param("sessionId") String sessionId, @Param("userId") Long userId);
@@ -239,12 +239,12 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
 
     @Update("""
             UPDATE nx_user_session
-               SET last_active_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               SET last_active_at=NOW(),updated_at=NOW()
              WHERE refresh_token_id=#{sessionId}
                AND user_id=#{userId}
                AND revoked_at IS NULL
-               AND expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
-               AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
+               AND expires_at>NOW()
+               AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
                AND is_deleted=0
             """)
     int touchLockedActiveUserSession(
@@ -269,7 +269,7 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             Long liveId = findActiveUserSessionInChain(issued.getSessionChainId(), userId, idleDays);
             if (liveId == null) return 0;
             if (lockRotatedSuccessor(liveId, userId, issued.getSessionChainId()) == 0) continue;
-            // UTC_TIMESTAMP is fixed at statement start. Acquire the live lock without
+            // NOW() is fixed at statement start. Acquire the live lock without
             // touching activity, then check expiry/idle in a fresh statement after waiting.
             int touched = touchRotatedSuccessor(liveId, userId, issued.getSessionChainId(),
                     issued.getRotationRedeemedAt(), idleDays);
@@ -289,7 +289,7 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     @Select("""
             SELECT * FROM nx_user_session
              WHERE refresh_token_id=#{sessionId} AND user_id=#{userId} AND is_deleted=0
-               AND rotation_redeemed_at>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL 10 SECOND)
+               AND rotation_redeemed_at>DATE_SUB(NOW(),INTERVAL 10 SECOND)
                AND rotated_to_id IS NOT NULL
             """)
     UserSessionEntity findRecentUserSessionRotation(@Param("sessionId") String sessionId, @Param("userId") Long userId);
@@ -297,8 +297,8 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     @Select("""
             SELECT id FROM nx_user_session
              WHERE session_chain_id=#{chainId} AND user_id=#{userId} AND revoked_at IS NULL AND is_deleted=0
-               AND expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
-               AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
+               AND expires_at>NOW()
+               AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
              ORDER BY id DESC LIMIT 1
             """)
     Long findActiveUserSessionInChain(@Param("chainId") String chainId, @Param("userId") Long userId,
@@ -313,12 +313,12 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
 
     @Update("""
             UPDATE nx_user_session
-               SET last_active_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               SET last_active_at=NOW(),updated_at=NOW()
              WHERE id=#{id} AND user_id=#{userId} AND session_chain_id=#{chainId}
-               AND #{redeemedAt}>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL 10 SECOND)
+               AND #{redeemedAt}>DATE_SUB(NOW(),INTERVAL 10 SECOND)
                AND revoked_at IS NULL AND is_deleted=0
-               AND expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
-               AND COALESCE(last_active_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
+               AND expires_at>NOW()
+               AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
             """)
     int touchRotatedSuccessor(@Param("id") Long id, @Param("userId") Long userId, @Param("chainId") String chainId,
             @Param("redeemedAt") java.time.LocalDateTime redeemedAt, @Param("idleDays") int idleDays);
@@ -328,8 +328,8 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
               FROM nx_user_session
              WHERE user_id=#{userId}
                AND revoked_at IS NULL
-               AND expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
-               AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),INTERVAL #{idleDays} DAY)
+               AND expires_at>NOW()
+               AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
                AND is_deleted=0
              ORDER BY COALESCE(last_active_at,updated_at,created_at) DESC,id DESC
             """)
@@ -341,22 +341,22 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             UPDATE nx_user_session live
               JOIN nx_user_session target
                 ON target.session_chain_id=live.session_chain_id AND target.user_id=live.user_id
-               SET live.revoked_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),live.updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               SET live.revoked_at=NOW(),live.updated_at=NOW()
              WHERE target.user_id=#{userId} AND target.refresh_token_id=#{sessionId}
                AND target.is_deleted=0
-               AND live.revoked_at IS NULL AND live.expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR) AND live.is_deleted=0
+               AND live.revoked_at IS NULL AND live.expires_at>NOW() AND live.is_deleted=0
             """)
     int revokeOwnedUserSession(@Param("userId") Long userId, @Param("sessionId") String sessionId);
 
     @Update("""
             UPDATE nx_user_session
-               SET revoked_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR),updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               SET revoked_at=NOW(),updated_at=NOW()
              WHERE user_id=#{userId}
                AND session_chain_id<>(SELECT session_chain_id FROM (
                      SELECT session_chain_id FROM nx_user_session
                       WHERE user_id=#{userId} AND refresh_token_id=#{currentSessionId} AND is_deleted=0 LIMIT 1
                    ) current_chain)
-               AND revoked_at IS NULL AND expires_at>DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR) AND is_deleted=0
+               AND revoked_at IS NULL AND expires_at>NOW() AND is_deleted=0
             """)
     int revokeOtherUserSessions(
             @Param("userId") Long userId,
@@ -364,7 +364,7 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
 
     @Update("""
             UPDATE nx_user_session
-               SET revoked_at=COALESCE(revoked_at,DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)),updated_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL 8 HOUR)
+               SET revoked_at=COALESCE(revoked_at,NOW()),updated_at=NOW()
              WHERE user_id=#{userId} AND is_deleted=0
             """)
     int revokeAllUserSessions(@Param("userId") Long userId);

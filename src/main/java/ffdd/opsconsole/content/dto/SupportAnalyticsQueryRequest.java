@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.dto;
 import ffdd.opsconsole.content.domain.SupportAnalyticsStats.Basis;
 import ffdd.opsconsole.content.domain.SupportAnalyticsStats.Query;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
@@ -13,7 +14,7 @@ public record SupportAnalyticsQueryRequest(String view, String category, String 
         String keyword, String basis, String from, String to, String businessZone, String groupId,
         String agentId, String currency, String sortKey, String direction, String pageNum,
         String pageSize, String expectedVersion) {
-    public static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    public static final ZoneId BUSINESS_ZONE = StorageTime.ZONE;
     private static final long MAX_SAFE_INTEGER = 9007199254740991L;
     public enum View { OVERVIEW, AGENTS, CUSTOMERS, FINANCE, NET_CONTRIBUTIONS, FIRST_DEPOSITS, FIRST_PURCHASES, DEVICES, ACTIVITY }
     public enum Category { ALL, BOUND, PENDING, ANOMALY }

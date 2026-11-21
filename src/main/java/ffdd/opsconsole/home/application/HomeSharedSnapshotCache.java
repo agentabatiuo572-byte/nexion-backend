@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.TaskPriceHistoryRow;
+import ffdd.opsconsole.shared.config.StorageTime;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -26,7 +27,7 @@ import org.springframework.stereotype.Component;
 @Slf4j
 public class HomeSharedSnapshotCache {
     private static final long MAX_AGE_MILLIS = 5_000;
-    private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId SERVER_ZONE = StorageTime.ZONE;
     private final AppHomeOverviewMapper mapper;
     private final StringRedisTemplate redis;
     private final Clock clock;

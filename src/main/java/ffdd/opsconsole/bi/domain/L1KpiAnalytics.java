@@ -1,6 +1,7 @@
 package ffdd.opsconsole.bi.domain;
 
 import ffdd.opsconsole.shared.config.BusinessCalendar;
+import ffdd.opsconsole.shared.config.StorageTime;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
@@ -26,7 +27,7 @@ import java.util.function.Predicate;
 
 /** L1 pure read-model calculator over schema-accepted A4 KPI event facts. */
 public final class L1KpiAnalytics {
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = StorageTime.ZONE;
     private static final int MINIMUM_SAMPLE_SIZE = 5;
     public static final List<Integer> KPI_IDS = List.of(1, 2, 3, 4, 5, 7, 8);
     private static final List<Integer> REGISTRATION_COHORT_KPI_IDS = List.of(1, 2, 3, 4, 5, 7);
@@ -38,7 +39,7 @@ public final class L1KpiAnalytics {
     private L1KpiAnalytics() {
     }
 
-    /** R-1: business calendar date of a stored (Beijing) timestamp. */
+    /** R-1: business calendar date of a storage-zone timestamp. */
     private static LocalDate businessDay(LocalDateTime storageTime) { return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(storageTime); }
 
     /** Calendar boundary shared by L1 reads and export selection validation. */
@@ -771,7 +772,7 @@ public final class L1KpiAnalytics {
                         || toDate.isAfter(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now))) {
                     throw new IllegalArgumentException("L1_CUSTOM_WINDOW_INVALID");
                 }
-                // R-1: custom dates are business dates; bounds are stored (Beijing) timestamps.
+                // R-1: custom dates are business dates; bounds are storage-zone timestamps.
                 LocalDateTime to = toDate.equals(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAtStorage(now))
                         ? now : ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(toDate.plusDays(1)).minusNanos(1);
                 return new WindowRange("custom", ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(fromDate), to);

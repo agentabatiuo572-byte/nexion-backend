@@ -4,16 +4,19 @@ package ffdd.opsconsole.shared.config;
  * R-1: SQL counterpart of {@link BusinessCalendar} for database-clock queries. Every expression is a
  * compile-time constant (usable in mapper annotations): the business offset is read from nx_business_calendar
  * by a scalar subquery, so a newly configured time zone applies without changing mapper signatures.
- * Storage remains UTC+8 (480 minutes). No expression contains "<", so they also fit XML &lt;script&gt; mappers. Expressions ending in _START / _END are stored timestamps; _DATE are
+ * The connection's session clock is set to the configured storage zone. No expression contains "<",
+ * so they also fit XML &lt;script&gt; mappers. Expressions ending in _START / _END are stored timestamps; _DATE are
  * business dates.
  */
 public final class BusinessPeriodSql {
-    public static final String STORAGE_NOW = "CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')";
+    public static final String STORAGE_NOW = "NOW()";
+    public static final String STORAGE_OFFSET_MINUTES = "TIMESTAMPDIFF(MINUTE,UTC_TIMESTAMP()," + STORAGE_NOW + ")";
     /*
      * The calendar is read through a derived table whose columns are all prefixed bc_, so an unqualified outer
      * column passed in by a caller (created_at, id, ...) can never bind to a calendar column of the same name.
      */
-    static final String DELTA_HEAD = "COALESCE((SELECT bc.bc_offset-480 FROM (SELECT id AS bc_id,track AS bc_track,"
+    static final String DELTA_HEAD = "COALESCE((SELECT bc.bc_offset-" + STORAGE_OFFSET_MINUTES
+            + " FROM (SELECT id AS bc_id,track AS bc_track,"
             + "offset_minutes AS bc_offset,effective_storage_at AS bc_at,effective_date AS bc_on"
             + " FROM nx_business_calendar WHERE is_deleted=0) bc WHERE bc.bc_track IN ('";
     static final String AT_MID = "','GLOBAL') AND NOT bc.bc_at>";
@@ -28,7 +31,7 @@ public final class BusinessPeriodSql {
         return "DATE_ADD(" + storageExpr + ",INTERVAL " + DELTA_HEAD + track + AT_MID + storageExpr + AT_TAIL + " MINUTE)";
     }
 
-    /** Beijing time until a GLOBAL version takes effect. */
+    /** The installation's default business calendar until a GLOBAL version takes effect. */
     public static final class Legacy {
         static final String T = BusinessCalendar.LEGACY;
         public static final String NOW = "DATE_ADD(" + STORAGE_NOW + ",INTERVAL " + DELTA_HEAD + T + AT_MID + STORAGE_NOW + AT_TAIL + " MINUTE)";

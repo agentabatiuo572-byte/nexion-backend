@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,7 +36,7 @@ public class H3WeeklyExchangeReferralEventConsumer {
     private static final String SOURCE = "H3_WEEKLY_EXCHANGE_REFERRAL";
     private static final String SKIPPED_OUTSIDE_CURRENT_ROLLOUT_WEEK =
             "H3_WEEKLY_EXCHANGE_REFERRAL_OUTSIDE_CURRENT_ROLLOUT_WEEK";
-    private static final ZoneId WEEK_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId WEEK_ZONE = StorageTime.ZONE;
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
 
     private final H3WeeklyExchangeReferralMapper mapper;

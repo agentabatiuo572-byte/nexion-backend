@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.growth.mapper.QuestCanonicalEventBindingMapper;
 import ffdd.opsconsole.growth.mapper.DayOneInstanceMapper;
@@ -29,7 +30,7 @@ public class QuestCanonicalEventConsumer {
 
     static final String CONSUMER_GROUP = "h3-quest-completion";
     static final String TOPIC = "spring-local-h3-quest-completion";
-    private static final ZoneId WEEK_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId WEEK_ZONE = StorageTime.ZONE;
     private static final Set<String> WEEKLY_THRESHOLD_EVENTS = Set.of(
             "H3_STOREFRONT_THREE_PRODUCTS_VIEWED", "H3_GENESIS_SECONDARY_MARKET_VIEWED",
             "H3_COMPUTE_COMPLETED_50", "H3_REFERRAL_REGISTERED", "H3_EXCHANGE_COMPLETED");

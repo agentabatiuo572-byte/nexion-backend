@@ -1,13 +1,14 @@
 package ffdd.opsconsole.bi.domain;
 
 import ffdd.opsconsole.shared.config.BusinessCalendar;
+import ffdd.opsconsole.shared.config.StorageTime;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -25,7 +26,7 @@ import java.util.TreeMap;
  * incomplete denominators as null instead of manufacturing operational rates.
  */
 public final class L4OperationsAnalytics {
-    private static final ZoneOffset BUSINESS_OFFSET = ZoneOffset.ofHours(8);
+    private static final ZoneId STORAGE_ZONE = StorageTime.ZONE;
     private static final List<String> PHASES = List.of("P1", "P2", "P3", "P4", "P5", "P6");
     private static final Set<String> L4_EVENTS = Set.of(
             "device.purchase_completed", "device.first_yield_received", "device.locked", "device.retired",
@@ -44,7 +45,7 @@ public final class L4OperationsAnalytics {
 
     public static Map<String, Object> calculate(
             List<Map<String, Object>> source, String period, String phase, String from, String to) {
-        return calculate(source, period, phase, from, to, LocalDateTime.now(BUSINESS_OFFSET));
+        return calculate(source, period, phase, from, to, LocalDateTime.now(STORAGE_ZONE));
     }
 
     static Map<String, Object> calculate(
@@ -602,7 +603,7 @@ public final class L4OperationsAnalytics {
                     || ChronoUnit.DAYS.between(start, end) > 399) {
                 throw new IllegalArgumentException("L4_CUSTOM_RANGE_INVALID");
             }
-            // R-1: custom dates are business dates; bounds are stored (Beijing) timestamps.
+            // R-1: custom dates are business dates; bounds are storage-zone timestamps.
             long days = ChronoUnit.DAYS.between(start, end) + 1;
             return new Range(ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(start),
                     ffdd.opsconsole.shared.config.BusinessCalendar.legacy().storageStart(end.plusDays(1)).minusNanos(1), days);

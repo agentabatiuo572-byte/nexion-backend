@@ -7,6 +7,7 @@ import ffdd.opsconsole.growth.mapper.ReferralRewardMapper.AppReferralAccount;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper.AppReferralLedgerRow;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper.AppReferralLedgerSummary;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -19,7 +20,7 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class AppReferralRewardService {
-    private static final ZoneId DATABASE_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId DATABASE_ZONE = StorageTime.ZONE;
     public static final int MAX_LIMIT = 20;
     private static final List<String> PRODUCTION_FACT_SOURCES = List.of(
             "nx_referral_reward_settlement",

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.treasury.application;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.StorageTime;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -25,7 +26,7 @@ import org.springframework.stereotype.Component;
 @ConditionalOnProperty(name = "nexion.treasury.development-reserve.enabled", havingValue = "true")
 @Slf4j
 public class DevelopmentTreasuryReserveBootstrap implements ApplicationRunner {
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = StorageTime.ZONE;
 
     private final OpsTreasuryService treasuryService;
     private final Clock clock;

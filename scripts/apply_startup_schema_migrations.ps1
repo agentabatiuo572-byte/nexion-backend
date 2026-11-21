@@ -546,6 +546,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261120_lc02_hdpay_withdrawal_schema.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_h9_launch_display.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_h9_active_jobs_display.sql")
+  (Join-Path $root "scripts\migrations\20261121_lc2_storage_timezone.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_fin.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_growth_team_support.sql")
 )
@@ -601,16 +602,18 @@ $previousMySqlPassword = $env:MYSQL_PWD
 Push-Location -LiteralPath $root.Path
 try {
   $env:MYSQL_PWD = $Password
+  $mysqlArgs = @('--default-character-set=utf8mb4', '--protocol=tcp',
+    "--init-command=SET SESSION time_zone = '$($databaseEnvironment.StorageOffset)'",
+    '-h', $databaseUri.Host, '-P', $port, '-u', $Username, $database)
   # S3 may require adjudication of legacy assignments; never apply it automatically.
   # Inspect actual columns so an equivalent schema without its old marker is still accepted.
   $supportOwnerPreflightSql = Get-Content -LiteralPath (Join-Path $PSScriptRoot "support_ticket_owner_preflight.sql") -Raw
-  $supportBindingSchema = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e $supportOwnerPreflightSql
+  $supportBindingSchema = & $MySql @mysqlArgs -N -B -e $supportOwnerPreflightSql
   if ($LASTEXITCODE -ne 0 -or (@($supportBindingSchema) -join "`n").Trim() -ne "READY") {
     throw "Support ticket ownership requires the S3 binding schema before startup migrations. $supportBindingSchema. Follow docs/HANDOFF-support-s3.md and review/apply scripts/migrations/20260929_support_binding_s3.sql first; startup does not automatically resolve legacy assignment conflicts."
   }
   # Repo-relative paths (Push-Location above) keep this single -e argument under the Windows command-line limit.
   $rootPrefix = $root.Path.TrimEnd('\', '/')
-  $mysqlArgs = @('--default-character-set=utf8mb4', '--protocol=tcp', '-h', $databaseUri.Host, '-P', $port, '-u', $Username, $database)
   # Refuse the nickname migration before its UPDATE when final names collide with
   # existing names or with each other. This is read-only; the operator resolves
   # the listed rows and retries the controlled startup.
@@ -667,7 +670,7 @@ SELECT f.id, f.original_nickname, f.target_nickname
   }
   Write-Host "Support schema installed. After the API starts, run scripts/manual_migrations/20261009_support_rules_unconfigured_upgrade.ps1 with an authorized administrator, saved operation ID and proof file. Installation is not ready until that command reads back LIMITED/UNLIMITED; it preserves existing explicit configuration and never creates a missing row."
 
-  $fundsReady = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e 'SELECT nx_support_fund_schema_ready_v1();'
+  $fundsReady = & $MySql @mysqlArgs -N -B -e 'SELECT nx_support_fund_schema_ready_v1();'
   if ($LASTEXITCODE -ne 0 -or (@($fundsReady) -join "`n").Trim() -ne '1') {
     throw 'Support funds reader is not ready after startup migrations.'
   }
@@ -684,11 +687,11 @@ SELECT f.id, f.original_nickname, f.target_nickname
     'd2_previous_status', 'd2_pre_freeze_reason', 'terminal_reason', 'retriable', 'created_at', 'updated_at', 'is_deleted'
   )
   $withdrawalOrderColumnSql = ($withdrawalOrderColumns | ForEach-Object { "'$_'" }) -join ','
-  $requiredWithdrawalColumnCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_withdrawal_order' AND COLUMN_NAME IN ($withdrawalOrderColumnSql);"
+  $requiredWithdrawalColumnCount = & $MySql @mysqlArgs -N -B -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_withdrawal_order' AND COLUMN_NAME IN ($withdrawalOrderColumnSql);"
   if ($LASTEXITCODE -ne 0 -or (@($requiredWithdrawalColumnCount) -join "`n").Trim() -ne [string]$withdrawalOrderColumns.Count) {
     throw "Withdrawal order schema startup postcondition failed: all $($withdrawalOrderColumns.Count) required columns must exist. Apply the controlled startup prerequisites, including 20261015_withdrawal_order_schema_readiness.sql, 20261105_d2_preserve_review_reason.sql and 20261107_b35_withdrawal_review_route.sql. Backend startup has been stopped."
   }
-  $requiredQuoteExpiryColumnCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_bank_payout_quote_expiry' AND COLUMN_NAME IN ('quote_no','expired_at');"
+  $requiredQuoteExpiryColumnCount = & $MySql @mysqlArgs -N -B -e "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_bank_payout_quote_expiry' AND COLUMN_NAME IN ('quote_no','expired_at');"
   if ($LASTEXITCODE -ne 0 -or (@($requiredQuoteExpiryColumnCount) -join "`n").Trim() -ne "2") {
     throw "Withdrawal quote expiry schema startup postcondition failed: quote_no and expired_at are required. Apply scripts/migrations/20260916_bank_beneficiary_verification.sql. Backend startup has been stopped."
   }
@@ -696,12 +699,12 @@ SELECT f.id, f.original_nickname, f.target_nickname
   # INSERT IGNORE keeps operator-owned versions immutable. Pair it with an
   # explicit postcondition so a conflicting draft/revoked v6 cannot be
   # silently mistaken for a usable production publication.
-  $requiredLegalTermsLocaleCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(DISTINCT locale) FROM nx_legal_terms_version WHERE locale IN ('vi','zh','en') AND jurisdiction='GLOBAL' AND status='PUBLISHED' AND is_deleted=0 AND JSON_LENGTH(sections_json) >= 1 AND NOT (locale='en' AND version_label='v4' AND title='Nexion Acceptance Terms seven-closures-20260817 post-fix-v4' AND summary='QA acceptance fixture') AND NOT (version_label='v5' AND last_operator='migration:formal-terms-v5');"
+  $requiredLegalTermsLocaleCount = & $MySql @mysqlArgs -N -B -e "SELECT COUNT(DISTINCT locale) FROM nx_legal_terms_version WHERE locale IN ('vi','zh','en') AND jurisdiction='GLOBAL' AND status='PUBLISHED' AND is_deleted=0 AND JSON_LENGTH(sections_json) >= 1 AND NOT (locale='en' AND version_label='v4' AND title='Nexion Acceptance Terms seven-closures-20260817 post-fix-v4' AND summary='QA acceptance fixture') AND NOT (version_label='v5' AND last_operator='migration:formal-terms-v5');"
   if ($LASTEXITCODE -ne 0 -or $requiredLegalTermsLocaleCount.Trim() -ne "3") {
     throw "Legal terms startup postcondition failed: published vi, zh, and en production terms are required. Backend startup has been stopped."
   }
 
-  $requiredIndexCount = & $MySql --default-character-set=utf8mb4 --protocol=tcp -N -B -h $databaseUri.Host -P $port -u $Username $database -e "SELECT COUNT(*) FROM (SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS indexed_columns FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = '$databaseSqlLiteral' AND TABLE_NAME = 'nx_admin_idempotency_record' AND INDEX_NAME IN ('idx_admin_idem_status_expires_deleted', 'idx_admin_idem_expiry_claim') GROUP BY INDEX_NAME) actual WHERE (INDEX_NAME = 'idx_admin_idem_status_expires_deleted' AND indexed_columns = 'status,expires_at,is_deleted') OR (INDEX_NAME = 'idx_admin_idem_expiry_claim' AND indexed_columns = 'status,is_deleted,expires_at,id');"
+  $requiredIndexCount = & $MySql @mysqlArgs -N -B -e "SELECT COUNT(*) FROM (SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS indexed_columns FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = '$databaseSqlLiteral' AND TABLE_NAME = 'nx_admin_idempotency_record' AND INDEX_NAME IN ('idx_admin_idem_status_expires_deleted', 'idx_admin_idem_expiry_claim') GROUP BY INDEX_NAME) actual WHERE (INDEX_NAME = 'idx_admin_idem_status_expires_deleted' AND indexed_columns = 'status,expires_at,is_deleted') OR (INDEX_NAME = 'idx_admin_idem_expiry_claim' AND indexed_columns = 'status,is_deleted,expires_at,id');"
   if ($LASTEXITCODE -ne 0 -or $requiredIndexCount.Trim() -ne "2") {
     throw "Both required idempotency expiry-recovery indexes with their exact column order must exist after migrations. Backend startup has been stopped."
   }

@@ -56,7 +56,7 @@ public interface BinaryCommissionSettlementMapper extends BaseMapper<Object> {
     record AssignmentMemberRow(Long ownerUserId, Long memberUserId, String leg,
                                String assignedBy, LocalDateTime assignedAt, String assignmentSource) {
         /**
-         * The DB stores DATETIME in the fixed Asia/Shanghai storage contract; expose
+         * DATETIME uses the configured storage zone. Expose
          * the same value as an offset-bearing instant while keeping assignedAt intact.
          */
         @JsonProperty("assignedAtIso")

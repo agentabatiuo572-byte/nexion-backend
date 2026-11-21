@@ -4,8 +4,9 @@ import ffdd.opsconsole.bi.application.BehaviorAnalyticsAcceptanceProfileConditio
 import ffdd.opsconsole.bi.application.BehaviorAnalyticsService;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.StorageTime;
+import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Conditional;
@@ -34,9 +35,8 @@ public class OpsBehaviorAnalyticsAcceptanceController {
             @RequestParam(value = "route", required = false) String route,
             @RequestParam("from") OffsetDateTime from,
             @RequestParam("to") OffsetDateTime to) {
-        ZoneOffset businessOffset = ZoneOffset.ofHours(8);
         return service.acceptanceBehavior(runId, observationToken, actorHash, sessionHash, route,
-                from.withOffsetSameInstant(businessOffset).toLocalDateTime(),
-                to.withOffsetSameInstant(businessOffset).toLocalDateTime());
+                LocalDateTime.ofInstant(from.toInstant(), StorageTime.ZONE),
+                LocalDateTime.ofInstant(to.toInstant(), StorageTime.ZONE));
     }
 }

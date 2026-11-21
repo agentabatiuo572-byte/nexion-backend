@@ -16,6 +16,7 @@ import ffdd.opsconsole.finance.mapper.D1FinanceClosureMapper;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
@@ -42,7 +43,7 @@ public class TopupCardLifecycleService {
             "ETH", Set.of("ETHEREUM-NODE", "INFURA", "ALCHEMY"));
     private static final Set<String> STATEMENT_STATUSES = Set.of("PAID", "CONFIRMED", "SETTLED");
     private static final BigDecimal MAX_TOPUP = new BigDecimal("1000000");
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = DateTimeFormatConfig.BUSINESS_ZONE;
 
     @lombok.NonNull
     private final SupportPaymentAttributionFacade paymentAttribution;

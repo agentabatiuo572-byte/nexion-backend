@@ -8,6 +8,7 @@ import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -17,7 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
@@ -53,7 +54,7 @@ public class BehaviorAnalyticsService {
     private static final Set<String> DEVICES = Set.of("APP", "H5", "MP");
     private static final Set<String> ZONES = Set.of("TOP", "MAIN_CTA", "CONTENT", "BOTTOM");
     private static final long MAX_DWELL_MS = 86_400_000L;
-    private static final ZoneOffset BUSINESS_ZONE = ZoneOffset.ofHours(8);
+    private static final ZoneId BUSINESS_ZONE = StorageTime.ZONE;
 
     private final BehaviorAnalyticsMapper mapper;
     private final BehaviorAnalyticsSandboxMapper sandboxMapper;

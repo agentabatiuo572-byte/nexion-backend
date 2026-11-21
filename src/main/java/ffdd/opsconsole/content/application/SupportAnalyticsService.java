@@ -656,7 +656,7 @@ public class SupportAnalyticsService {
         // Type-only identity for pure projection: internalSampling routes every source read to FactMapper.
         // No Authentication is installed, and this identity is never serialized into a generation or HTTP version.
         var scope=new ReadScope(9_007_199_254_740_991L,ReadMode.ALL,null,null);
-        var query=new Query(ReadMode.ALL,null,null,Basis.PERIOD_EVENT,LocalDateTime.of(1000,1,1,0,0),LocalDateTime.of(9999,1,1,0,0),"Asia/Shanghai",null);
+        var query=new Query(ReadMode.ALL,null,null,Basis.PERIOD_EVENT,LocalDateTime.of(1000,1,1,0,0),LocalDateTime.of(9999,1,1,0,0),SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),null);
         var c=new QueryCapture();c.internalSampling=true;c.singleCustomer=true;c.sampledFacts=raw;
         var result=withNet(evaluate(query,scope,c),c);
         if(raw.contributions().customers().stream().anyMatch(r->r.reasons().contains("READ_FAILED")))
@@ -676,7 +676,7 @@ public class SupportAnalyticsService {
         }
         var views=new TreeMap<String,List<Customer>>();
         for(String currency:List.of("*","USDT","UVT"))for(boolean asset:List.of(false,true)) {
-            var q=new Query(ReadMode.ALL,null,null,asset?Basis.CURRENT_ASSET:Basis.CURRENT_CUSTOMER_HISTORY,null,null,"Asia/Shanghai",currency.equals("*")?null:currency);
+            var q=new Query(ReadMode.ALL,null,null,asset?Basis.CURRENT_ASSET:Basis.CURRENT_CUSTOMER_HISTORY,null,null,SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),currency.equals("*")?null:currency);
             views.put((asset?"ASSET:":"HISTORY:")+currency,result.currentCustomers().stream().map(old->compileCustomer(old,q,c,perRootNet.get(old.customerId()))).toList());
         }
         var roots=c.current.keySet();var rules=factMapper.queryRules();

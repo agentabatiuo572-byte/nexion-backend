@@ -7,6 +7,7 @@ import ffdd.opsconsole.commerce.mapper.CommerceSandboxTrialMapper.TrialClaim;
 import ffdd.opsconsole.commerce.mapper.CommerceSandboxTrialMapper.TrialClaimWrite;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -33,7 +34,7 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class CommerceSandboxTrialService {
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = StorageTime.ZONE;
     private static final int TRIAL_DAYS = 3;
     private static final int GRACE_DAYS = 7;
     private static final BigDecimal OFFSET_CAP = new BigDecimal("50.000000");

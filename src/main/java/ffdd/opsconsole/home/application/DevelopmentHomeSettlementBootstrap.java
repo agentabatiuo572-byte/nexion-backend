@@ -10,6 +10,7 @@ import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentTa
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.math.BigDecimal;
@@ -60,7 +61,7 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
     private static final String FIXED_PHONE = "18708173775";
     private static final String CLIENT_NAME = "UVEL Development Workload";
     private static final String TASK_PREFIX = "DEV-TASK-";
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = StorageTime.ZONE;
     private static final Set<String> TASK_CLASSES = Set.of("IG", "VG", "LL", "FT", "EM", "SP");
 
     private final DevelopmentHomeSettlementMapper mapper;

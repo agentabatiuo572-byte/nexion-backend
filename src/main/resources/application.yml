@@ -27,15 +27,14 @@ spring:
       max-request-size: ${NEXION_MEDIA_MAX_REQUEST_SIZE:220MB}
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: ${NEXION_DB_URL:jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    url: ${NEXION_DB_URL:jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&connectionTimeZone=${NEXION_TIME_STORAGE_ZONE:Asia/Shanghai}&useSSL=false&allowPublicKeyRetrieval=true}
     username: ${NEXION_DB_USERNAME:root}
     password: ${NEXION_DB_PASSWORD:}
-    # D1 persists business LocalDateTime values in UTC+08. Keep every pooled
-    # session's NOW()/DATE_SUB comparisons in that same clock, independent of host timezone.
+    # Keep pooled NOW()/DATE_SUB comparisons and DATETIME writes on the storage clock.
     hikari:
       minimum-idle: 10
       maximum-pool-size: 100
-      connection-init-sql: "SET time_zone = '+08:00'"
+      connection-init-sql: "SET time_zone = '${nexion.time.storage-offset}'"
   data:
     redis:
       host: ${NEXION_REDIS_HOST:127.0.0.1}
