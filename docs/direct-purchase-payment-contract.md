@@ -62,12 +62,8 @@ For the same owner and purchase kind, an in-progress intent takes precedence ove
 | --- | --- | --- | --- |
 | In-progress intent | 409 | `PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED` | An intent is already in progress for the same business. |
 | Order E1 | 409 | `PURCHASE_GATE_NOT_MET` | The buyer does not meet the current E1 purchase conditions. |
-| Order E1 | 409 | `PURCHASE_GATE_SOLD_OUT` | The E1 lifetime counter has reached the cap. |
 | Order E1 | 409 | `PURCHASE_GATE_INVALID` | The product's E1 gate configuration cannot be evaluated. |
 | Order E1 | 503 | `PURCHASE_GATE_FACTS_UNAVAILABLE` | The buyer facts needed by the E1 gate are temporarily unavailable. Retry the request. |
-
-Before payment the order checks return these exact E1 reasons. Settlement of a paid order (wallet `/pay` or delivery of a confirmed external payment) still reports any E1 gate refusal as 409 `PURCHASE_GATE_BLOCKED`.
-
 | Order E1 | 409 | `PURCHASE_GATE_SOLD_OUT` | The gate allowed the purchase, but the line quantity exceeds the remaining quota or the quota generation is invalid. |
 | Replacement E1 | 403 | `PURCHASE_GATE_SOLD_OUT` | The target's lifetime quota is exhausted. |
 | Replacement E1 | 403 | `PURCHASE_GATE_NOT_MET` | The buyer does not meet the target's requirements. |
@@ -78,6 +74,8 @@ Before payment the order checks return these exact E1 reasons. Settlement of a p
 | Trial conversion checks | 409 | `TRIAL_NOT_CONVERTIBLE` | The claim is inactive or its conversion window has closed. |
 | Trial conversion checks | 422 | `TRIAL_PRODUCT_REQUIRED` | The requested trial conversion product is missing or malformed. |
 | Trial conversion checks | 409 | `TRIAL_PRODUCT_NOT_ELIGIBLE` | The requested product does not match the claim's conversion product, or the claim has no valid configured product. |
+
+Before payment the order checks return these exact E1 reasons. Settlement of a paid order (wallet `/pay` or delivery of a confirmed external payment) still reports any E1 gate refusal as 409 `PURCHASE_GATE_BLOCKED`.
 
 Quota remains available to other purchasers while an intent awaits payment. A quota failure during confirmed payment delivery can still send the intent to `MANUAL_REVIEW`.
 
