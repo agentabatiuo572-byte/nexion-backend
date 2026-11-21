@@ -749,7 +749,7 @@ public class SupportFundReadService {
         if("BANK-VND".equals(order.get("chain"))) {
             var matches=banks.stream().filter(row->no.equals(row.get("withdrawalNo")) &&number(row,"userId")==customer).toList();
             require(matches.size()==1,Gap.SOURCE);var bank=matches.get(0);
-            reservation=nodeEquals(source.path("bankReservation"),bank)
+            reservation=matchesBankReservation(source.path("bankReservation"),bank,text(order,"status"))
                 &&decimal(bank.get("amount")).compareTo(decimal(order.get("amount")))==0
                 &&decimal(bank.get("fee")).compareTo(decimal(order.get("actualFee")))==0
                 &&decimal(bank.get("net")).compareTo(decimal(order.get("netReceive")))==0;
@@ -855,6 +855,22 @@ public class SupportFundReadService {
         if(value instanceof Timestamp t)return t.toLocalDateTime().toString();if(value instanceof LocalDateTime t)return t.toString();
         if(value instanceof Map<?,?> map) {var sorted=new TreeMap<String,Object>();map.forEach((k,v)->sorted.put(k.toString(),normalize(v)));return sorted;}
         if(value instanceof Collection<?> list)return list.stream().map(SupportFundReadService::normalize).toList();return value;
+    }
+    private boolean matchesBankReservation(JsonNode receipt,Map<String,Object> bank,String withdrawalStatus) {
+        if(nodeEquals(receipt,bank))return true;
+        String recorded=receipt.path("state").asText(""),current=text(bank,"state");
+        // Finalization writes the wallet receipt before HDPay advances the payout state.
+        boolean progressed=switch(current) {
+            case "DISPATCHING" -> "READY".equals(recorded);
+            case "PENDING" -> Set.of("READY","DISPATCHING","MANUAL_REVIEW").contains(recorded);
+            case "PAID" -> "CONFIRMED".equals(withdrawalStatus);
+            case "FAILED" -> Set.of("FAILED","REFUNDED").contains(withdrawalStatus);
+            default -> false;
+        };
+        if(!progressed || !Set.of("READY","DISPATCHING","PENDING","MANUAL_REVIEW").contains(recorded))return false;
+        var reservationAtCapture=new HashMap<>(bank);
+        reservationAtCapture.put("state",recorded);
+        return nodeEquals(receipt,reservationAtCapture);
     }
     private boolean nodeEquals(JsonNode node,Object value) {return codec.canonical(node).equals(tree(value));}
     // Only these wallet columns differ in native JDBC representation across wallet and journal tables.
