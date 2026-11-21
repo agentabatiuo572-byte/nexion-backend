@@ -46,7 +46,7 @@ public final class BusinessCalendar {
         ZoneId shanghai = ZoneId.of(StorageTime.SHANGHAI);
         ZoneId vietnam = ZoneId.of(StorageTime.VIETNAM);
         return List.of(
-                new Version(LEGACY, STORAGE_ZONE, EPOCH, EPOCH.atStartOfDay()),
+                new Version(LEGACY, vietnam, EPOCH, EPOCH.atStartOfDay()),
                 new Version(GROWTH_TEAM, shanghai, EPOCH, EPOCH.atStartOfDay()),
                 new Version(GROWTH_TEAM, vietnam, FIRST_VIETNAM_DATE,
                         switchStorageAt(FIRST_VIETNAM_DATE, vietnam, List.of(shanghai))));

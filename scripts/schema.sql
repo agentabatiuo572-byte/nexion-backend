@@ -4,7 +4,7 @@ USE nexion;
 
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 
--- Record a Vietnam installation before any baseline tables or seeds are written.
+-- Record a fresh installation before any baseline tables or seeds are written.
 SET @lc2_tz_empty = NOT EXISTS (
   SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()
 );
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS nx_schema_migration_state (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 INSERT IGNORE INTO nx_schema_migration_state (migration_key, phase)
 SELECT '20261121_lc2_storage_timezone', 'FRESH'
- WHERE @lc2_tz_empty AND TIMESTAMPDIFF(MINUTE, UTC_TIMESTAMP(), NOW()) = 420;
+ WHERE @lc2_tz_empty;
 
 CREATE TABLE IF NOT EXISTS nx_user (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
