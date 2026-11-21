@@ -13,6 +13,7 @@ import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
@@ -21,6 +22,7 @@ import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -437,6 +439,26 @@ public class AppOrderCommandService {
         return developmentPaymentReceipt(order, paymentNo, balanceAfter, paymentRail, false);
     }
 
+    public void checkExternalPaymentQuota(Long userId, String orderNo, LocalDateTime occurredAtUtc) {
+        for (var product : mapper.findOrderQuotaProducts(orderNo)) {
+            HardwareQuotaPurchaseGuard.check(mapper, userId, product.productNo(), product.quantity(), occurredAtUtc);
+        }
+        var lines = mapper.findUnreservedPaymentInventoryLines(orderNo);
+        var gateFacts = paymentInventoryGateFacts(lines, () -> mapper.findPaymentGateFacts(userId));
+        for (var line : lines) {
+            // Before payment the exact gate reason is returned so the App can say why; settlement keeps PURCHASE_GATE_BLOCKED.
+            var decision = purchaseGatePolicy.evaluate(line.purchaseGateJson(), gateFacts);
+            if (!decision.allowed()) {
+                throw new BizException("PURCHASE_GATE_FACTS_UNAVAILABLE".equals(decision.code()) ? 503 : 409, decision.code());
+            }
+            if (purchaseGatePolicy.hasQuota(line.purchaseGateJson())
+                    && (!validPaymentGateGeneration(line) || purchaseGatePolicy.lifetimeQuotaExhausted(
+                            line.purchaseGateJson(), line.quantity()))) {
+                throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
+            }
+        }
+    }
+
     private void consumePaymentInventory(Long userId, String orderNo, int quantity) {
         var lines = mapper.lockPaymentInventoryLines(orderNo);
         if (lines == null || lines.isEmpty() || lines.stream().anyMatch(line -> line == null
@@ -444,18 +466,11 @@ public class AppOrderCommandService {
                 || lines.stream().mapToInt(AppOrderCommandMapper.PaymentInventoryLine::quantity).sum() != quantity) {
             throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
         }
-        CanonicalStateMapper.PurchaseFacts facts = null;
-        if (lines.stream().anyMatch(line -> StringUtils.hasText(line.purchaseGateJson()))) {
-            facts = mapper.paymentGateFacts(userId);
-        }
-        StorefrontPurchaseGatePolicy.Facts gateFacts = facts == null ? null
-                : new StorefrontPurchaseGatePolicy.Facts(facts.rank(), facts.activeDirect(), facts.teamComputePoints());
+        var gateFacts = paymentInventoryGateFacts(lines, () -> mapper.paymentGateFacts(userId));
         for (var line : lines) {
-            if (!purchaseGatePolicy.evaluate(line.purchaseGateJson(), gateFacts).allowed()) {
-                throw new BizException(409, "PURCHASE_GATE_BLOCKED");
-            }
+            requirePaymentInventoryGate(line.purchaseGateJson(), gateFacts);
             if (purchaseGatePolicy.hasQuota(line.purchaseGateJson())) {
-                if (line.gateGeneration() == null || line.gateGeneration() < 1
+                if (!validPaymentGateGeneration(line)
                         || mapper.consumePaymentQuota(line.productNo(), line.quantity(), line.gateGeneration()) != 1
                         || mapper.recordPaymentQuota(orderNo, line.productId(), line.gateGeneration()) != 1) {
                     throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
@@ -467,6 +482,25 @@ public class AppOrderCommandService {
         }
         if (promotions != null) promotions.consumePaymentInventory(orderNo);
         if (mapper.markPaymentInventoryConsumed(orderNo) != 1) throw new BizException(409, "ORDER_STATE_CONFLICT");
+    }
+
+    private StorefrontPurchaseGatePolicy.Facts paymentInventoryGateFacts(
+            List<AppOrderCommandMapper.PaymentInventoryLine> lines,
+            Supplier<CanonicalStateMapper.PurchaseFacts> readFacts) {
+        if (lines.stream().noneMatch(line -> StringUtils.hasText(line.purchaseGateJson()))) return null;
+        var facts = readFacts.get();
+        return facts == null ? null
+                : new StorefrontPurchaseGatePolicy.Facts(facts.rank(), facts.activeDirect(), facts.teamComputePoints());
+    }
+
+    private void requirePaymentInventoryGate(String gateJson, StorefrontPurchaseGatePolicy.Facts gateFacts) {
+        if (!purchaseGatePolicy.evaluate(gateJson, gateFacts).allowed()) {
+            throw new BizException(409, "PURCHASE_GATE_BLOCKED");
+        }
+    }
+
+    private boolean validPaymentGateGeneration(AppOrderCommandMapper.PaymentInventoryLine line) {
+        return line.gateGeneration() != null && line.gateGeneration() >= 1;
     }
 
     private boolean hardwareQuotaPrerequisitesMet(AppOrderCommandMapper.MonthlyQuota tier,

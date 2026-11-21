@@ -1,6 +1,7 @@
 package ffdd.opsconsole.commerce.mapper;
 
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -14,7 +15,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppOrderCommandMapper extends BaseMapper<Object> {
+public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuotaPurchaseMapper {
     @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent p JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo} AND p.status NOT IN ('DELIVERED','EXPIRED')")
     int countActiveDirectPaymentIntent(@Param("orderNo") String orderNo);
     @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent p JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo}")
@@ -43,21 +44,35 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
 
     @org.apache.ibatis.annotations.Select("SELECT COUNT(*) FROM nx_order WHERE order_no=#{orderNo} AND user_id=#{userId} AND payment_status='PAID' AND order_status='COMPLETED' AND activation_status='ACTIVATED' AND is_deleted=0")
     int countCompletedPaidOrder(@org.apache.ibatis.annotations.Param("userId") Long userId,@org.apache.ibatis.annotations.Param("orderNo") String orderNo);
-    @Select("""
-            SELECT t.id, t.quota_code quotaCode, t.product_no productNo,
-                   t.monthly_quota monthlyQuota, t.direct_refs directRefs,
-                   t.month_compute_points monthComputePoints, t.unlock_mode unlockMode, t.status,
-                   CASE WHEN UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE' THEN oi.quantity ELSE o.quantity END quantity
+    String ORDER_PAYMENT_QUANTITY =
+            "CASE WHEN UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE' THEN oi.quantity ELSE o.quantity END";
+    String ORDER_PAYMENT_PRODUCTS = """
               FROM nx_order o
               LEFT JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.is_deleted=0
                AND UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE'
               JOIN nx_product p ON p.id=CASE WHEN UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE'
                    THEN oi.product_id ELSE o.product_id END
+            """;
+
+    @Select("""
+            SELECT t.id, t.quota_code quotaCode, t.product_no productNo,
+                   t.monthly_quota monthlyQuota, t.direct_refs directRefs,
+                   t.month_compute_points monthComputePoints, t.unlock_mode unlockMode, t.status,
+            """ + ORDER_PAYMENT_QUANTITY + " quantity " + ORDER_PAYMENT_PRODUCTS + """
               JOIN nx_team_hardware_quota_tier t ON t.product_no=p.product_no AND t.is_deleted=0
              WHERE o.order_no=#{orderNo} AND o.is_deleted=0
              ORDER BY t.id FOR UPDATE
             """)
     List<MonthlyQuota> lockOrderMonthlyQuotas(@Param("orderNo") String orderNo);
+
+    @Select("SELECT p.product_no productNo, SUM(" + ORDER_PAYMENT_QUANTITY + ") quantity "
+            + ORDER_PAYMENT_PRODUCTS + """
+             WHERE o.order_no=#{orderNo} AND o.is_deleted=0
+             GROUP BY p.product_no ORDER BY p.product_no
+            """)
+    List<OrderQuotaProduct> findOrderQuotaProducts(@Param("orderNo") String orderNo);
+
+    record OrderQuotaProduct(String productNo, long quantity) { }
 
     @Select("""
             WITH RECURSIVE subtree AS (
@@ -386,14 +401,24 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
             """)
     List<DevelopmentPaymentItem> lockDevelopmentPaymentItems(@Param("orderNo") String orderNo);
 
-    @Select("""
+    String PAYMENT_INVENTORY_LINES = """
             SELECT p.id productId,p.product_no productNo,i.quantity,p.stock,p.inventory_mode inventoryMode,
                    s.purchase_gate_json purchaseGateJson,s.purchase_gate_generation gateGeneration
               FROM nx_order_item i JOIN nx_product p ON p.id=i.product_id AND p.is_deleted=0
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
-             WHERE i.order_no=#{orderNo} AND i.is_deleted=0 ORDER BY p.id FOR UPDATE
-            """)
+             WHERE i.order_no=#{orderNo} AND i.is_deleted=0
+            """;
+
+    @Select(PAYMENT_INVENTORY_LINES + " ORDER BY p.id FOR UPDATE")
     List<PaymentInventoryLine> lockPaymentInventoryLines(@Param("orderNo") String orderNo);
+
+    @Select(PAYMENT_INVENTORY_LINES + """
+               AND i.lifetime_quota_reserved=0
+               AND EXISTS (SELECT 1 FROM nx_order o WHERE o.order_no=i.order_no
+                           AND o.is_deleted=0 AND o.inventory_reserved=0)
+             ORDER BY p.id
+            """)
+    List<PaymentInventoryLine> findUnreservedPaymentInventoryLines(@Param("orderNo") String orderNo);
 
     @Select("""
             SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS `rank`,
@@ -409,6 +434,9 @@ public interface AppOrderCommandMapper extends BaseMapper<Object> {
               FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1 FOR SHARE
             """)
     CanonicalStateMapper.PurchaseFacts paymentGateFacts(@Param("userId") Long userId);
+
+    @Select(CanonicalStateMapper.PURCHASE_FACTS)
+    CanonicalStateMapper.PurchaseFacts findPaymentGateFacts(@Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_product SET stock=CASE WHEN inventory_mode='FINITE' THEN stock-#{quantity} ELSE stock END,
