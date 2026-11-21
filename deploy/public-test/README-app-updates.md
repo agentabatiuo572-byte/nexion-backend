@@ -11,6 +11,8 @@
 
 登记任一 APK/WGT 后，执行 TEST 宿主上的 `sudo /usr/local/sbin/uvel-sync-app-update-downloads`。该工具从可用目录重建精确到 SHA-256 文件的 GET/HEAD 例外，并在重载前验证 Nginx 配置。运营审批前用手机 GET 实际下载并核对文件摘要。撤销时先确认没有生效或待审批的引用，将目录行停用，立即执行同一工具，然后移走文件。未登记路径继续沿用 TEST 原有网络白名单。运维安装时从经审核的 backend test 提交取得同目录 `sync_app_update_downloads.py`，以 root:root、0755 安装至上述路径。
 
+TEST 下载统一发送 `Cache-Control: private, no-store`。对先前允许长期缓存的制品，撤销后若公网仍返回 Cloudflare HIT，使用经授权的 TEST 控制台清除该文件的精确 HTTPS URL，并复核旧 URL 的响应。
+
 ## 登记 TEST 资源包
 
 签发方核对 WGT 内的 DCloud appId、资源构建号及发行说明，记录适用的原生宿主构建范围。运行时通过 `NEXION_APPUPDATES_RESOURCEPUBLICKEY` 为服务配置同一枚 TEST P-256 验签公钥（X.509 SubjectPublicKeyInfo DER 的 Base64）。客户端固定这枚公钥。私钥保留在签发方。

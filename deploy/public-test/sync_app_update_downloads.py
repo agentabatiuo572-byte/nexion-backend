@@ -58,7 +58,7 @@ def locations():
 {access}    limit_except GET {{ deny all; }}
     default_type {MEDIA_TYPES[extension]};
     add_header X-Content-Type-Options nosniff;
-    add_header Cache-Control "public, max-age=31536000, immutable";
+    add_header Cache-Control "private, no-store" always;
     try_files $uri =404;
 }}
 """)
