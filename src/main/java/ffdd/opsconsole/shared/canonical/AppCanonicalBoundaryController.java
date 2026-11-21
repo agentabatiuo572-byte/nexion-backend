@@ -148,9 +148,9 @@ public class AppCanonicalBoundaryController {
     }
 
     /** Owner-only read of an ordinary create command; never creates or charges an order. */
-    @GetMapping("/api/orders/commands/{idempotencyKey}")
+    @GetMapping("/api/orders/commands")
     public ApiResult<Map<String, Object>> orderCreateCommand(
-            @PathVariable String idempotencyKey,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden() : service.orderCreateCommand(userId, idempotencyKey);
