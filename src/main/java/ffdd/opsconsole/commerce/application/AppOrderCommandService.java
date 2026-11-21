@@ -446,7 +446,11 @@ public class AppOrderCommandService {
         var lines = mapper.findUnreservedPaymentInventoryLines(orderNo);
         var gateFacts = paymentInventoryGateFacts(lines, () -> mapper.findPaymentGateFacts(userId));
         for (var line : lines) {
-            requirePaymentInventoryGate(line.purchaseGateJson(), gateFacts);
+            // Before payment the exact gate reason is returned so the App can say why; settlement keeps PURCHASE_GATE_BLOCKED.
+            var decision = purchaseGatePolicy.evaluate(line.purchaseGateJson(), gateFacts);
+            if (!decision.allowed()) {
+                throw new BizException("PURCHASE_GATE_FACTS_UNAVAILABLE".equals(decision.code()) ? 503 : 409, decision.code());
+            }
             if (purchaseGatePolicy.hasQuota(line.purchaseGateJson())
                     && (!validPaymentGateGeneration(line) || purchaseGatePolicy.lifetimeQuotaExhausted(
                             line.purchaseGateJson(), line.quantity()))) {
