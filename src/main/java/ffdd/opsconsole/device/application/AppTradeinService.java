@@ -427,8 +427,15 @@ public class AppTradeinService {
                 quote.targetDeviceStatus()));
     }
 
+    /** Checks source runtime state without changing it. */
+    public void requireRecyclableSource(long userId, long sourceDeviceId) {
+        if (computeV2Lifecycle != null) {
+            computeV2Lifecycle.requireDrainedForReplacement(userId, sourceDeviceId);
+        }
+    }
+
     private void retireTradeinSource(Long userId, AppTradeinMapper.SourceDevice source) {
-        if(computeV2Lifecycle!=null)computeV2Lifecycle.requireDrainedForReplacement(userId,source.id());
+        requireRecyclableSource(userId, source.id());
         long version = source.rowVersion();
         if (source.activated()) {
             if (deviceLifecycle.deactivateOwnedDeviceCas(userId, source.id(), version) != 1) {
@@ -472,7 +479,7 @@ public class AppTradeinService {
         if (source == null || !source.id().equals(request.sourceDeviceId())) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
         }
-        if(computeV2Lifecycle!=null)computeV2Lifecycle.requireDrainedForReplacement(userId,source.id());
+        requireRecyclableSource(userId, source.id());
         AppTradeinMapper.TargetProduct target = mapper.lockTargetProduct(null, request.targetProductNo());
         if (target == null || !finiteTarget(target) || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
