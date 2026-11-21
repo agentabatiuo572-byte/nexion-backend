@@ -191,10 +191,13 @@ public class PlatformExperienceConfigService {
         List<String> previousLanguages = readInterfaceLanguages();
         List<String> nextLanguages = languages == null
                 ? requireLanguages(previousLanguages, INTERFACE_LANGUAGES_INVALID) : languages;
-        AppDownloadRequest download = request.appDownload();
+        Optional<PlatformComputeConfigView.ShareConfig> previousShare = readShare(true);
+        AppDownloadRequest download = retainLegacyDownloadFields(request.appDownload(),
+                previousShare.map(PlatformComputeConfigView.ShareConfig::appDownload).orElse(null));
         Map<String, String> notes = new LinkedHashMap<>();
         if ("official".equals(trim(download.source()))) {
             notes.putAll(download.releaseNotes());
+            notes.putIfAbsent("vi", "");
             String chineseNotes = notes.get("zh");
             boolean blankChineseNotes = isLocalizedBlank(chineseNotes);
             if (blankChineseNotes && !nextOperatingLanguages.contains("zh")) {
@@ -208,8 +211,7 @@ public class PlatformExperienceConfigService {
                 notes.put(language, Objects.toString(supplied.get(language), ""));
             }
         }
-        PlatformComputeConfigView.ShareConfig next = toShare(request, Map.copyOf(notes));
-        Optional<PlatformComputeConfigView.ShareConfig> previousShare = readShare(true);
+        PlatformComputeConfigView.ShareConfig next = toShare(request, download, Map.copyOf(notes));
         config.upsertAdminValue(BASE_URL_KEY, next.baseUrl(), "STRING", GROUP, "A3 App experience base URL");
         config.upsertAdminValue(CHANNELS_KEY, json(next.channels()), "JSON", GROUP, "A3 App share channels");
         config.upsertAdminValue(APP_DOWNLOAD_KEY, json(next.appDownload()), "JSON", GROUP, "A3 App installer metadata");
@@ -309,13 +311,33 @@ public class PlatformExperienceConfigService {
         return value == null || LOCALIZED_WHITESPACE.matcher(value).matches();
     }
 
-    private PlatformComputeConfigView.ShareConfig toShare(PlatformExperienceConfigUpdateRequest request, Map<String, String> notes) {
+    private AppDownloadRequest retainLegacyDownloadFields(AppDownloadRequest submitted, PlatformComputeConfigView.AppDownload saved) {
+        Map<String, String> suppliedNotes = submitted.releaseNotes() == null ? Map.of() : submitted.releaseNotes();
+        if (saved == null || suppliedNotes.containsKey("vi")) return submitted;
+        Map<String, String> savedNotes = saved.releaseNotes() == null ? Map.of() : saved.releaseNotes();
+        // The old editor always sent these exact empty fields while downloads were disabled.
+        boolean oldDisabledForm = "unavailable".equals(submitted.source())
+                && "".equals(submitted.officialUrl()) && "".equals(submitted.apkUrl()) && "".equals(submitted.version())
+                && Map.of("zh", "", "en", "").equals(suppliedNotes);
+        Map<String, String> notes = savedNotes;
+        if (!oldDisabledForm) {
+            String vietnamese = savedNotes.get("vi");
+            if (vietnamese == null) return submitted;
+            notes = new LinkedHashMap<>(suppliedNotes);
+            notes.put("vi", vietnamese);
+        }
+        return new AppDownloadRequest(oldDisabledForm ? saved.officialUrl() : submitted.officialUrl(),
+                submitted.iosUrl(), submitted.androidUrl(), submitted.apkUrl(),
+                oldDisabledForm ? saved.version() : submitted.version(), notes, submitted.source());
+    }
+
+    private PlatformComputeConfigView.ShareConfig toShare(PlatformExperienceConfigUpdateRequest request,
+            AppDownloadRequest download, Map<String, String> notes) {
         List<PlatformComputeConfigView.ShareChannel> channels = request.channels().stream()
                 .map(channel -> new PlatformComputeConfigView.ShareChannel(
                         trim(channel.key()), trim(channel.intentType()), trim(channel.textTemplate()), trim(channel.urlTemplate()),
                         trim(channel.androidPackage()), trim(channel.iosScheme()), Boolean.TRUE.equals(channel.enabled())))
                 .toList();
-        AppDownloadRequest download = request.appDownload();
         boolean available = "official".equals(trim(download.source()));
         return new PlatformComputeConfigView.ShareConfig(
                 trim(request.baseUrl()) == null ? "" : trim(request.baseUrl()), channels,
