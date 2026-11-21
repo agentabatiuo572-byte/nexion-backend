@@ -64,6 +64,7 @@ public class PromotionAdminService {
             String auditedTarget="PROMOTION".equals(resource.get("type"))||"POLICY".equals(resource.get("type"))
                 ?text(resource.get("id")):target;
             audit.recordRequired(AuditLogWriteRequest.builder().action(operation).resourceType("PROMOTION").resourceId(auditedTarget)
+                .bizNo("VERSION".equals(resource.get("type")) ? resource.get("id") + "@" + resource.get("revision") : null)
                 .actorId(actor).actorType("ADMIN").method("POST").path("/api/admin/growth").result("SUCCESS").riskLevel("HIGH")
                 .detail(values("commandId",command,"idempotencyKey",key,"reason",request.get("reason"),"evidenceRefs",request.get("evidenceRefs"),"requestHash",hash(request),"beforeHash",hash(before),"afterHash",hash(after),"resource",resource)).build());
             auditSnapshot(command,auditedTarget,"before",before,actor);auditSnapshot(command,auditedTarget,"after",after,actor);
@@ -285,7 +286,7 @@ public class PromotionAdminService {
             var auth=PromotionPolicyResolver.content(resolved,"authorization");
             if(Boolean.TRUE.equals(auth.get("separateMakerChecker"))){
                 if("publish".equals(action))require(number(v.get("approved_by"))!=actor,"PROMOTION_MAKER_CHECKER_REQUIRED");
-                else require(db.count("SELECT COUNT(*) FROM nx_audit_log WHERE resource_type='PROMOTION' AND resource_id=? AND actor_id=? AND action IN ('CREATEPROMOTION','SAVEDRAFT','CREATEDRAFTVERSION','COPYPROMOTION','SUBMITPROMOTION') AND is_deleted=0",id,actor)==0,"PROMOTION_MAKER_CHECKER_REQUIRED");
+                else requireIndependentVersionReviewer(id,ver,number(v.get("revision")),actor);
             }
         }
         if("publish".equals(action)){
@@ -303,6 +304,47 @@ public class PromotionAdminService {
             """,json(draft),hash(draft),id,ver,v.get("revision")));
         else changed(db.write("UPDATE nx_promotion_version SET status='DRAFT',approved_by=NULL,approved_at=NULL,approval_ref=NULL,resolved_policies_json=NULL,revision=revision+1 WHERE activity_id=? AND version=?",id,ver));
         return resource("VERSION",id+":"+ver,number(v.get("revision"))+1);
+    }
+    private void requireIndependentVersionReviewer(String id, long version, long revision, long reviewer) {
+        // A new draft version is a verbatim copy. Only authored content and submissions count.
+        var events = db.list("""
+            SELECT action,actor_id,biz_no,detail_json AS detail,1 AS verified FROM nx_audit_log
+             WHERE resource_type='PROMOTION' AND resource_id=? AND result='SUCCESS' AND is_deleted=0
+               AND action IN ('CREATEPROMOTION','SAVEDRAFT','SUBMITPROMOTION')
+            UNION ALL
+            SELECT cold_payload->>'$.action',cold_payload->>'$.actorId',cold_payload->>'$.bizNo',cold_payload->>'$.detail',
+                   IF(content_sha256=SHA2(CAST(cold_payload AS CHAR),256)
+                      AND JSON_EXTRACT(cold_payload,'$.id')=original_audit_id,1,0)
+              FROM nx_audit_log_archive
+             WHERE cold_payload->>'$.resourceType'='PROMOTION' AND cold_payload->>'$.resourceId'=?
+               AND cold_payload->>'$.result'='SUCCESS'
+               AND cold_payload->>'$.action' IN ('CREATEPROMOTION','SAVEDRAFT','SUBMITPROMOTION')
+            """, id, id);
+        String versionId = id + ":" + version;
+        boolean submissionVerified = false;
+        for (var event : events) {
+            require(number(event.get("verified")) == 1, "PROMOTION_MAKER_CHECKER_REQUIRED");
+            String action = text(event.get("action"));
+            if ("CREATEPROMOTION".equals(action) && version != 1) continue;
+            if (!"CREATEPROMOTION".equals(action)) {
+                // Older rows carry the same identity in the command receipt. New rows also
+                // retain it outside the audit detail, which may be truncated for long evidence.
+                String stamp = text(event.get("biz_no"));
+                if (stamp.isBlank() || "null".equals(stamp)) {
+                    var receipt = map(parse(event.get("detail")).get("resource"));
+                    require("VERSION".equals(receipt.get("type")), "PROMOTION_MAKER_CHECKER_REQUIRED");
+                    stamp = receipt.get("id") + "@" + receipt.get("revision");
+                }
+                require(stamp.startsWith(id + ":") && stamp.substring(id.length() + 1).matches("[1-9][0-9]*@[1-9][0-9]*"),
+                        "PROMOTION_MAKER_CHECKER_REQUIRED");
+                if (!stamp.startsWith(versionId + "@")) continue;
+                if ("SUBMITPROMOTION".equals(action) && stamp.equals(versionId + "@" + revision))
+                    submissionVerified = true;
+            }
+            long maker = number(event.get("actor_id"));
+            require(maker > 0 && maker != reviewer, "PROMOTION_MAKER_CHECKER_REQUIRED");
+        }
+        require(submissionVerified, "PROMOTION_MAKER_CHECKER_REQUIRED");
     }
     public static String publicationState(String old,Instant starts){return "PAUSED".equals(old)?"PAUSED":starts.isAfter(Instant.now())?"SCHEDULED":"ACTIVE";}
     private Map<String,Object> visibleActivity(String id,boolean lock){
