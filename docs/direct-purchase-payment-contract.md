@@ -37,9 +37,11 @@ Quote requests check payment channel readiness before checking the device. Inten
 
 ## Purchase quota checks (BUG-549 phase 1)
 
-For bank and USDT payments, both quote creation and new intent creation read the F4b tier, buyer requirements and active usage for the current business month. The requested quantity must fit the remaining monthly quota. An existing in-progress intent takes precedence over the quota check. A successful intent creation can be replayed with its original quote and command key. A quota rejection creates no quote, intent, collection address assignment or provider payment order for that request. A rejected intent request leaves its original quote subject to the existing validity rules.
+For bank and USDT payments, both quote creation and new intent creation read the F4b tier, buyer requirements and active usage for the current business month. The requested quantity must fit the remaining monthly quota. A quota rejection creates no quote, intent, collection address assignment or provider payment order for that request. A rejected intent request leaves its original quote subject to the existing validity rules.
 
-`ORDER_PAY` uses the stored product and quantity for a single order and the stored product and quantity for each bundle line. Quantities for the same F4b tier are summed. The E1 lifetime check uses each line's quantity and the current SKU quota. It skips legacy orders with `inventory_reserved` true or null and lines already marked `lifetime_quota_reserved`. The three replacement kinds check one unit of the canonical target from their existing server quote and retain the quote's E1 evaluation. Trial conversion checks one unit of the product resolved from the trial claim using the conversion rules. Its requested product must match that target. A missing or malformed product returns HTTP 422 `TRIAL_PRODUCT_REQUIRED`. A mismatch returns HTTP 409 `TRIAL_PRODUCT_NOT_ELIGIBLE`.
+For the same owner and purchase kind, an in-progress intent takes precedence over channel readiness, address selection, pricing and eligibility checks. It returns HTTP 409 `PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED`. `ORDER_PAY` matches by order number. `TRADE_IN` and `CAPACITY_REPLACE` match by source device and canonical target product, and `CAPACITY_KEEP` matches by canonical target product. A target ID and a product number resolve to the same identity when they name the same product. Trial conversion matches by the trial claim, so refreshed amounts and quote versions still refer to the same business. Intent creation first handles original-key replay and quote reuse, checks for an in-progress intent before candidate address selection, and repeats those checks in the creation transaction.
+
+`ORDER_PAY` uses the stored product and quantity for a single order and the stored product and quantity for each bundle line. Quantities for the same F4b tier are summed. E1 evaluates the current SKU gate with the buyer facts used at settlement, then compares each eligible line's quantity against the remaining lifetime quota. It skips legacy orders with `inventory_reserved` true or null and lines already marked `lifetime_quota_reserved`. The three replacement kinds check one unit of the canonical target from their existing server quote and retain the quote's E1 evaluation. Trial conversion checks the current conversion switch and the claim's actual conversion deadline. It checks one unit of the product resolved from the claim and requires the requested product to match.
 
 | HTTP status | Response `message` | F4b reason |
 | --- | --- | --- |
@@ -50,13 +52,26 @@ For bank and USDT payments, both quote creation and new intent creation read the
 
 | Kind | POST `/api/app/purchase-payment-quotes` | POST `/api/app/purchase-payment-intents` (new intent) |
 | --- | --- | --- |
-| `ORDER_PAY` | F4b above, plus 409 `PURCHASE_GATE_SOLD_OUT` | F4b above, plus 409 `PURCHASE_GATE_SOLD_OUT` |
-| `TRADE_IN` | F4b above and existing E1 403 codes below | F4b above and existing E1 403 codes below |
-| `CAPACITY_REPLACE` | F4b above and existing E1 403 codes below | F4b above and existing E1 403 codes below |
-| `CAPACITY_KEEP` | F4b above and existing E1 403 codes below | F4b above and existing E1 403 codes below |
-| `TRIAL_CONVERT` | F4b above | F4b above |
+| `ORDER_PAY` | In-progress intent, F4b and order E1 | In-progress intent, F4b and order E1 |
+| `TRADE_IN` | In-progress intent, F4b and replacement E1 | In-progress intent, F4b and replacement E1 |
+| `CAPACITY_REPLACE` | In-progress intent, F4b and replacement E1 | In-progress intent, F4b and replacement E1 |
+| `CAPACITY_KEEP` | In-progress intent, F4b and replacement E1 | In-progress intent, F4b and replacement E1 |
+| `TRIAL_CONVERT` | In-progress intent, F4b and trial conversion checks | In-progress intent, F4b and trial conversion checks |
 
-The existing replacement E1 codes all use HTTP 403. They are `PURCHASE_GATE_SOLD_OUT`, `PURCHASE_GATE_NOT_MET`, `PURCHASE_GATE_INVALID`, `PURCHASE_GATE_FACTS_UNAVAILABLE` and `PURCHASE_GATE_FACTS_INVALID`.
+| Check | HTTP status | Response `message` | Reason |
+| --- | --- | --- | --- |
+| In-progress intent | 409 | `PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED` | An intent is already in progress for the same business. |
+| Order E1 | 409 | `PURCHASE_GATE_BLOCKED` | The current E1 gate denied the purchase, including when its counter has reached the cap. |
+| Order E1 | 409 | `PURCHASE_GATE_SOLD_OUT` | The gate allowed the purchase, but the line quantity exceeds the remaining quota or the quota generation is invalid. |
+| Replacement E1 | 403 | `PURCHASE_GATE_SOLD_OUT` | The target's lifetime quota is exhausted. |
+| Replacement E1 | 403 | `PURCHASE_GATE_NOT_MET` | The buyer does not meet the target's requirements. |
+| Replacement E1 | 403 | `PURCHASE_GATE_INVALID` | The target's gate configuration is invalid. |
+| Replacement E1 | 403 | `PURCHASE_GATE_FACTS_UNAVAILABLE` | Buyer facts are unavailable. |
+| Replacement E1 | 403 | `PURCHASE_GATE_FACTS_INVALID` | Buyer facts are invalid. |
+| Trial conversion checks | 409 | `TRIAL_KILL_SWITCH_DISABLED` | Trial conversion is disabled. |
+| Trial conversion checks | 409 | `TRIAL_NOT_CONVERTIBLE` | The claim is inactive or its conversion window has closed. |
+| Trial conversion checks | 422 | `TRIAL_PRODUCT_REQUIRED` | The requested trial conversion product is missing or malformed. |
+| Trial conversion checks | 409 | `TRIAL_PRODUCT_NOT_ELIGIBLE` | The requested product does not match the claim's conversion product, or the claim has no valid configured product. |
 
 Quota remains available to other purchasers while an intent awaits payment. A quota failure during confirmed payment delivery can still send the intent to `MANUAL_REVIEW`.
 

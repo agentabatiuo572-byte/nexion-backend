@@ -55,6 +55,7 @@ public class PurchasePaymentService {
     private final TestCloudActivationAdmission testCloudAdmission;
     private final Clock clock;
     private static final Set<String> KINDS=Set.of("ORDER_PAY","TRIAL_CONVERT","TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP");
+    private static final String TRIAL_CLAIM_SNAPSHOT = "trialClaimNo";
     private Instant now(){return clock.instant();}
     private static final String SELECT="SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?";
     /** 仍未终结、可能占着本人订单付款的进行中状态;报价/建单/超时与按订单只读找回共用同一谓词。 */
@@ -120,12 +121,14 @@ public class PurchasePaymentService {
         // Credential material is rejected before serialisation, hashing, logging or persistence.
         if(payload.containsKey("paymentPassword")||payload.containsKey("credentialVersion")||payload.containsKey("attemptNo"))
             throw new BizException(422,"EXTERNAL_PAYMENT_CREDENTIAL_FORBIDDEN");
+        user(owner,false);
+        requireNoActiveIntent(owner, kind, payload, Map.of());
         ready(method);
         return tx(()->{
             user(owner,true);
+            requireNoActiveIntent(owner, kind, payload, Map.of());
+            if ("TRIAL_CONVERT".equals(kind)) trials.requireExternalPaymentConversion(owner);
             Instant pricingAt=now();
-            if(!activeIntents(owner,kind,json(payload),"").isEmpty())
-                throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
             var target=new ReplacementTarget();
             var pricing=pricing(owner,kind,payload,pricingAt,false,true,target);
             if("ORDER_PAY".equals(kind))payload.put("orderNo",pricing.get("orderNo"));
@@ -154,14 +157,82 @@ public class PurchasePaymentService {
                 quote.put("fxRateVndPerUsdt",quoted.toPlainString());quote.put("fxVersion",config.get("version"));
                 quote.put("amountVnd",total.multiply(quoted).setScale(0,RoundingMode.HALF_UP).toPlainString());
             }
+            var snapshot = quote;
+            if ("TRIAL_CONVERT".equals(kind)) {
+                snapshot = new LinkedHashMap<>(quote);
+                snapshot.put(TRIAL_CLAIM_SNAPSHOT, map(pricing.get("trial")).get("claimNo"));
+            }
             db.write("INSERT INTO nx_purchase_payment_quote(quote_id,user_id,kind,payment_method,payload_json,quote_json,pricing_hash,expires_at) VALUES(?,?,?,?,?,?,?,?)",
-                    id,owner,kind,method,json(payload),json(quote),hash(pricing),timestamp(expires));
+                    id,owner,kind,method,json(payload),json(snapshot),hash(pricing),timestamp(expires));
             return quote;
         });
     }
     private List<Map<String,Object>> activeIntents(Object owner,Object kind,String payload,String excluding){
         // Resolve legacy aliases with the actual order column's collation, not JSON/string equality.
         return db.rows("SELECT p.intent_no,p.kind,p.status,p.reason,p.confirmed_at,p.receipt_json FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND "+IN_PROGRESS+" AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
+    }
+
+    private void requireNoActiveIntent(long owner, String kind, Map<String,Object> payload, Map<String,Object> quote) {
+        if (hasActiveBusinessIntent(owner, kind, payload, quote)) {
+            throw new BizException(409, "PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
+        }
+    }
+
+    private boolean hasActiveBusinessIntent(long owner, String kind, Map<String,Object> payload, Map<String,Object> quote) {
+        if ("ORDER_PAY".equals(kind)) return !activeIntents(owner, kind, json(payload), "").isEmpty();
+
+        var active = db.rows("SELECT p.payload_json,p.quote_json FROM nx_purchase_payment_intent p"
+                + " WHERE p.user_id=? AND p.kind=? AND " + IN_PROGRESS, owner, kind);
+        if (active.isEmpty()) return false;
+        if ("TRIAL_CONVERT".equals(kind)) {
+            var currentClaim = trials.currentExternalPaymentClaim(owner);
+            String claimNo = trialClaimNo(quote, currentClaim);
+            return claimNo != null && active.stream().anyMatch(intent ->
+                    claimNo.equals(trialClaimNo(parse(intent.get("quote_json")), currentClaim)));
+        }
+
+        var identity = replacementIdentity(kind, payload);
+        return identity != null && active.stream().anyMatch(intent ->
+                identity.equals(replacementIdentity(kind, parse(intent.get("payload_json")))));
+    }
+
+    private String trialClaimNo(Map<String,Object> quote, AppTrialLifecycleService.ExternalPaymentClaim currentClaim) {
+        if (quote.get(TRIAL_CLAIM_SNAPSHOT) instanceof String claimNo) return claimNo;
+        if (currentClaim == null) return null;
+        // A restarted claim has a new number and start time. Older snapshots carry only the quote instant.
+        if (!quote.isEmpty() && Instant.parse(text(quote.get("pricingAsOf"))).isBefore(currentClaim.claimedAt())) {
+            return null;
+        }
+        return currentClaim.claimNo();
+    }
+
+    private record ReplacementIdentity(Long sourceDeviceId, String targetProductNo) { }
+
+    private ReplacementIdentity replacementIdentity(String kind, Map<String,Object> payload) {
+        Long source = switch (kind) {
+            case "TRADE_IN" -> optionalLong(payload.get("sourceDeviceId"));
+            case "CAPACITY_REPLACE" -> capacitySourceId(payload);
+            default -> null;
+        };
+        if (!"CAPACITY_KEEP".equals(kind) && (source == null || source <= 0)) return null;
+
+        Long targetId = "TRADE_IN".equals(kind) ? optionalLong(payload.get("targetProductId")) : null;
+        String requestedNo = text(payload.get("targetProductNo")).trim();
+        if (targetId == null && requestedNo.isEmpty()) return null;
+        // Resolve the same catalog row even after the product becomes ineligible for a new purchase.
+        var target = targetId == null
+                ? db.one("SELECT product_no FROM nx_product WHERE product_no=?", requestedNo)
+                : db.one("SELECT product_no FROM nx_product WHERE id=? AND (?='' OR product_no=?)",
+                        targetId, requestedNo, requestedNo);
+        return target == null ? null : new ReplacementIdentity(source, text(target.get("product_no")));
+    }
+
+    private static Long capacitySourceId(Map<String,Object> payload) {
+        try {
+            return Long.valueOf(text(payload.get("sourceDeviceId")).trim());
+        } catch (NumberFormatException malformed) {
+            return null;
+        }
     }
     private Instant deadline(String kind,Map<String,Object> payload,Instant pricingAt){
         if(!"ORDER_PAY".equals(kind))return pricingAt.plusSeconds(1800);
@@ -218,14 +289,10 @@ public class PurchasePaymentService {
                 String wanted="CAPACITY_REPLACE".equals(kind)?"REPLACE_REQUIRED":"CAPACITY_AVAILABLE";
                 if(!wanted.equals(q.decision()))throw new BizException(409,"CAPACITY_REPLACEMENT_SOURCE_CHANGED");
                 if (checkReplacementSource && "CAPACITY_REPLACE".equals(kind)) {
-                    boolean sourceMatches;
-                    try {
-                        Long requestedSourceId = Long.valueOf(text(payload.get("sourceDeviceId")).trim());
-                        sourceMatches = requestedSourceId.equals(q.sourceDeviceId());
-                    } catch (NumberFormatException invalidSourceId) {
-                        sourceMatches = false;
+                    Long requestedSourceId = capacitySourceId(payload);
+                    if (requestedSourceId == null || !requestedSourceId.equals(q.sourceDeviceId())) {
+                        throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
                     }
-                    if (!sourceMatches) throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
                     tradeins.requireRecyclableSource(owner, q.sourceDeviceId());
                 }
                 var source=q.sourceDeviceId()==null?null:db.one("SELECT id,row_version,status,ownership_status FROM nx_user_device WHERE id=? AND user_id=?",q.sourceDeviceId(),owner);
@@ -270,12 +337,33 @@ public class PurchasePaymentService {
 
     private static <T> T require(ApiResult<T> response){if(response==null||response.getCode()!=0)throw new BizException(response==null?503:response.getCode(),response==null?"PURCHASE_PAYMENT_UNAVAILABLE":response.getMessage());return response.getData();}
     private static Long optionalLong(Object value){return value==null?null:number(value);}
-    public Map<String,Object> create(long owner,String key,String quoteId){
-        if(key==null||key.isBlank()||key.length()>128)throw new BizException(422,"IDEMPOTENCY_KEY_REQUIRED");
+    private void requireUnusedQuote(String quoteId) {
+        if (db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE quote_id=?", quoteId) != null) {
+            throw new BizException(409, "PURCHASE_PAYMENT_QUOTE_ALREADY_USED");
+        }
+    }
+
+    private record CreatePreflight(Map<String,Object> quote, Map<String,Object> replay) { }
+
+    private CreatePreflight createPreflight(long owner, String key, String quoteId) {
         var originalQuote=db.one("SELECT * FROM nx_purchase_payment_quote WHERE quote_id=? AND user_id=?",quoteId,owner);
         if(originalQuote==null)throw new BizException(404,"PURCHASE_PAYMENT_QUOTE_NOT_FOUND");
         var existing=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,originalQuote.get("kind"),key);
-        if(existing!=null){if(!quoteId.equals(existing.get("quote_id")))throw new BizException(409,"IDEMPOTENCY_KEY_CONFLICT");return get(owner,text(existing.get("intent_no")));}
+        if(existing!=null){
+            if(!quoteId.equals(existing.get("quote_id")))throw new BizException(409,"IDEMPOTENCY_KEY_CONFLICT");
+            return new CreatePreflight(originalQuote, existing);
+        }
+        requireUnusedQuote(quoteId);
+        requireNoActiveIntent(owner, text(originalQuote.get("kind")), parse(originalQuote.get("payload_json")),
+                parse(originalQuote.get("quote_json")));
+        return new CreatePreflight(originalQuote, null);
+    }
+
+    public Map<String,Object> create(long owner,String key,String quoteId){
+        if(key==null||key.isBlank()||key.length()>128)throw new BizException(422,"IDEMPOTENCY_KEY_REQUIRED");
+        var preflight=tx(()->createPreflight(owner,key,quoteId));
+        if(preflight.replay()!=null)return get(owner,text(preflight.replay().get("intent_no")));
+        var originalQuote=preflight.quote();
         boolean bsc=cregis(originalQuote.get("payment_method"));
         CregisNetwork network=bsc?network(originalQuote.get("payment_method")):null;
         ready(text(originalQuote.get("payment_method")));
@@ -287,19 +375,19 @@ public class PurchasePaymentService {
             if(quote==null)throw new BizException(404,"PURCHASE_PAYMENT_QUOTE_NOT_FOUND");
             var prior=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,quote.get("kind"),key);
             if(prior!=null){if(!quoteId.equals(prior.get("quote_id")))throw new BizException(409,"IDEMPOTENCY_KEY_CONFLICT");return values("intent",prior,"winner",false);}
-            if(db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE quote_id=?",quoteId)!=null)throw new BizException(409,"PURCHASE_PAYMENT_QUOTE_ALREADY_USED");
-            if(!deadline(text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(parse(quote.get("quote_json")).get("pricingAsOf")))).isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
-            if(!instant(quote.get("expires_at")).isAfter(now()))throw new BizException(409,"PURCHASE_PAYMENT_QUOTE_EXPIRED");
-            if(!Boolean.TRUE.equals(parse(quote.get("quote_json")).get("paymentFeesConfigured")))throw new BizException(503,"PURCHASE_PAYMENT_FEES_NOT_CONFIGURED");
-            // Share the policy mutex with D1 publication until this intent commits its immutable fee snapshot.
-            var feeVersion=db.one("SELECT version FROM nx_purchase_payment_policy WHERE id=1 FOR SHARE");
-            if(feeVersion==null||number(feeVersion.get("version"))!=number(parse(quote.get("quote_json")).get("feePolicyVersion")))
-                throw new BizException(409,"PURCHASE_PAYMENT_FEE_POLICY_CHANGED");
-            if(!activeIntents(owner,quote.get("kind"),text(quote.get("payload_json")),"").isEmpty())
-                throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
+            requireUnusedQuote(quoteId);
             var frozenQuote=parse(quote.get("quote_json"));
             String kind=text(quote.get("kind"));
             var payload=parse(quote.get("payload_json"));
+            requireNoActiveIntent(owner, kind, payload, frozenQuote);
+            if(!deadline(kind,payload,Instant.parse(text(frozenQuote.get("pricingAsOf")))).isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
+            if(!instant(quote.get("expires_at")).isAfter(now()))throw new BizException(409,"PURCHASE_PAYMENT_QUOTE_EXPIRED");
+            if(!Boolean.TRUE.equals(frozenQuote.get("paymentFeesConfigured")))throw new BizException(503,"PURCHASE_PAYMENT_FEES_NOT_CONFIGURED");
+            // Share the policy mutex with D1 publication until this intent commits its immutable fee snapshot.
+            var feeVersion=db.one("SELECT version FROM nx_purchase_payment_policy WHERE id=1 FOR SHARE");
+            if(feeVersion==null||number(feeVersion.get("version"))!=number(frozenQuote.get("feePolicyVersion")))
+                throw new BizException(409,"PURCHASE_PAYMENT_FEE_POLICY_CHANGED");
+            if ("TRIAL_CONVERT".equals(kind)) trials.requireExternalPaymentConversion(owner);
             var target=new ReplacementTarget();
             var pricing=pricing(owner,kind,payload,Instant.parse(text(frozenQuote.get("pricingAsOf"))),!frozenQuote.containsKey("trialOffsetBasis"),true,target);
             if(!hash(pricing).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
@@ -670,6 +758,7 @@ public class PurchasePaymentService {
     private Map<String,Object> view(Map<String,Object> row,boolean admin){
         var result=parse(row.get("quote_json"));result.putAll(values("intentNo",row.get("intent_no"),"commandKey",row.get("command_key"),"status",row.get("status"),
                 "reason",row.get("reason"),"version",row.get("version"),"expiresAt",deadline(row).toString(),"deadlineAt",deadline(row).toString(),"confirmationGraceEndsAt",graceEnd(row.get("payment_method"),deadline(row)).toString()));
+        result.remove(TRIAL_CLAIM_SNAPSHOT);
         if(row.get("provider_expires_at")!=null)result.put("expirationTime",instant(row.get("provider_expires_at")).toString());
         if(row.get("payment_url")!=null&&"AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)))result.put("paymentUrl",row.get("payment_url"));
         boolean networkOpen=true;

@@ -356,6 +356,21 @@ public class AppTrialLifecycleService {
         return ApiResult.ok(frozen);
     }
 
+    public ExternalPaymentClaim currentExternalPaymentClaim(Long owner) {
+        TrialRow row = mapper.trial(owner);
+        return row == null ? null : new ExternalPaymentClaim(row.claimNo(), row.claimedAt().atZone(BUSINESS_ZONE).toInstant());
+    }
+
+    public record ExternalPaymentClaim(String claimNo, Instant claimedAt) { }
+
+    public void requireExternalPaymentConversion(Long owner) {
+        if (!trialGateEnabled()) throw new BizException(409, "TRIAL_KILL_SWITCH_DISABLED");
+        TrialRow row = mapper.trial(owner);
+        if (row == null || !active(row.status()) || !withinConversionDeadline(row, businessNow())) {
+            throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        }
+    }
+
     public void checkExternalPaymentQuota(Long owner, String requestedProductNo, LocalDateTime occurredAtUtc) {
         TrialRow row = mapper.trial(owner);
         if (row == null || !active(row.status())) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
@@ -387,10 +402,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         }
         LocalDateTime now = businessNow();
-        LocalDateTime conversionDeadline = row.expiresAt() == null ? null
-                : "EXTENDED".equals(normalize(row.status())) ? row.expiresAt()
-                : row.expiresAt().plusDays(row.graceDaysSnapshot());
-        if (conversionDeadline == null || !now.isBefore(conversionDeadline)) {
+        if (!withinConversionDeadline(row, now)) {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
@@ -516,6 +528,13 @@ public class AppTrialLifecycleService {
         if (!VerifiedPurchasePayment.active()) paymentAttribution.record(prepared);
         if (!VerifiedPurchasePayment.active()) detail.put("paidTotalUsdt",amount.setScale(2,RoundingMode.HALF_UP).toPlainString());
         return ApiResult.ok(detail);
+    }
+
+    private boolean withinConversionDeadline(TrialRow row, LocalDateTime now) {
+        if (row.expiresAt() == null) return false;
+        LocalDateTime deadline = "EXTENDED".equals(normalize(row.status())) ? row.expiresAt()
+                : row.expiresAt().plusDays(row.graceDaysSnapshot());
+        return now.isBefore(deadline);
     }
 
     @Transactional(rollbackFor = Exception.class)

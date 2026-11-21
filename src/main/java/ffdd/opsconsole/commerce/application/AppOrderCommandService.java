@@ -443,8 +443,13 @@ public class AppOrderCommandService {
         for (var product : mapper.findOrderQuotaProducts(orderNo)) {
             HardwareQuotaPurchaseGuard.check(mapper, userId, product.productNo(), product.quantity(), occurredAtUtc);
         }
-        for (var line : mapper.findUnreservedPaymentInventoryLines(orderNo)) {
-            if (purchaseGatePolicy.lifetimeQuotaExhausted(line.purchaseGateJson(), line.quantity())) {
+        var lines = mapper.findUnreservedPaymentInventoryLines(orderNo);
+        var gateFacts = paymentInventoryGateFacts(lines, () -> mapper.findPaymentGateFacts(userId));
+        for (var line : lines) {
+            requirePaymentInventoryGate(line.purchaseGateJson(), gateFacts);
+            if (purchaseGatePolicy.hasQuota(line.purchaseGateJson())
+                    && (!validPaymentGateGeneration(line) || purchaseGatePolicy.lifetimeQuotaExhausted(
+                            line.purchaseGateJson(), line.quantity()))) {
                 throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
             }
         }
@@ -457,18 +462,11 @@ public class AppOrderCommandService {
                 || lines.stream().mapToInt(AppOrderCommandMapper.PaymentInventoryLine::quantity).sum() != quantity) {
             throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
         }
-        CanonicalStateMapper.PurchaseFacts facts = null;
-        if (lines.stream().anyMatch(line -> StringUtils.hasText(line.purchaseGateJson()))) {
-            facts = mapper.paymentGateFacts(userId);
-        }
-        StorefrontPurchaseGatePolicy.Facts gateFacts = facts == null ? null
-                : new StorefrontPurchaseGatePolicy.Facts(facts.rank(), facts.activeDirect(), facts.teamComputePoints());
+        var gateFacts = paymentInventoryGateFacts(lines, () -> mapper.paymentGateFacts(userId));
         for (var line : lines) {
-            if (!purchaseGatePolicy.evaluate(line.purchaseGateJson(), gateFacts).allowed()) {
-                throw new BizException(409, "PURCHASE_GATE_BLOCKED");
-            }
+            requirePaymentInventoryGate(line.purchaseGateJson(), gateFacts);
             if (purchaseGatePolicy.hasQuota(line.purchaseGateJson())) {
-                if (line.gateGeneration() == null || line.gateGeneration() < 1
+                if (!validPaymentGateGeneration(line)
                         || mapper.consumePaymentQuota(line.productNo(), line.quantity(), line.gateGeneration()) != 1
                         || mapper.recordPaymentQuota(orderNo, line.productId(), line.gateGeneration()) != 1) {
                     throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
@@ -480,6 +478,25 @@ public class AppOrderCommandService {
         }
         if (promotions != null) promotions.consumePaymentInventory(orderNo);
         if (mapper.markPaymentInventoryConsumed(orderNo) != 1) throw new BizException(409, "ORDER_STATE_CONFLICT");
+    }
+
+    private StorefrontPurchaseGatePolicy.Facts paymentInventoryGateFacts(
+            List<AppOrderCommandMapper.PaymentInventoryLine> lines,
+            Supplier<CanonicalStateMapper.PurchaseFacts> readFacts) {
+        if (lines.stream().noneMatch(line -> StringUtils.hasText(line.purchaseGateJson()))) return null;
+        var facts = readFacts.get();
+        return facts == null ? null
+                : new StorefrontPurchaseGatePolicy.Facts(facts.rank(), facts.activeDirect(), facts.teamComputePoints());
+    }
+
+    private void requirePaymentInventoryGate(String gateJson, StorefrontPurchaseGatePolicy.Facts gateFacts) {
+        if (!purchaseGatePolicy.evaluate(gateJson, gateFacts).allowed()) {
+            throw new BizException(409, "PURCHASE_GATE_BLOCKED");
+        }
+    }
+
+    private boolean validPaymentGateGeneration(AppOrderCommandMapper.PaymentInventoryLine line) {
+        return line.gateGeneration() != null && line.gateGeneration() >= 1;
     }
 
     private boolean hardwareQuotaPrerequisitesMet(AppOrderCommandMapper.MonthlyQuota tier,

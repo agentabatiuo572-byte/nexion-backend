@@ -435,6 +435,9 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
             """)
     CanonicalStateMapper.PurchaseFacts paymentGateFacts(@Param("userId") Long userId);
 
+    @Select(CanonicalStateMapper.PURCHASE_FACTS)
+    CanonicalStateMapper.PurchaseFacts findPaymentGateFacts(@Param("userId") Long userId);
+
     @Update("""
             UPDATE nx_product SET stock=CASE WHEN inventory_mode='FINITE' THEN stock-#{quantity} ELSE stock END,
                    sold_count=sold_count+#{quantity},updated_at=NOW(6)

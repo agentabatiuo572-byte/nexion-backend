@@ -154,7 +154,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             """)
     UserEventAttribution developmentUserEventAttribution(@Param("userId") Long userId);
 
-    @Select("""
+    String PURCHASE_FACTS = """
             SELECT CAST(COALESCE(NULLIF(REPLACE(UPPER(u.v_rank),'V',''),''),'0') AS UNSIGNED) AS `rank`,
                    (SELECT COUNT(*) FROM nx_team_member tm JOIN nx_user child ON child.id=tm.member_user_id
                      WHERE tm.user_id=u.id AND tm.level=1 AND tm.is_deleted=0 AND child.sandbox=u.sandbox
@@ -166,7 +166,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                       AND o.order_status NOT IN ('REFUNDED','CHARGEBACK')
                     WHERE tm.user_id=u.id AND tm.member_user_id<>u.id AND tm.is_deleted=0 AND member.status='ACTIVE' AND member.is_deleted=0) AS teamComputePoints
               FROM nx_user u WHERE u.id=#{userId} AND u.status='ACTIVE' AND u.is_deleted=0 LIMIT 1
-            """)
+            """;
+    @Select(PURCHASE_FACTS)
     PurchaseFacts purchaseFacts(@Param("userId") Long userId);
 
     /** F4b counts active direct sponsors; this is not the V-rank branch counter. */
