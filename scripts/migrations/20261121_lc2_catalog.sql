@@ -1,5 +1,5 @@
 -- Launch catalog: use the E1/E2 write shapes without recording an operator action.
--- PRODUCT and task policy timestamps use the application's +08:00 business clock.
+-- Use the migration session's storage clock for catalog and policy timestamps.
 CREATE TEMPORARY TABLE lc2_catalog (
   product_no VARCHAR(64) PRIMARY KEY,
   name VARCHAR(128) NOT NULL,
@@ -36,56 +36,67 @@ INSERT INTO lc2_catalog VALUES
    JSON_ARRAY('Shared access to a hosted GPU pool', 'No hardware to set up', 'Daily UVT credits', 'Move up to a full device anytime'),
    '40-series/rtx-4090/'),
   ('stellarbox-s1-mini', 'UVELBox S1 Mini', 'S1', 'Entry', 'L1', 59, 25.58, 3.05, 500,
-   'RTX 4060', 1, 8, 15.1, '115 W', '99.5%', '12-month free hardware warranty',
+   'RTX 4060', 1, 8, 15.1, '115 W', '99.5%', '12 months',
    4, 40, 6, 75, 'Entry', 'An entry hosted compute plan for everyday AI tasks',
    JSON_ARRAY('Dedicated entry GPU in our data center', 'Installed, powered and maintained for you', 'Image, speech and embedding tasks', 'Daily credits shown in Earnings'),
    '40-series/rtx-4060-4060ti/'),
   ('stellarbox-s1', 'UVELBox S1', 'S1', 'Entry', 'L1', 119, 52.65, 6.27, 500,
-   'RTX 4060 Ti', 1, 16, 22.1, '165 W', '99.5%', '12-month free hardware warranty',
+   'RTX 4060 Ti', 1, 16, 22.1, '165 W', '99.5%', '12 months',
    6, 45, 8, 55, 'Popular', 'The balanced entry plan, hosted for you',
    JSON_ARRAY('Dedicated GPU with 16 GB VRAM', 'Free 3-day trial for new users', 'Image, speech and embedding tasks', 'Daily credits shown in Earnings'),
    '40-series/rtx-4060-4060ti/'),
   ('stellarbox-s1-plus', 'UVELBox S1 Plus', 'S1', 'Entry', 'L2', 229, 103.44, 12.31, 300,
-   'RTX 4070 Ti SUPER', 1, 16, 44.1, '285 W', '99.5%', '12-month free hardware warranty',
+   'RTX 4070 Ti SUPER', 1, 16, 44.1, '285 W', '99.5%', '12 months',
    10, 85, 14, 35, 'Upgrade', 'More compute for image and language tasks',
    JSON_ARRAY('Dedicated GPU with 16 GB VRAM', 'Unlocks language model tasks', '12-month free hardware warranty', 'Daily credits shown in Earnings'),
    '40-series/rtx-4070-family/'),
   ('stellarbox-pro', 'UVELBox Pro', 'PRO', 'Pro', 'L2', 449, 207.14, 24.66, 200,
-   'RTX 4090', 1, 24, 82.6, '450 W', '99.7%', '18-month free hardware warranty',
+   'RTX 4090', 1, 24, 82.6, '450 W', '99.7%', '18 months',
    17, 130, 24, 20, 'Pro', 'A high-end hosted GPU for heavier AI workloads',
    JSON_ARRAY('Dedicated high-end GPU with 24 GB VRAM', 'Language model and image tasks', '18-month free hardware warranty', 'Daily credits shown in Earnings'),
    '40-series/rtx-4090/'),
   ('stellarbox-pro-v2', 'UVELBox Pro v2', 'PRO_V2', 'Pro', 'L3', 899, 433.20, 51.57, 100,
-   'RTX 5090', 1, 32, 104.8, '575 W', '99.7%', '18-month free hardware warranty',
+   'RTX 5090', 1, 32, 104.8, '575 W', '99.7%', '18 months',
    22, 180, 32, 15, 'New', 'A next-generation GPU with 32 GB VRAM',
    JSON_ARRAY('Dedicated next-generation GPU with 32 GB VRAM', 'Unlocks fine-tuning tasks', '18-month free hardware warranty', 'Daily credits shown in Earnings'),
    '50-series/rtx-5090/'),
   ('stellarrack-p1-lite', 'UVELRack P1 Lite', 'RACK_P1', 'Flagship', 'L3', 1799, 886.62, 105.55, 50,
-   'RTX 4090', 2, 48, 165.2, '900 W (combined GPU rated)', '99.9%', '24-month free hardware warranty',
+   'RTX 4090', 2, 48, 165.2, '900 W (combined GPU rated)', '99.9%', '24 months',
    34, 260, 48, 11, 'Rack', 'Your first dual-GPU rack node',
    JSON_ARRAY('2 GPUs, 48 GB VRAM in total', 'Fine-tuning and language model tasks', '24-month free hardware warranty', 'Daily credits shown in Earnings'),
    '40-series/rtx-4090/'),
   ('stellarrack-p1', 'UVELRack P1', 'RACK_P1', 'Flagship', 'L3', 3499, 1764.63, 210.07, 30,
-   'RTX 4090', 4, 96, 330.4, '1,800 W (combined GPU rated)', '99.9%', '24-month free hardware warranty',
+   'RTX 4090', 4, 96, 330.4, '1,800 W (combined GPU rated)', '99.9%', '24 months',
    68, 520, 96, 6, 'Flagship', 'A four-GPU rack node in our data center',
    JSON_ARRAY('4 GPUs, 96 GB VRAM in total', 'Fine-tuning and language model tasks', '24-month free hardware warranty', 'Daily credits shown in Earnings'),
    '40-series/rtx-4090/'),
   ('stellarrack-p2', 'UVELRack P2', 'RACK_P2', 'Flagship', 'L4', 6999, 3702.24, 440.74, 20,
-   'RTX 5090', 8, 256, 838.4, '4,600 W (combined GPU rated)', '99.9%', '24-month free hardware warranty',
+   'RTX 5090', 8, 256, 838.4, '4,600 W (combined GPU rated)', '99.9%', '24 months',
    176, 1440, 256, 3, 'Flagship', 'An eight-GPU next-generation rack node for every task type',
    JSON_ARRAY('8 GPUs, 256 GB VRAM in total', 'All six task types unlocked', '24-month free hardware warranty', 'Daily credits shown in Earnings'),
    '50-series/rtx-5090/');
 
 START TRANSACTION;
-SET @lc2_catalog_at = UTC_TIMESTAMP(6) + INTERVAL 8 HOUR;
-SET @lc2_empty_phase = NOT EXISTS (SELECT 1 FROM nx_admin_phase_config WHERE scope = 'E1');
+SET @lc2_catalog_at = NOW(6);
+-- A creation proposal can already own the target even when the catalog is empty.
+SET @lc2_catalog_create_pending = EXISTS (
+  SELECT 1
+  FROM nx_audit_object_lock l
+  JOIN nx_audit_operation_ticket t ON t.operation_id = l.ticket_id
+  WHERE l.target_domain = 'E' AND l.is_deleted = 0
+    AND l.target_type IN ('device_sku', 'device_phase')
+    AND t.status = 'pending' AND t.is_deleted = 0
+    AND CASE WHEN JSON_VALID(t.command_json) THEN JSON_UNQUOTE(JSON_EXTRACT(t.command_json, '$.op')) END
+        IN ('e1_sku_create', 'e1_phase_create')
+);
 INSERT INTO nx_admin_phase_config (scope, label, sort_order, status, created_at, updated_at, is_deleted)
 SELECT 'E1', 'P1', 0, 'active', @lc2_catalog_at, @lc2_catalog_at, 0
-WHERE @lc2_empty_phase;
+WHERE NOT @lc2_catalog_create_pending
+  AND NOT EXISTS (SELECT 1 FROM nx_admin_phase_config WHERE scope = 'E1');
 
 SET @lc2_p1 = (SELECT id FROM nx_admin_phase_config
                WHERE scope = 'E1' AND label = 'P1' AND status = 'active' AND is_deleted = 0);
-SET @lc2_empty_catalog = @lc2_p1 IS NOT NULL
+SET @lc2_empty_catalog = NOT @lc2_catalog_create_pending AND @lc2_p1 IS NOT NULL
   AND NOT EXISTS (SELECT 1 FROM nx_product)
   AND NOT EXISTS (SELECT 1 FROM nx_admin_device_sku);
 
@@ -133,7 +144,7 @@ SELECT product_no, name, IF(tier = 'Share', 'SHARE', 'DEVICE'), tier, series_cod
        price, ROUND(price * 10), COALESCE(tflops, 0), ROUND(monthly_usdt / 30, 6), daily_uvt,
        monthly_usdt, 10, COALESCE(stock, 0), IF(stock IS NULL, 'UNLIMITED', 'FINITE'),
        product_no = 'stellarbox-s1', badge, tagline, 'off', 0,
-       IF(gpu_count = 1, gpu_model, CONCAT(gpu_model, ' × ', gpu_count)), vram_gb,
+       CONCAT(gpu_count, '× ', gpu_model), vram_gb,
        IF(tier = 'Share', ROUND(monthly_usdt * 0.9 * 36500 / (30 * price), 4), NULL),
        IF(tier = 'Share', ROUND(monthly_usdt * 1.1 * 36500 / (30 * price), 4), NULL),
        IF(tier = 'Share', NULL, CAST(@lc2_p1 AS CHAR)), @lc2_catalog_at, @lc2_catalog_at
