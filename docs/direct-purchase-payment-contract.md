@@ -8,7 +8,7 @@ An explicit HDPAY payment time must not precede the original intent's created_at
 
 External subtotal and each payable fee are Decimal with two digits, HALF_UP. The original business amount is preserved as businessAmountUsdt (six digits), the two digit collection principal is subtotalUsdt, and roundingAdjustmentUsdt records subtotal minus business amount. The receipt retains original amountUsdt and separately returns paymentSubtotalUsdt. Channel fees apply once to discounted subtotal; BSC has a separate networkConfirmFeeUsdt, HDPay has none. Supplier actual fees are recorded independently when known. HDPay freezes the current authoritative VND exchange rate once and collects integer dong. USD/USDT 1:1 is not VND conversion authority.
 
-No unpaid intent reserves product stock or a device slot. Actual delivery joins the existing purchase transaction and rechecks ownership, current source version/eligibility, product state/stock and both quota systems. The verified payment scope skips PIN checks and wallet principal debits/ledgers, while preserving legitimate independent trial rewards. Durable intent receipt, order link, provider payment record, inventory/devices, events and required delivery audit commit together. A failed delivery rolls back and enters D1 review. Trial accrual pricing freezes its business quote instant; elapsed time alone cannot alter a quoted payment.
+Stock, device slots and quota reservations follow the underlying order and settlement rules. Actual delivery joins the existing purchase transaction and rechecks ownership, applicable source version and eligibility, and product state and stock. Settlement checks and consumes the F4b monthly quota for all five kinds. It applies the E1 lifetime gate to replacement purchases and ordinary order lines whose inventory and lifetime quota still need to be consumed. Trial conversion uses F4b only. The verified payment scope skips PIN checks and wallet principal debits/ledgers, while preserving legitimate independent trial rewards. Durable intent receipt, order link, provider payment record, inventory/devices, events and required delivery audit commit together. A failed delivery rolls back and enters D1 review. Trial accrual pricing freezes its business quote instant; elapsed time alone cannot alter a quoted payment.
 
 BSC purchase creation never calls address/create. It proves a currently unassigned pool address belongs to the configured project and has zero provider/chain balances, binds a fresh canonical allocation block/hash, then atomically changes purpose to PURCHASE_DIRECT and state to DIRECT_PURCHASE with the new intent. The address remains permanently dedicated and is never allocated to a wallet or recycled. An unavailable pool fails before creating an intent. The existing replenishment worker remains responsible for provider address creation and unknown allocation recovery.
 
@@ -34,6 +34,31 @@ For `TRADE_IN` and `CAPACITY_REPLACE`, `POST /api/app/purchase-payment-quotes` a
 | 503 | `COMPUTE_V2_RUNTIME_RECOVERING` | The Compute V2 runtime is temporarily unavailable. Retry the request. |
 
 Quote requests check payment channel readiness before checking the device. Intent creation rechecks the device for a new intent. Replaying a successful creation with its original key and quote returns the existing intent. A device can become busy after an intent is created, in which case confirmed payment still enters `MANUAL_REVIEW` if delivery fails the replacement guard.
+
+## Purchase quota checks (BUG-549 phase 1)
+
+For bank and USDT payments, both quote creation and new intent creation read the F4b tier, buyer requirements and active usage for the current business month. The requested quantity must fit the remaining monthly quota. An existing in-progress intent takes precedence over the quota check. A successful intent creation can be replayed with its original quote and command key. A quota rejection creates no quote, intent, collection address assignment or provider payment order for that request. A rejected intent request leaves its original quote subject to the existing validity rules.
+
+`ORDER_PAY` uses the stored product and quantity for a single order and the stored product and quantity for each bundle line. Quantities for the same F4b tier are summed. The E1 lifetime check uses each line's quantity and the current SKU quota. It skips legacy orders with `inventory_reserved` true or null and lines already marked `lifetime_quota_reserved`. The three replacement kinds check one unit of the canonical target from their existing server quote and retain the quote's E1 evaluation. Trial conversion checks one unit of the product resolved from the trial claim using the conversion rules. Its requested product must match that target. A missing or malformed product returns HTTP 422 `TRIAL_PRODUCT_REQUIRED`. A mismatch returns HTTP 409 `TRIAL_PRODUCT_NOT_ELIGIBLE`.
+
+| HTTP status | Response `message` | F4b reason |
+| --- | --- | --- |
+| 409 | `ORDER_MONTHLY_QUOTA_PAUSED` | The tier is paused. |
+| 409 | `ORDER_MONTHLY_QUOTA_REQUIREMENTS_NOT_MET` | The buyer does not meet the tier's requirements. |
+| 409 | `ORDER_MONTHLY_QUOTA_EXHAUSTED` | The remaining quota is below the requested quantity. |
+| 503 | `ORDER_MONTHLY_QUOTA_UNAVAILABLE` | Tier configuration or quota facts are unavailable. Retry the request. |
+
+| Kind | POST `/api/app/purchase-payment-quotes` | POST `/api/app/purchase-payment-intents` (new intent) |
+| --- | --- | --- |
+| `ORDER_PAY` | F4b above, plus 409 `PURCHASE_GATE_SOLD_OUT` | F4b above, plus 409 `PURCHASE_GATE_SOLD_OUT` |
+| `TRADE_IN` | F4b above and existing E1 403 codes below | F4b above and existing E1 403 codes below |
+| `CAPACITY_REPLACE` | F4b above and existing E1 403 codes below | F4b above and existing E1 403 codes below |
+| `CAPACITY_KEEP` | F4b above and existing E1 403 codes below | F4b above and existing E1 403 codes below |
+| `TRIAL_CONVERT` | F4b above | F4b above |
+
+The existing replacement E1 codes all use HTTP 403. They are `PURCHASE_GATE_SOLD_OUT`, `PURCHASE_GATE_NOT_MET`, `PURCHASE_GATE_INVALID`, `PURCHASE_GATE_FACTS_UNAVAILABLE` and `PURCHASE_GATE_FACTS_INVALID`.
+
+Quota remains available to other purchasers while an intent awaits payment. A quota failure during confirmed payment delivery can still send the intent to `MANUAL_REVIEW`.
 
 ## 2026-11-01 deadline and result contract
 

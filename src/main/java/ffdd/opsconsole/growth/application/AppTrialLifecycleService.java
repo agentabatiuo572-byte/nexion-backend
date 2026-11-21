@@ -356,6 +356,19 @@ public class AppTrialLifecycleService {
         return ApiResult.ok(frozen);
     }
 
+    public void checkExternalPaymentQuota(Long owner, String requestedProductNo, LocalDateTime occurredAtUtc) {
+        TrialRow row = mapper.trial(owner);
+        if (row == null || !active(row.status())) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        if (!requestedProductNo.matches("[A-Za-z0-9._-]{2,64}")) {
+            throw new BizException(422, "TRIAL_PRODUCT_REQUIRED");
+        }
+        String configured = trialProductCode(policyMap(), row);
+        if (configured == null || !configured.equals(canonicalTrialProductId(requestedProductNo))) {
+            throw new BizException(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
+        }
+        HardwareQuotaPurchaseGuard.check(mapper, owner, configured, 1, occurredAtUtc);
+    }
+
     private ApiResult<Map<String, Object>> convertOnce(
             Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");

@@ -14,6 +14,7 @@ import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
 import ffdd.opsconsole.finance.mapper.PurchasePaymentMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.*;
+import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -121,12 +122,16 @@ public class PurchasePaymentService {
             throw new BizException(422,"EXTERNAL_PAYMENT_CREDENTIAL_FORBIDDEN");
         ready(method);
         return tx(()->{
-            user(owner,true);Instant pricingAt=now();var pricing=pricing(owner,kind,payload,pricingAt,false,true);
-            if("ORDER_PAY".equals(kind))payload.put("orderNo",pricing.get("orderNo"));
+            user(owner,true);
+            Instant pricingAt=now();
             if(!activeIntents(owner,kind,json(payload),"").isEmpty())
                 throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
+            var target=new ReplacementTarget();
+            var pricing=pricing(owner,kind,payload,pricingAt,false,true,target);
+            if("ORDER_PAY".equals(kind))payload.put("orderNo",pricing.get("orderNo"));
             BigDecimal subtotal=money(pricing.get("subtotalUsdt"));
             if(subtotal.signum()<=0)throw new BizException(409,"ZERO_PAYMENT_REQUIRES_WALLET");
+            checkPurchaseQuota(owner,kind,payload,pricing,target);
             var current=policy.current();var channel=maps(current.get("channels")).stream()
                     .filter(c->method.equals(c.get("paymentMethod"))).findFirst().orElseThrow();
             if(!Boolean.TRUE.equals(channel.get("configured")))throw new BizException(503,"PURCHASE_PAYMENT_FEES_NOT_CONFIGURED");
@@ -188,7 +193,7 @@ public class PurchasePaymentService {
         db.write("INSERT IGNORE INTO nx_purchase_payment_result(notification_key,intent_no,outcome,user_id,order_no) VALUES(?,?,?,?,?)",key,row.get("intent_no"),status,row.get("user_id"),orderNo);
     }
     private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,
-                                      boolean legacyTrialQuote,boolean checkReplacementSource){
+                                      boolean legacyTrialQuote,boolean checkReplacementSource,ReplacementTarget target){
         hostingCenters.requirePool();
         switch(kind){
             case "ORDER_PAY":{
@@ -204,6 +209,7 @@ public class PurchasePaymentService {
                 if(payload.get("expectedSourceVersion")==null||number(payload.get("expectedSourceVersion"))!=q.sourceRowVersion())
                     throw new BizException(409,"TRADEIN_SOURCE_VERSION_CONFLICT");
                 if(checkReplacementSource)tradeins.requireRecyclableSource(owner,q.sourceDeviceId());
+                if(target!=null)target.productNo=q.targetProductNo();
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"sourceVersion",q.sourceRowVersion(),"sourceDeviceId",q.sourceDeviceId(),
                         "targetProductId",q.targetProductId(),"targetPrice",q.targetPriceUsdt().toPlainString(),"discount",q.discountUsdt().toPlainString());
             }
@@ -223,6 +229,7 @@ public class PurchasePaymentService {
                     tradeins.requireRecyclableSource(owner, q.sourceDeviceId());
                 }
                 var source=q.sourceDeviceId()==null?null:db.one("SELECT id,row_version,status,ownership_status FROM nx_user_device WHERE id=? AND user_id=?",q.sourceDeviceId(),owner);
+                if(target!=null)target.productNo=q.targetProductNo();
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"targetProductId",q.targetProductId(),"source",source);
             }
             case "TRIAL_CONVERT":{
@@ -238,6 +245,29 @@ public class PurchasePaymentService {
             default:throw new BizException(422,"PURCHASE_PAYMENT_KIND_INVALID");
         }
     }
+
+    private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,
+                                      boolean legacyTrialQuote,boolean checkReplacementSource){
+        return pricing(owner,kind,payload,pricingAt,legacyTrialQuote,checkReplacementSource,null);
+    }
+
+    // Carries the canonical replacement target outside the hashed pricing map.
+    private static final class ReplacementTarget {
+        private String productNo;
+    }
+
+    private void checkPurchaseQuota(long owner, String kind, Map<String,Object> payload,
+                                    Map<String,Object> pricing, ReplacementTarget target) {
+        var occurredAtUtc = LocalDateTime.ofInstant(now(), ZoneOffset.UTC);
+        switch (kind) {
+            case "ORDER_PAY" -> orders.checkExternalPaymentQuota(owner, text(pricing.get("orderNo")), occurredAtUtc);
+            case "TRADE_IN", "CAPACITY_REPLACE", "CAPACITY_KEEP" ->
+                    HardwareQuotaPurchaseGuard.check(db, owner, target.productNo, 1, occurredAtUtc);
+            case "TRIAL_CONVERT" -> trials.checkExternalPaymentQuota(owner, text(payload.get("productNo")), occurredAtUtc);
+            default -> throw new BizException(422, "PURCHASE_PAYMENT_KIND_INVALID");
+        }
+    }
+
     private static <T> T require(ApiResult<T> response){if(response==null||response.getCode()!=0)throw new BizException(response==null?503:response.getCode(),response==null?"PURCHASE_PAYMENT_UNAVAILABLE":response.getMessage());return response.getData();}
     private static Long optionalLong(Object value){return value==null?null:number(value);}
     public Map<String,Object> create(long owner,String key,String quoteId){
@@ -265,11 +295,16 @@ public class PurchasePaymentService {
             var feeVersion=db.one("SELECT version FROM nx_purchase_payment_policy WHERE id=1 FOR SHARE");
             if(feeVersion==null||number(feeVersion.get("version"))!=number(parse(quote.get("quote_json")).get("feePolicyVersion")))
                 throw new BizException(409,"PURCHASE_PAYMENT_FEE_POLICY_CHANGED");
-            var frozenQuote=parse(quote.get("quote_json"));
-            if(!hash(pricing(owner,text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(frozenQuote.get("pricingAsOf"))),!frozenQuote.containsKey("trialOffsetBasis"),true)).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
-            ready(text(quote.get("payment_method")));
             if(!activeIntents(owner,quote.get("kind"),text(quote.get("payload_json")),"").isEmpty())
                 throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
+            var frozenQuote=parse(quote.get("quote_json"));
+            String kind=text(quote.get("kind"));
+            var payload=parse(quote.get("payload_json"));
+            var target=new ReplacementTarget();
+            var pricing=pricing(owner,kind,payload,Instant.parse(text(frozenQuote.get("pricingAsOf"))),!frozenQuote.containsKey("trialOffsetBasis"),true,target);
+            if(!hash(pricing).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
+            ready(text(quote.get("payment_method")));
+            checkPurchaseQuota(owner,kind,payload,pricing,target);
             if(!quoteDeadline(quote).isAfter(now()))throw new BizException(409,"ORDER_PAYMENT_EXPIRED");
             String no=id("PPI-");
             db.write("INSERT INTO nx_purchase_payment_intent(intent_no,quote_id,user_id,kind,payment_method,command_key,payload_json,quote_json,pricing_hash,status,expires_at,provider_project) VALUES(?,?,?,?,?,?,?,?,?,'CREATING',?,?)",

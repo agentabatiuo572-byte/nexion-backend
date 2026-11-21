@@ -117,11 +117,24 @@ public class StorefrontPurchaseGatePolicy {
         if (raw == null || raw.isBlank()) return false;
         try {
             JsonNode gate = objectMapper.readTree(raw);
-            return validGate(gate) && gate.path("enforce").asBoolean()
-                    && gate.hasNonNull("quotaCap") && gate.hasNonNull("quotaSold");
+            return enforcedQuota(gate);
         } catch (Exception ex) {
             return false;
         }
+    }
+
+    public boolean lifetimeQuotaExhausted(String raw, int quantity) {
+        if (raw == null || raw.isBlank()) return false;
+        try {
+            JsonNode gate = objectMapper.readTree(raw);
+            return enforcedQuota(gate) && quantity > integer(gate, "quotaCap") - integer(gate, "quotaSold");
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
+    private boolean enforcedQuota(JsonNode gate) {
+        return validGate(gate) && gate.path("enforce").asBoolean() && gate.hasNonNull("quotaCap");
     }
 
     private boolean validGate(JsonNode gate) {

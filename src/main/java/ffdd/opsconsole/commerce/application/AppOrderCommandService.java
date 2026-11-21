@@ -13,6 +13,7 @@ import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
@@ -21,6 +22,7 @@ import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -435,6 +437,17 @@ public class AppOrderCommandService {
                 .detail(auditDetail).build());
         if (!fullyDiscounted && !external) paymentAttribution.record(prepared);
         return developmentPaymentReceipt(order, paymentNo, balanceAfter, paymentRail, false);
+    }
+
+    public void checkExternalPaymentQuota(Long userId, String orderNo, LocalDateTime occurredAtUtc) {
+        for (var product : mapper.findOrderQuotaProducts(orderNo)) {
+            HardwareQuotaPurchaseGuard.check(mapper, userId, product.productNo(), product.quantity(), occurredAtUtc);
+        }
+        for (var line : mapper.findUnreservedPaymentInventoryLines(orderNo)) {
+            if (purchaseGatePolicy.lifetimeQuotaExhausted(line.purchaseGateJson(), line.quantity())) {
+                throw new BizException(409, "PURCHASE_GATE_SOLD_OUT");
+            }
+        }
     }
 
     private void consumePaymentInventory(Long userId, String orderNo, int quantity) {
