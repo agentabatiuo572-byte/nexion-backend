@@ -5619,6 +5619,7 @@
       "PublicPromotion": {
         "type": "object",
         "properties": {
+          "productImages": { "type": "object", "additionalProperties": { "type": "string" } },
           "bannerImageUrl": {
             "type": [
               "string",
@@ -5821,6 +5822,7 @@
       "QuoteLine": {
         "type": "object",
         "properties": {
+          "imageUrl": { "type": ["string", "null"] },
           "lineId": {
             "$ref": "#/components/schemas/Id"
           },
@@ -10988,6 +10990,7 @@
       "OrderReceiptItem": {
         "type": "object",
         "properties": {
+          "imageUrl": { "type": ["string", "null"] },
           "lineId": {
             "$ref": "#/components/schemas/Id"
           },

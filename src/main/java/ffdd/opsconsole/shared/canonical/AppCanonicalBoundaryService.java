@@ -60,6 +60,8 @@ import org.springframework.util.StringUtils;
 public class AppCanonicalBoundaryService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
+    @Autowired
+    private BusinessProductImages productImages;
 
     private static final ZoneId SERVER_ZONE = StorageTime.ZONE;
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -476,6 +478,9 @@ public class AppCanonicalBoundaryService {
                     : realized.todayEarningsNex().setScale(6, RoundingMode.HALF_UP));
             devices.add(projection);
         }
+        Map<String, String> images = sandboxRuntime ? Map.of() : productImages.urls(devices.stream()
+                .map(row -> (String) row.get("productCode")).toList());
+        devices.forEach(row -> row.put("imageUrl", images.get(row.get("productCode"))));
         BigDecimal realizedTodayUsdt = devices.stream()
                 .map(device -> (BigDecimal) device.get("todayEarningsUsdt"))
                 .reduce(BigDecimal.ZERO, BigDecimal::add).setScale(6, RoundingMode.HALF_UP);
@@ -932,12 +937,18 @@ public class AppCanonicalBoundaryService {
         Map<String, Map<String, Object>> trialSettlements = page.stream()
                 .anyMatch(row -> row.orderNo() != null && row.orderNo().startsWith("TRC-"))
                 ? trialSettlements(userId) : Map.of();
+        List<OrderImageTarget> imageTargets = new ArrayList<>();
         List<Map<String, Object>> orders = page.stream().map(row -> {
-            Map<String, Object> projected = projectUserOrder(userId, row, overlays.get(row.orderNo()));
+            Map<String, Object> projected = projectUserOrder(userId, row, overlays.get(row.orderNo()), imageTargets);
+            imageTargets.add(new OrderImageTarget(projected, row.firstItemSku()));
             Map<String, Object> trial = trialSettlements.get(row.orderNo());
             if (trial != null) projected.put("trialSettlement", trial);
             return projected;
         }).toList();
+        Map<String, String> images = productImages.urls(imageTargets.stream().map(OrderImageTarget::sku).toList());
+        for (OrderImageTarget target : imageTargets) {
+            target.row().put("imageUrl", target.sku() == null ? null : images.get(target.sku()));
+        }
         String nextCursor = hasMore && !page.isEmpty() ? page.get(page.size() - 1).orderNo() : null;
         return ApiResult.ok(linked("orders", orders, "source", "server", "sourceEnvironment", "PRODUCTION",
                 "runId", null, "serverCanonical", true, "nextCursor", nextCursor));
@@ -975,8 +986,10 @@ public class AppCanonicalBoundaryService {
         }
     }
 
+    private record OrderImageTarget(Map<String, Object> row, String sku) {}
+
     private Map<String, Object> projectUserOrder(Long userId, CanonicalStateMapper.UserOrder order,
-                                                  CommerceAcceptanceSandboxMapper.OrderOverlay overlay) {
+            CommerceAcceptanceSandboxMapper.OrderOverlay overlay, List<OrderImageTarget> imageTargets) {
         String sandboxState = overlay == null ? null : normalizeState(overlay.state(), "");
         String paymentStatus = overlayPaymentStatus(sandboxState, order.paymentStatus());
         String orderStatus = overlayOrderStatus(sandboxState, order.orderStatus());
@@ -1030,13 +1043,22 @@ public class AppCanonicalBoundaryService {
         if ("BUNDLE".equalsIgnoreCase(order.orderType())) {
             List<CanonicalStateMapper.UserOrderLineItem> lines = mapper.userOrderLineItems(order.orderNo());
             if (lines == null || lines.isEmpty()) throw new BizException(503, "BUNDLE_ORDER_LINES_UNAVAILABLE");
-            projected.put("lineItems", lines.stream().map(line -> linked(
-                    "orderLineId", line.orderLineId() == null ? null : line.orderLineId().toString(),
-                    "sku", line.sku(), "name", line.name(), "quantity", line.quantity(),
-                    "unitPriceUsdt", zero(line.unitPriceUsdt()), "lineAmountUsdt", zero(line.lineAmountUsdt())))
-                    .toList());
+            projected.put("lineItems", lines.stream().map(line -> {
+                var item = linked("orderLineId", line.orderLineId() == null ? null : line.orderLineId().toString(),
+                        "sku", line.sku(), "name", line.name(), "quantity", line.quantity(),
+                        "unitPriceUsdt", zero(line.unitPriceUsdt()), "lineAmountUsdt", zero(line.lineAmountUsdt()));
+                imageTargets.add(new OrderImageTarget(item, line.sku()));
+                return item;
+            }).toList());
         }
-        if (promotions != null && overlay == null) projected.putAll(promotions.orderProjection(userId, order.orderNo()));
+        if (promotions != null && overlay == null) {
+            projected.putAll(promotions.orderProjection(userId, order.orderNo()));
+            if (projected.containsKey("items")) {
+                var items = ffdd.opsconsole.promotion.domain.PromotionValues.maps(projected.get("items"));
+                items.forEach(item -> imageTargets.add(new OrderImageTarget(item, (String) item.get("productNo"))));
+                projected.put("items", items);
+            }
+        }
         return projected;
     }
 
@@ -1438,7 +1460,7 @@ public class AppCanonicalBoundaryService {
         String orderStatus = overlayOrderStatus(state, "PENDING_PAYMENT");
         String activationStatus = overlayActivationStatus(state, "WAITING_PAYMENT");
         return linked("orderNo", order.orderNo(), "productId", order.productId(), "productNo", order.productNo(),
-                "productName", order.productNo(), "quantity", order.quantity(), "unitPriceUsdt", zero(order.unitPriceUsdt()),
+                "productName", order.productNo(), "imageUrl", null, "quantity", order.quantity(), "unitPriceUsdt", zero(order.unitPriceUsdt()),
                 "discountUsdt", BigDecimal.ZERO, "amountUsdt", zero(order.amountUsdt()), "paymentMethod", "SANDBOX_WALLET",
                 "paidTotalUsdt", paidState(state) ? zero(order.amountUsdt()).setScale(2,RoundingMode.HALF_UP).toPlainString() : null,
                 "paymentStatus", paymentStatus, "orderStatus", orderStatus, "activationStatus", activationStatus,

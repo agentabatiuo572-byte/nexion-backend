@@ -72,6 +72,8 @@ public class AppHomeOverviewService {
     private static final List<String> DEVICE_UPGRADE_LADDER = List.of(
             "phone", "stellarbox-s1", "stellarbox-pro", "stellarbox-pro-v2",
             "stellarrack-p1", "stellarrack-p2");
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.shared.canonical.BusinessProductImages productImages;
     private final AppHomeOverviewMapper mapper;
     private final ComputeTaskProofVerifier proofVerifier;
     private final GrowthPublicStatsService publicStatsService;
@@ -153,10 +155,16 @@ public class AppHomeOverviewService {
             result.put("earningsLedger", earningsLedger(mapper.earningsLedger(userId, sourceEnvironment)));
             List<MarketProductRow> marketProducts = safe(mapper.marketProducts());
             List<MarketTaskRow> marketTasks = safe(mapper.marketTasks());
+            OwnedDeviceRow base = highestCurrentDevice(userId, accountSandbox);
+            List<String> skuCodes = new ArrayList<>();
+            for (MarketProductRow product : marketProducts) {
+                if (product != null) skuCodes.add(product.productNo());
+            }
+            if (base != null) skuCodes.add(base.productCode());
+            Map<String, String> images = productImages == null ? Map.of() : productImages.urls(skuCodes);
             // Preserve response key order; this request-local map is published only by completion.
             result.put("marketBoard", null);
-            result.put("doTheMath", doTheMath(
-                    userId, highestCurrentDevice(userId, accountSandbox), marketProducts));
+            result.put("doTheMath", doTheMath(userId, base, marketProducts, images));
             result.put("weeklyPromo", promo());
             AppHomeOverviewMapper.PaidSummary paid = mapper.cumulativePaid(userId, accountSandbox);
             Long activeDevices = mapper.activeDevices(userId, accountSandbox);
@@ -179,7 +187,7 @@ public class AppHomeOverviewService {
                     HomeSharedSnapshotCache.Snapshot historySnapshot = snapshot != null
                             && snapshot.validUntil() > clock.millis() ? snapshot : null;
                     result.put("marketBoard", marketBoard(marketTasks, safe(historySnapshot == null
-                            ? mapper.marketTaskPriceHistory() : historySnapshot.marketTaskPriceHistory()), marketProducts));
+                            ? mapper.marketTaskPriceHistory() : historySnapshot.marketTaskPriceHistory()), marketProducts, images));
                     onGrid.put("activeJobs", publicStatsService.currentActiveJobsDisplay());
                     return ApiResult.ok(result);
                 } catch (DataAccessException ex) {
@@ -228,7 +236,7 @@ public class AppHomeOverviewService {
         result.put("earnings", earnings);
         result.put("earningsLedgerMode", "SANDBOX_QUOTE_EXAMPLES");
         result.put("earningsLedger", sandboxLedger(tasks, runId, now));
-        result.put("marketBoard", marketBoard(tasks, List.of(), safe(mapper.marketProducts())));
+        result.put("marketBoard", marketBoard(tasks, List.of(), safe(mapper.marketProducts()), Map.of()));
         result.put("doTheMath", null);
         result.put("weeklyPromo", null);
         result.put("onboarding", linked("cumulativePaidUsdt", null,
@@ -267,7 +275,7 @@ public class AppHomeOverviewService {
     }
 
     private Map<String, Object> marketBoard(List<MarketTaskRow> tasks, List<TaskPriceHistoryRow> history,
-                                            List<MarketProductRow> products) {
+                                            List<MarketProductRow> products, Map<String, String> images) {
         List<Map<String, Object>> workloads = new ArrayList<>();
         List<Map<String, Object>> rankings = new ArrayList<>();
         Set<String> workloadCodes = new LinkedHashSet<>();
@@ -295,6 +303,7 @@ public class AppHomeOverviewService {
             for (MarketProductRow row : products) {
                 if (row == null || "cloud-share".equals(deviceKind(row))) continue;
                 rankings.add(linked("rank", rank++, "name", text(row.name()), "kind", deviceKind(row),
+                        "imageUrl", images.get(java.util.Objects.toString(row.productNo(), "")),
                         "bestFor", null, "dailyUsdt", nonNegative(row.dailyUsdt())));
             }
         }
@@ -311,7 +320,8 @@ public class AppHomeOverviewService {
             .max(java.util.Comparator.comparing(OwnedDeviceRow::dailyUsdt).thenComparing(d->-d.id())).orElse(null);
     }
 
-    private Map<String, Object> doTheMath(Long userId, OwnedDeviceRow base, List<MarketProductRow> products) {
+    private Map<String, Object> doTheMath(Long userId, OwnedDeviceRow base, List<MarketProductRow> products,
+                                         Map<String, String> images) {
         if (base == null || base.dailyUsdt() == null || base.dailyUsdt().signum() <= 0) return null;
         String baseKind = ProductSeries.kind(base.seriesCode(), base.deviceType());
         if (baseKind == null || "cloud-share".equals(baseKind)) return null;
@@ -344,9 +354,10 @@ public class AppHomeOverviewService {
         return linked(
                 "basis", "OWNED_DEVICE_TO_NEXT_CATALOG_PRODUCT",
                 "base", linked("kind", baseKind, "productNo", text(base.productCode()), "name", text(base.name()),
-                        "dailyUsdt", nonNegative(base.dailyUsdt())),
+                        "imageUrl", images.get(java.util.Objects.toString(base.productCode(), "")), "dailyUsdt", nonNegative(base.dailyUsdt())),
                 "target", linked("productNo", text(target.productNo()), "kind", targetKind,
-                        "name", text(target.name()), "dailyUsdt", nonNegative(target.dailyUsdt()),
+                        "name", text(target.name()), "imageUrl", images.get(target.productNo()),
+                        "dailyUsdt", nonNegative(target.dailyUsdt()),
                         "priceUsdt", nonNegative(target.priceUsdt())),
                 "multiplier", multiplier,
                 "paybackDays", paybackDays);

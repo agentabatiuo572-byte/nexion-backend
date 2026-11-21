@@ -1,5 +1,6 @@
 package ffdd.opsconsole.auth.web;
 
+import ffdd.opsconsole.promotion.web.PromotionItemImages;
 import ffdd.opsconsole.auth.application.AppPaymentPasswordService;
 import ffdd.opsconsole.auth.facade.ExternalPurchaseCommandQuery;
 import ffdd.opsconsole.auth.application.AppPaymentPasswordService.Change;
@@ -38,6 +39,7 @@ public class AppPaymentPasswordController {
         return ApiResult.ok(service.securityCommand(user(auth).id(),commandKey));
     }
     @GetMapping("/api/app/payment-commands/{kind}/{commandKey}")
+    @PromotionItemImages("receipt")
     public ApiResult<Map<String,Object>> purchase(Authentication auth,@PathVariable String kind,@PathVariable String commandKey) {
         long user=user(auth).id();
         ExternalPurchaseCommandQuery external=externalCommands==null?null:externalCommands.getIfAvailable();

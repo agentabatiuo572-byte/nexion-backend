@@ -33,6 +33,30 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer activeUserEnvironment(@Param("userId") Long userId);
 
+    record ProductArtwork(String sku, String seriesCode, String assetId, String objectKey) {}
+
+    @Select("""
+            <script>
+            SELECT p.product_no AS sku, p.series_code AS seriesCode,
+                   s.image_asset_id AS assetId, s.image_object_key AS objectKey
+              FROM nx_product p
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+             WHERE p.is_deleted=0 AND p.product_no IN
+             <foreach collection="skus" item="sku" open="(" separator="," close=")">#{sku}</foreach>
+            </script>
+            """)
+    List<ProductArtwork> businessProductArtwork(@Param("skus") java.util.Collection<String> skus);
+
+    @Select("""
+            SELECT 1 FROM nx_admin_device_sku s
+              JOIN nx_product p ON p.product_no=s.sku_id AND p.is_deleted=0
+             WHERE s.is_deleted=0 AND s.sku_id=#{sku}
+               AND BINARY s.image_asset_id=BINARY #{assetId}
+               AND BINARY s.image_object_key=BINARY #{objectKey}
+             LIMIT 1
+            """)
+    Integer currentBusinessImage(@Param("sku") String sku, @Param("assetId") String assetId, @Param("objectKey") String objectKey);
+
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 AND sandbox=0 FOR UPDATE")
     Long lockActiveUser(@Param("userId") Long userId);
 

@@ -10,6 +10,10 @@ public final class ProductSeries {
 
     private ProductSeries() {}
 
+    public static java.util.Collection<String> representativeSkus() {
+        return KINDS.values();
+    }
+
     public static boolean valid(String seriesCode) {
         return seriesCode != null && KINDS.containsKey(seriesCode);
     }

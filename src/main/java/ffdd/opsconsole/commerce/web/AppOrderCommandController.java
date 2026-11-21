@@ -1,5 +1,6 @@
 package ffdd.opsconsole.commerce.web;
 
+import ffdd.opsconsole.promotion.web.PromotionItemImages;
 import ffdd.opsconsole.commerce.application.AppOrderCommandService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.util.Map;
@@ -18,6 +19,7 @@ public class AppOrderCommandController {
     private final AppOrderCommandService service;
 
     @PostMapping({"/api/orders/{orderNo}/cancel", "/api/app/orders/{orderNo}/cancel"})
+    @PromotionItemImages
     public ApiResult<Map<String, Object>> cancel(@PathVariable String orderNo,
                                                   @RequestHeader(name = "Idempotency-Key", required = false) String key,
                                                   Authentication authentication) {
@@ -26,6 +28,7 @@ public class AppOrderCommandController {
     }
 
     @PostMapping({"/api/orders/{orderNo}/pay", "/api/app/orders/{orderNo}/pay"})
+    @PromotionItemImages
     public ApiResult<Map<String, Object>> pay(@PathVariable String orderNo,
                                                @RequestHeader(name = "Idempotency-Key", required = false) String key,
                                                @RequestBody(required = false) Authorization authorization,

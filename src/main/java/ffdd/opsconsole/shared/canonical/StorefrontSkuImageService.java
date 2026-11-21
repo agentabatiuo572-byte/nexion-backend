@@ -58,6 +58,14 @@ public class StorefrontSkuImageService {
     }
 
     public String issueUrl(String productNo, String assetId, String objectKey, Duration expiry) {
+        return issueUrl(productNo, assetId, objectKey, expiry, false);
+    }
+
+    String issueBusinessUrl(String productNo, String assetId, String objectKey) {
+        return issueUrl(productNo, assetId, objectKey, Duration.ofSeconds(MAX_URL_SECONDS), true);
+    }
+
+    private String issueUrl(String productNo, String assetId, String objectKey, Duration expiry, boolean business) {
         if (!validProductNo(productNo) || !ManagedSkuMediaIdentity.isCanonicalPair(assetId, objectKey)
                 || !ManagedSkuMediaIdentity.isApprovedImageObjectKey(objectKey)) {
             throw new IllegalArgumentException("STORE_IMAGE_IDENTITY_INVALID");
@@ -67,12 +75,16 @@ public class StorefrontSkuImageService {
         if (seconds <= 0) throw new IllegalArgumentException("STORE_IMAGE_EXPIRY_INVALID");
         long expires = clock.instant().getEpochSecond() + seconds;
         String signature = Base64.getUrlEncoder().withoutPadding()
-                .encodeToString(mac(signingKey(), payload(productNo, assetId, objectKey, expires)));
-        return origin + "/api/store/media/images/" + productNo + "/" + assetId
+                .encodeToString(mac(signingKey(), payload(productNo, assetId, objectKey, expires, business)));
+        return origin + (business ? "/api/store/media/business-images/" : "/api/store/media/images/") + productNo + "/" + assetId
                 + "?expires=" + expires + "&signature=" + signature;
     }
 
     public ImageBytes read(String productNo, String assetId, String rawExpires, String rawSignature) {
+        return read(productNo, assetId, rawExpires, rawSignature, false);
+    }
+
+    ImageBytes read(String productNo, String assetId, String rawExpires, String rawSignature, boolean business) {
         if (!validProductNo(productNo) || assetId == null || assetId.length() > 240
                 || rawExpires == null || !rawExpires.matches("[0-9]{1,12}")
                 || rawSignature == null || !rawSignature.matches("[A-Za-z0-9_-]{43}")) {
@@ -93,10 +105,12 @@ public class StorefrontSkuImageService {
                 || !ManagedSkuMediaIdentity.isApprovedImageObjectKey(objectKey)
                 || expires <= now || expires > now + MAX_URL_SECONDS
                 || !MessageDigest.isEqual(suppliedSignature,
-                    mac(signingKey(), payload(productNo, assetId, objectKey, expires)))) {
+                    mac(signingKey(), payload(productNo, assetId, objectKey, expires, business)))) {
             throw unavailable();
         }
-        if (!Integer.valueOf(1).equals(mapper.currentStorefrontImage(productNo, assetId, objectKey))) {
+        Integer current = business ? mapper.currentBusinessImage(productNo, assetId, objectKey)
+                : mapper.currentStorefrontImage(productNo, assetId, objectKey);
+        if (!Integer.valueOf(1).equals(current)) {
             throw unavailable();
         }
         ImageBytes cached;
@@ -219,8 +233,8 @@ public class StorefrontSkuImageService {
         }
     }
 
-    private byte[] payload(String productNo, String assetId, String objectKey, long expires) {
-        return ("v1\nGET\n" + productNo + "\n" + assetId + "\n" + objectKey + "\n" + expires)
+    private byte[] payload(String productNo, String assetId, String objectKey, long expires, boolean business) {
+        return ((business ? "business-v1\nGET\n" : "v1\nGET\n") + productNo + "\n" + assetId + "\n" + objectKey + "\n" + expires)
                 .getBytes(StandardCharsets.UTF_8);
     }
 

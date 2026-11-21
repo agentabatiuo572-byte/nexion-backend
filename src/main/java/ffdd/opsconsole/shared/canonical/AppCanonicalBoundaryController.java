@@ -1,5 +1,6 @@
 package ffdd.opsconsole.shared.canonical;
 
+import ffdd.opsconsole.promotion.web.PromotionItemImages;
 import ffdd.opsconsole.commerce.application.CommerceSandboxTrialService;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
@@ -137,6 +138,7 @@ public class AppCanonicalBoundaryController {
     }
 
     @PostMapping("/api/orders")
+    @PromotionItemImages
     public ApiResult<Map<String, Object>> createOrder(
             @RequestBody OrderCreateRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
@@ -157,6 +159,7 @@ public class AppCanonicalBoundaryController {
     }
 
     @PostMapping("/api/orders/bundle")
+    @PromotionItemImages
     public ApiResult<Map<String, Object>> createBundleOrder(
             @RequestBody BundleOrderCreateRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
