@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectReader;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.Map;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -84,4 +85,31 @@ public interface OrderCreateReceiptMapper {
             @Param("itemCount") int itemCount,
             @Param("amount") BigDecimal amount, @Param("policyVersion") Long policyVersion,
             @Param("quoteId") String quoteId, @Param("ttlMinutes") int ttlMinutes);
+
+    /** Read-only owner lookup by the original ordinary-create command key. */
+    @Select("""
+            SELECT request_hash requestHash, error_message errorMessage,
+                   created_at createdAt, updated_at updatedAt
+              FROM nx_admin_idempotency_record
+             WHERE scope=CONCAT('APP:ORDER_CREATE:USER:',#{userId})
+               AND BINARY idempotency_key=BINARY #{idempotencyKey}
+               AND is_deleted=0
+             LIMIT 1
+            """)
+    CommandRecord orderCreateCommand(@Param("userId") Long userId, @Param("idempotencyKey") String idempotencyKey);
+
+    /** Minimal authorized order status for a successful create receipt; never returns another user's order. */
+    @Select("""
+            SELECT o.order_no orderNo, o.payment_status paymentStatus, o.order_status orderStatus,
+                   o.activation_status activationStatus, o.amount_usdt amountUsdt, o.created_at placedAt
+              FROM nx_order o
+             WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.is_deleted=0
+             LIMIT 1
+            """)
+    OrderSummary ownedOrder(@Param("userId") Long userId, @Param("orderNo") String orderNo);
+
+    record CommandRecord(String requestHash, String errorMessage, LocalDateTime createdAt, LocalDateTime updatedAt) { }
+
+    record OrderSummary(String orderNo, String paymentStatus, String orderStatus, String activationStatus,
+                        BigDecimal amountUsdt, LocalDateTime placedAt) { }
 }

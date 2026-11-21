@@ -767,6 +767,93 @@ public class AppCanonicalBoundaryService {
         });
     }
 
+    /** Read-only owner lookup for an ordinary App order-create command. Never claims or re-executes it. */
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public ApiResult<Map<String, Object>> orderCreateCommand(Long userId, String idempotencyKey) {
+        if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        String key = idempotencyKey == null ? "" : idempotencyKey.trim();
+        if (key.isEmpty()) return ApiResult.fail(422, "IDEMPOTENCY_KEY_REQUIRED");
+        if (key.length() > 128) return ApiResult.fail(422, "IDEMPOTENCY_KEY_INVALID");
+        String scope = "APP:ORDER_CREATE:USER:" + userId;
+        OrderCreateReceiptMapper.CommandRecord command = mapper.orderCreateCommand(userId, key);
+        if (command == null) return orderCommandNotFound(key);
+        if (!StringUtils.hasText(command.requestHash())) {
+            return orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
+        }
+        var recovered = idempotencyService.recoveryResult(scope, key, command.requestHash(), ApiResult.class);
+        return switch (recovered.status()) {
+            case NOT_FOUND -> orderCommandNotFound(key);
+            case PROCESSING -> orderCommandReceipt(key, scope, "PROCESSING", null, null, command);
+            case FAILED -> orderCommandReceipt(key, scope, "FAILED", null,
+                    orderCommandError(500, command.errorMessage()), command);
+            case UNKNOWN, MISMATCH, CONFIRMED_SUCCEEDED, CONFIRMED_NOT_EXECUTED ->
+                    orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
+            case SUCCEEDED -> {
+                ApiResult saved = recovered.response();
+                if (saved == null) yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
+                if (saved.getCode() != 0) {
+                    yield orderCommandReceipt(key, scope, "FAILED", null,
+                            orderCommandError(saved.getCode(), saved.getMessage()), command);
+                }
+                Object data = saved.getData();
+                Object rawOrderNo = data instanceof Map<?, ?> map ? map.get("orderNo") : null;
+                String orderNo = rawOrderNo == null ? "" : String.valueOf(rawOrderNo).trim();
+                if (orderNo.isEmpty()) yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
+                OrderCreateReceiptMapper.OrderSummary order = mapper.ownedOrder(userId, orderNo);
+                if (order == null) yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
+                yield orderCommandReceipt(key, scope, "SUCCEEDED", orderCommandOrder(order), null, command);
+            }
+        };
+    }
+
+    private ApiResult<Map<String, Object>> orderCommandNotFound(String key) {
+        return ApiResult.fail(404, "ORDER_CREATE_COMMAND_NOT_FOUND",
+                linked("status", "NOT_FOUND", "idempotencyKey", key, "canRetrySameKey", true));
+    }
+
+    private ApiResult<Map<String, Object>> orderCommandReceipt(String key, String scope, String status,
+                                                               Map<String, Object> order, Map<String, Object> error,
+                                                               OrderCreateReceiptMapper.CommandRecord command) {
+        return ApiResult.ok(linked(
+                "commandId", "OQC-" + sha256(scope + ":" + key),
+                "operation", "ORDER_CREATE",
+                "idempotencyKey", key,
+                "status", status,
+                "order", order,
+                "error", error,
+                "canRetrySameKey", false,
+                "createdAt", iso(command.createdAt()),
+                "updatedAt", iso(command.updatedAt())));
+    }
+
+    private Map<String, Object> orderCommandOrder(OrderCreateReceiptMapper.OrderSummary order) {
+        String payment = normalizeState(order.paymentStatus(), "");
+        String status = normalizeState(order.orderStatus(), "");
+        String activation = normalizeState(order.activationStatus(), "");
+        String canonical = canonicalOrderStatus(payment, status, activation);
+        return linked(
+                "orderNo", order.orderNo(),
+                "status", canonical,
+                "canonicalStatus", canonical,
+                "paymentStatus", payment,
+                "orderStatus", status,
+                "activationStatus", activation,
+                "amountUsdt", zero(order.amountUsdt()),
+                "placedAt", epochMillis(order.placedAt()));
+    }
+
+    private Map<String, Object> orderCommandError(int code, String message) {
+        int safeCode = code >= 400 && code <= 599 ? code : 500;
+        String safeMessage = message != null && message.matches("[A-Z][A-Z0-9_]{0,127}")
+                ? message : "ORDER_CREATE_FAILED";
+        return linked("code", safeCode, "message", safeMessage);
+    }
+
+    private String iso(LocalDateTime value) {
+        return value == null ? null : value.atZone(SERVER_ZONE).toInstant().toString();
+    }
+
     public ApiResult<Map<String, Object>> orders(Long userId) {
         return ordersInternal(userId, null, 100, true);
     }

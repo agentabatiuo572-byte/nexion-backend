@@ -147,6 +147,15 @@ public class AppCanonicalBoundaryController {
                         request.quantity(), request.voucherId(), request.promotionQuoteId(), idempotencyKey);
     }
 
+    /** Owner-only read of an ordinary create command; never creates or charges an order. */
+    @GetMapping("/api/orders/commands/{idempotencyKey}")
+    public ApiResult<Map<String, Object>> orderCreateCommand(
+            @PathVariable String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.orderCreateCommand(userId, idempotencyKey);
+    }
+
     @PostMapping("/api/orders/bundle")
     public ApiResult<Map<String, Object>> createBundleOrder(
             @RequestBody BundleOrderCreateRequest request,
