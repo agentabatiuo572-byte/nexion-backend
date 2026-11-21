@@ -17,6 +17,7 @@ import ffdd.opsconsole.device.dto.AppTradeinQuoteResponse;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitResponse;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.device.mapper.SimulatedTaskMapper.RuntimeRow;
 import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -315,13 +316,14 @@ public class AppTradeinService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "TRADEIN_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        RuntimeRow simulatedRuntime = lockReplacementRuntime(userId, evaluation.source());
         String hostingCenter = hostingCenters.requirePool().assign(instanceNo);
         testCloudAdmission.requireReplacementCapacity(evaluation.source().id(),evaluation.source().activated()?1:0);
         reservePurchaseQuotaAtSettlement(userId, evaluation.target().productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, evaluation.target().productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
 
-        retireTradeinSource(userId, evaluation.source());
+        retireTradeinSource(userId, evaluation.source(), simulatedRuntime);
 
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(VerifiedPurchasePayment.active() ? BigDecimal.ZERO : quote.payableUsdt()).setScale(6, RoundingMode.HALF_UP);
 
@@ -434,8 +436,13 @@ public class AppTradeinService {
         }
     }
 
-    private void retireTradeinSource(Long userId, AppTradeinMapper.SourceDevice source) {
-        requireRecyclableSource(userId, source.id());
+    private RuntimeRow lockReplacementRuntime(long userId, AppTradeinMapper.SourceDevice source) {
+        return computeV2Lifecycle == null ? null : computeV2Lifecycle.lockAppReplacementRuntime(
+                userId, source.id(), source.instanceNo(), source.activated());
+    }
+
+    private void retireTradeinSource(Long userId, AppTradeinMapper.SourceDevice source, RuntimeRow simulatedRuntime) {
+        if (simulatedRuntime != null) computeV2Lifecycle.cancelSimulatedForReplacement(simulatedRuntime);
         long version = source.rowVersion();
         if (source.activated()) {
             if (deviceLifecycle.deactivateOwnedDeviceCas(userId, source.id(), version) != 1) {
@@ -479,7 +486,7 @@ public class AppTradeinService {
         if (source == null || !source.id().equals(request.sourceDeviceId())) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
         }
-        requireRecyclableSource(userId, source.id());
+        RuntimeRow simulatedRuntime = lockReplacementRuntime(userId, source);
         AppTradeinMapper.TargetProduct target = mapper.lockTargetProduct(null, request.targetProductNo());
         if (target == null || !finiteTarget(target) || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
@@ -489,6 +496,8 @@ public class AppTradeinService {
         reservePurchaseQuotaAtSettlement(userId, target.productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
+
+        if (simulatedRuntime != null) computeV2Lifecycle.cancelSimulatedForReplacement(simulatedRuntime);
 
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(VerifiedPurchasePayment.active() ? BigDecimal.ZERO : quote.payableUsdt())
                 .setScale(6, RoundingMode.HALF_UP);
