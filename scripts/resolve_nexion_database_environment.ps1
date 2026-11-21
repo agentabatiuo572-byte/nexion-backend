@@ -4,7 +4,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$defaultJdbcUrl = "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true"
+$storageZone = $env:NEXION_TIME_STORAGE_ZONE
+if ([string]::IsNullOrWhiteSpace($storageZone)) { $storageZone = "Asia/Shanghai" }
+$storageZone = $storageZone.Trim()
+if ($storageZone -cnotin @("Asia/Shanghai", "Asia/Ho_Chi_Minh")) {
+  throw "NEXION_TIME_STORAGE_ZONE must be Asia/Shanghai or Asia/Ho_Chi_Minh."
+}
+$defaultJdbcUrl = "jdbc:mysql://127.0.0.1:3306/nexion?useUnicode=true&characterEncoding=utf8&connectionTimeZone=$storageZone&useSSL=false&allowPublicKeyRetrieval=true"
 $defaultUsername = "root"
 
 function Get-ProcessEnvironmentValue {

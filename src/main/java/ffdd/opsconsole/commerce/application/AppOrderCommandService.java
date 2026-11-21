@@ -2,6 +2,7 @@ package ffdd.opsconsole.commerce.application;
 
 import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
@@ -382,7 +383,7 @@ public class AppOrderCommandService {
             throw new BizException(409, "ORDER_STATE_CONFLICT");
         }
         if (external && mapper.recordVerifiedPaidAt(orderNo, java.time.LocalDateTime.ofInstant(
-                VerifiedPurchasePayment.paidInstant(), java.time.ZoneId.of("Asia/Shanghai"))) != 1) {
+                VerifiedPurchasePayment.paidInstant(), DateTimeFormatConfig.BUSINESS_ZONE)) != 1) {
             throw new BizException(409,"ORDER_PAYMENT_TIME_CONFLICT");
         }
         if (!external && mapper.insertDevelopmentPayment(orderNo, userId, paymentNo, order.amountUsdt()) != 1) {

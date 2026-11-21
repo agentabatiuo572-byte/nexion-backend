@@ -22,6 +22,8 @@ import ffdd.opsconsole.shared.canonical.StorefrontProductReleasePolicy;
 import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.capacity.MonthlyTargetProjection;
+import ffdd.opsconsole.shared.config.BusinessCalendar;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
@@ -75,7 +77,7 @@ public class AppTrialLifecycleService {
             Clock clock, TestCloudActivationAdmission testCloudAdmission) {
         this(null,paymentAttribution,mapper,earningsReleaseService,idempotency,coverageFacade,audit,outbox,productReleasePolicy,canonicalStateMapper,environment,clock,testCloudAdmission);
     }
-    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId BUSINESS_ZONE = DateTimeFormatConfig.BUSINESS_ZONE;
     private static final String TRIAL_KILLSWITCH_KEY = "killswitch.trial";
     private static final String TRIAL_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.trial";
     private static final String TRIAL_CONVERSION_SOURCE = "nx_trial_claim + nx_order + nx_order_item";
@@ -113,7 +115,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
         LocalDateTime now = businessNow();
-        Map<String, String> policy = policyMap();
+        Map<String, String> policy = policyMap(false, BusinessCalendar.legacy().dateAtStorage(now));
         return ApiResult.ok(project(userId, mapper.trial(userId), policy, now, false));
     }
 
@@ -152,7 +154,7 @@ public class AppTrialLifecycleService {
             Long userId, Long paymentMethodId, String deviceName, String idempotencyKey) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         LocalDateTime now = businessNow();
-        LocalDate quotaDate = now.toLocalDate();
+        LocalDate quotaDate = BusinessCalendar.legacy().dateAtStorage(now);
         Map<String, String> policy = policyMap(true, quotaDate);
         if (!flag(policy, "phaseOpen", true)) return ApiResult.fail(409, "TRIAL_PHASE_CLOSED");
         if (mapper.trialCycleSignalCount(userId) > 0) return ApiResult.fail(409, "TRIAL_CYCLE_RISK_BLOCKED");
@@ -1066,7 +1068,7 @@ public class AppTrialLifecycleService {
     }
 
     private LocalDate businessDate() {
-        return ffdd.opsconsole.shared.config.BusinessCalendar.legacy().today(clock);
+        return BusinessCalendar.legacy().today(clock);
     }
 
     private LocalDateTime businessNow() {

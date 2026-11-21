@@ -2,7 +2,7 @@ package ffdd.opsconsole.shared.config;
 
 import java.time.*;
 
-/** Versioned growth/team calendar. Storage and event timestamps remain Asia/Shanghai.
+/** Versioned growth/team calendar. Storage timestamps follow the configured storage zone.
  * Boundaries before the rollout retain their original meaning for settlement replay;
  * the open day/week/month bridge to 2026-10-19 00:00 Vietnam without gaps or overlap.
  * R-1: delegates to the GROWTH_TEAM track of {@link BusinessCalendar}, so a business time zone set in A3
