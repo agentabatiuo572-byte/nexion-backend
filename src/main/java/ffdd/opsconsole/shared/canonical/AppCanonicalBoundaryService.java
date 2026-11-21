@@ -795,10 +795,10 @@ public class AppCanonicalBoundaryService {
                     yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
                 }
                 JsonNode code = saved.get("code");
-                if (code == null || !code.isIntegralNumber()) {
+                if (code == null || !code.isIntegralNumber() || !code.canConvertToInt()) {
                     yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
                 }
-                int savedCode = code.canConvertToInt() ? code.intValue() : 500;
+                int savedCode = code.intValue();
                 if (savedCode != 0) {
                     JsonNode message = saved.get("message");
                     yield orderCommandReceipt(key, scope, "FAILED", null,
