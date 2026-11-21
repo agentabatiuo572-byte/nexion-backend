@@ -304,6 +304,9 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                    #{eventType}
                </foreach>
                AND o.created_at &lt; DATE_SUB(NOW(), INTERVAL #{graceMinutes} MINUTE)
+               AND (o.event_type != 'admin.exchange_caps_changed'
+                    OR (o.aggregate_type = 'EXCHANGE_CONFIG'
+                        AND o.aggregate_id IN ('queueEtaHours', 'queueEtaCopy', 'queueEtaCopyZh', 'queueEtaCopyVi')))
                <if test="unlinkedC1Type != null">
                  AND BINARY o.event_type = BINARY #{unlinkedC1Type}
                  AND NOT EXISTS (
