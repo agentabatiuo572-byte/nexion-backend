@@ -3,6 +3,7 @@ package ffdd.opsconsole.device.application;
 import ffdd.opsconsole.device.mapper.DeviceCatalogMapper;
 import ffdd.opsconsole.device.mapper.DeviceCatalogMapper.TaskPriceHistorySchemaRow;
 import ffdd.opsconsole.device.mapper.DeviceCatalogMapper.TaskPriceSeedRow;
+import ffdd.opsconsole.shared.config.StorageTime;
 import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -34,7 +35,7 @@ public class E2TaskPriceHistoryService {
     public static final String SOURCE_PC_PRICE = "PC_PRICE";
     public static final String SOURCE_SCHEDULED = "SCHEDULED_SNAPSHOT";
 
-    private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId SERVER_ZONE = StorageTime.ZONE;
     private static final DateTimeFormatter BUCKET_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmm");
     private static final Set<String> WRITE_SOURCES = Set.of(SOURCE_PC_CREATE, SOURCE_PC_UPDATE, SOURCE_PC_PRICE);
     private static final Map<String, BigDecimal> DEVELOPMENT_DELTAS = Map.of(

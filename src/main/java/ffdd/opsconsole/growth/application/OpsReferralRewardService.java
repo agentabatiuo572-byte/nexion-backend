@@ -13,6 +13,7 @@ import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -46,7 +47,7 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class OpsReferralRewardService {
-    private static final ZoneId DATABASE_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId DATABASE_ZONE = StorageTime.ZONE;
     private static final String SETTLEMENT_ENVIRONMENT = "PRODUCTION";
     private static final String EFFECTIVE_AT_KEY = "K.rewards.referral.effectiveAt";
     private static final String VERSION_KEY = "K.rewards.referral.version";

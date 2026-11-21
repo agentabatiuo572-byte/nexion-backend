@@ -127,7 +127,7 @@ public interface AppGrowthWheelMapper {
                    CASE WHEN LOWER(reward_kind)='nex' THEN 'UVT' ELSE UPPER(reward_kind) END rewardType,
                    reward_amount rewardAmount,tier_name rewardName,
                     downgraded,downgrade_reason downgradeReason,
-                    DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s+08:00') awardedAt
+                    CONCAT(DATE_FORMAT(created_at,'%Y-%m-%dT%H:%i:%s'),@@session.time_zone) awardedAt
               FROM nx_growth_wheel_spin
              WHERE user_id=#{userId} AND event_code=#{eventCode} AND is_deleted=0
              ORDER BY created_at DESC,id DESC

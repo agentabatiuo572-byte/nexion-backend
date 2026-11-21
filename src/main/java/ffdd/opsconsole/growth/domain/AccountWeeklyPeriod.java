@@ -1,11 +1,12 @@
 package ffdd.opsconsole.growth.domain;
 
+import ffdd.opsconsole.shared.config.StorageTime;
 import java.time.*;
 import java.time.temporal.TemporalAdjusters;
 
 /** Immutable calendar coordinates. Database DATETIME values still represent +08 instants. */
 public record AccountWeeklyPeriod(String zoneId, LocalDate localWeekStart, Instant from, Instant until) {
-    public static final ZoneId STORAGE_ZONE = ZoneId.of("Asia/Shanghai");
+    public static final ZoneId STORAGE_ZONE = StorageTime.ZONE;
     public static final String CALENDAR_VERSION = "PHONE_REGION_V1";
 
     public AccountWeeklyPeriod {

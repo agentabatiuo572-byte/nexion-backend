@@ -92,8 +92,8 @@ public interface SupportBindingMapper extends BaseMapper<SupportAgentAssignmentE
             + " LEFT JOIN nx_support_reply_cursor pr ON pr.conversation_no=pm.conversation_no"
             + " WHERE pc.user_id=p.customer_id AND pm.is_deleted=0 AND pm.sender_type='user' AND pm.id>COALESCE(pr.through_message_id,0) ";
     String POOL_MESSAGE_COLUMNS = "(SELECT COUNT(*)" + POOL_PENDING_MESSAGES + ") pendingMessageCount,"
-            + "(SELECT DATE_FORMAT(CONVERT_TZ(MAX(pm.created_at),'+08:00','+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ')" + POOL_PENDING_MESSAGES + ") lastMessageAt,"
-            + "(SELECT DATE_FORMAT(CONVERT_TZ(MIN(pm.created_at),'+08:00','+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ')" + POOL_PENDING_MESSAGES + ") waitingSince,"
+            + "(SELECT DATE_FORMAT(CONVERT_TZ(MAX(pm.created_at),@@session.time_zone,'+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ')" + POOL_PENDING_MESSAGES + ") lastMessageAt,"
+            + "(SELECT DATE_FORMAT(CONVERT_TZ(MIN(pm.created_at),@@session.time_zone,'+00:00'),'%Y-%m-%dT%H:%i:%s.%fZ')" + POOL_PENDING_MESSAGES + ") waitingSince,"
             + "(SELECT LEFT(pm.content,80)" + POOL_PENDING_MESSAGES + " ORDER BY pm.id DESC LIMIT 1) lastMessagePreview,";
     // Pool clocks are UTC DATETIME(6); return explicit UTC strings without JDBC/session-zone conversion.
     // Customers who are waiting on an unanswered message come first, longest wait first.

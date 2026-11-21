@@ -2299,7 +2299,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                              AND s.created_at>=NOW()-INTERVAL 30 DAY) AS tamperDetected,
                    JSON_OBJECT(
                        'source', 'nx_withdrawal_order', 'amountBasis', 'ASSET_REQUESTED_GROSS',
-                       'capturedAt', DATE_FORMAT(NOW(), '%Y-%m-%dT%H:%i:%s'), 'timeZone', 'Asia/Shanghai',
+                       'capturedAt', DATE_FORMAT(NOW(), '%Y-%m-%dT%H:%i:%s'), 'timeZone', #{storageZone},
                        'statusFilter', 'ALL', 'baselineDivisorDays', 30,
                        'windows', JSON_OBJECT(
                            '24h', JSON_OBJECT('fromInclusive', DATE_FORMAT(NOW()-INTERVAL 24 HOUR, '%Y-%m-%dT%H:%i:%s'), 'toExclusive', NULL),
@@ -2312,7 +2312,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
              LIMIT 1
             """)
-    ScoreRawInputRecord scoreRawInput(@Param("userNo") String userNo);
+    ScoreRawInputRecord scoreRawInput(@Param("userNo") String userNo, @Param("storageZone") String storageZone);
 
     @Select("""
             <script>

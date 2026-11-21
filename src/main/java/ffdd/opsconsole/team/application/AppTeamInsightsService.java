@@ -616,7 +616,7 @@ public class AppTeamInsightsService {
     }
     /**
      * Same versioned Vietnam calendar construction used by F4's settlement service. The
-     * datasource pins MySQL sessions to +08:00, so the mapper receives these
+     * mapper receives these
      * explicit LocalDateTime bounds instead of deriving a separate CURDATE/NOW
      * boundary from that session clock.
      */

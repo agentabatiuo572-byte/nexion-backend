@@ -42,7 +42,7 @@ public interface DeviceOrderRefundImpactMapper {
              WHERE t.due_at<=t.cutoff
                AND NOT EXISTS (
                  SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=t.user_id AND l.asset='UVT' AND l.direction='IN'
-                   AND l.biz_no=CONCAT('CLOUD_SHARE_DAILY:',t.user_device_id,':',DATE(CONVERT_TZ(t.due_at,'+08:00','+00:00')))
+                   AND l.biz_no=CONCAT('CLOUD_SHARE_DAILY:',t.user_device_id,':',DATE(CONVERT_TZ(t.due_at,@@session.time_zone,'+00:00')))
                )
             """)
     List<PendingDailyUvt> pendingDailyUvt(@Param("orderNo")String orderNo,@Param("userId")long userId,

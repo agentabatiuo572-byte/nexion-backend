@@ -1,5 +1,6 @@
 package ffdd.opsconsole.content.application;
 
+import ffdd.opsconsole.content.dto.SupportAnalyticsQueryRequest;
 import ffdd.opsconsole.content.mapper.SupportAnalyticsFactMapper;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade;
@@ -86,7 +87,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
             SupportAnalyticsFactSnapshot next=reads.execute(status->{
                 Instant asOf=Objects.requireNonNull(mapper.nowUtc()).toInstant(ZoneOffset.UTC);
                 var ids=List.copyOf(mapper.productionCustomers());
-                var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),"Asia/Shanghai",asOf):payments.readHistory(ids);
+                var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),asOf):payments.readHistory(ids);
                 lease.renew();
                 var contributions=funds.readNetContributions(ids,()->{
                     // The read-only generation has not been published. Keep the previous complete

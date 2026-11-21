@@ -35,7 +35,7 @@ public final class DeviceMonthlyTargetPacing {
     }
     public record Schedule(Cycle cycle, BigDecimal u, List<BigDecimal> weights) {
         public Schedule { weights = List.copyOf(weights); }
-        /** Integral in business seconds. LocalDateTime here is always Asia/Shanghai. */
+        /** Integral in business seconds. LocalDateTime uses the storage zone. */
         public BigDecimal weightedSeconds(LocalDateTime start, LocalDateTime end) {
             BigDecimal total = ZERO;
             while (start.isBefore(end)) {

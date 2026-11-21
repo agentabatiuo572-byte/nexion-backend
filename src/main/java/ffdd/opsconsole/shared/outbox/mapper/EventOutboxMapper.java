@@ -453,13 +453,13 @@ public interface EventOutboxMapper extends BaseMapper<EventOutboxEntity> {
                           OR (COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.instanceKey')),'null'),
                                            NULLIF(JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.instance_key')),'null')) IS NULL
                               AND o.event_ts>=w.eligible_from AND o.event_ts<w.eligible_until))
-                        AND ((w.eligible_until<=CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')
+                        AND ((w.eligible_until<=NOW()
                               AND o.event_type IN ('H3_STOREFRONT_THREE_PRODUCTS_VIEWED',
                                    'H3_GENESIS_SECONDARY_MARKET_VIEWED','H3_COMPUTE_COMPLETED_50',
                                    'H3_REFERRAL_REGISTERED','H3_EXCHANGE_COMPLETED'))
                           OR (o.event_ts>=w.eligible_from AND o.event_ts<w.eligible_until
-                              AND CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')>=w.eligible_from
-                              AND CONVERT_TZ(UTC_TIMESTAMP(),'+00:00','+08:00')<w.eligible_until
+                              AND NOW()>=w.eligible_from
+                              AND NOW()<w.eligible_until
                               AND (COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.sourceOccurredAt')),'null'),
                                             NULLIF(JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.source_occurred_at')),'null')) IS NULL
                                 OR CAST(REPLACE(LEFT(COALESCE(

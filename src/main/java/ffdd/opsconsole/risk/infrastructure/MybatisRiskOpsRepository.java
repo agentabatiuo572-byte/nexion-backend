@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.core.type.TypeReference;
+import ffdd.opsconsole.shared.config.StorageTime;
 import lombok.RequiredArgsConstructor;
 import ffdd.opsconsole.risk.domain.RiskArbitrageParamView;
 import ffdd.opsconsole.risk.domain.RiskArbitrageRowView;
@@ -781,7 +782,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
 
     @Override
     public Optional<RiskScoreRawInput> scoringInput(String userNo) {
-        return Optional.ofNullable(mapper.scoreRawInput(userNo)).map(row -> new RiskScoreRawInput(
+        return Optional.ofNullable(mapper.scoreRawInput(userNo, StorageTime.ZONE.getId())).map(row -> new RiskScoreRawInput(
                 row.userNo(), row.multiAccountClusterSize(), row.multiAccountFraud(),
                 row.arbitrageSignals(), row.severeArbitrage(),
                 row.withdrawalCount24h(), row.withdrawalAmount24h(),

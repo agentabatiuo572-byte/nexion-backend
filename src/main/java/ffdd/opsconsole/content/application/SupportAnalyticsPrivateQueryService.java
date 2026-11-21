@@ -79,7 +79,7 @@ public class SupportAnalyticsPrivateQueryService {
         rows.sort(rowOrder(q.direction()));
         long offset=(q.pageNum()-1)*q.pageSize();
         int start=(int)Math.min(offset,rows.size()),end=(int)Math.min(offset+q.pageSize(),rows.size());
-        var payload=map("view",q.view().name(),"basis",q.basis().name(),"businessZone","Asia/Shanghai",
+        var payload=map("view",q.view().name(),"basis",q.basis().name(),"businessZone",SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),
             "pageNum",q.pageNum(),"pageSize",q.pageSize(),"total",version.status()==SupportAnalyticsQueryVersion.Status.READY?(long)rows.size():null,"observedTotal",(long)rows.size(),"records",rows.subList(start,end).stream().map(Row::body).toList(),
             "versionState",version.status().name(),"queryVersion",version.value(),"canContinue",version.status()==SupportAnalyticsQueryVersion.Status.READY && end<rows.size(),
             "recordsStatus",q.view()==View.AGENTS?evaluation.result().personnel().status().name():version.status().name(),

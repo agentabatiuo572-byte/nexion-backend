@@ -18,6 +18,7 @@ import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -60,7 +61,7 @@ public class AppCanonicalBoundaryService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
 
-    private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId SERVER_ZONE = StorageTime.ZONE;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Pattern SANDBOX_RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
@@ -501,7 +502,7 @@ public class AppCanonicalBoundaryService {
                 "realizedTodayNex", realizedTodayNex,
                 "walletUsdt", zero(profile.usdtAvailable()).setScale(6, RoundingMode.HALF_UP),
                 "walletNex", zero(profile.nexAvailable()).setScale(6, RoundingMode.HALF_UP),
-                "userJoinedAt", profile.joinedAt().atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli(),
+                "userJoinedAt", epochMillis(profile.joinedAt()),
                 "serverNow", capacityNow.atZone(SERVER_ZONE).toInstant().toEpochMilli(),
                 "timezone", SERVER_ZONE.getId(),
                 "slotCap", Math.max(1, mapper.deviceSlotCap()),
@@ -1409,7 +1410,7 @@ public class AppCanonicalBoundaryService {
     }
 
     private Long epochMillis(LocalDateTime value) {
-        return value == null ? null : value.atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli();
+        return value == null ? null : value.atZone(SERVER_ZONE).toInstant().toEpochMilli();
     }
 
     private boolean isCommerceSandboxUser(Long userId) {

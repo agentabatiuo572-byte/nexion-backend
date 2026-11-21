@@ -154,7 +154,7 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             + "AND session_ended_reason IS NULL AND " + FIXED_CONTEXT + " FOR UPDATE")
     int countExecutionOwner(@Param("userId") long userId, @Param("installationId") String installationId, @Param("idleDays") int idleDays);
 
-    // nx_user_session DATETIME values use UTC+08; SQL session time_zone can differ on a host.
+    // The connection pool sets the MySQL session clock to the storage zone of nx_user_session.
     @Select("""
             SELECT * FROM nx_user_session
              WHERE user_id=#{userId}

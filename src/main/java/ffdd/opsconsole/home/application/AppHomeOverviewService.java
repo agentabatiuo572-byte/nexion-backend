@@ -15,6 +15,7 @@ import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.PromoRow;
 import ffdd.opsconsole.home.mapper.AppHomeOverviewMapper.TaskPriceHistoryRow;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -52,7 +53,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @RequiredArgsConstructor
 @Slf4j
 public class AppHomeOverviewService {
-    private static final ZoneId SERVER_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final ZoneId SERVER_ZONE = StorageTime.ZONE;
     private static final Set<String> SANDBOX_PROFILES = Set.of("test");
     private static final Set<String> PRODUCTION_PROFILES = Set.of("dev", "prod");
     private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
@@ -110,7 +111,7 @@ public class AppHomeOverviewService {
         }
         try {
             LocalDateTime now = LocalDateTime.ofInstant(clock.instant(), SERVER_ZONE);
-            // R-1: day / week / month cut by the business calendar; bounds are stored (Beijing) timestamps.
+            // R-1: day / week / month cut by the business calendar; bounds are storage-zone timestamps.
             var calendar = ffdd.opsconsole.shared.config.BusinessCalendar.legacy();
             LocalDate today = calendar.dateAtStorage(now);
             LocalDateTime dayStart = calendar.storageStart(today);

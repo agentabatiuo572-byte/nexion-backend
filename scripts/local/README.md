@@ -21,6 +21,13 @@ scripts/local/start_backend.sh               # 每次启动前会重跑幂等迁
 
 以后启动只需 `scripts/local/start_backend.sh`。
 
+### 部署存储时区
+
+- 越南首装时，在后端进程和 `bootstrap_db.sh` 的环境中设置 `NEXION_TIME_STORAGE_ZONE=Asia/Ho_Chi_Minh`。默认值为 `Asia/Shanghai`，适用于继续使用北京时间的库。
+- 自定义 JDBC URL 的 `connectionTimeZone` 应与存储时区一致。后端启动时设置 JVM 默认时区及连接池的 MySQL 会话时区，Bash 首装脚本也会初始化每个 SQL 文件的会话时区。
+- 建议将服务器 `TZ`、JVM `-Duser.timezone` 和 MySQL `default-time-zone` 与部署时区对齐，便于查看服务日志和使用独立数据库客户端。这三项均为可选项。
+- 已有业务数据的 DATETIME 按原时区解释。现有库切换存储时区前需要单独的数据迁移。
+
 用于客服资金统计的 TEST 副本需要完整的 MySQL 备份。逻辑导出沿用受管备份的 `--routines --events --triggers`，还原时保留原执行者、触发器顺序和受限账号的授权。恢复后用应用数据库账号执行 [客服验收库前置检查](check_support_analytics_restore.sql)，`funds_ready` 和 `rules_ready` 均为 `1` 时进入业务验收。已有库从对应备份恢复 `nx_support_rules.id=1` 的原版本与运营配置。全新空库按 S3 初始化该行。首份客服统计快照发布后，用授权客服查询并核对所选客户的钱包余额。
 
 ### 空库为什么需要额外步骤（C-1）

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.config.VietnamBusinessPeriod;
 import ffdd.opsconsole.growth.mapper.H3WeeklyParticipationMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -22,7 +23,7 @@ import org.springframework.util.StringUtils;
  */
 @Service
 public class H3WeeklyParticipationEvaluator {
-    static final ZoneId WEEK_ZONE = ZoneId.of("Asia/Shanghai");
+    static final ZoneId WEEK_ZONE = StorageTime.ZONE;
     static final String STOREFRONT_PRODUCT_DETAIL = "STOREFRONT_PRODUCT_DETAIL";
     static final String GENESIS_SECONDARY_MARKET = "GENESIS_SECONDARY_MARKET";
     static final String VERIFIED_PRODUCTION_COMPUTE_COMPLETION = "VERIFIED_PRODUCTION_COMPUTE_COMPLETION";

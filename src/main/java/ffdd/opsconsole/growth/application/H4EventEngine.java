@@ -206,8 +206,8 @@ public class H4EventEngine {
                 SELECT 1 FROM nx_user_level_log l JOIN nx_user u ON u.id=l.user_id
                 WHERE l.user_id=? AND l.level_type='VRANK' AND l.is_deleted=0
                   AND CAST(REPLACE(UPPER(l.to_code),'V','') AS UNSIGNED)>=?
-                  AND l.created_at<CONVERT_TZ(?,'+00:00','+08:00')
-                  AND GREATEST(l.created_at,CONVERT_TZ(?,'+00:00','+08:00'))<DATE_ADD(u.created_at,INTERVAL ? DAY)
+                  AND l.created_at<CONVERT_TZ(?,'+00:00',@@session.time_zone)
+                  AND GREATEST(l.created_at,CONVERT_TZ(?,'+00:00',@@session.time_zone))<DATE_ADD(u.created_at,INTERVAL ? DAY)
                 LIMIT 1
                 """,id,number(r.get("minRank")),effectiveEnd(rule),effectiveStart(rule),number(r.get("windowDays")).intValue())!=null;
             return values("current",earned?number(r.get("minRank")):rank,"target",number(r.get("minRank")),"eligible",earned||"IN_PROGRESS".equals(phase(rule))&&inWindow&&rank>=number(r.get("minRank")).intValue());
