@@ -190,7 +190,7 @@ public class VRankPromotionEngine {
      * meetsAllConditions:字段 >0 才作为条件,所有作为条件的字段都满足才返回 true。
      * 字段缺失/null/0 = 不要求此维度(通过)。
      */
-    boolean meetsAllConditions(VRankEvaluationSnapshot snapshot, VRankConfigRow target) {
+    static boolean meetsAllConditions(VRankEvaluationSnapshot snapshot, VRankConfigRow target) {
         if (target == null) {
             return false;
         }
@@ -229,7 +229,7 @@ public class VRankPromotionEngine {
      * <p>"达到 V{n} 阶的腿数"业务语义:V3 阶要求 2 条 V2 腿 — 即 L1 成员中 v_rank >= V2 的至少 2 条。
      * 故按 >= targetV 累加。
      */
-    private int cumulativeLegCount(Map<Integer, Integer> legCounts, int targetV) {
+    private static int cumulativeLegCount(Map<Integer, Integer> legCounts, int targetV) {
         int sum = 0;
         for (Map.Entry<Integer, Integer> entry : legCounts.entrySet()) {
             if (entry.getKey() != null && entry.getKey() >= targetV) {
@@ -240,7 +240,7 @@ public class VRankPromotionEngine {
     }
 
     /** "V3" → 3;"V8" → 8;非法 → null。 */
-    Integer parseRankLevel(String rankCode) {
+    static Integer parseRankLevel(String rankCode) {
         if (!StringUtils.hasText(rankCode)) {
             return null;
         }
@@ -263,7 +263,7 @@ public class VRankPromotionEngine {
     }
 
     /** 索引 → 配置行(无匹配返回 null)。 */
-    private VRankConfigRow rankByIndex(List<VRankConfigRow> ranks, int targetIndex) {
+    static VRankConfigRow rankByIndex(List<VRankConfigRow> ranks, int targetIndex) {
         if (targetIndex < 0 || targetIndex >= VRANK_CODES.size()) {
             return null;
         }

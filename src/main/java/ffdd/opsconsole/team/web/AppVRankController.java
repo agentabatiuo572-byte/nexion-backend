@@ -100,7 +100,8 @@ public class AppVRankController {
         }
         Scope scope = userScope(userId);
         if ("SANDBOX".equals(scope.sourceEnvironment())) {
-            return ApiResult.ok(TeamSandboxFactGenerator.currentRank(scope.runId(), userId));
+            return ApiResult.ok(TeamSandboxFactGenerator.currentRank(scope.runId(), userId,
+                    commissionRepository.vRankConfigRows()));
         }
         VRankEvaluationSnapshot snapshot = performanceRepository.computeSnapshot(userId);
         Map<String, Object> progress = new LinkedHashMap<>();

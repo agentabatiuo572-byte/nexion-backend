@@ -487,6 +487,20 @@ public class AppUserRegistrationService {
         return !"0".equals(configFacade.activeValue("auth.risk."+key).orElse("1"));
     }
 
+    /**
+     * GROW-01P (BUG-558): 隔离(test/sandbox) OAuth 新建账号沿用正式注册链的注册来源与新人礼冻结。
+     * 与 registerProvider 同源：同一 nx_user_registration_origin 结构、同一
+     * auth.risk.h5_freeze_newcomer_gift 开关与 FROZEN 回执，未实付的新用户不会提前进入
+     * （模拟）新人礼账本。没有真实 attempt 的旧内部重载不写（避免脏来源/设备限额）。
+     */
+    public UserLoginResponse.RegistrationReceipt recordIsolatedProviderOrigin(UserEntity user,AppLoginContext context) {
+        if(user==null||user.getId()==null||context==null||context.group()==null
+                ||context.group()==AppSessionSurface.UNKNOWN||context.loginAttemptId()==null
+                ||!context.loginAttemptId().matches("[A-Za-z0-9_-]{16,80}"))return null;
+        int sandbox=Integer.valueOf(1).equals(user.getSandbox())?1:0;
+        return saveRegistration(user.getId(),null,sandbox,context);
+    }
+
     private UserLoginResponse.RegistrationReceipt saveRegistration(long id,UserEntity sponsor,int sandbox,AppLoginContext context) {
         boolean freeze = flag("h5_freeze_newcomer_gift");
         var receipt=registrationReceipt(sponsor,sandbox,freeze);

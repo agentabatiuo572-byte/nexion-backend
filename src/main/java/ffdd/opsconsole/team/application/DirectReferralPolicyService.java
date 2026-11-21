@@ -85,6 +85,12 @@ public class DirectReferralPolicyService {
         return sevenLayerPaused(false);
     }
     public boolean sevenLayerPausedForUpdate(){return sevenLayerPaused(true);}
+
+    /** Read-only preview input: the same first-layer split bit frozen by settleSeven. */
+    public boolean purchaseSplitEnabled() {
+        var policy = at(now());
+        return policy.schemaVersion() == 2 && policy.purchase().enabled();
+    }
     private boolean sevenLayerPaused(boolean currentRead) {
         var value=(currentRead?config.activeValueForUpdate(PAUSED_KEY):config.activeValue(PAUSED_KEY)).orElse("false");
         if(!Set.of("true","false").contains(value))throw new BizException(503,"SEVEN_LAYER_PAUSE_CONFIG_INVALID");

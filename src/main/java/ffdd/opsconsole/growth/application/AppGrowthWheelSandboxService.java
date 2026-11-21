@@ -2,6 +2,7 @@ package ffdd.opsconsole.growth.application;
 
 import ffdd.opsconsole.growth.mapper.AppGrowthWheelSandboxMapper;
 import ffdd.opsconsole.growth.mapper.AppGrowthWheelSandboxMapper.SandboxCommand;
+import ffdd.opsconsole.growth.mapper.AppGrowthWheelSandboxMapper.SandboxMilestone;
 import ffdd.opsconsole.growth.mapper.AppGrowthWheelSandboxMapper.SandboxSpin;
 import ffdd.opsconsole.growth.mapper.AppGrowthWheelSandboxMapper.SandboxTicket;
 import ffdd.opsconsole.growth.mapper.AppGrowthWheelSandboxMapper.SandboxTier;
@@ -16,6 +17,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -37,6 +39,7 @@ public class AppGrowthWheelSandboxService {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final BigDecimal ONE_HUNDRED = new BigDecimal("100.0000");
     private static final Set<String> REWARD_KINDS = Set.of("uvt", "points", "usdt", "coupon");
+    private static final Set<String> MILESTONE_REWARD_TYPES = Set.of("UVT", "USDT", "SPIN", "BADGE");
     private static final Clock CLOCK = Clock.systemUTC();
 
     private final AppGrowthWheelSandboxMapper mapper;
@@ -182,22 +185,46 @@ public class AppGrowthWheelSandboxService {
     public ApiResult<Map<String, Object>> pointState(Long userId) {
         WheelSandboxProfile.Scope scope = scope(userId);
         ensureScope(scope);
+        LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam()
+                .dateAt(java.time.Instant.now());
         Map<String, Object> streak = new LinkedHashMap<>();
-        streak.put("currentStreak", 0);
-        streak.put("longestStreak", 0);
-        streak.put("streakSavers", 0);
-        streak.put("checkedInToday", false);
-        streak.put("lastCheckInDate", null);
+        Map<String, Object> raw = mapper.canonicalStreakState(userId, today);
+        if (raw != null) streak.putAll(raw);
+        streak.putIfAbsent("currentStreak", 0);
+        streak.putIfAbsent("longestStreak", 0);
+        streak.putIfAbsent("streakSavers", 0);
+        Object checked = streak.get("checkedInToday");
+        streak.put("checkedInToday", checked instanceof Boolean value ? value
+                : checked instanceof Number number && number.intValue() != 0);
+        streak.putIfAbsent("lastCheckInDate", null);
+        List<Long> claimedIds = mapper.claimedMilestoneIds(scope.runId(), userId);
+        Set<Long> claimed = new LinkedHashSet<>(claimedIds == null ? List.of() : claimedIds);
+        List<Map<String, Object>> rules = mapper.dailyMilestoneRules(userId);
+        List<Map<String, Object>> milestones = (rules == null ? List.<Map<String, Object>>of() : rules).stream()
+                .map(row -> milestoneView(row, claimed)).toList();
         return ApiResult.ok(linked(
                 "rewardAsset", "UVT",
-                "serverDate", today().toString(),
-                "nextResetAtUtc", today().plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toString(),
+                "serverDate", today.toString(),
+                "nextResetAtUtc", ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam()
+                        .startOf(today.plusDays(1)).toString(),
                 "streak", streak,
-                "dailyMilestones", List.of(), "earningMilestones", List.of(), "rules", List.of(),
+                "dailyMilestones", milestones, "earningMilestones", List.of(), "rules", List.of(),
                 "powerUps", List.of(), "topStreakers", List.of(),
                 "bonusTickets", mapper.countAvailableTickets(scope.runId(), userId),
                 "source", "mock", "serverCanonical", true,
                 "sourceEnvironment", "SANDBOX", "runId", scope.runId()));
+    }
+
+    private Map<String, Object> milestoneView(Map<String, Object> row, Set<Long> claimed) {
+        Long milestoneId = ((Number) row.get("milestoneId")).longValue();
+        int day = ((Number) row.get("milestoneDay")).intValue();
+        int current = ((Number) row.get("currentStreak")).intValue();
+        String rewardType = row.get("rewardType") == null ? "" : String.valueOf(row.get("rewardType")).trim().toUpperCase(Locale.ROOT);
+        String status = claimed.contains(milestoneId) ? "CLAIMED"
+                : current >= day ? "CLAIMABLE" : "LOCKED";
+        return linked("milestoneId", milestoneId, "milestoneDay", day,
+                "rewardType", rewardType, "rewardAmount", row.get("rewardAmount"),
+                "badgeCode", row.get("badgeCode"), "status", status);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -259,7 +286,7 @@ public class AppGrowthWheelSandboxService {
         return spinResponse(scope, code, spin, false);
     }
 
-    /** Sandbox milestone claims issue only scoped mock tickets. */
+    /** Sandbox milestone claims use the real H5 rule/streak and write only scoped sandbox facts. */
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> claimMilestone(Long userId, Long milestoneId, String idempotencyKey) {
         WheelSandboxProfile.Scope scope = scope(userId);
@@ -274,19 +301,102 @@ public class AppGrowthWheelSandboxService {
         SandboxCommand existing = mapper.lockCommand(scope.runId(), userId, "DAILY_MILESTONE_CLAIM", key);
         if (existing != null) {
             if (!hash.equals(existing.spinHash())) throw new BizException(409, "WHEEL_SANDBOX_IDEMPOTENCY_CONFLICT");
-            return milestoneResponse(scope, milestoneId, parseCount(existing.spinNo()), true);
+            return replayMilestone(scope, milestoneId, existing);
         }
-        int tickets = 1;
-        if (mapper.insertCommand(scope.runId(), userId, "DAILY_MILESTONE_CLAIM", key, hash, String.valueOf(tickets)) != 1) {
+        if (milestoneClaimCount(scope, milestoneId) > 0) {
+            return ApiResult.fail(409, "DAILY_MILESTONE_NOT_CLAIMABLE");
+        }
+        SandboxMilestone milestone = mapper.lockClaimableMilestone(userId, milestoneId);
+        if (milestone == null) return ApiResult.fail(409, "DAILY_MILESTONE_NOT_CLAIMABLE");
+        String guardKey = milestoneKey(milestoneId);
+        if (mapper.lockCommand(scope.runId(), userId, "DAILY_MILESTONE_STATE", guardKey) != null) {
+            return ApiResult.fail(409, "DAILY_MILESTONE_NOT_CLAIMABLE");
+        }
+        String rewardType = normalizeMilestoneRewardType(milestone.rewardType());
+        BigDecimal amount = milestone.rewardAmount() == null ? BigDecimal.ZERO : milestone.rewardAmount();
+        int tickets = 0;
+        if ("UVT".equals(rewardType) || "USDT".equals(rewardType)) {
+            if (amount == null || amount.signum() <= 0) throw new BizException(409, "REWARD_AMOUNT_INVALID");
+        } else if ("SPIN".equals(rewardType)) {
+            if (amount == null || amount.stripTrailingZeros().scale() > 0 || amount.signum() <= 0) {
+                throw new BizException(409, "REWARD_AMOUNT_INVALID");
+            }
+            tickets = amount.intValueExact();
+        } else if (!StringUtils.hasText(milestone.badgeCode())) {
+            throw new BizException(409, "DAILY_MILESTONE_BADGE_NOT_CONFIGURED");
+        }
+        String facts = "LEDGER:" + milestone.milestoneDay() + ":" + tickets;
+        if (mapper.insertCommand(scope.runId(), userId, "DAILY_MILESTONE_CLAIM", key, hash, facts) != 1) {
             throw new BizException(409, "WHEEL_SANDBOX_IDEMPOTENCY_CONFLICT");
         }
-        for (int index = 1; index <= tickets; index++) {
-            String ticketId = "SBX-TICKET-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-            if (mapper.insertTicket(scope.runId(), userId, ticketId, "DAILY_MILESTONE", sourcePrefix + index) != 1) {
-                throw new BizException(409, "WHEEL_SANDBOX_TICKET_CONFLICT");
-            }
+        if (mapper.insertCommand(scope.runId(), userId, "DAILY_MILESTONE_STATE", guardKey, hash, facts) != 1) {
+            throw new BizException(409, "DAILY_MILESTONE_NOT_CLAIMABLE");
         }
-        return milestoneResponse(scope, milestoneId, tickets, false);
+        if ("UVT".equals(rewardType) || "USDT".equals(rewardType)) {
+            creditMilestoneLedger(scope, milestoneId, rewardType, amount, milestone.badgeCode());
+        } else if ("SPIN".equals(rewardType)) {
+            creditMilestoneLedger(scope, milestoneId, "SPIN", BigDecimal.valueOf(tickets), milestone.badgeCode());
+            for (int index = 1; index <= tickets; index++) {
+                String ticketId = "SBX-TICKET-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
+                if (mapper.insertTicket(scope.runId(), userId, ticketId, "DAILY_MILESTONE", sourcePrefix + index) != 1) {
+                    throw new BizException(409, "WHEEL_SANDBOX_TICKET_CONFLICT");
+                }
+            }
+        } else {
+            creditMilestoneLedger(scope, milestoneId, "BADGE", amount, milestone.badgeCode());
+        }
+        return milestoneResponse(scope, milestone.milestoneId(), milestone.milestoneDay(),
+                rewardType, amount, tickets, milestone.badgeCode(), false);
+    }
+
+    private ApiResult<Map<String, Object>> replayMilestone(WheelSandboxProfile.Scope scope,
+                                                            Long milestoneId, SandboxCommand command) {
+        String stored = command.spinNo();
+        if (stored != null && stored.matches("\\d+")) {
+            // Commands created by the old preview stored only a ticket count.
+            return legacyMilestoneResponse(scope, milestoneId, parseCount(stored), true);
+        }
+        if (stored != null && stored.startsWith("LEDGER:")) {
+            String[] parts = stored.split(":");
+            if (parts.length != 3) throw new BizException(409, "WHEEL_SANDBOX_REPLAY_UNAVAILABLE");
+            Map<String, Object> fact = mapper.milestoneRewardFact(scope.runId(), scope.userId(), milestoneId);
+            if (fact == null) throw new BizException(409, "WHEEL_SANDBOX_REPLAY_UNAVAILABLE");
+            String type = String.valueOf(fact.get("asset")).toUpperCase(Locale.ROOT);
+            String bizNo = String.valueOf(fact.get("bizNo"));
+            String prefix = "MILESTONE:" + milestoneId + ":";
+            String badge = bizNo.length() > prefix.length() ? bizNo.substring(prefix.length()) : null;
+            return milestoneResponse(scope, milestoneId, Integer.parseInt(parts[1]), type,
+                    (BigDecimal) fact.get("amount"), Integer.parseInt(parts[2]), badge, true);
+        }
+        throw new BizException(409, "WHEEL_SANDBOX_REPLAY_UNAVAILABLE");
+    }
+
+    private int milestoneClaimCount(WheelSandboxProfile.Scope scope, Long milestoneId) {
+        return mapper.claimedMilestoneCommands(scope.runId(), scope.userId(), milestoneId)
+                + mapper.claimedMilestoneTickets(scope.runId(), scope.userId(), milestoneId)
+                + mapper.claimedMilestoneRewards(scope.runId(), scope.userId(), milestoneId);
+    }
+
+    private String milestoneKey(Long milestoneId) {
+        return "MS:" + milestoneId;
+    }
+
+    private String normalizeMilestoneRewardType(Object raw) {
+        String value = raw == null ? "" : String.valueOf(raw).trim().toUpperCase(Locale.ROOT);
+        if (!MILESTONE_REWARD_TYPES.contains(value)) throw new BizException(409, "REWARD_TYPE_UNSUPPORTED");
+        return value;
+    }
+
+    private void creditMilestoneLedger(WheelSandboxProfile.Scope scope, Long milestoneId,
+                                       String asset, BigDecimal amount, String badgeCode) {
+        BigDecimal before = mapper.rewardBalance(scope.runId(), scope.userId(), asset);
+        if (before == null) before = BigDecimal.ZERO;
+        String bizNo = "MILESTONE:" + milestoneId;
+        if (StringUtils.hasText(badgeCode)) bizNo += ":" + badgeCode;
+        if (mapper.insertReward(scope.runId(), scope.userId(), bizNo,
+                asset, amount, before.add(amount)) != 1) {
+            throw new BizException(409, "WHEEL_SANDBOX_REWARD_LEDGER_CONFLICT");
+        }
     }
 
     private WheelSandboxProfile.Scope scope(Long userId) {
@@ -370,12 +480,24 @@ public class AppGrowthWheelSandboxService {
                 "replay", replay, "source", "mock", "sourceEnvironment", "SANDBOX", "runId", scope.runId()));
     }
 
-    private ApiResult<Map<String, Object>> milestoneResponse(WheelSandboxProfile.Scope scope, Long milestoneId,
-                                                               int tickets, boolean replay) {
-        return ApiResult.ok(linked("milestoneId", milestoneId, "rewardType", "SPIN", "spinTickets", tickets,
-                "status", "CLAIMED", "replay", replay, "source", "mock", "serverCanonical", true,
+    private ApiResult<Map<String, Object>> milestoneResponse(WheelSandboxProfile.Scope scope,
+                                                               Long milestoneId, Integer milestoneDay,
+                                                               String rewardType, BigDecimal rewardAmount,
+                                                               int tickets, String badgeCode, boolean replay) {
+        return ApiResult.ok(linked("milestoneId", milestoneId,
+                "milestoneDay", milestoneDay, "rewardType", rewardType,
+                "rewardAmount", rewardAmount, "badgeCode", badgeCode,
+                "spinTickets", tickets, "status", "CLAIMED", "replay", replay,
+                "source", "mock", "serverCanonical", true,
                 "sourceEnvironment", "SANDBOX",
                 "runId", scope.runId()));
+    }
+
+    private ApiResult<Map<String, Object>> legacyMilestoneResponse(WheelSandboxProfile.Scope scope,
+                                                                    Long milestoneId, int tickets, boolean replay) {
+        return ApiResult.ok(linked("milestoneId", milestoneId, "rewardType", "SPIN", "spinTickets", tickets,
+                "status", "CLAIMED", "replay", replay, "source", "mock", "serverCanonical", true,
+                "sourceEnvironment", "SANDBOX", "runId", scope.runId()));
     }
 
     private Map<String, Object> publicSegment(SandboxTier tier, int order) {

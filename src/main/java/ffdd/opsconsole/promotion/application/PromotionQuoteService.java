@@ -67,6 +67,7 @@ public class PromotionQuoteService {
             price=prices(userId,items,voucher,false,decimal(redeemed.get("discount")));
             spentVoucher=true;
         }
+        requirePhysicalStock(items);
         Instant now=Instant.now();
         List<Map<String,Object>> candidates=db.list("""
             SELECT p.activity_id,p.active_version FROM nx_promotion p JOIN nx_promotion_version v
@@ -264,6 +265,25 @@ public class PromotionQuoteService {
             }
         }
     }
+    /**
+     * New quotes must expose a finite physical product shortage before activity eligibility.
+     * This is deliberately local to the quote entry: the shared eligibility batch keeps its
+     * existing storefront/detail/bundle/order semantics.
+     */
+    private void requirePhysicalStock(List<PromotionRules.Selection> items) {
+        for (PromotionRules.Selection item : items) {
+            Map<String,Object> product = db.product(item.productNo(), false);
+            String type = text(product.get("product_type")).trim().toUpperCase(Locale.ROOT);
+            String mode = text(product.get("inventory_mode")).trim().toUpperCase(Locale.ROOT);
+            if (("DEVICE".equals(type) || "SERVER".equals(type))
+                    && "FINITE".equals(mode)
+                    && decimal(product.get("stock")).signum() <= 0) {
+                if (items.size() == 1) throw new BizException(404, "PRODUCT_NOT_AVAILABLE");
+                throw new BizException(409, "BUNDLE_PRODUCT_NOT_AVAILABLE");
+            }
+        }
+    }
+
     public Map<String,Object> prices(long user,List<PromotionRules.Selection> items,String voucher) {
         return prices(user,items,voucher,false,null);
     }
