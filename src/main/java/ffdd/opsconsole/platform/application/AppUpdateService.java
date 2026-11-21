@@ -29,6 +29,8 @@ public class AppUpdateService {
     private final String androidDownloadOrigin;
     @Value("${nexion.app-updates.resource-public-key:}")
     private final String resourcePublicKey;
+    @Value("${nexion.app-updates.ios-resource-bundle-id:}")
+    private final String iosResourceBundleId;
 
     public record Text(String zh, String en, String vi) {}
     public record Artifact(String artifactId, String platform, String versionName, int latestBuild,
@@ -78,11 +80,15 @@ public class AppUpdateService {
             return new PublicView(platform, build < pkg.minBuild ? "required" : "optional", pkg);
         Policy resource = s.liveResource;
         if (resourceBuild != null && resource != null && build >= resource.minNativeBuild && build <= resource.maxNativeBuild
-                && (appId == null || resource.appId.equals(appId))
-                && (!"HBuilder".equals(resource.appId) || ("HBuilder".equals(appId) && "io.dcloud.HBuilder".equals(hostPackage)))
+                && resource.appId.equals(appId) && matchesResourceHost(platform, appId, hostPackage)
                 && currentArtifact(available, resource))
             return new PublicView(platform, resourceBuild < resource.latestBuild ? "optional" : "current", resource);
         return new PublicView(platform, pkg == null ? "none" : "current", pkg);
+    }
+
+    private boolean matchesResourceHost(String platform, String appId, String hostPackage) {
+        if ("ios".equals(platform)) return !iosResourceBundleId.isBlank() && iosResourceBundleId.equals(hostPackage);
+        return "HBuilder".equals(appId) ? "io.dcloud.HBuilder".equals(hostPackage) : "ai.uvel.app".equals(hostPackage);
     }
 
     @Transactional(readOnly = true)
@@ -232,7 +238,8 @@ public class AppUpdateService {
     private boolean trustedResource(Artifact a) {
         boolean samsungTestBase = "https://api-test.uvel.ai".equals(androidDownloadOrigin) && "android".equals(a.platform)
                 && "HBuilder".equals(a.appId) && a.minNativeBuild == 1532 && a.maxNativeBuild == 1532;
-        if (resourcePublicKey.isBlank() || !androidDownloadOrigin.matches("https://[a-zA-Z0-9.-]+")
+        if (resourcePublicKey.isBlank() || ("ios".equals(a.platform) && iosResourceBundleId.isBlank())
+                || !androidDownloadOrigin.matches("https://[a-zA-Z0-9.-]+")
                 || !a.downloadUrl.equals(androidDownloadOrigin + "/app-updates/" + a.platform + "/" + a.sha256 + ".wgt")
                 || !a.signature.matches("[a-f0-9]{128}") || (!"__UNI__G77FFD9D".equals(a.appId) && !samsungTestBase)
                 || a.versionName.indexOf('\n') >= 0 || a.versionName.indexOf('\r') >= 0
