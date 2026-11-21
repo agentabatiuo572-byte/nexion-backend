@@ -17,8 +17,9 @@ public class AppUpdateController {
 
     @GetMapping("/api/app/updates/current")
     public ApiResult<PublicView> current(@RequestParam String platform, @RequestParam int build,
-            @RequestParam(required = false) Integer resourceBuild) {
-        return ApiResult.ok(updates.current(platform, build, resourceBuild));
+            @RequestParam(required = false) Integer resourceBuild, @RequestParam(required = false) String appId,
+            @RequestParam(required = false) String hostPackage) {
+        return ApiResult.ok(updates.current(platform, build, resourceBuild, appId, hostPackage));
     }
 
     @GetMapping("/api/admin/platform/app-updates")

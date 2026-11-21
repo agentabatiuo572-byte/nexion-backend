@@ -16,3 +16,5 @@
 签名输入是以下九项以单个 LF 连接的 UTF-8 字节，最后一行无换行。各项依次为 `uvel-test-resource-v1`、`platform`、`appId`、`versionName`、十进制 `latestBuild`、`minNativeBuild`、`maxNativeBuild`、`sizeBytes` 和小写 `sha256`。算法为 ECDSA P-256/SHA-256，签名采用 IEEE P1363 编码，存储 64 字节签名的小写十六进制文本。
 
 签发后把文件放在 `/srv/uvel-app/artifacts/app-updates/<platform>/<sha256>.wgt`，从相应 TEST HTTPS 入口回读并核对签名清单、字节长度及完整摘要，再向独立目录 `nx_app_update_resource` 登记这些属性及不可变下载地址。资源和整包使用各自的构建序列、共享审批流程，恢复申请恢复上次发布前的整包与资源组合。公开检查传入 `GET /api/app/updates/current?platform=android&build=<原生构建号>&resourceBuild=<当前资源构建号>`，先判断整包最低门槛与推荐，再对处于兼容范围的宿主返回日常资源推荐。
+
+产品 App 资源的 appId 为 `__UNI__G77FFD9D`。三星 TEST 标准基座使用单独签发的 Android 资源，清单 appId 为 `HBuilder`，适配范围起止均为 1532。该基座请求还须提供真实运行时 `appId=HBuilder&hostPackage=io.dcloud.HBuilder`，客户端安装前再次核对宿主身份。

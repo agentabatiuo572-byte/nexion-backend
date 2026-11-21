@@ -67,7 +67,7 @@ public class AppUpdateService {
     private record Row(long revision, State state) {}
     private record Receipt(String action, String actorId, String hash) {}
 
-    public PublicView current(String platform, int build, Integer resourceBuild) {
+    public PublicView current(String platform, int build, Integer resourceBuild, String appId, String hostPackage) {
         checkPlatform(platform);
         if (build < 1 || (resourceBuild != null && resourceBuild < 0)) throw new BizException("构建号无效");
         State s = load(platform, false).state;
@@ -78,6 +78,8 @@ public class AppUpdateService {
             return new PublicView(platform, build < pkg.minBuild ? "required" : "optional", pkg);
         Policy resource = s.liveResource;
         if (resourceBuild != null && resource != null && build >= resource.minNativeBuild && build <= resource.maxNativeBuild
+                && (appId == null || resource.appId.equals(appId))
+                && (!"HBuilder".equals(resource.appId) || ("HBuilder".equals(appId) && "io.dcloud.HBuilder".equals(hostPackage)))
                 && currentArtifact(available, resource))
             return new PublicView(platform, resourceBuild < resource.latestBuild ? "optional" : "current", resource);
         return new PublicView(platform, pkg == null ? "none" : "current", pkg);
@@ -228,9 +230,11 @@ public class AppUpdateService {
     }
 
     private boolean trustedResource(Artifact a) {
+        boolean samsungTestBase = "https://api-test.uvel.ai".equals(androidDownloadOrigin) && "android".equals(a.platform)
+                && "HBuilder".equals(a.appId) && a.minNativeBuild == 1532 && a.maxNativeBuild == 1532;
         if (resourcePublicKey.isBlank() || !androidDownloadOrigin.matches("https://[a-zA-Z0-9.-]+")
                 || !a.downloadUrl.equals(androidDownloadOrigin + "/app-updates/" + a.platform + "/" + a.sha256 + ".wgt")
-                || !a.signature.matches("[a-f0-9]{128}") || !"__UNI__G77FFD9D".equals(a.appId)
+                || !a.signature.matches("[a-f0-9]{128}") || (!"__UNI__G77FFD9D".equals(a.appId) && !samsungTestBase)
                 || a.versionName.indexOf('\n') >= 0 || a.versionName.indexOf('\r') >= 0
                 || a.minNativeBuild < 1 || a.maxNativeBuild < a.minNativeBuild
                 || a.sizeBytes <= 0) return false;
