@@ -484,6 +484,13 @@ public class SupportLeaderboardSourceService {
             var reader=new ObjectMapper().reader().with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
                 .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS,DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
             JsonNode source=reader.readTree(proof.sourceFactJson()),evidence=reader.readTree(proof.attributionEvidenceJson());
+            if("UNASSIGNED".equals(attribution.agentStatus()) && ("UNKNOWN".equals(attribution.groupStatus())
+                    || "UNKNOWN".equals(attribution.ownerStatus()))) {
+                if(!jsonText(evidence.path("agent"),"reason","NO_CURRENT_BINDING")
+                        || !evidence.path("bindingHistory").isArray())return false;
+                for(JsonNode binding:evidence.path("bindingHistory"))
+                    if(activeAtCapture(binding,proof.captureDbUtc()))return false;
+            }
             if("KNOWN".equals(attribution.agentStatus()) && !agents.contains(attribution.agentAdminId())) {
                 // A removed agent can still own a past contribution. Verify the identity and binding saved at payment.
                 boolean capturedAdmin=false,capturedBinding=false;
@@ -491,9 +498,10 @@ public class SupportLeaderboardSourceService {
                     if(jsonId(admin,"id",attribution.agentAdminId()) && jsonId(admin,"isDeleted",0L))capturedAdmin=true;
                 }
                 for(JsonNode binding:evidence.path("bindingHistory")) {
-                    if(jsonId(binding,"userId",fact.customerId()) && jsonId(binding,"agentAdminId",attribution.agentAdminId())
-                            && jsonText(binding,"status","ACTIVE") && jsonId(binding,"isDeleted",0L)
-                            && binding.path("endsAt").isNull())capturedBinding=true;
+                    if(!activeAtCapture(binding,proof.captureDbUtc()))continue;
+                    if(capturedBinding || !jsonId(binding,"userId",fact.customerId()) || !jsonId(binding,"agentAdminId",attribution.agentAdminId())
+                            || !jsonText(binding,"status","ACTIVE") || !jsonId(binding,"isDeleted",0L) || !binding.path("endsAt").isNull())return false;
+                    capturedBinding=true;
                 }
                 if(!capturedAdmin || !capturedBinding)return false;
             }
@@ -514,6 +522,11 @@ public class SupportLeaderboardSourceService {
                 && jsonLayer(evidence.path("group"),attribution.groupStatus(),attribution.groupId())
                 && jsonLayer(evidence.path("owner"),attribution.ownerStatus(),attribution.ownerAdminId());
         }catch(IOException | IllegalArgumentException | DateTimeException | NullPointerException ex){return false;}
+    }
+    private static boolean activeAtCapture(JsonNode binding,LocalDateTime capture) {
+        LocalDateTime start=LocalDateTime.parse(binding.path("startsAt").textValue());
+        JsonNode end=binding.path("endsAt");
+        return !start.isAfter(capture) && (end.isNull() || LocalDateTime.parse(end.textValue()).isAfter(capture));
     }
     private static boolean jsonText(JsonNode node,String field,String expected) {
         JsonNode value=node.get(field);return value!=null && (expected==null?value.isNull():value.isTextual()
