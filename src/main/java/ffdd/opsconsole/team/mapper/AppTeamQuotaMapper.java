@@ -56,14 +56,15 @@ public interface AppTeamQuotaMapper extends BaseMapper<Object> {
                    COALESCE(t.display_name, t.quota_code) AS name,
                    t.direct_refs AS directRefs, t.month_compute_points AS monthComputePoints,
                    t.monthly_quota AS monthlyQuota, t.unlock_mode AS unlockMode,
-                   COALESCE(SUM(CASE WHEN u.is_deleted = 0 AND UPPER(u.status) = 'ACTIVE'
-                         AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
-
-                         AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
-
-                         THEN u.quantity ELSE 0 END), 0) AS soldThisMonth
+                   COALESCE(SUM(CASE WHEN u.usage_type='SOLD' THEN u.quantity ELSE 0 END),0) AS soldThisMonth,
+                   COALESCE(SUM(u.quantity),0) AS usedThisMonth,
+                   COALESCE(SUM(CASE WHEN u.usage_type='RESERVED' AND u.purchase_intent_no IS NOT NULL
+                                     THEN u.quantity ELSE 0 END),0) AS pendingThisMonth
               FROM nx_team_hardware_quota_tier t
-              LEFT JOIN nx_team_hardware_quota_usage u ON u.quota_tier_id = t.id
+              LEFT JOIN nx_team_hardware_quota_usage u ON u.quota_tier_id=t.id
+               AND u.is_deleted=0 AND UPPER(u.status)='ACTIVE'
+               AND u.occurred_at >= """ + HardwareQuotaPeriod.SQL_MONTH_START_UTC + """
+               AND u.occurred_at < """ + HardwareQuotaPeriod.SQL_NEXT_MONTH_START_UTC + """
              WHERE t.is_deleted = 0 AND t.status = 1
              GROUP BY t.id, t.quota_code, t.product_no, t.display_name,
                       t.direct_refs, t.month_compute_points, t.monthly_quota,
@@ -107,5 +108,11 @@ public interface AppTeamQuotaMapper extends BaseMapper<Object> {
     record UserScope(Integer sandbox, String vRank) { }
     record QuotaRow(String quotaCode, String productNo, String name, Integer directRefs,
                     BigDecimal monthComputePoints, Integer monthlyQuota, String unlockMode,
-                    Long soldThisMonth) { }
+                    Long soldThisMonth, Long usedThisMonth, Long pendingThisMonth) {
+        public QuotaRow(String quotaCode, String productNo, String name, Integer directRefs,
+                        BigDecimal monthComputePoints, Integer monthlyQuota, String unlockMode, Long soldThisMonth) {
+            this(quotaCode, productNo, name, directRefs, monthComputePoints, monthlyQuota, unlockMode,
+                    soldThisMonth, soldThisMonth, 0L);
+        }
+    }
 }

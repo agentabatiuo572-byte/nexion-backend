@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.mapper;
 
+import ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.infrastructure.UserDeviceEntity;
 import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
@@ -13,7 +14,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper {
+public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper, PurchaseGateQuotaMapper {
     @Select("""
             SELECT config_key AS configKey, config_value AS configValue
               FROM nx_compute_e3_config
@@ -97,19 +98,20 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
      * trade-ins (including different entry keys) cannot oversell it.
      */
     @Update("""
-            UPDATE nx_admin_device_sku
+            UPDATE nx_admin_device_sku s
                SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
                    CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),
                    updated_at=NOW()
-             WHERE sku_id=#{productNo} AND is_deleted=0
+             WHERE sku_id=#{productNo} AND is_deleted=0 AND purchase_gate_generation=#{generation}
                AND JSON_VALID(purchase_gate_json)=1
                AND JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.enforce'))='true'
                AND JSON_EXTRACT(purchase_gate_json,'$.quotaCap') IS NOT NULL
                AND JSON_EXTRACT(purchase_gate_json,'$.quotaSold') IS NOT NULL
-               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity} + """ + HELD + """
                    <= CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
             """)
-    int consumePurchaseQuota(@Param("productNo") String productNo, @Param("quantity") Integer quantity);
+    int consumePurchaseQuota(@Param("productNo") String productNo, @Param("quantity") Integer quantity,
+                             @Param("generation") long generation);
 
     @Select("""
             SELECT COALESCE((SELECT config_value FROM nx_config_item

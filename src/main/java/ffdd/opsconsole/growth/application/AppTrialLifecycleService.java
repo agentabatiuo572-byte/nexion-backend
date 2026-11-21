@@ -4,6 +4,7 @@ import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
+import ffdd.opsconsole.finance.purchase.PurchaseQuotaReservation;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
@@ -324,19 +325,19 @@ public class AppTrialLifecycleService {
                     testCloudAdmission.lock();
                     requireUser(userId);
                     return once("TRIAL_CONVERT:PRODUCTION",userId,idempotencyKey,request,
-                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote,false));
+                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote,false,null));
                 });
     }
 
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version) {
-        return settleVerifiedExternal(owner,product,expected,version,false);
+        return settleVerifiedExternal(owner,product,expected,version,false,null);
     }
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
-    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version,boolean legacyQuote) {
+    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version,boolean legacyQuote, PurchaseQuotaReservation reservation) {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
         testCloudAdmission.lock();
-        requireUser(owner); return convertOnce(owner,product,expected,StringUtils.hasText(version)?version:null,legacyQuote);
+        requireUser(owner); return convertOnce(owner,product,expected,StringUtils.hasText(version)?version:null,legacyQuote,reservation);
     }
     @Transactional(readOnly=true)
     public ApiResult<Map<String,Object>> externalPaymentPricing(Long owner,Instant pricingInstant) {
@@ -374,7 +375,18 @@ public class AppTrialLifecycleService {
     }
 
     public void checkExternalPaymentQuota(Long owner, String requestedProductNo, LocalDateTime occurredAtUtc) {
-        TrialRow row = mapper.trial(owner);
+        HardwareQuotaPurchaseGuard.check(mapper, owner, externalPaymentProduct(mapper.trial(owner), requestedProductNo),
+                1, occurredAtUtc);
+    }
+
+    public AppTrialLifecycleMapper.ConversionProduct lockExternalPaymentProduct(Long owner, String requestedProductNo) {
+        String configured = externalPaymentProduct(mapper.lockTrial(owner), requestedProductNo);
+        var product = mapper.lockConversionProduct(configured);
+        if (!availablePhysicalTrialProduct(product)) throw new BizException(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+        return product;
+    }
+
+    private String externalPaymentProduct(TrialRow row, String requestedProductNo) {
         if (row == null || !active(row.status())) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
         if (!requestedProductNo.matches("[A-Za-z0-9._-]{2,64}")) {
             throw new BizException(422, "TRIAL_PRODUCT_REQUIRED");
@@ -383,11 +395,12 @@ public class AppTrialLifecycleService {
         if (configured == null || !configured.equals(canonicalTrialProductId(requestedProductNo))) {
             throw new BizException(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         }
-        HardwareQuotaPurchaseGuard.check(mapper, owner, configured, 1, occurredAtUtc);
+        return configured;
     }
 
     private ApiResult<Map<String, Object>> convertOnce(
-            Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote) {
+            Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote,
+            PurchaseQuotaReservation reservation) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
         if (!validExpectedAmount(expectedAmountUsdt)) {
@@ -448,8 +461,9 @@ public class AppTrialLifecycleService {
         String hostingCenter = hostingCenters.requirePool().assign("trial:" + row.claimNo());
         testCloudAdmission.requireCapacity(1);
         requireCoverage(quote.remainderUsdt(), quote.rewardNex());
-        var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, product.productNo(),
-                LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC));
+        if (reservation != null) reservation.requireSingle(product.id(), product.productNo());
+        var hardwareQuota = reservation == null ? HardwareQuotaPurchaseGuard.reserve(mapper, userId, product.productNo(),
+                LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC)) : null;
         WalletRow wallet = mapper.lockWallet(userId);
         if (wallet == null) return ApiResult.fail(409, "TRIAL_WALLET_UNAVAILABLE");
         if (VerifiedPurchasePayment.active()) VerifiedPurchasePayment.require(userId,amount);
@@ -489,7 +503,7 @@ public class AppTrialLifecycleService {
         }
         String instanceNo = "TRIAL-DEV-" + UUID.randomUUID().toString().replace("-", "")
                 .substring(0, 20).toUpperCase(Locale.ROOT);
-        HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
+        if (hardwareQuota != null) HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
                 "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : normalize(product.productType()),
                 instanceNo, row.deviceName(), subtotal, hostingCenter) != 1) {

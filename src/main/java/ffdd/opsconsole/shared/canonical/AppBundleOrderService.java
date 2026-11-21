@@ -317,12 +317,16 @@ public class AppBundleOrderService {
             StorefrontProductReleasePolicy.Decision release = releasePolicy.evaluate(row.productNo(), row.unlockPhase());
             return release == null || !release.available();
         })) return ApiResult.fail(409, "BUNDLE_PRODUCT_NOT_RELEASED");
-        if (products.stream().anyMatch(row -> StringUtils.hasText(row.purchaseGateJson()))) {
-            AppBundleOrderMapper.PurchaseFacts facts = mapper.purchaseFacts(userId);
+        var gates = products.stream().map(product -> mapper.lockGateQuota(product.productNo()))
+                .filter(gate -> gate != null && StringUtils.hasText(gate.gateJson())).toList();
+        if (!gates.isEmpty()) {
+            var facts = mapper.purchaseFacts(userId);
             if (facts == null) return ApiResult.fail(409, "PURCHASE_GATE_FACTS_UNAVAILABLE");
-            StorefrontPurchaseGatePolicy.Facts gateFacts = safeGateFacts(facts);
+            var gateFacts = safeGateFacts(facts);
             if (gateFacts == null) return ApiResult.fail(409, "PURCHASE_GATE_FACTS_INVALID");
-            if (products.stream().anyMatch(row -> !purchaseGatePolicy.evaluate(row.purchaseGateJson(), gateFacts).allowed())) {
+            if (gates.stream().anyMatch(gate -> !purchaseGatePolicy.evaluate(gate.gateJson(), gateFacts, gate.held()).allowed()
+                    || purchaseGatePolicy.lifetimeQuotaExhausted(
+                            gate.gateJson(), quantities.get(gate.skuId()), gate.held()))) {
                 return ApiResult.fail(409, "PURCHASE_GATE_BLOCKED");
             }
         }
@@ -339,7 +343,9 @@ public class AppBundleOrderService {
         }
         hostingCenters.requirePool();
         String orderNo = "BND-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
-        for (var product : products) validateCanonicalPurchaseGate(userId, product.productNo());
+        for (var product : products) {
+            validateCanonicalPurchaseGate(userId, product.productNo(), quantities.get(product.productNo()));
+        }
         if (mapper.insertBundleOrder(userId, orderNo, products.get(0).id(), itemCount, quantity, subtotal, discount, amount) != 1) {
             throw new BizException(409, "BUNDLE_ORDER_CREATE_CONFLICT");
         }
@@ -381,13 +387,14 @@ public class AppBundleOrderService {
         }
     }
 
-    private void validateCanonicalPurchaseGate(Long userId, String productNo) {
-        String rawGate = mapper.purchaseGateJson(productNo);
-        if (!StringUtils.hasText(rawGate)) return;
+    private void validateCanonicalPurchaseGate(Long userId, String productNo, int quantity) {
+        var gate = mapper.lockGateQuota(productNo);
+        if (gate == null || !StringUtils.hasText(gate.gateJson())) return;
         AppBundleOrderMapper.PurchaseFacts facts = mapper.purchaseFacts(userId);
         StorefrontPurchaseGatePolicy.Facts gateFacts = facts == null ? null : safeGateFacts(facts);
         if ((facts != null && gateFacts == null)
-                || !purchaseGatePolicy.evaluate(rawGate, gateFacts).allowed()) {
+                || !purchaseGatePolicy.evaluate(gate.gateJson(), gateFacts, gate.held()).allowed()
+                || purchaseGatePolicy.lifetimeQuotaExhausted(gate.gateJson(), quantity, gate.held())) {
             throw new BizException(409, "PURCHASE_GATE_BLOCKED");
         }
     }

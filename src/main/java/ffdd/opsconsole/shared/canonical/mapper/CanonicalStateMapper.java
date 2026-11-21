@@ -13,7 +13,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, TrialSlotReservationMapper, OrderCreateReceiptMapper {
+public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, TrialSlotReservationMapper, OrderCreateReceiptMapper, PurchaseGateQuotaMapper {
     // All purchase entrypoints count unfulfilled gift promises against the same account slots.
     /** Old trial conversions already fulfilled a single device but used PAID/ACTIVE.
      * Preserve history and require the exact settled claim/device/order relationship.
@@ -862,7 +862,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
 
     /** Canonical, quantity-aware lifetime quota CAS for ordinary checkout. */
     @Update("""
-            UPDATE nx_admin_device_sku
+            UPDATE nx_admin_device_sku s
                SET purchase_gate_json=JSON_SET(purchase_gate_json,'$.quotaSold',
                    CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}),
                    updated_at=NOW()
@@ -874,7 +874,7 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                AND JSON_EXTRACT(purchase_gate_json,'$.quotaCap') IS NOT NULL
                AND JSON_EXTRACT(purchase_gate_json,'$.quotaSold') IS NOT NULL
                AND #{quantity} > 0
-               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity}
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaSold')) AS UNSIGNED)+#{quantity} + """ + HELD + """
                    <= CAST(JSON_UNQUOTE(JSON_EXTRACT(purchase_gate_json,'$.quotaCap')) AS UNSIGNED)
             """)
     int consumePurchaseQuota(@Param("productNo") String productNo, @Param("quantity") Integer quantity);

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.mapper;
 
+import ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper;
 import ffdd.opsconsole.promotion.mapper.PromotionMapper;
 import ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
@@ -7,7 +8,7 @@ import java.util.*;
 import org.apache.ibatis.annotations.*;
 
 /** Statements are server-owned SQL; all request values use bound parameters. */
-public interface PurchasePaymentMapper extends BaseMapper<Object>, HardwareQuotaPurchaseMapper {
+public interface PurchasePaymentMapper extends BaseMapper<Object>, HardwareQuotaPurchaseMapper, PurchaseGateQuotaMapper {
     @SelectProvider(type=PromotionMapper.StatementProvider.class,method="statement")
     @Lang(PromotionMapper.PreparedSqlDriver.class) @Options(useCache=false)
     @Results({@Result(column="expires_at",property="expires_at",javaType=java.sql.Timestamp.class),
