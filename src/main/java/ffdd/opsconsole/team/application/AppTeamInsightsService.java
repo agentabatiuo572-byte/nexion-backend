@@ -24,10 +24,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
@@ -49,6 +51,10 @@ public class AppTeamInsightsService {
     private final PlatformConfigFacade configFacade;
     private final Environment environment;
     private final LeaderboardPauseSnapshotService pauseSnapshots;
+    @Autowired(required = false)
+    private UnilevelCommissionService unilevelCommission;
+    @Autowired(required = false)
+    private DirectReferralPolicyService directReferralPolicies;
     private final Map<String, LeaderboardSnapshot> leaderboardSnapshots = new ConcurrentHashMap<>();
 
     public ApiResult<Map<String, Object>> leaderboard(Long userId, String requestedPeriod) {
@@ -151,9 +157,19 @@ public class AppTeamInsightsService {
         Instant snapshotAt = snapshotAt(requestedSnapshotAt);
         if ("SANDBOX".equals(scope.sourceEnvironment())) {
             boolean sevenLayerEnabled = sevenLayerEnabled();
+            boolean splitFirstLayer = false;
+            if (sevenLayerEnabled) {
+                if (unilevelCommission == null) sevenLayerEnabled = false;
+                else if (directReferralPolicies != null) {
+                    try { splitFirstLayer = directReferralPolicies.purchaseSplitEnabled(); }
+                    catch (RuntimeException unavailablePolicy) { sevenLayerEnabled = false; }
+                }
+            }
+            final boolean split = splitFirstLayer;
+            Function<BigDecimal, UnilevelCommissionService.PreviewBudget> budget = sevenLayerEnabled
+                    ? subtotal -> unilevelCommission.previewBudget(subtotal, List.of(8, 8), split) : null;
             return ApiResult.ok(paginateSandboxEvents(
-                    TeamSandboxFactGenerator.commissions(scope.runId(), userId, sevenLayerEnabled,
-                            sevenLayerEnabled ? mapper.unilevelRates() : List.of()),
+                    TeamSandboxFactGenerator.commissions(scope.runId(), userId, sevenLayerEnabled, budget, split),
                     requestedPage, requestedPageSize));
         }
         LocalDateTime snapshotBoundary = LocalDateTime.ofInstant(snapshotAt, BUSINESS_ZONE);
@@ -231,9 +247,9 @@ public class AppTeamInsightsService {
         Scope scope = scope(userId);
         Instant snapshotAt = snapshotAt(requestedSnapshotAt);
         if ("SANDBOX".equals(scope.sourceEnvironment())) {
+            // sevenLayerEnabled was rejected above; the legacy compatibility preview is empty.
             return ApiResult.ok(paginateSandboxEvents(
-                    TeamSandboxFactGenerator.unilevel(scope.runId(), userId, period, sevenLayerEnabled,
-                            sevenLayerEnabled ? mapper.unilevelRates() : List.of()),
+                    TeamSandboxFactGenerator.unilevel(scope.runId(), userId, period),
                     requestedPage, requestedPageSize));
         }
         LocalDateTime snapshotBoundary = LocalDateTime.ofInstant(snapshotAt, BUSINESS_ZONE);

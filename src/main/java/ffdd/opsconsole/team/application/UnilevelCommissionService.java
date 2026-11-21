@@ -11,6 +11,7 @@ import java.math.RoundingMode;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -320,6 +321,64 @@ public class UnilevelCommissionService {
     }
 
     record LayerRates(Map<String, BigDecimal> usdtPct, Map<String, BigDecimal> nexPerUsd) {}
+
+    /** Read-only sandbox preview result; never writes a settlement or wallet. */
+    public record PreviewLayer(int layer, BigDecimal budgetUsdt, BigDecimal legacyNex, String reason) { }
+    public record PreviewBudget(boolean available, String reason, List<PreviewLayer> layers) { }
+
+    /**
+     * Reuses the settlement's complete-rate, pause, depth-gate, promo and merge-exit rules
+     * without a real upline chain or any write. Sandbox beneficiaries have no real rank;
+     * callers pass a synthetic rank per layer and a neutral influence score.
+     */
+    public PreviewBudget previewBudget(BigDecimal subtotal, List<Integer> memberRanks, boolean splitFirstLayer) {
+        if (subtotal == null || subtotal.signum() < 0 || subtotal.stripTrailingZeros().scale() > 6
+                || subtotal.precision() - subtotal.scale() > 12) {
+            return new PreviewBudget(false, "UNILEVEL_ORDER_AMOUNT_INVALID", List.of());
+        }
+        try {
+            String paused = configValue(DirectReferralPolicyService.PAUSED_KEY, false).orElse("false");
+            if (!Set.of("true", "false").contains(paused)) {
+                return new PreviewBudget(false, "SEVEN_LAYER_PAUSE_CONFIG_INVALID", List.of());
+            }
+            if (Boolean.parseBoolean(paused)) {
+                return new PreviewBudget(false, DirectReferralPolicyService.PAUSED_ERROR, List.of());
+            }
+            var layerRates = requireCompleteLayerRates(teamCommissionMapper.unilevelRates());
+            var rates = layerRates.usdtPct();
+            var nexRates = layerRates.nexPerUsd();
+            int gate = resolveDepthGateLayer(false);
+            int rank = resolveDepthGateRankNum(false);
+            BigDecimal promo = resolvePromoMultiplier(false);
+            BigDecimal capPct = configDecimal(CONFIG_KEY_MERGE_EXIT_MAX_PCT, new BigDecimal("25"), false);
+            BigDecimal cap = subtotal.multiply(capPct).divide(HUNDRED, 6, RoundingMode.DOWN);
+            BigDecimal allocated = ZERO;
+            var layers = new java.util.ArrayList<PreviewLayer>();
+            for (int layer = 1; layer <= MAX_DEPTH; layer++) {
+                Integer memberRank = memberRanks != null && memberRanks.size() >= layer
+                        ? memberRanks.get(layer - 1) : null;
+                String reason = memberRank == null ? "NO_UPLINE"
+                        : isLayerPaused(layer, false) ? "LAYER_PAUSED"
+                        : layer >= gate && memberRank < rank ? "DEPTH_GATE_NOT_MET" : "";
+                BigDecimal pct = rates.get("L" + layer), coefficient = nexRates.get("L" + layer);
+                BigDecimal original = subtotal.multiply(pct).divide(HUNDRED, 6, RoundingMode.HALF_UP)
+                        .multiply(promo).setScale(6, RoundingMode.HALF_UP);
+                BigDecimal budget = reason.isEmpty()
+                        ? original.min(cap.subtract(allocated).max(ZERO)).setScale(6, RoundingMode.DOWN)
+                        : ZERO;
+                if (budget.signum() == 0 && reason.isEmpty()) {
+                    reason = original.signum() == 0 ? "ZERO_PAID_SOURCE" : "CHAIN_CAP_EXHAUSTED";
+                }
+                allocated = allocated.add(budget);
+                BigDecimal legacyNex = budget.multiply(coefficient).setScale(6, RoundingMode.HALF_UP);
+                if (layer == 1 && splitFirstLayer) legacyNex = ZERO;
+                layers.add(new PreviewLayer(layer, budget, legacyNex, reason));
+            }
+            return new PreviewBudget(true, "", List.copyOf(layers));
+        } catch (BizException ex) {
+            return new PreviewBudget(false, ex.getMessage(), List.of());
+        }
+    }
 
     /** F2 层暂停开关:读 operator canonical team.ui.F.unilevel.L{n}.paused。 */
     private boolean isLayerPaused(int layer) {

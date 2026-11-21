@@ -263,7 +263,7 @@ public class VRankPromotionEngine {
     }
 
     /** 索引 → 配置行(无匹配返回 null)。 */
-    private VRankConfigRow rankByIndex(List<VRankConfigRow> ranks, int targetIndex) {
+    static VRankConfigRow rankByIndex(List<VRankConfigRow> ranks, int targetIndex) {
         if (targetIndex < 0 || targetIndex >= VRANK_CODES.size()) {
             return null;
         }
