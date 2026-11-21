@@ -156,9 +156,9 @@ public class SupportLeaderboardSamplingService {
         NavigableMap<String,Context> result=new TreeMap<>(current);
         YearMonth nowMonth=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(at);
         for(String saved:checked(publicationMapper.publishedMonths(SupportLeaderboardPolicy.DEFINITION))) {
-            YearMonth month=YearMonth.parse(saved);if(!month.isBefore(nowMonth))continue;
+            YearMonth month=YearMonth.parse(saved);if(!month.isBefore(nowMonth) || SupportLeaderboardPolicy.beforeProduction(month))continue;
             for(Context c:current.values())if(c.board()!=Board.customers) {
-                Context historical=new Context(c.board(),month,month,c.currency(),c.scope(),c.approvedGroupIds(),c.definitionVersion(),at);
+                Context historical=SupportLeaderboardPolicy.context(c.board(),month,month,c.currency(),c.scope(),c.approvedGroupIds(),c.definitionVersion(),at);
                 result.put(SupportLeaderboardPublicationService.streamKey(historical),historical);
             }
         }
@@ -185,7 +185,7 @@ public class SupportLeaderboardSamplingService {
     private static void safeId(long id){if(id<=0 || id>9007199254740991L)throw SupportLeaderboardPolicy.unavailable();}
     private static void add(Map<String,Context> output,Instant at,Scope scope,Set<Long> groups){YearMonth month=ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(at);
         for(Board board:List.of(Board.netContribution,Board.firstPayment,Board.customers))for(String currency:SupportAnalyticsPrivateQueryService.CURRENCIES){
-            Context context=new Context(board,board==Board.customers?null:month,month,currency,scope,Set.copyOf(groups),SupportLeaderboardPolicy.DEFINITION,at);
+            Context context=SupportLeaderboardPolicy.context(board,board==Board.customers?null:month,month,currency,scope,Set.copyOf(groups),SupportLeaderboardPolicy.DEFINITION,at);
             output.put(SupportLeaderboardPublicationService.streamKey(context),context);}
     }
     static List<String> window(NavigableMap<String,Context> contexts,String after,int limit){

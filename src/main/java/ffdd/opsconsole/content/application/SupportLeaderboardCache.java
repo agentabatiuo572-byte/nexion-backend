@@ -35,7 +35,7 @@ public class SupportLeaderboardCache {
         public List<YearMonth> months(Context selected) {
             var months=new TreeSet<YearMonth>();
             for(Entry entry:entries.values()) {Context c=entry.publication().snapshot().context();
-                if(c.rankMonth()!=null && c.board()==selected.board() && ffdd.opsconsole.common.domain.LegacyUvtProof.matches(c.currency(),selected.currency())
+                if(c.rankMonth()!=null && !SupportLeaderboardPolicy.beforeProduction(c.rankMonth()) && c.board()==selected.board() && ffdd.opsconsole.common.domain.LegacyUvtProof.matches(c.currency(),selected.currency())
                     && c.scope()==selected.scope() && c.approvedGroupIds().equals(selected.approvedGroupIds())
                     && c.definitionVersion().equals(selected.definitionVersion()))months.add(c.rankMonth());}
             return List.copyOf(months.descendingSet());

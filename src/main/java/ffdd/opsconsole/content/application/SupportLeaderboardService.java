@@ -111,13 +111,14 @@ public class SupportLeaderboardService {
         Publication publication=entry.publication();
         Context published=publication.snapshot().context();
         if(!DEFINITION.equals(published.definitionVersion()))throw unavailable();
-        if(selected.referenceMonth().equals(currentMonth) && !selected.businessPeriod().equals(published.businessPeriod()))
+        if((selected.referenceMonth().equals(currentMonth) || selected.businessPeriod().from().equals(SupportLeaderboardPolicy.PRODUCTION_START))
+                && !selected.businessPeriod().equals(published.businessPeriod()))
             throw new BizException(503,"SUPPORT_LEADERBOARD_CACHE_NOT_READY");
         return new Resolved(preliminary,publication,months,now,SupportLeaderboardPolicy.REFRESH_MINUTES,entry.refreshFailed());
     }
     private static Context context(Normalized q,Authorization a,Instant now) {
         Set<Long> groups=q.groupId()==null?a.scopes().get(q.scope()):Set.of(q.groupId());
-        return new Context(q.board(),q.rankMonth(),q.referenceMonth(),q.currency(),q.scope(),groups,DEFINITION,now);
+        return SupportLeaderboardPolicy.context(q.board(),q.rankMonth(),q.referenceMonth(),q.currency(),q.scope(),groups,DEFINITION,now);
     }
     private static boolean expired(Publication p,Instant now,int interval){return !now.isBefore(p.snapshot().context().evaluatedAt().plusSeconds(interval*60L));}
     private record Authorization(long actor,Account account,List<Role> roles,List<Grant> grants,List<Qualification> qualifications,
