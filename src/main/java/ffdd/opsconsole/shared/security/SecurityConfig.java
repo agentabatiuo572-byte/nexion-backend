@@ -75,6 +75,7 @@ public class SecurityConfig {
                                 "/auth/users/oauth/provider/status", "/auth/users/oauth/provider/complete",
                                 "/auth/users/oauth/provider/callback/{provider}").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/platform").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/app/updates/current").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/store/media/images/**", "/api/store/media/business-images/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/app/profile/avatar/image/*/*").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/config/referral-rewards").permitAll()

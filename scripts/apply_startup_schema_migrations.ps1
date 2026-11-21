@@ -552,6 +552,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261121_lc2_storage_timezone.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_fin.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_growth_team_support.sql")
+  (Join-Path $root "scripts\migrations\20261122_app_update_policy.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
