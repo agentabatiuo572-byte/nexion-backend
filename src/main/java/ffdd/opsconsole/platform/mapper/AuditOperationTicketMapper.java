@@ -52,6 +52,21 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
             """)
     AuditOperationTicketEntity selectActiveByOperationId(@Param("operationId") String operationId);
 
+    // A2 marks the ticket approved only after the listing command succeeds.
+    @Select("""
+            SELECT EXISTS (
+                SELECT 1 FROM nx_audit_operation_ticket
+                 WHERE object_text = #{skuId} AND status = 'approved'
+                   AND decided_at IS NOT NULL AND is_deleted = 0
+                   AND CASE WHEN JSON_VALID(command_json) THEN
+                       JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.domain')) = 'E'
+                       AND JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.op')) IN ('e1_sku_create', 'e1_sku_update', 'e1_sku_status')
+                       AND LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.params.status')))) = 'on'
+                   END
+            )
+            """)
+    boolean hasApprovedSkuListing(@Param("skuId") String skuId);
+
     /** Canonical A1 pending proposals; source_domain is normalized to A, so command_json is the discriminator. */
     @Select("""
             SELECT COUNT(*)

@@ -488,7 +488,7 @@ public class AppUserRegistrationService {
     }
 
     private UserLoginResponse.RegistrationReceipt saveRegistration(long id,UserEntity sponsor,int sandbox,AppLoginContext context) {
-        boolean freeze=context.group()==AppSessionSurface.H5 && flag("h5_freeze_newcomer_gift");
+        boolean freeze = flag("h5_freeze_newcomer_gift");
         var receipt=registrationReceipt(sponsor,sandbox,freeze);
         mapper.recordOrigin(id,context.loginAttemptId(),context.group().name(),context.installationId(),sandbox,freeze,receipt);
         return receipt;
