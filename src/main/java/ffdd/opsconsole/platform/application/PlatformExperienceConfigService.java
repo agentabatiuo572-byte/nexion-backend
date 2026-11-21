@@ -25,6 +25,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.Optional;
 import java.util.regex.Pattern;
@@ -51,6 +52,8 @@ public class PlatformExperienceConfigService {
             "zalo", "telegram", "whatsapp", "messenger", "sms", "x", "copy", "poster", "system");
     private static final Set<String> INTENT_TYPES = Set.of("web", "scheme", "copy", "poster", "system");
     private static final Set<String> SOURCES = Set.of("official", "unavailable");
+    private static final PlatformComputeConfigView.AppDownload UNAVAILABLE_DOWNLOAD =
+            new PlatformComputeConfigView.AppDownload("", "", "", "", "", Map.of("zh", "", "en", "", "vi", ""), "unavailable");
     private static final Pattern LOCALIZED_WHITESPACE = Pattern.compile("[\\s\\p{Z}\\uFEFF]*");
 
     private final PlatformConfigFacade config;
@@ -133,9 +136,7 @@ public class PlatformExperienceConfigService {
         PlatformComputeConfigView.ShareConfig value = share.orElseGet(this::unavailableShare);
         PlatformComputeConfigView.AppDownload download = value.appDownload();
         if ("unavailable".equals(download.source())) {
-            return ApiResult.ok(new PlatformComputeConfigView.ShareConfig(value.baseUrl(), value.channels(),
-                    new PlatformComputeConfigView.AppDownload(download.officialUrl(), "", "", download.apkUrl(),
-                            download.version(), download.releaseNotes(), download.source())));
+            return ApiResult.ok(new PlatformComputeConfigView.ShareConfig(value.baseUrl(), value.channels(), UNAVAILABLE_DOWNLOAD));
         }
         // Released clients reject fragments while parsing the entire platform config.
         // Keep their landing page usable until they opt in; never change stored A3 data.
@@ -191,15 +192,20 @@ public class PlatformExperienceConfigService {
         List<String> nextLanguages = languages == null
                 ? requireLanguages(previousLanguages, INTERFACE_LANGUAGES_INVALID) : languages;
         AppDownloadRequest download = request.appDownload();
-        Map<String, String> notes = Map.of("zh", "", "en", "");
+        Map<String, String> notes = new LinkedHashMap<>();
         if ("official".equals(trim(download.source()))) {
-            notes = new LinkedHashMap<>(download.releaseNotes());
+            notes.putAll(download.releaseNotes());
             String chineseNotes = notes.get("zh");
             boolean blankChineseNotes = isLocalizedBlank(chineseNotes);
             if (blankChineseNotes && !nextOperatingLanguages.contains("zh")) {
                 notes.put("zh", notes.get("en"));
             } else if (blankChineseNotes || !StringUtils.hasText(chineseNotes)) {
                 return ApiResult.fail(422, "PLATFORM_EXPERIENCE_RELEASE_METADATA_REQUIRED");
+            }
+        } else {
+            Map<String, String> supplied = download.releaseNotes() == null ? Map.of() : download.releaseNotes();
+            for (String language : OPERATING_LANGUAGE_CODES) {
+                notes.put(language, Objects.toString(supplied.get(language), ""));
             }
         }
         PlatformComputeConfigView.ShareConfig next = toShare(request, Map.copyOf(notes));
@@ -284,7 +290,7 @@ public class PlatformExperienceConfigService {
         String source = trim(download.source());
         if (!SOURCES.contains(source)) return "PLATFORM_EXPERIENCE_SOURCE_INVALID";
         String officialUrl = trim(download.officialUrl());
-        if (!"unavailable".equals(source) && !validUrl(officialUrl, false, true)) {
+        if (("official".equals(source) || StringUtils.hasText(officialUrl)) && !validUrl(officialUrl, false, true)) {
             return "PLATFORM_EXPERIENCE_OFFICIAL_URL_INVALID";
         }
         if (StringUtils.hasText(download.iosUrl()) && !validUrl(download.iosUrl(), false)) return "PLATFORM_EXPERIENCE_IOS_URL_INVALID";
@@ -314,11 +320,11 @@ public class PlatformExperienceConfigService {
         return new PlatformComputeConfigView.ShareConfig(
                 trim(request.baseUrl()) == null ? "" : trim(request.baseUrl()), channels,
                 new PlatformComputeConfigView.AppDownload(
-                        available && trim(download.officialUrl()) != null ? trim(download.officialUrl()) : "",
+                        download.officialUrl() == null ? "" : trim(download.officialUrl()),
                         download.iosUrl() == null ? "" : trim(download.iosUrl()),
                         download.androidUrl() == null ? "" : trim(download.androidUrl()),
                         available && trim(download.apkUrl()) != null ? trim(download.apkUrl()) : "",
-                        available && trim(download.version()) != null ? trim(download.version()) : "",
+                        download.version() == null ? "" : trim(download.version()),
                         notes,
                         available ? "official" : "unavailable"));
     }
@@ -358,8 +364,7 @@ public class PlatformExperienceConfigService {
     }
 
     private PlatformComputeConfigView.ShareConfig unavailableShare() {
-        return new PlatformComputeConfigView.ShareConfig("", List.of(),
-                new PlatformComputeConfigView.AppDownload("", "", "", "", "", Map.of("zh", "", "en", ""), "unavailable"));
+        return new PlatformComputeConfigView.ShareConfig("", List.of(), UNAVAILABLE_DOWNLOAD);
     }
 
     private boolean validStoredShare(PlatformComputeConfigView.ShareConfig share) {
@@ -375,7 +380,7 @@ public class PlatformExperienceConfigService {
         }
         PlatformComputeConfigView.AppDownload download = share.appDownload();
         if (download == null || !SOURCES.contains(download.source())) return false;
-        if (!"unavailable".equals(download.source())
+        if (("official".equals(download.source()) || StringUtils.hasText(download.officialUrl()))
                 && !validUrl(download.officialUrl(), false, true)) return false;
         if ((StringUtils.hasText(download.iosUrl()) && !validUrl(download.iosUrl(), false))
                 || (StringUtils.hasText(download.androidUrl()) && !validUrl(download.androidUrl(), false))) return false;
@@ -385,9 +390,7 @@ public class PlatformExperienceConfigService {
                 && (!StringUtils.hasText(download.version()) || download.releaseNotes() == null
                 || !StringUtils.hasText(download.releaseNotes().get("zh"))
                 || !StringUtils.hasText(download.releaseNotes().get("en")))) return false;
-        if ("unavailable".equals(download.source())
-                && (StringUtils.hasText(download.officialUrl()) || StringUtils.hasText(download.apkUrl())
-                || StringUtils.hasText(download.version()))) return false;
+        if ("unavailable".equals(download.source()) && StringUtils.hasText(download.apkUrl())) return false;
         return true;
     }
 
