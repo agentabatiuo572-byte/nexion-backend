@@ -524,6 +524,7 @@ public class SupportLeaderboardSourceService {
         }catch(IOException | IllegalArgumentException | DateTimeException | NullPointerException ex){return false;}
     }
     private static boolean activeAtCapture(JsonNode binding,LocalDateTime capture) {
+        if(jsonId(binding,"isDeleted",1L))return false;
         LocalDateTime start=LocalDateTime.parse(binding.path("startsAt").textValue());
         JsonNode end=binding.path("endsAt");
         return !start.isAfter(capture) && (end.isNull() || LocalDateTime.parse(end.textValue()).isAfter(capture));
