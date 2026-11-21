@@ -501,6 +501,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("domain", "G1");
         response.put("product", "staking");
+        response.put("appVisible", false);
         response.put("currentNexPrice", currentPrice());
         response.put("stats", map(
                 "lockedTotalUsd", usdtPoolUsd.add(nexPoolUsd),
