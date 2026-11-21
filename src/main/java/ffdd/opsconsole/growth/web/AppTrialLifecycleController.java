@@ -33,7 +33,7 @@ public class AppTrialLifecycleController {
         Long userId = userId(authentication);
         StartRequest body = request == null ? new StartRequest(null, null) : request;
         return userId == null ? forbidden()
-                : service.start(userId, body.paymentMethodId(), body.deviceName(), idempotencyKey);
+                : service.withProductImage(service.start(userId, body.paymentMethodId(), body.deviceName(), idempotencyKey));
     }
 
     @PostMapping("/cancel")
@@ -43,7 +43,7 @@ public class AppTrialLifecycleController {
             Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
-                : service.cancel(userId, request == null ? null : request.reason(), idempotencyKey);
+                : service.withProductImage(service.cancel(userId, request == null ? null : request.reason(), idempotencyKey));
     }
 
     @PostMapping("/extension")
@@ -51,7 +51,7 @@ public class AppTrialLifecycleController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? forbidden() : service.extend(userId, idempotencyKey);
+        return userId == null ? forbidden() : service.withProductImage(service.extend(userId, idempotencyKey));
     }
 
     @PostMapping("/redeem-early")

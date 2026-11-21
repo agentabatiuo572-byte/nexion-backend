@@ -17,7 +17,16 @@ public class StorefrontSkuImageController {
     @GetMapping("/api/store/media/images/{productNo}/{assetId}")
     public ResponseEntity<byte[]> image(@PathVariable String productNo, @PathVariable String assetId,
                                         @RequestParam String expires, @RequestParam String signature) {
-        StorefrontSkuImageService.ImageBytes image = service.read(productNo, assetId, expires, signature);
+        return response(service.read(productNo, assetId, expires, signature));
+    }
+
+    @GetMapping("/api/store/media/business-images/{productNo}/{assetId}")
+    public ResponseEntity<byte[]> businessImage(@PathVariable String productNo, @PathVariable String assetId,
+                                                @RequestParam String expires, @RequestParam String signature) {
+        return response(service.read(productNo, assetId, expires, signature, true));
+    }
+
+    private ResponseEntity<byte[]> response(StorefrontSkuImageService.ImageBytes image) {
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(image.contentType()))
                 .cacheControl(CacheControl.noStore())

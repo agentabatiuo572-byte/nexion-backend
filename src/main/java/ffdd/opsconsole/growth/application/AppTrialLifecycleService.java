@@ -61,6 +61,9 @@ public class AppTrialLifecycleService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.shared.canonical.BusinessProductImages productImages;
+
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
 
     // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
@@ -117,7 +120,21 @@ public class AppTrialLifecycleService {
         }
         LocalDateTime now = businessNow();
         Map<String, String> policy = policyMap(false, BusinessCalendar.legacy().dateAtStorage(now));
-        return ApiResult.ok(project(userId, mapper.trial(userId), policy, now, false));
+        return withProductImage(ApiResult.ok(project(userId, mapper.trial(userId), policy, now, false)));
+    }
+
+    /** Enrich the HTTP view only. A replay retains its original SKU and gets a newly signed image. */
+    public ApiResult<Map<String, Object>> withProductImage(ApiResult<Map<String, Object>> receipt) {
+        if (productImages == null || receipt.getCode() != 0 || receipt.getData() == null
+                || !(receipt.getData().get("config") instanceof Map<?, ?> config)
+                || !(config.get("trialProductId") instanceof String sku)) return receipt;
+        Map<Object, Object> displayConfig = new LinkedHashMap<>(config);
+        displayConfig.remove("imageUrl");
+        String url = productImages.urls(List.of(sku)).get(sku);
+        if (url != null) displayConfig.put("imageUrl", url);
+        Map<String, Object> view = new LinkedHashMap<>(receipt.getData());
+        view.put("config", displayConfig);
+        return new ApiResult<>(receipt.getCode(), receipt.getMessage(), view);
     }
 
     @Transactional(readOnly = true)

@@ -27,6 +27,8 @@ public class AppTeamQuotaService {
     private final AppTeamQuotaMapper mapper;
     private final VRankPerformanceRepository performanceRepository;
     private final AppProductCatalogService productCatalog;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.shared.canonical.BusinessProductImages productImages;
     private final Environment environment;
 
     public ApiResult<Map<String, Object>> snapshot(Long userId) {
@@ -89,6 +91,10 @@ public class AppTeamQuotaService {
             tier.put("conditions", conditions); tier.put("perks", perks(product));
             tier.put("available", Boolean.TRUE.equals(product.get("available")) && remaining > 0);
             tiers.add(tier);
+        }
+        if (productImages != null) {
+            Map<String, String> images = productImages.urls(rows.stream().map(AppTeamQuotaMapper.QuotaRow::productNo).toList());
+            for (Map<String, Object> tier : tiers) tier.put("imageUrl", images.get(tier.get("productId")));
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("source", "server"); result.put("sourceEnvironment", scope.sourceEnvironment());
