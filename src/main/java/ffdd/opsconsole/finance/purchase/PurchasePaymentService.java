@@ -172,28 +172,45 @@ public class PurchasePaymentService {
         return db.rows("SELECT p.intent_no,p.kind,p.status,p.reason,p.confirmed_at,p.receipt_json FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND "+IN_PROGRESS+" AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
     }
 
+    /**
+     * B58-BE-01: 同一本人、同一业务身份已有在途付款单时，仍按既有 409
+     * PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED 拒绝，但把**已核对**的原付款单号放进回包 data，
+     * 客户端可凭它读回原单。写入路径不变，不新建单据、不扣款。
+     */
     private void requireNoActiveIntent(long owner, String kind, Map<String,Object> payload, Map<String,Object> quote) {
-        if (hasActiveBusinessIntent(owner, kind, payload, quote)) {
-            throw new BizException(409, "PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
-        }
+        String intentNo = hasActiveBusinessIntent(owner, kind, payload, quote);
+        if (intentNo == null) return;
+        // 覆盖置换、换容量、保留全部设备与试用转购；普通订单(ORDER_PAY)保持原回包不变。
+        if ("ORDER_PAY".equals(kind)) throw new BizException(409, "PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
+        throw new ExistingPurchasePaymentIntentException(intentNo);
     }
 
-    private boolean hasActiveBusinessIntent(long owner, String kind, Map<String,Object> payload, Map<String,Object> quote) {
-        if ("ORDER_PAY".equals(kind)) return !activeIntents(owner, kind, json(payload), "").isEmpty();
+    /** 已核对（owner + kind + 同一业务身份）且仍在途的原付款单号；不打单时返回 null。 */
+    private String hasActiveBusinessIntent(long owner, String kind, Map<String,Object> payload, Map<String,Object> quote) {
+        if ("ORDER_PAY".equals(kind)) {
+            var active = activeIntents(owner, kind, json(payload), "");
+            return active.isEmpty() ? null : text(active.get(0).get("intent_no"));
+        }
 
-        var active = db.rows("SELECT p.payload_json,p.quote_json FROM nx_purchase_payment_intent p"
+        var active = db.rows("SELECT p.intent_no,p.payload_json,p.quote_json FROM nx_purchase_payment_intent p"
                 + " WHERE p.user_id=? AND p.kind=? AND " + IN_PROGRESS, owner, kind);
-        if (active.isEmpty()) return false;
+        if (active.isEmpty()) return null;
         if ("TRIAL_CONVERT".equals(kind)) {
             var currentClaim = trials.currentExternalPaymentClaim(owner);
             String claimNo = trialClaimNo(quote, currentClaim);
-            return claimNo != null && active.stream().anyMatch(intent ->
-                    claimNo.equals(trialClaimNo(parse(intent.get("quote_json")), currentClaim)));
+            if (claimNo == null) return null;
+            return active.stream()
+                    .filter(intent -> claimNo.equals(trialClaimNo(parse(intent.get("quote_json")), currentClaim)))
+                    .map(intent -> text(intent.get("intent_no")))
+                    .findFirst().orElse(null);
         }
 
         var identity = replacementIdentity(kind, payload);
-        return identity != null && active.stream().anyMatch(intent ->
-                identity.equals(replacementIdentity(kind, parse(intent.get("payload_json")))));
+        if (identity == null) return null;
+        return active.stream()
+                .filter(intent -> identity.equals(replacementIdentity(kind, parse(intent.get("payload_json")))))
+                .map(intent -> text(intent.get("intent_no")))
+                .findFirst().orElse(null);
     }
 
     private String trialClaimNo(Map<String,Object> quote, AppTrialLifecycleService.ExternalPaymentClaim currentClaim) {
@@ -501,6 +518,16 @@ public class PurchasePaymentService {
     public Map<String,Object> get(long owner,String no){
         var row=db.one(SELECT+" AND user_id=?",no,owner);if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");
         refresh(row);return view(db.one(SELECT,no),false);
+    }
+    /**
+     * B58-BE-01: 本人凭原 intentNo 的只读快照。只按实际 owner 取行并做纯 view 投影：
+     * 不调用 refresh（不查供应商、不写 QUERY_UNKNOWN、不关单、不 deliver），因此不建单、不扣款。
+     * 既有的 GET /{intentNo} 仍保留主动查单与交付路径，合同不变。
+     */
+    public Map<String,Object> snapshot(long owner,String no){
+        var row=db.one(SELECT+" AND user_id=?",no,owner);
+        if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");
+        return view(row,false);
     }
     private void refresh(Map<String,Object> row){
         if(row.get("receipt_json")!=null){
