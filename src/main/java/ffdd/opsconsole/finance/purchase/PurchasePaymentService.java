@@ -211,7 +211,17 @@ public class PurchasePaymentService {
                 var q=require(tradeins.capacityQuote(owner,new AppCapacityReplaceQuoteRequest(text(payload.get("targetProductNo")))));
                 String wanted="CAPACITY_REPLACE".equals(kind)?"REPLACE_REQUIRED":"CAPACITY_AVAILABLE";
                 if(!wanted.equals(q.decision()))throw new BizException(409,"CAPACITY_REPLACEMENT_SOURCE_CHANGED");
-                if(checkReplacementSource&&"CAPACITY_REPLACE".equals(kind))tradeins.requireRecyclableSource(owner,q.sourceDeviceId());
+                if (checkReplacementSource && "CAPACITY_REPLACE".equals(kind)) {
+                    boolean sourceMatches;
+                    try {
+                        Long requestedSourceId = Long.valueOf(text(payload.get("sourceDeviceId")).trim());
+                        sourceMatches = requestedSourceId.equals(q.sourceDeviceId());
+                    } catch (NumberFormatException invalidSourceId) {
+                        sourceMatches = false;
+                    }
+                    if (!sourceMatches) throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
+                    tradeins.requireRecyclableSource(owner, q.sourceDeviceId());
+                }
                 var source=q.sourceDeviceId()==null?null:db.one("SELECT id,row_version,status,ownership_status FROM nx_user_device WHERE id=? AND user_id=?",q.sourceDeviceId(),owner);
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"targetProductId",q.targetProductId(),"source",source);
             }

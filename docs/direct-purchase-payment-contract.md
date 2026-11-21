@@ -26,6 +26,7 @@ For `TRADE_IN` and `CAPACITY_REPLACE`, `POST /api/app/purchase-payment-quotes` a
 
 | HTTP status | Response `message` | Reason |
 | --- | --- | --- |
+| 409 | `CAPACITY_REPLACEMENT_SOURCE_CHANGED` | For `CAPACITY_REPLACE`, the requested `payload.sourceDeviceId` must match the current replacement candidate. Both endpoints verify the match before checking the device runtime. |
 | 409 | `SIMULATED_DEVICE_BUSY` | The simulated device runtime has not drained. |
 | 409 | `COMPUTE_V2_DEVICE_BUSY` | The Compute V2 device runtime has not drained. |
 | 409 | `COMPUTE_V2_LEGACY_REQUEST_UNRESOLVED` | An earlier execution request is unresolved. |
