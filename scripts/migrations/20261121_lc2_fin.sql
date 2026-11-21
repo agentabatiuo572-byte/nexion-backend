@@ -49,6 +49,24 @@ SELECT 'withdrawal.d5.version', '1', 'NUMBER', 'wallet', 'ADMIN', 'D5 aggregate 
  WHERE @lc2_fin_pending
 ON DUPLICATE KEY UPDATE config_key = nx_config_item.config_key;
 
+-- Repair the factory BEP20 mirror before the fee update advances the D5 version.
+UPDATE nx_config_item mirror
+JOIN nx_config_item canonical ON canonical.config_key = 'withdrawal.bep20.enabled'
+JOIN nx_config_item revision ON revision.config_key = 'withdrawal.d5.version'
+   SET mirror.config_value = canonical.config_value
+ WHERE @lc2_fin_pending
+   AND mirror.config_key = 'wallet.withdrawal.bep20.enabled'
+   AND mirror.status = 1 AND mirror.is_deleted = 0
+   AND canonical.status = 1 AND canonical.is_deleted = 0
+   AND revision.status = 1 AND revision.is_deleted = 0
+   AND BINARY mirror.config_value = 'false' AND BINARY canonical.config_value = 'true'
+   AND BINARY revision.config_value = '1'
+   AND NOT EXISTS (
+     SELECT 1 FROM nx_audit_object_lock
+      WHERE target_domain = 'D' AND target_type = 'withdrawal_limits'
+        AND target_id = 'current' AND is_deleted = 0
+   );
+
 UPDATE nx_config_item canonical
 JOIN nx_config_item mirror ON mirror.config_key = 'wallet.withdrawal.nex_fee_offset_rate'
 JOIN nx_config_item revision ON revision.config_key = 'withdrawal.d5.version'
@@ -110,10 +128,11 @@ ON DUPLICATE KEY UPDATE config_key = nx_config_item.config_key;
 
 -- An existing canonical or legacy switch (including a deleted row) owns its
 -- state. Never insert an enabled canonical switch ahead of such a decision.
+-- Exchange opens through J1 only after the D3 reserve and G3 price are ready.
 INSERT INTO nx_emergency_control_setting (setting_key, setting_value, value_type, group_code, remark, operator)
 SELECT CONCAT('killswitch.', gates.gate_key), 'enabled', 'STRING', 'admin_killswitch',
        'J1 launch kill switch default', 'migration:lc2'
-  FROM (SELECT 'withdraw' AS gate_key UNION ALL SELECT 'trial' UNION ALL SELECT 'exchange') gates
+  FROM (SELECT 'withdraw' AS gate_key UNION ALL SELECT 'trial') gates
  WHERE @lc2_fin_pending
    AND NOT EXISTS (
      SELECT 1 FROM nx_emergency_control_setting existing
@@ -158,20 +177,54 @@ SELECT rules.rule_id, rules.dimension, rules.condition_text, rules.action, 'acti
    )
  ORDER BY rules.rule_id;
 
--- Payment quotes bind the policy version. Replace the original unconfigured
--- document as a whole and leave any operator revision and its quotes intact.
+-- Keep configured channels and their order. Upgrade the factory fee fields
+-- in place, then append missing channels in launch order.
+SELECT policy_json INTO @lc2_previous_payment_policy
+  FROM nx_purchase_payment_policy WHERE id = 1 FOR UPDATE;
+SET @lc2_unconfigured_fees = '{"configured":false,"channelFeeRatePct":null,"channelFeeFixed":null,"networkConfirmFeeUsdt":null}';
+
+WITH defaults AS (
+  SELECT 1 AS position, 'HDPAY_BANK' AS method, '10' AS minimum, '0' AS network_fee
+  UNION ALL SELECT 2, 'CREGIS_USDT_BSC', '1', '1'
+  UNION ALL SELECT 3, 'CREGIS_USDT_ERC20', '1', '5'
+), launch_channels AS (
+  SELECT position, method, minimum, JSON_OBJECT(
+      'configured', TRUE, 'channelFeeRatePct', '0', 'channelFeeFixed', '0',
+      'networkConfirmFeeUsdt', network_fee
+  ) AS fees
+  FROM defaults
+), existing_channels AS (
+  SELECT channel.position, channel.method, channel.payload
+  FROM JSON_TABLE(@lc2_previous_payment_policy, '$[*]' COLUMNS (
+    position FOR ORDINALITY,
+    method VARCHAR(32) PATH '$.paymentMethod',
+    payload JSON PATH '$'
+  )) AS channel
+), merged_channels AS (
+  SELECT 0 AS appended, existing.position,
+         CASE WHEN launch.fees IS NOT NULL AND JSON_CONTAINS(existing.payload, @lc2_unconfigured_fees)
+              THEN JSON_MERGE_PATCH(existing.payload, launch.fees)
+              ELSE existing.payload END AS payload
+  FROM existing_channels existing
+  LEFT JOIN launch_channels launch ON BINARY existing.method = BINARY launch.method
+  UNION ALL
+  SELECT 1, launch.position, JSON_MERGE_PATCH(
+      JSON_OBJECT('paymentMethod', launch.method, 'minTopupPrincipal', launch.minimum), launch.fees
+  )
+  FROM launch_channels launch
+  WHERE NOT EXISTS (SELECT 1 FROM existing_channels existing WHERE BINARY existing.method = BINARY launch.method)
+)
+SELECT JSON_ARRAYAGG(CAST(payload AS JSON)) OVER (
+    ORDER BY appended, position ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+  ) INTO @lc2_merged_payment_policy
+  FROM merged_channels LIMIT 1;
+
+-- Quotes bind the aggregate policy version, so bump it only for a changed document.
 UPDATE nx_purchase_payment_policy
-   SET policy_json = '[
-     {"paymentMethod":"HDPAY_BANK","configured":true,"channelFeeRatePct":"0","channelFeeFixed":"0","networkConfirmFeeUsdt":"0","minTopupPrincipal":"10"},
-     {"paymentMethod":"CREGIS_USDT_BSC","configured":true,"channelFeeRatePct":"0","channelFeeFixed":"0","networkConfirmFeeUsdt":"1","minTopupPrincipal":"1"},
-     {"paymentMethod":"CREGIS_USDT_ERC20","configured":true,"channelFeeRatePct":"0","channelFeeFixed":"0","networkConfirmFeeUsdt":"5","minTopupPrincipal":"1"}
-   ]',
+   SET policy_json = CAST(@lc2_merged_payment_policy AS JSON),
        version = version + 1, updated_at = NOW(6)
- WHERE @lc2_fin_pending AND id = 1 AND version = 1
-   AND policy_json = CAST('[
-     {"paymentMethod":"HDPAY_BANK","configured":false,"channelFeeRatePct":null,"channelFeeFixed":null,"networkConfirmFeeUsdt":null,"minTopupPrincipal":"10"},
-     {"paymentMethod":"CREGIS_USDT_BSC","configured":false,"channelFeeRatePct":null,"channelFeeFixed":null,"networkConfirmFeeUsdt":null,"minTopupPrincipal":"1"}
-   ]' AS JSON);
+ WHERE @lc2_fin_pending AND id = 1 AND JSON_TYPE(policy_json) = 'ARRAY'
+   AND policy_json <> CAST(@lc2_merged_payment_policy AS JSON);
 
 -- New projects get their first policy from the configured project ID at app
 -- startup. Do not invalidate any existing maker/checker case or revision.
