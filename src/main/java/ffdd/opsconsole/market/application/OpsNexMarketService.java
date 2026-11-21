@@ -926,6 +926,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("domain", "G4");
         response.put("product", "genesis");
         response.put("asset", "GENESIS_NODE");
+        response.put("showcaseEnabled",
+                Boolean.parseBoolean(genesisValue(genesisParamDef("showcaseEnabled"), null).trim()));
         response.put("currentNexPrice", currentPrice());
         response.put("stats", map(
                 "totalSlots", supply.setScale(0, RoundingMode.HALF_UP),

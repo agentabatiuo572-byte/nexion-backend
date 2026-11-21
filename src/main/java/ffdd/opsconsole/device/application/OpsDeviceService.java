@@ -257,6 +257,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private DeviceOrderRefundImpactService refundImpacts;
     @org.springframework.beans.factory.annotation.Autowired
     private SimulatedTaskWakeService simulationWakes;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper auditTickets;
 
     public OpsDeviceService(SupportPaymentAttributionFacade paymentAttribution,
             DeviceOpsRepository deviceRepository, DeviceCatalogRepository catalogRepository,
@@ -541,6 +543,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (listingGuard != null) {
                 return listingGuard;
             }
+            if (effectiveWriteRequest.monthlyTargetUsdt() != null && firstPublishedTargetListingBelowRedline(before)) {
+                return ApiResult.fail(409, "COVERAGE_BELOW_REDLINE");
+            }
         }
         boolean legacyOnSaleMaintenance="on".equals(before.status()) && !newlyListed && !targetChanged && !scopeChanged
                 && !ProductSeries.valid(effectiveWriteRequest.seriesCode());
@@ -646,6 +651,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             ApiResult<DeviceSkuView> listingGuard = requireE1SkuListingAllowed(normalized);
             if (listingGuard != null) {
                 return listingGuard;
+            }
+            if (firstPublishedTargetListingBelowRedline(before)) {
+                return ApiResult.fail(409, "COVERAGE_BELOW_REDLINE");
             }
         }
         DeviceSkuView updated = catalogRepository.updateSkuStatus(
@@ -5377,6 +5385,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
                 || coverage.redlinePct() == null
                 || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0;
+    }
+
+    private boolean firstPublishedTargetListingBelowRedline(DeviceSkuView sku) {
+        // An ordinary off-sale E1 draft has no published policy. Launch seeds already
+        // carry one, so check coverage before their first successful listing.
+        return sku.monthlyTargetUsdt() != null && sku.productTaskPolicyVersion() > 0
+                && !auditTickets.hasApprovedSkuListing(sku.skuId()) && coverageBelowRedline();
     }
 
     static boolean e2TaskPricingAmplifiesFinancialOutflow(

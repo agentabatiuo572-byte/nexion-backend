@@ -175,7 +175,7 @@ VALUES
   ('admin.bootstrap.mode', 'baseline', 'STRING', 'admin_system', 'ADMIN', 'Local system baseline mode.', 1),
   ('auth.session.access_ttl_hours', '2', 'NUMBER', 'auth', 'PRIVATE', 'Access token lifetime in hours.', 1),
   ('auth.session.refresh_ttl_days', '30', 'NUMBER', 'auth', 'PRIVATE', 'Refresh token lifetime in days.', 1),
-  ('auth.session.idle_ttl_days', '7', 'NUMBER', 'auth', 'PRIVATE', 'Idle session lifetime in days.', 1),
+  ('auth.session.idle_ttl_days', '30', 'NUMBER', 'auth', 'PRIVATE', 'Idle session lifetime in days.', 1),
   ('auth.session.step_up_days', '7', 'NUMBER', 'auth', 'PRIVATE', 'Step-up authentication interval in days.', 1),
   ('auth.risk.login_lock_threshold', '5', 'NUMBER', 'auth', 'PRIVATE', 'Short-window login lock threshold.', 1),
   ('auth.risk.lock_duration_minutes', '30', 'NUMBER', 'auth', 'PRIVATE', 'Short-window login lock duration.', 1),
