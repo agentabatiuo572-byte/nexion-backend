@@ -121,7 +121,7 @@ public class PurchasePaymentService {
             throw new BizException(422,"EXTERNAL_PAYMENT_CREDENTIAL_FORBIDDEN");
         ready(method);
         return tx(()->{
-            user(owner,true);Instant pricingAt=now();var pricing=pricing(owner,kind,payload,pricingAt,false);
+            user(owner,true);Instant pricingAt=now();var pricing=pricing(owner,kind,payload,pricingAt,false,true);
             if("ORDER_PAY".equals(kind))payload.put("orderNo",pricing.get("orderNo"));
             if(!activeIntents(owner,kind,json(payload),"").isEmpty())
                 throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
@@ -187,7 +187,8 @@ public class PurchasePaymentService {
         String key="PAYMENT_TIMEOUT".equals(status)&&!orderNo.isBlank()?"ORDER:"+orderNo:"INTENT:"+text(row.get("intent_no"));
         db.write("INSERT IGNORE INTO nx_purchase_payment_result(notification_key,intent_no,outcome,user_id,order_no) VALUES(?,?,?,?,?)",key,row.get("intent_no"),status,row.get("user_id"),orderNo);
     }
-    private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,boolean legacyTrialQuote){
+    private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,
+                                      boolean legacyTrialQuote,boolean checkReplacementSource){
         hostingCenters.requirePool();
         switch(kind){
             case "ORDER_PAY":{
@@ -202,6 +203,7 @@ public class PurchasePaymentService {
                 var q=require(tradeins.quote(owner,new AppTradeinQuoteRequest(optionalLong(payload.get("sourceDeviceId")),optionalLong(payload.get("targetProductId")),text(payload.get("targetProductNo")))));
                 if(payload.get("expectedSourceVersion")==null||number(payload.get("expectedSourceVersion"))!=q.sourceRowVersion())
                     throw new BizException(409,"TRADEIN_SOURCE_VERSION_CONFLICT");
+                if(checkReplacementSource)tradeins.requireRecyclableSource(owner,q.sourceDeviceId());
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"sourceVersion",q.sourceRowVersion(),"sourceDeviceId",q.sourceDeviceId(),
                         "targetProductId",q.targetProductId(),"targetPrice",q.targetPriceUsdt().toPlainString(),"discount",q.discountUsdt().toPlainString());
             }
@@ -209,6 +211,7 @@ public class PurchasePaymentService {
                 var q=require(tradeins.capacityQuote(owner,new AppCapacityReplaceQuoteRequest(text(payload.get("targetProductNo")))));
                 String wanted="CAPACITY_REPLACE".equals(kind)?"REPLACE_REQUIRED":"CAPACITY_AVAILABLE";
                 if(!wanted.equals(q.decision()))throw new BizException(409,"CAPACITY_REPLACEMENT_SOURCE_CHANGED");
+                if(checkReplacementSource&&"CAPACITY_REPLACE".equals(kind))tradeins.requireRecyclableSource(owner,q.sourceDeviceId());
                 var source=q.sourceDeviceId()==null?null:db.one("SELECT id,row_version,status,ownership_status FROM nx_user_device WHERE id=? AND user_id=?",q.sourceDeviceId(),owner);
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"targetProductId",q.targetProductId(),"source",source);
             }
@@ -253,7 +256,7 @@ public class PurchasePaymentService {
             if(feeVersion==null||number(feeVersion.get("version"))!=number(parse(quote.get("quote_json")).get("feePolicyVersion")))
                 throw new BizException(409,"PURCHASE_PAYMENT_FEE_POLICY_CHANGED");
             var frozenQuote=parse(quote.get("quote_json"));
-            if(!hash(pricing(owner,text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(frozenQuote.get("pricingAsOf"))),!frozenQuote.containsKey("trialOffsetBasis"))).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
+            if(!hash(pricing(owner,text(quote.get("kind")),parse(quote.get("payload_json")),Instant.parse(text(frozenQuote.get("pricingAsOf"))),!frozenQuote.containsKey("trialOffsetBasis"),true)).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             ready(text(quote.get("payment_method")));
             if(!activeIntents(owner,quote.get("kind"),text(quote.get("payload_json")),"").isEmpty())
                 throw new BizException(409,"PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
@@ -515,7 +518,8 @@ public class PurchasePaymentService {
             if("ORDER_PAY".equals(kind))orders.lockDirectPaymentOrderParticipants(text(payload.get("orderNo")));
             user(owner,true);var quote=parse(intent.get("quote_json"));
             boolean legacyTrialQuote=!quote.containsKey("trialOffsetBasis");
-            if(!hash(pricing(owner,kind,payload,Instant.parse(text(quote.get("pricingAsOf"))),legacyTrialQuote)).equals(intent.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
+            // Fulfilment checks the replacement source under the existing submission rules.
+            if(!hash(pricing(owner,kind,payload,Instant.parse(text(quote.get("pricingAsOf"))),legacyTrialQuote,false)).equals(intent.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             var result=VerifiedPurchasePayment.settle(owner,text(intent.get("payment_method")),no,money(quote.get("subtotalUsdt")),Instant.parse(text(quote.get("pricingAsOf"))),intent.get("paid_at")==null?instant(intent.get("confirmed_at")):instant(intent.get("paid_at")),()->fulfil(owner,kind,payload,no,legacyTrialQuote));
             Object receipt=require(result);
             Map<String,Object> canonical=jsonMapper.convertValue(receipt,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});

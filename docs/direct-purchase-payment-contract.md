@@ -20,6 +20,19 @@ Wallet recharge principal requests must be positive integers and meet their auth
 Legacy wallet request DTOs explicitly reject any supplied paymentMethod other than WALLET at HTTP binding, even when a valid PIN is supplied; omission retains WALLET behavior. External payloads therefore cannot silently execute a wallet purchase.
 External channel fees are fail-closed until each channel is explicitly configured. The policy publishes configured:false with null fees for an unknown channel. Partial policy PATCH accepts one or two complete channels, only marking those submitted entries configured; explicit zero is a valid approved free policy. New quotes/intent creation reject missing fee configuration, while already initiated intents preserve their snapshots.
 
+## Replacement source check (B57-BE-02)
+
+For `TRADE_IN` and `CAPACITY_REPLACE`, `POST /api/app/purchase-payment-quotes` and `POST /api/app/purchase-payment-intents` check the old device with the same read-only runtime guard used at submission. A rejection creates no quote or payment intent for that request, allocates no collection address and creates no provider payment order. If intent creation is rejected, its original quote remains under the existing validity rules.
+
+| HTTP status | Response `message` | Reason |
+| --- | --- | --- |
+| 409 | `SIMULATED_DEVICE_BUSY` | The simulated device runtime has not drained. |
+| 409 | `COMPUTE_V2_DEVICE_BUSY` | The Compute V2 device runtime has not drained. |
+| 409 | `COMPUTE_V2_LEGACY_REQUEST_UNRESOLVED` | An earlier execution request is unresolved. |
+| 409 | `COMPUTE_V2_OWNER_CHANGED` | The runtime ownership record no longer matches the source device and owner. |
+| 503 | `COMPUTE_V2_RUNTIME_RECOVERING` | The Compute V2 runtime is temporarily unavailable. Retry the request. |
+
+Quote requests check payment channel readiness before checking the device. Intent creation rechecks the device for a new intent. Replaying a successful creation with its original key and quote returns the existing intent. A device can become busy after an intent is created, in which case confirmed payment still enters `MANUAL_REVIEW` if delivery fails the replacement guard.
 
 ## 2026-11-01 deadline and result contract
 
