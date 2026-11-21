@@ -29,6 +29,15 @@ public interface CregisExceptionRefundMapper extends BaseMapper<Object> {
     @Select("SELECT mode,fee_usdt feeUsdt,version FROM nx_cregis_exception_refund_policy WHERE project_id=#{project}")
     Map<String,Object> policy(long project);
     @Insert("INSERT IGNORE INTO nx_cregis_exception_refund_policy(project_id) VALUES(#{project})") int ensurePolicy(long project);
+    @Insert("""
+        INSERT INTO nx_cregis_exception_refund_policy(project_id,mode,fee_usdt,version)
+        SELECT #{project},'PLATFORM_PAYS',0,1
+        WHERE NOT EXISTS (
+            SELECT 1 FROM nx_cregis_exception_refund_policy_case WHERE project_id=#{project}
+        )
+        ON DUPLICATE KEY UPDATE project_id=nx_cregis_exception_refund_policy.project_id
+        """)
+    int installLaunchPolicy(long project);
     @Select("SELECT mode,fee_usdt feeUsdt,version FROM nx_cregis_exception_refund_policy WHERE project_id=#{project} FOR UPDATE")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     Map<String,Object> lockPolicy(long project);

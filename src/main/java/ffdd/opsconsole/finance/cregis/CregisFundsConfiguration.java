@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.cregis;
 
 import ffdd.opsconsole.finance.mapper.CregisAutoForwardMapper;
+import ffdd.opsconsole.finance.mapper.CregisExceptionRefundMapper;
 import ffdd.opsconsole.finance.mapper.CregisFundsPreparationMapper;
 import java.util.Map;
 import java.util.Objects;
@@ -16,12 +17,17 @@ public class CregisFundsConfiguration implements ApplicationRunner {
     private final CregisProperties properties;
     private final CregisFundsPreparationMapper preparation;
     private final CregisAutoForwardMapper autoForward;
+    private final CregisExceptionRefundMapper exceptionRefund;
 
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
         long project = properties.getProjectId();
         if (project <= 0) return;
+
+        if (properties.getMode() == CregisProperties.Mode.PROVIDER) {
+            exceptionRefund.installLaunchPolicy(project);
+        }
 
         for (var network : CregisNetwork.values()) {
             if (!properties.autoForwardAddressesConfigured(network)) continue;
