@@ -17,6 +17,7 @@ import ffdd.opsconsole.device.dto.AppTradeinQuoteResponse;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitRequest;
 import ffdd.opsconsole.device.dto.AppTradeinSubmitResponse;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.device.mapper.SimulatedTaskMapper.RuntimeRow;
 import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -211,7 +212,8 @@ public class AppTradeinService {
         }
         AppCapacityReplaceSubmitRequest normalized = new AppCapacityReplaceSubmitRequest(
                 request.sourceDeviceId(), targetProductNo, request.expectedPayableUsdt());
-        return capacityReplaceInternal(userId, idempotencyKey, normalized);
+        return executeCapacityOnce(userId, idempotencyKey, normalized,
+                () -> capacityReplaceInternal(userId, idempotencyKey, normalized));
     }
 
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
@@ -268,7 +270,8 @@ public class AppTradeinService {
         if (mapper.lockActiveUser(userId) == null) {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
         }
-        return submitInternal(userId, idempotencyKey, request);
+        return executeOnce(userId, idempotencyKey, request,
+                () -> submitInternal(userId, idempotencyKey, request));
     }
 
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
@@ -313,13 +316,14 @@ public class AppTradeinService {
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
             throw new BizException(409, "TRADEIN_EVENT_ATTRIBUTION_UNAVAILABLE");
         }
+        RuntimeRow simulatedRuntime = lockReplacementRuntime(userId, evaluation.source());
         String hostingCenter = hostingCenters.requirePool().assign(instanceNo);
         testCloudAdmission.requireReplacementCapacity(evaluation.source().id(),evaluation.source().activated()?1:0);
         reservePurchaseQuotaAtSettlement(userId, evaluation.target().productNo());
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, evaluation.target().productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
 
-        retireTradeinSource(userId, evaluation.source());
+        retireTradeinSource(userId, evaluation.source(), simulatedRuntime);
 
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(VerifiedPurchasePayment.active() ? BigDecimal.ZERO : quote.payableUsdt()).setScale(6, RoundingMode.HALF_UP);
 
@@ -432,14 +436,13 @@ public class AppTradeinService {
         }
     }
 
-    private void prepareReplacementSource(long userId, AppTradeinMapper.SourceDevice source) {
-        if (computeV2Lifecycle != null) {
-            computeV2Lifecycle.prepareAppReplacement(userId, source.id(), source.instanceNo(), source.activated());
-        }
+    private RuntimeRow lockReplacementRuntime(long userId, AppTradeinMapper.SourceDevice source) {
+        return computeV2Lifecycle == null ? null : computeV2Lifecycle.lockAppReplacementRuntime(
+                userId, source.id(), source.instanceNo(), source.activated());
     }
 
-    private void retireTradeinSource(Long userId, AppTradeinMapper.SourceDevice source) {
-        prepareReplacementSource(userId, source);
+    private void retireTradeinSource(Long userId, AppTradeinMapper.SourceDevice source, RuntimeRow simulatedRuntime) {
+        if (simulatedRuntime != null) computeV2Lifecycle.cancelSimulatedForReplacement(simulatedRuntime);
         long version = source.rowVersion();
         if (source.activated()) {
             if (deviceLifecycle.deactivateOwnedDeviceCas(userId, source.id(), version) != 1) {
@@ -483,6 +486,7 @@ public class AppTradeinService {
         if (source == null || !source.id().equals(request.sourceDeviceId())) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
         }
+        RuntimeRow simulatedRuntime = lockReplacementRuntime(userId, source);
         AppTradeinMapper.TargetProduct target = mapper.lockTargetProduct(null, request.targetProductNo());
         if (target == null || !finiteTarget(target) || target.stock() == null || target.stock() < 1) {
             throw new BizException(409, "TRADEIN_TARGET_NOT_ACTIVE");
@@ -493,7 +497,7 @@ public class AppTradeinService {
         var hardwareQuota = HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC));
 
-        prepareReplacementSource(userId, source);
+        if (simulatedRuntime != null) computeV2Lifecycle.cancelSimulatedForReplacement(simulatedRuntime);
 
         BigDecimal balanceAfter = quote.walletBalanceUsdt().subtract(VerifiedPurchasePayment.active() ? BigDecimal.ZERO : quote.payableUsdt())
                 .setScale(6, RoundingMode.HALF_UP);
@@ -1002,6 +1006,24 @@ public class AppTradeinService {
             throw new BizException(422, "CAPACITY_REPLACEMENT_TARGET_REQUIRED");
         }
         return normalized;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private ApiResult<AppTradeinSubmitResponse> executeOnce(
+            Long userId, String idempotencyKey, AppTradeinSubmitRequest request,
+            Supplier<ApiResult<AppTradeinSubmitResponse>> action) {
+        return (ApiResult<AppTradeinSubmitResponse>) (ApiResult) idempotencyService.execute(
+                "APP:E3_TRADEIN_SUBMIT:USER:" + userId, idempotencyKey,
+                sha256(String.valueOf(request)), ApiResult.class, (Supplier) action);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private ApiResult<AppTradeinSubmitResponse> executeCapacityOnce(
+            Long userId, String idempotencyKey, AppCapacityReplaceSubmitRequest request,
+            Supplier<ApiResult<AppTradeinSubmitResponse>> action) {
+        return (ApiResult<AppTradeinSubmitResponse>) (ApiResult) idempotencyService.execute(
+                "APP:E3_CAPACITY_REPLACE:USER:" + userId, idempotencyKey,
+                sha256(String.valueOf(request)), ApiResult.class, (Supplier) action);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

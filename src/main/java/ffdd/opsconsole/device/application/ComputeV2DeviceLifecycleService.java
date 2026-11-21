@@ -2,6 +2,7 @@ package ffdd.opsconsole.device.application;
 
 import ffdd.opsconsole.device.compute.v2.ComputeV2Runtime;
 import ffdd.opsconsole.device.compute.v2.ComputeV2Runtime.RuntimeView;
+import ffdd.opsconsole.device.mapper.SimulatedTaskMapper.RuntimeRow;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
@@ -100,8 +101,8 @@ public class ComputeV2DeviceLifecycleService {
             throw error("COMPUTE_V2_DEVICE_BUSY");
     }
 
-    /** The App owns the user and source device locks and the replacement transaction. */
-    public void prepareAppReplacement(long user, long device, String instanceNo, boolean activated) {
+    /** Checks the source without writes. The App already holds the user and device locks. */
+    RuntimeRow lockAppReplacementRuntime(long user, long device, String instanceNo, boolean activated) {
         var view = ownedView(user, device);
         if (view.isPresent()) {
             var event = view.get().event();
@@ -115,8 +116,12 @@ public class ComputeV2DeviceLifecycleService {
         if (view.isPresent() && !drained(view.get())) {
             throw error("COMPUTE_V2_DEVICE_BUSY");
         }
-        simulated.cancelForReplacement(user, device, instanceNo, activated,
+        return simulated.lockReplacementRuntime(user, device, instanceNo, activated,
                 runtime.isPresent() && enrolled.contains(device));
+    }
+
+    void cancelSimulatedForReplacement(RuntimeRow lockedRuntime) {
+        simulated.cancelForReplacement(lockedRuntime);
     }
 
     private Optional<RuntimeView> ownedView(long user,long device) {

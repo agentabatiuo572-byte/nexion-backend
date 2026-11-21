@@ -177,8 +177,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         });
     }
 
-    /** The caller holds the user and OWNED device locks. Even a due task is cancelled before settlement. */
-    void cancelForReplacement(long userId, long deviceId, String instanceNo, boolean activated, boolean computeV2Enrolled) {
+    /** The caller holds the user and OWNED device locks until the replacement transaction ends. */
+    RuntimeRow lockReplacementRuntime(long userId, long deviceId, String instanceNo, boolean activated, boolean computeV2Enrolled) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("SIMULATED_LIFECYCLE_TRANSACTION_REQUIRED");
         }
@@ -191,26 +191,33 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 || mapper.hasUncancellableReplacementTask(userId, deviceId, runtime != null || !activated)) {
             throw error(409, "COMPUTE_V2_LEGACY_REQUEST_UNRESOLVED");
         }
-        if (runtime == null) return;
-        if (computeV2Enrolled) throw error(409, "COMPUTE_V2_DEVICE_BUSY");
+        if (runtime == null) return null;
 
         boolean terminal = Set.of("STOPPED", "EXPIRED").contains(runtime.state());
-        boolean canHaveTask = Set.of("RUNNING", "CLOSING", "ERROR").contains(runtime.state());
-        if (!terminal && !canHaveTask && !"WAITING_CONFIG".equals(runtime.state())) {
+        if (!terminal && !Set.of("RUNNING", "CLOSING", "ERROR", "WAITING_CONFIG").contains(runtime.state())) {
             throw error(409, "SIMULATED_RUNTIME_IDENTITY_CONFLICT");
         }
         boolean drained = terminal && runtime.currentTaskNo() == null && runtime.nextActionAt() == null;
+        if (computeV2Enrolled) {
+            if (drained) return null;
+            throw error(409, "COMPUTE_V2_DEVICE_BUSY");
+        }
         if (!drained && (!activated || !manages(deviceId))) throw error(409, "SIMULATED_DEVICE_BUSY");
+        return runtime;
+    }
+
+    /** Even a due task is cancelled before settlement. The runtime lock is still held. */
+    void cancelForReplacement(RuntimeRow runtime) {
         LocalDateTime cutoff = now();
         if (runtime.currentTaskNo() != null) {
             var task = mapper.lockTask(runtime.currentTaskNo());
-            if (task == null || !runtime.currentTaskNo().equals(task.taskNo()) || task.userId() != userId
-                    || task.deviceId() != deviceId || !instanceNo.equals(task.instanceNo())
+            if (task == null || !runtime.currentTaskNo().equals(task.taskNo()) || task.userId() != runtime.userId()
+                    || task.deviceId() != runtime.deviceId() || !runtime.instanceNo().equals(task.instanceNo())
                     || task.generation() != runtime.generation()) {
                 throw error(409, "SIMULATED_TASK_IDENTITY_CONFLICT");
             }
             if (task.postedAt() != null) throw error(409, "SIMULATED_TASK_ALREADY_POSTED");
-            if (!"RUNNING".equals(task.status()) || !canHaveTask) {
+            if (!"RUNNING".equals(task.status()) || !Set.of("RUNNING", "CLOSING", "ERROR").contains(runtime.state())) {
                 throw error(409, "SIMULATED_TASK_IDENTITY_CONFLICT");
             }
             if (mapper.cancelTask(task.taskNo(), SimulatedTaskMapper.REPLACEMENT_STOP_REASON) != 1) {
@@ -218,9 +225,9 @@ public class SimulatedTaskService implements SchedulingConfigurer {
             }
             monthlyTargets.cancel(task);
         }
-        var stopped = new RuntimeRow(deviceId, userId, instanceNo, runtime.productCode(), runtime.phone(), runtime.generation(),
-                runtime.intervalStartedAt(), runtime.phoneValidUntil(), cutoff, false, null, runtime.nextStartAt(),
-                null, null, "STOPPED", SimulatedTaskMapper.REPLACEMENT_STOP_REASON);
+        var stopped = new RuntimeRow(runtime.deviceId(), runtime.userId(), runtime.instanceNo(), runtime.productCode(),
+                runtime.phone(), runtime.generation(), runtime.intervalStartedAt(), runtime.phoneValidUntil(), cutoff,
+                false, null, runtime.nextStartAt(), null, null, "STOPPED", SimulatedTaskMapper.REPLACEMENT_STOP_REASON);
         if (mapper.updateRuntime(stopped) != 1) throw error(409, "SIMULATED_RUNTIME_IDENTITY_CONFLICT");
     }
 
