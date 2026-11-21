@@ -22,6 +22,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
@@ -769,7 +770,6 @@ public class AppCanonicalBoundaryService {
 
     /** Read-only owner lookup for an ordinary App order-create command. Never claims or re-executes it. */
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
-    @SuppressWarnings({"unchecked", "rawtypes"})
     public ApiResult<Map<String, Object>> orderCreateCommand(Long userId, String idempotencyKey) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
         String key = idempotencyKey == null ? "" : idempotencyKey.trim();
@@ -781,7 +781,7 @@ public class AppCanonicalBoundaryService {
         if (!StringUtils.hasText(command.requestHash())) {
             return orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
         }
-        var recovered = idempotencyService.recoveryResult(scope, key, command.requestHash(), ApiResult.class);
+        var recovered = idempotencyService.recoveryResult(scope, key, command.requestHash(), JsonNode.class);
         return switch (recovered.status()) {
             case NOT_FOUND -> orderCommandNotFound(key);
             case PROCESSING -> orderCommandReceipt(key, scope, "PROCESSING", null, null, command);
@@ -790,15 +790,27 @@ public class AppCanonicalBoundaryService {
             case UNKNOWN, MISMATCH, CONFIRMED_SUCCEEDED, CONFIRMED_NOT_EXECUTED ->
                     orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
             case SUCCEEDED -> {
-                ApiResult saved = recovered.response();
-                if (saved == null) yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
-                if (saved.getCode() != 0) {
-                    yield orderCommandReceipt(key, scope, "FAILED", null,
-                            orderCommandError(saved.getCode(), saved.getMessage()), command);
+                JsonNode saved = recovered.response();
+                if (saved == null || !saved.isObject()) {
+                    yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
                 }
-                Object data = saved.getData();
-                Object rawOrderNo = data instanceof Map<?, ?> map ? map.get("orderNo") : null;
-                String orderNo = rawOrderNo == null ? "" : String.valueOf(rawOrderNo).trim();
+                JsonNode code = saved.get("code");
+                if (code == null || !code.isIntegralNumber()) {
+                    yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
+                }
+                int savedCode = code.canConvertToInt() ? code.intValue() : 500;
+                if (savedCode != 0) {
+                    JsonNode message = saved.get("message");
+                    yield orderCommandReceipt(key, scope, "FAILED", null,
+                            orderCommandError(savedCode,
+                                    message != null && message.isTextual() ? message.textValue() : null), command);
+                }
+                JsonNode data = saved.get("data");
+                JsonNode rawOrderNo = data != null && data.isObject() ? data.get("orderNo") : null;
+                if (rawOrderNo == null || !rawOrderNo.isTextual()) {
+                    yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
+                }
+                String orderNo = rawOrderNo.textValue().trim();
                 if (orderNo.isEmpty()) yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);
                 OrderCreateReceiptMapper.OrderSummary order = mapper.ownedOrder(userId, orderNo);
                 if (order == null) yield orderCommandReceipt(key, scope, "UNKNOWN", null, null, command);

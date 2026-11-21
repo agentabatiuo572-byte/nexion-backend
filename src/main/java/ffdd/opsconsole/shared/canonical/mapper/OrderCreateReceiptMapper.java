@@ -92,7 +92,7 @@ public interface OrderCreateReceiptMapper {
                    created_at createdAt, updated_at updatedAt
               FROM nx_admin_idempotency_record
              WHERE scope=CONCAT('APP:ORDER_CREATE:USER:',#{userId})
-               AND BINARY idempotency_key=BINARY #{idempotencyKey}
+               AND idempotency_key=#{idempotencyKey}
                AND is_deleted=0
              LIMIT 1
             """)
