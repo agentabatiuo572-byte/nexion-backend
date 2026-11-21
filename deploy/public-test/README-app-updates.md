@@ -9,6 +9,8 @@
 3. 经 HTTPS 下载，核对完整文件摘要，然后由 TEST 发布操作者用审核过的产物信息新增目录行。每个构建号只登记一个不可变产物，一次性写入 `artifact_id,platform,version_name,latest_build,download_url,sha256`。运营接口仅接收该目录的 `artifactId`，版本名、下载地址与摘要从目录派生。iOS 仅登记已核实版本对应的 Apple App Store 安装入口。
 4. 用 A3 查看目录、编辑草稿并提交。另一名具备 A2 审批权限及 A3 读取权限的管理员审批。由具备 A3 写权限且未审批此候选的管理员发布。撤回或驳回后保留草稿和记录。恢复上一策略同样需要提交、审批、发布；首发后支持恢复为空。发现制品已撤销时，发布操作者将该行的 `available` 设置为 0，客户端之后的查询即停止下发该包。
 
+登记任一 APK/WGT 后，执行 TEST 宿主上的 `sudo /usr/local/sbin/uvel-sync-app-update-downloads`。该工具从可用目录重建精确到 SHA-256 文件的 GET/HEAD 例外，并在重载前验证 Nginx 配置。运营审批前用手机 GET 实际下载并核对文件摘要。撤销时先确认没有生效或待审批的引用，将目录行停用，立即执行同一工具，然后移走文件。未登记路径继续沿用 TEST 原有网络白名单。运维安装时从经审核的 backend test 提交取得同目录 `sync_app_update_downloads.py`，以 root:root、0755 安装至上述路径。
+
 ## 登记 TEST 资源包
 
 签发方核对 WGT 内的 DCloud appId、资源构建号及发行说明，记录适用的原生宿主构建范围。运行时通过 `NEXION_APPUPDATES_RESOURCEPUBLICKEY` 为服务配置同一枚 TEST P-256 验签公钥（X.509 SubjectPublicKeyInfo DER 的 Base64）。客户端固定这枚公钥。私钥保留在签发方。
