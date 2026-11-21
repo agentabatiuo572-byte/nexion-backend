@@ -48,6 +48,7 @@ public class AppUserOAuthService {
     private final EventOutboxService outboxService;
     private final Environment environment;
     private final OAuthSandboxChallengeService sandboxChallengeService;
+    private final AppUserRegistrationService registrationService;
 
     @PostConstruct
     void ensureSchema() {
@@ -162,6 +163,11 @@ public class AppUserOAuthService {
                 user = userMapper.selectById(identity.getUserId());
                 if (!isActiveInEnvironment(user, authEnvironment)) return ApiResult.fail(403, "OAUTH_IDENTITY_NOT_AVAILABLE");
             }
+        }
+        if (created) {
+            // GROW-01P: 隔离新建账号补注册来源与新人礼冻结（与正式 OAuth 注册同源）。
+            // 只在我们自己新建成功时写；唯一键冲突的败者分支已软删临时用户/钱包，不写来源。
+            registrationService.recordIsolatedProviderOrigin(user, context);
         }
         return issueDevelopmentSession(user, provider, subject, clientAddress, context, created, true);
     }
