@@ -7,6 +7,9 @@ import ffdd.opsconsole.shared.security.UserAccountBlocklistVerifier;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import java.util.UUID;
+import java.util.Map;
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -23,6 +26,7 @@ public class NativePushDispatcher {
     private final Environment env;
     private final TransactionTemplate transaction;
     private final TransactionTemplate discoveryTransaction;
+    @Autowired private OpsKillSwitchService killSwitch;
 
     public NativePushDispatcher(NativePushMapper mapper, AuthSessionMapper sessions, UserAccountBlocklistVerifier blocklist,
             PlatformConfigFacade config, DirectPushClient provider, Environment env, PlatformTransactionManager transactions) {
@@ -42,6 +46,7 @@ public class NativePushDispatcher {
             // Keep the migration cutover fixed. An advancing MAX(id) cursor would skip lower IDs committed out of order.
             // The 24-hour window and unique notification/installation key bound recovery and prevent replay.
             mapper.discover(low, Long.MAX_VALUE, sandbox);
+            if (testBusinessAlerts()) mapper.discoverNova(sandbox, NativePushService.TEST_APNS_TOPIC);
             mapper.expireAmbiguousClaims();
         });
         for (int count = 0; count < 20; count++) {
@@ -76,7 +81,22 @@ public class NativePushDispatcher {
             var notification = mapper.ownedNotification(delivery.notificationId(), delivery.userId());
             if (notification == null) { finish(delivery, "CANCELLED", "NOTIFICATION_REMOVED", null, 0); return; }
             if (delivery.attempts() > 5) { finish(delivery, "FAILED", "ATTEMPTS_EXHAUSTED", null, 0); return; }
-            var result = provider.send(delivery.id(), delivery.notificationId(), installation.provider(), installation.clientId(), notification.language());
+            boolean nova = notification.isNova();
+            boolean enhanced = testBusinessAlerts();
+            if (nova && (!enhanced || mapper.novaChannelEnabled(notification.id()) == 0 || killSwitch.notificationEmergencyStop())) {
+                finish(delivery, "CANCELLED", "NOVA_DISABLED", null, 0);
+                return;
+            }
+            boolean support = enhanced && "SUPPORT_REPLY".equals(notification.type());
+            DirectPushClient.Result result;
+            if (nova || support || installation.apnsTopic() != null) {
+                Map<String,String> alert = nova ? Map.of("title", notification.title(), "body", notification.body())
+                        : Map.of("title", "UVEL", "body", support ? DirectPushClient.supportReply(notification.language())
+                                : DirectPushClient.message(notification.language()));
+                result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert, installation.apnsTopic(), nova || support);
+            } else {
+                result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), notification.language());
+            }
             String status = result.status();
             if ("INVALID_TOKEN".equals(status)) {
                 mapper.deactivate(installation.installationId());
@@ -99,5 +119,9 @@ public class NativePushDispatcher {
             int value = config.activeValue("auth.session.idle_ttl_days").map(Integer::parseInt).orElse(30);
             return value >= 7 && value <= 90 ? value : 30;
         } catch (NumberFormatException invalid) { return 30; }
+    }
+
+    private boolean testBusinessAlerts() {
+        return Boolean.TRUE.equals(env.getProperty("nexion.deployment.public-test", Boolean.class));
     }
 }

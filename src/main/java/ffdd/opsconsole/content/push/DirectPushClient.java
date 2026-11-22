@@ -79,27 +79,35 @@ public class DirectPushClient {
     private JsonNode serviceAccount() throws Exception { return json.readTree(readSecureFile("fcm.service-account-file")); }
 
     public Result send(long deliveryId, long notificationId, String provider, String token, String language) {
+        return send(deliveryId, notificationId, provider, token, Map.of("title","UVEL","body",message(language)), null, false);
+    }
+
+    Result send(long deliveryId, long notificationId, String provider, String token, Map<String,String> alert, String apnsTopic,
+                boolean showConfiguredAlert) {
         String state=configurationState(provider);
         if (!"CONFIGURED".equals(state)) return new Result("BLOCKED",state,null);
         if (!NativePushService.validNativeToken(provider,"FCM".equals(provider)?"android":"ios",token))
             return new Result("INVALID_TOKEN","INVALID_NATIVE_TOKEN",null);
         boolean sending=false;
         try {
-            Map<String,String> alert=Map.of("title","UVEL","body",message(language));
-            Map<String,String> data=Map.of("notificationId",Long.toString(notificationId),"deliveryId",Long.toString(deliveryId));
+            Map<String,String> data=new java.util.HashMap<>(Map.of("notificationId",Long.toString(notificationId),"deliveryId",Long.toString(deliveryId)));
             HttpRequest request;
             if ("FCM".equals(provider)) {
+                if (showConfiguredAlert) data.put("displayCopy", "configured");
                 String access=accessToken();
                 String body=json.writeValueAsString(Map.of("message",Map.of("token",token,"notification",alert,"data",data,
                         "android",Map.of("priority","high","ttl","3600s","notification",Map.of("channel_id","uvel_notifications")))));
                 request=request(URI.create("https://fcm.googleapis.com/v1/projects/"+property("fcm.project-id")+"/messages:send"),body)
                         .header("Authorization","Bearer "+access).build();
             } else {
+                if (apnsTopic != null && !(NativePushService.TEST_APNS_TOPIC.equals(apnsTopic)
+                        && env.getProperty("nexion.deployment.public-test", Boolean.class, false)))
+                    return new Result("BLOCKED","APNS_TOPIC_NOT_CONFIGURED",null);
                 String body=json.writeValueAsString(Map.of("aps",Map.of("alert",alert,"sound","default"),
                         "notificationId",data.get("notificationId"),"deliveryId",data.get("deliveryId")));
                 String host="sandbox".equals(property("apns.environment"))?"api.sandbox.push.apple.com":"api.push.apple.com";
                 request=request(URI.create("https://"+host+"/3/device/"+token),body).version(HttpClient.Version.HTTP_2)
-                        .header("authorization","bearer "+apnsJwt()).header("apns-topic",property("apns.topic"))
+                        .header("authorization","bearer "+apnsJwt()).header("apns-topic",apnsTopic == null ? property("apns.topic") : apnsTopic)
                         .header("apns-push-type","alert").header("apns-priority","10")
                         .header("apns-expiration",Long.toString(Instant.now().plusSeconds(3600).getEpochSecond())).build();
             }
@@ -220,6 +228,20 @@ public class DirectPushClient {
             case "kk" -> "Жаңа хабарландыру бар. Оны көру үшін UVEL қолданбасын ашыңыз.";
             case "uz" -> "Yangi bildirishnomangiz bor. Uni ko‘rish uchun UVEL ilovasini oching.";
             default -> "You have a new notification. Open UVEL to view it.";
+        };
+    }
+
+    static String supportReply(String language) {
+        return switch (ffdd.opsconsole.shared.i18n.InterfaceLanguages.baseCode(language)) {
+            case "zh" -> "客服有新回复";
+            case "vi" -> "Bộ phận hỗ trợ đã trả lời";
+            case "id" -> "Ada balasan baru dari dukungan";
+            case "ms" -> "Khidmat pelanggan telah membalas";
+            case "fil" -> "May bagong tugon ang suporta";
+            case "ru" -> "Служба поддержки ответила";
+            case "kk" -> "Қолдау қызметінен жаңа жауап келді";
+            case "uz" -> "Yordam xizmatidan yangi javob bor";
+            default -> "Support has replied";
         };
     }
     private static final class AuthFailure extends Exception {

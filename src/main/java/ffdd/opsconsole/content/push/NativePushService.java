@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class NativePushService {
+    static final String TEST_APNS_TOPIC = "ai.uvel.app.test";
     private final NativePushMapper mapper;
     private final CurrentAppSessionService sessions;
 
@@ -24,7 +25,11 @@ public class NativePushService {
         this.sessions = sessions;
     }
 
-    public record Registration(String clientId, String provider, String platform, String permission, String appVersion) { }
+    public record Registration(String clientId, String provider, String platform, String permission, String appVersion, String apnsTopic) {
+        public Registration(String clientId, String provider, String platform, String permission, String appVersion) {
+            this(clientId, provider, platform, permission, appVersion, null);
+        }
+    }
     public record Route(String notificationId, String route) { }
 
     @Transactional
@@ -33,7 +38,8 @@ public class NativePushService {
         if (request == null || !validNativeToken(request.provider(), request.platform(), request.clientId())
                 || !("android".equals(request.platform()) || "ios".equals(request.platform()))
                 || !("granted".equals(request.permission()) || "denied".equals(request.permission()) || "unknown".equals(request.permission()))
-                || request.appVersion() == null || request.appVersion().length() > 64)
+                || request.appVersion() == null || request.appVersion().length() > 64
+                || (request.apnsTopic() != null && !("APNS".equals(request.provider()) && TEST_APNS_TOPIC.equals(request.apnsTopic()))))
             throw new BizException(400, "INVALID_PUSH_REGISTRATION");
         String hash = hashToken(token);
         var session = sessions.requireCurrent(auth, id, false);
@@ -42,14 +48,14 @@ public class NativePushService {
         String cidOwner = mapper.tokenOwner(request.provider(), canonicalToken(request));
         if (cidOwner != null && !id.equals(cidOwner)) throw new BizException(409, "PUSH_TOKEN_ALREADY_BOUND");
         Installation next = new Installation(id, canonicalToken(request), request.provider(), hash, session.getUserId(), session.getSessionChainId(),
-                request.platform(), request.permission(), request.appVersion(), old == null ? 1 : old.bindingEpoch(), true);
+                request.platform(), request.permission(), request.appVersion(), old == null ? 1 : old.bindingEpoch(), true, request.apnsTopic());
         try {
             if (old == null) mapper.insert(next);
             else {
                 boolean changed = !old.active() || !Objects.equals(old.userId(), next.userId())
                         || !Objects.equals(old.sessionChainId(), next.sessionChainId())
                         || !old.provider().equals(next.provider()) || !old.clientId().equals(next.clientId()) || !old.permission().equals(next.permission())
-                        || !old.platform().equals(next.platform());
+                        || !old.platform().equals(next.platform()) || !Objects.equals(old.apnsTopic(), next.apnsTopic());
                 if (changed) mapper.cancelPending(id);
                 mapper.update(next, changed ? 1 : 0);
             }
@@ -91,6 +97,15 @@ public class NativePushService {
     static Route route(Notification n) {
         if (n == null) throw new BizException(404, "PUSH_NOTIFICATION_NOT_FOUND");
         String route = n.ctaHref();
+        if (n.isNova()) {
+            String page = switch (route == null ? "" : route) {
+                case "", "NONE" -> "";
+                case "/team" -> "/pages/team/team";
+                case "/earn" -> "/pages/earn/earn";
+                default -> throw new BizException(409, "PUSH_ROUTE_UNAVAILABLE");
+            };
+            return new Route(Long.toString(n.id()), page);
+        }
         boolean allowed = route != null && switch (n.type()) {
             case "DEVICE_EXPIRY" -> route.equals("/pages/me/trial") || route.matches("/pages/earn/device-detail\\?id=[0-9]{1,18}");
             case "DEVICE_ALERT" -> route.matches("/pages/earn/device-detail\\?id=[0-9]{1,18}");
