@@ -177,13 +177,20 @@ public class AdminIdempotencyService {
         } catch (RuntimeException ex) {
             Object businessResponse = ex instanceof AdminCommandBusinessRejection rejection
                     ? rejection.response() : null;
-            if (businessResponse == null && "A2_COMMAND".equals(normalizedScope)
-                    && ex instanceof BizException businessError) {
-                Object errorData = businessError.errorData();
-                if (errorData != null) {
-                    // Reuse the exception's existing structured rejection payload, not a bare
-                    // status-code-derived ApiResult; only proven business exceptions are replayable.
-                    businessResponse = ApiResult.fail(businessError.getCode(), businessError.getMessage(), errorData);
+            if (businessResponse == null && ex instanceof BizException businessError) {
+                if ("A2_COMMAND".equals(normalizedScope)) {
+                    Object errorData = businessError.errorData();
+                    if (errorData != null) {
+                        // Replay only the exception's existing structured rejection payload.
+                        businessResponse = ApiResult.fail(businessError.getCode(), businessError.getMessage(), errorData);
+                    }
+                } else if (eventFailureReceiptScope(normalizedScope)) {
+                    int code = businessError.getCode();
+                    String reason = businessError.getMessage();
+                    if (code >= 400 && code < 500 && reason != null && reason.matches("[A-Z][A-Z0-9_]{0,127}")) {
+                        // The original exception still rolls back the event action.
+                        businessResponse = ApiResult.fail(code, reason);
+                    }
                 }
             }
             businessRejection.set(businessResponse);
@@ -196,6 +203,12 @@ public class AdminIdempotencyService {
             }
             throw ex;
         }
+    }
+
+    static boolean eventFailureReceiptScope(String scope) {
+        return scope.startsWith("APP:EVENT_JOIN:USER:")
+                || scope.startsWith("APP:EVENT_CLAIM:USER:")
+                || scope.startsWith("H4_EVENT:");
     }
 
     private String errorSummary(RuntimeException ex) {

@@ -834,7 +834,7 @@ public class AppGrowthEngagementService {
         return switch (receipt.status()) {
             case NOT_FOUND -> ApiResult.fail(404, "EVENT_COMMAND_NOT_FOUND", Map.of("status", "NOT_FOUND"));
             case PROCESSING -> ApiResult.ok(Map.of("status", "PROCESSING"));
-            case FAILED -> failedEventCommand(500, null);
+            case FAILED -> failedEventCommand(receipt.response());
             case SUCCEEDED -> projectEventCommand(code, receipt.response());
             default -> ApiResult.ok(Map.of("status", "UNKNOWN"));
         };
@@ -863,6 +863,15 @@ public class AppGrowthEngagementService {
             return ApiResult.ok(Map.of("status", "UNKNOWN"));
         }
         return ApiResult.ok(Map.of("status", "SUCCEEDED", "result", result));
+    }
+
+    private ApiResult<Map<String, Object>> failedEventCommand(JsonNode saved) {
+        JsonNode code = saved == null ? null : saved.get("code");
+        if (code == null || !code.isIntegralNumber() || !code.canConvertToInt()
+                || code.intValue() < 400 || code.intValue() >= 500) {
+            return failedEventCommand(500, null);
+        }
+        return failedEventCommand(code.intValue(), saved.path("message").textValue());
     }
 
     private ApiResult<Map<String, Object>> failedEventCommand(int code, String reason) {

@@ -65,15 +65,18 @@ public class AdminIdempotencyTransactionExecutor {
             String scope, String idempotencyKey, String requestHash, Class<T> responseType) {
         AdminIdempotencyRecordEntity record = recordMapper.selectCurrent(scope, idempotencyKey);
         var status = recoveryStatus(record, requestHash);
-        if (status != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) {
+        boolean failed = status == AdminIdempotencyService.RecoveryStatus.FAILED;
+        boolean hasEventFailure = failed && AdminIdempotencyService.eventFailureReceiptScope(scope)
+                && StringUtils.hasText(record.getResponseJson());
+        if (status != AdminIdempotencyService.RecoveryStatus.SUCCEEDED && !hasEventFailure) {
             return new AdminIdempotencyService.RecoveryResult<>(status, null);
         }
+        var missingResponseStatus = failed ? status : AdminIdempotencyService.RecoveryStatus.UNKNOWN;
         try {
             T response = objectMapper.readValue(record.getResponseJson(), responseType);
-            return new AdminIdempotencyService.RecoveryResult<>(response == null
-                    ? AdminIdempotencyService.RecoveryStatus.UNKNOWN : status, response);
+            return new AdminIdempotencyService.RecoveryResult<>(response == null ? missingResponseStatus : status, response);
         } catch (JsonProcessingException ex) {
-            return new AdminIdempotencyService.RecoveryResult<>(AdminIdempotencyService.RecoveryStatus.UNKNOWN, null);
+            return new AdminIdempotencyService.RecoveryResult<>(missingResponseStatus, null);
         }
     }
 
