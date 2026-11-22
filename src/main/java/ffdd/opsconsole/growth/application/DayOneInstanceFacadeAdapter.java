@@ -29,14 +29,6 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
     private static final DateTimeFormatter INSTANCE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
     private static final int DEFAULT_ELIGIBILITY_HOURS = 72;
     private static final int FULL_REWARD_HOURS = 24;
-    private static final java.util.Set<String> ACCOUNT_PHONE_CODES = java.util.Set.of(
-            "bind_mobile","bind_phone","bind_phone_number","verify_mobile","verify_phone","verify_phone_number");
-    private static final java.util.Set<String> ACCOUNT_PHONE_ROUTES = java.util.Set.of(
-            "/pages/me/profile","/pages/me/security","/me/profile","/me/security");
-    private static final java.util.regex.Pattern PHONE = java.util.regex.Pattern.compile(
-            "(?iu)(?:^|[\\s_/-])(?:(?:phone|mobile|smartphone)(?:[\\s_/-]|$)|iphone(?=\\d|[\\s_/-]|$))|手机|手機|điện thoại");
-    private static final java.util.regex.Pattern PHONE_ACTION = java.util.regex.Pattern.compile(
-            "(?iu)connect|calibrat|activat|bind|buy|purchas|连接|接入|校准|激活|开启|启用|绑定|购买|kết nối|hiệu chuẩn|hiệu chỉnh|kích hoạt|mua|liên kết");
     private final DayOneInstanceMapper mapper;
     private final GrowthRhythmFacade growthRhythmFacade;
 
@@ -57,7 +49,6 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
 
         var definitions = mapper.lockActiveDayOneDefinitions();
         List<Long> activeDefinitionIds = definitions.stream()
-                .filter(mission -> !"H5".equals(user.surface()) || availableOnWeb(mission))
                 .map(DayOneInstanceMapper.DayOneMission::id).toList();
         var eligibleIds = java.util.Set.copyOf(activeDefinitionIds);
         int activeDefinitionCount = activeDefinitionIds.size();
@@ -118,14 +109,6 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
         if (raw == null || !raw.trim().matches("^[0-9]{1,3}$")) return DEFAULT_ELIGIBILITY_HOURS;
         int parsed = Integer.parseInt(raw.trim());
         return parsed >= 24 && parsed <= 720 ? parsed : DEFAULT_ELIGIBILITY_HOURS;
-    }
-
-    private boolean availableOnWeb(DayOneInstanceMapper.DayOneMission mission) {
-        String route = mission.route() == null ? "" : mission.route().split("[?#]", 2)[0];
-        if (route.matches("/(?:pages/)?(?:onboarding/(?:connect|estimator)|entry-surfaces/(?:index|signed|h5|white))")) return false;
-        if (ACCOUNT_PHONE_CODES.contains(mission.code().toLowerCase(Locale.ROOT)) || ACCOUNT_PHONE_ROUTES.contains(route)) return true;
-        String label = mission.code() + " " + mission.name();
-        return !(PHONE.matcher(label).find() && PHONE_ACTION.matcher(label).find());
     }
 
     private Map<Long, List<DayOneDefinitionBinding>> groupItems(List<DayOneDefinitionBinding> bindings) {
