@@ -830,6 +830,17 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             """)
     List<ProductStock> findPurchasableProducts(@Param("productNos") List<String> productNos);
 
+    @Select("""
+            SELECT p.product_no FROM nx_product p
+             WHERE p.product_no=#{productNo} AND p.is_deleted=0
+               AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
+               AND COALESCE(p.store_visible,1)=1 AND p.price_usdt>0
+               AND UPPER(p.product_type) IN ('DEVICE','SERVER')
+               AND p.inventory_mode='FINITE' AND p.stock<=0
+             LIMIT 1
+            """)
+    String findOutOfStockStorefrontProductNo(@Param("productNo") String productNo);
+
     /** Store detail observation may read an exhausted SKU; it must not inherit purchase stock gates. */
     @Select("""
             SELECT p.id

@@ -1120,9 +1120,15 @@ public class AppCanonicalBoundaryService {
                     batch == null ? "PURCHASE_ELIGIBILITY_UNAVAILABLE" : batch.getMessage());
         }
         PurchaseEligibilityDecision decision = batch.getData() == null ? null : batch.getData().get(normalized);
-        if (decision == null) return ApiResult.fail(404, "PRODUCT_NOT_AVAILABLE");
         boolean productionShaped = !fundsSandboxProfileGuard.isLocalSandboxEnabled();
         String runId = productionShaped ? null : commerceAcceptanceRun.requireRunId();
+        if (decision == null) {
+            String outOfStockProductNo = productionShaped
+                    ? mapper.findOutOfStockStorefrontProductNo(normalized)
+                    : commerceAcceptanceSandboxMapper.findOutOfStockStorefrontProductNo(runId, normalized);
+            return normalized.equals(outOfStockProductNo) ? ApiResult.fail(409, "PRODUCT_OUT_OF_STOCK")
+                    : ApiResult.fail(404, "PRODUCT_NOT_AVAILABLE");
+        }
         return ApiResult.ok(linked("productNo", decision.productNo(), "eligible", decision.eligible(),
                 "decisionCode", decision.decisionCode(),
                 "policies", decision.policies(),

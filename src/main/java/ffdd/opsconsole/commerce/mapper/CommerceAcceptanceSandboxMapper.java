@@ -182,6 +182,19 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
             @Param("runId") String runId, @Param("productNos") List<String> productNos);
 
     @Select("""
+            SELECT c.product_no FROM nx_commerce_sandbox_catalog c
+              JOIN nx_product p ON p.id=c.product_id AND p.product_no=c.product_no
+             WHERE c.run_id=#{runId} AND c.product_no=#{productNo} AND c.is_deleted=0
+               AND c.source='mock' AND c.source_environment='SANDBOX' AND c.price_usdt>0
+               AND UPPER(c.device_type) IN ('DEVICE','SERVER')
+               AND c.inventory_mode='FINITE' AND c.stock<=0
+               AND p.is_deleted=0 AND p.store_visible=1 AND p.price_usdt>0
+               AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
+             LIMIT 1
+            """)
+    String findOutOfStockStorefrontProductNo(@Param("runId") String runId, @Param("productNo") String productNo);
+
+    @Select("""
             SELECT c.product_id productId,p.product_no productNo,p.name,p.tier,p.price_usdt priceUsdt,c.stock,c.sold_count sold,
                    c.gpu_model gpuModel,c.vram_total_gb vramTotalGb,c.hashrate,c.daily_usdt dailyUsdt,c.daily_nex dailyNex,
                    c.tagline,c.badge,c.unlock_phase unlockPhase,c.version,c.updated_at updatedAt,
