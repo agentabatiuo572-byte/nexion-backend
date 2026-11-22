@@ -823,9 +823,11 @@ public class AppGrowthEngagementService {
         String scope = switch (operation) {
             case "join" -> "APP:EVENT_JOIN:USER:" + userId;
             case "claim" -> "APP:EVENT_CLAIM:USER:" + userId;
+            case "reminder" -> H4EventEngine.reminderCommandScope(userId);
             default -> throw new BizException(422, "EVENT_COMMAND_OPERATION_UNSUPPORTED");
         };
-        var receipt = idempotencyService.recoveryResult(scope, idempotencyKey, sha256(code), JsonNode.class);
+        String requestHash = "reminder".equals(operation) ? code : sha256(code);
+        var receipt = idempotencyService.recoveryResult(scope, idempotencyKey, requestHash, JsonNode.class);
         if ("claim".equals(operation)) {
             receipt = eventClaimReceipt(userId, code, idempotencyKey, receipt);
         }
