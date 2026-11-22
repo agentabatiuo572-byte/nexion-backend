@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.application;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
@@ -31,6 +32,8 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.RecoveryResult;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.RecoveryStatus;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -810,6 +813,61 @@ public class AppGrowthEngagementService {
                     "eventId", code, "rewardType", rewardType, "rewardAmount", amount,
                     "badgeCode", "BADGE".equals(rewardType) ? reward.badgeCode() : null));
         });
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> eventCommandReceipt(
+            Long userId, String eventCode, String operation, String idempotencyKey) {
+        requireCanonicalEngagementRuntime();
+        String code = reference(eventCode, "EVENT_CODE_REQUIRED");
+        String scope = switch (operation) {
+            case "join" -> "APP:EVENT_JOIN:USER:" + userId;
+            case "claim" -> "APP:EVENT_CLAIM:USER:" + userId;
+            default -> throw new BizException(422, "EVENT_COMMAND_OPERATION_UNSUPPORTED");
+        };
+        var receipt = idempotencyService.recoveryResult(scope, idempotencyKey, sha256(code), JsonNode.class);
+        if ("claim".equals(operation)) {
+            receipt = eventClaimReceipt(userId, code, idempotencyKey, receipt);
+        }
+        return switch (receipt.status()) {
+            case NOT_FOUND -> ApiResult.fail(404, "EVENT_COMMAND_NOT_FOUND", Map.of("status", "NOT_FOUND"));
+            case PROCESSING -> ApiResult.ok(Map.of("status", "PROCESSING"));
+            case FAILED -> failedEventCommand(500, null);
+            case SUCCEEDED -> projectEventCommand(code, receipt.response());
+            default -> ApiResult.ok(Map.of("status", "UNKNOWN"));
+        };
+    }
+
+    private RecoveryResult<JsonNode> eventClaimReceipt(Long userId, String eventCode, String key,
+            RecoveryResult<JsonNode> legacy) {
+        // A rule may have been added since the original claim. Recover either write scope.
+        var managed = idempotencyService.recoveryResult("H4_EVENT:" + userId + ":" + eventCode,
+                key, eventCode, JsonNode.class);
+        if (legacy.status() == RecoveryStatus.NOT_FOUND) return managed;
+        if (managed.status() == RecoveryStatus.NOT_FOUND || managed.status() == RecoveryStatus.MISMATCH) return legacy;
+        if (legacy.status() == RecoveryStatus.MISMATCH) return managed;
+        return new RecoveryResult<>(RecoveryStatus.UNKNOWN, null);
+    }
+
+    private ApiResult<Map<String, Object>> projectEventCommand(String eventCode, JsonNode saved) {
+        JsonNode code = saved.path("code");
+        if (!code.isIntegralNumber() || !code.canConvertToInt()) {
+            return ApiResult.ok(Map.of("status", "UNKNOWN"));
+        }
+        int savedCode = code.intValue();
+        if (savedCode != 0) return failedEventCommand(savedCode, saved.path("message").textValue());
+        JsonNode result = saved.path("data");
+        if (!eventCode.equals(result.path("eventId").textValue())) {
+            return ApiResult.ok(Map.of("status", "UNKNOWN"));
+        }
+        return ApiResult.ok(Map.of("status", "SUCCEEDED", "result", result));
+    }
+
+    private ApiResult<Map<String, Object>> failedEventCommand(int code, String reason) {
+        int status = code >= 400 && code <= 599 ? code : 500;
+        String message = reason != null && reason.matches("[A-Z][A-Z0-9_]{0,127}")
+                ? reason : "EVENT_COMMAND_FAILED";
+        return ApiResult.ok(Map.of("status", "FAILED", "error", Map.of("code", status, "message", message)));
     }
 
     @Transactional(rollbackFor = Exception.class)
