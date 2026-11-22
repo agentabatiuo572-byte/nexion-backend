@@ -98,7 +98,7 @@ public interface NativePushMapper {
           AND ((i.provider='FCM' AND i.platform='android') OR (i.provider='APNS' AND i.platform='ios' AND i.apns_topic=#{testTopic}))
         JOIN nx_user u ON u.id=n.user_id AND u.is_deleted=0 AND u.status='ACTIVE' AND u.sandbox=#{sandbox}
         LEFT JOIN nx_user_preference p ON p.user_id=u.id AND p.is_deleted=0
-        WHERE cutover.id=2 AND n.biz_no LIKE 'NOVA-%' AND n.push_status='DELIVERED' AND n.is_deleted=0
+        WHERE cutover.id=2 AND n.biz_no LIKE 'NOVA-%' AND n.push_status IN ('DELIVERED','READ') AND n.is_deleted=0
           AND (n.cta_href IS NULL OR BINARY n.cta_href IN ('','NONE','/team','/earn'))
           AND n.created_at>=i.bound_at AND n.created_at>DATE_SUB(NOW(6),INTERVAL 24 HOUR)
           AND COALESCE(p.notify_system,1)=1
