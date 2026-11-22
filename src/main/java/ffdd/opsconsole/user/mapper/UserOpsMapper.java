@@ -176,6 +176,25 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     int invalidateOpenSecurityOtpChallenges(@Param("userId") Long userId);
 
+    @Select("""
+            SELECT #{cooldownSeconds} - TIMESTAMPDIFF(SECOND, created_at, NOW())
+              FROM nx_user_otp_challenge
+             WHERE user_id=#{userId} AND challenge_no LIKE 'SEC2FA-%' AND is_deleted=0
+               AND created_at>DATE_SUB(NOW(), INTERVAL #{cooldownSeconds} SECOND)
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+            """)
+    Integer securityOtpRetryAfterSeconds(@Param("userId") Long userId,
+            @Param("cooldownSeconds") int cooldownSeconds);
+
+    @Update("""
+            UPDATE nx_user_otp_challenge
+               SET created_at=NOW(), updated_at=NOW(), expires_at=DATE_ADD(NOW(), INTERVAL #{ttlMinutes} MINUTE)
+             WHERE user_id=#{userId} AND challenge_no=#{challengeNo}
+            """)
+    void markSecurityOtpChallengeSent(@Param("userId") Long userId, @Param("challengeNo") String challengeNo,
+            @Param("ttlMinutes") int ttlMinutes);
+
     @Update("""
             UPDATE nx_user_otp_challenge
                SET consumed_at=NOW(),attempts=attempts+1,updated_at=NOW()

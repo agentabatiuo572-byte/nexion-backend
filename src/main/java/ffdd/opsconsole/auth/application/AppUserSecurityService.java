@@ -281,6 +281,11 @@ public class AppUserSecurityService {
                 user.getCountryCode(), user.getPhone())) {
             throw new PreWriteRejection(422, "USER_PHONE_INVALID");
         }
+        int cooldownSeconds = AppOtpPolicy.sendCooldownSeconds(configFacade);
+        Integer retryAfterSeconds = userMapper.securityOtpRetryAfterSeconds(userId, cooldownSeconds);
+        if (retryAfterSeconds != null) {
+            throw new TwoFactorChallengeCooldown(retryAfterSeconds);
+        }
         if (!otpDeliveryService.available(user.getCountryCode())) {
             throw new PreWriteRejection(503, "USER_OTP_DELIVERY_UNAVAILABLE");
         }
@@ -300,13 +305,14 @@ public class AppUserSecurityService {
             otpDeliveryService.deliver(user.getCountryCode(), user.getPhone(), challengeNo, code,
                     TWO_FACTOR_OTP_TTL_MINUTES, InterfaceLanguages.baseCode(user.getLanguage()));
         } catch (RuntimeException ex) {
-            userMapper.invalidateOpenSecurityOtpChallenges(userId);
-            throw new PreWriteRejection(503, "USER_OTP_DELIVERY_UNAVAILABLE");
+            throw new BizException(503, "USER_OTP_DELIVERY_UNAVAILABLE");
         }
+        // Start the resend window after delivery accepts the challenge.
+        userMapper.markSecurityOtpChallengeSent(userId, challengeNo, TWO_FACTOR_OTP_TTL_MINUTES);
         recordRequired(userId, "USER_TWO_FACTOR_CHALLENGE_SENT", "USER_SECURITY", String.valueOf(userId),
                 Map.of("targetEnabled", request.enabled(), "challengeNo", shortId(challengeNo)));
         return Map.of("challengeNo", challengeNo, "expiresInSeconds", TWO_FACTOR_OTP_TTL_MINUTES * 60,
-                "phoneMasked", maskPhone(user.getPhone()));
+                "phoneMasked", maskPhone(user.getPhone()), "resendAfterSeconds", cooldownSeconds);
     }
 
     @Transactional(noRollbackFor = PreWriteRejection.class)
@@ -532,9 +538,22 @@ public class AppUserSecurityService {
      * subtype preserves the verification counter/audit (or a successful guard clear) while an
      * audit/outbox failure after a real mutation still rolls the whole transaction back.
      */
-    static final class PreWriteRejection extends BizException {
+    static class PreWriteRejection extends BizException {
         PreWriteRejection(int code, String message) {
             super(code, message);
+        }
+    }
+
+    public static final class TwoFactorChallengeCooldown extends PreWriteRejection {
+        private final int retryAfterSeconds;
+
+        TwoFactorChallengeCooldown(int retryAfterSeconds) {
+            super(429, "USER_OTP_SEND_RATE_LIMITED");
+            this.retryAfterSeconds = retryAfterSeconds;
+        }
+
+        public int retryAfterSeconds() {
+            return retryAfterSeconds;
         }
     }
 }
