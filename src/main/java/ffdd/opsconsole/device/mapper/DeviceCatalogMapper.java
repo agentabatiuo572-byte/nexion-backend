@@ -245,6 +245,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               name VARCHAR(128) NOT NULL,
               tier VARCHAR(32) DEFAULT NULL,
               tagline VARCHAR(255) DEFAULT NULL,
+              tagline_translations_json JSON NULL,
               badge VARCHAR(64) DEFAULT NULL,
               gpu VARCHAR(128) DEFAULT NULL,
               vram VARCHAR(64) DEFAULT NULL,
@@ -1893,6 +1894,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     int archiveGenerationGate(@Param("skuId") String skuId, @Param("now") LocalDateTime now);
 
+    @Select("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_admin_device_sku' AND column_name='tagline_translations_json'")
+    int countSkuTaglineTranslationsColumn();
+    @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN tagline_translations_json JSON NULL AFTER tagline")
+    void addSkuTaglineTranslationsColumn();
+    @Select("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_product' AND column_name='tagline_translations_json'")
+    int countProductTaglineTranslationsColumn();
+    @Update("ALTER TABLE nx_product ADD COLUMN tagline_translations_json JSON NULL AFTER tagline")
+    void addProductTaglineTranslationsColumn();
     @Select("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_admin_device_sku' AND column_name='spec_document_title'")
     int countSkuDocumentTitleColumn();
     @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN spec_document_title VARCHAR(200) DEFAULT NULL")
@@ -1901,6 +1910,27 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     int countSkuDocumentUrlColumn();
     @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN spec_document_url VARCHAR(2048) DEFAULT NULL")
     void addSkuDocumentUrlColumn();
+
+    @Select("SELECT tagline_translations_json FROM nx_product WHERE product_no=#{skuId} AND is_deleted=0 LIMIT 1")
+    String findTaglineTranslations(@Param("skuId") String skuId);
+
+    @Select("""
+            <script>
+            SELECT p.product_no AS skuId, p.tagline_translations_json AS taglineTranslationsJson
+              FROM nx_product p
+             WHERE p.is_deleted=0 AND p.product_no IN
+             <foreach collection="skuIds" item="skuId" open="(" separator="," close=")">#{skuId}</foreach>
+            </script>
+            """)
+    List<SkuTaglineTranslations> findTaglineTranslationsBySkus(@Param("skuIds") List<String> skuIds);
+
+    @Update("UPDATE nx_product SET tagline_translations_json=CAST(#{json} AS JSON) WHERE product_no=#{skuId} AND is_deleted=0")
+    int updateProductTaglineTranslations(@Param("skuId") String skuId, @Param("json") String json);
+
+    @Update("UPDATE nx_admin_device_sku SET tagline_translations_json=CAST(#{json} AS JSON) WHERE sku_id=#{skuId} AND is_deleted=0")
+    int updateSkuTaglineTranslations(@Param("skuId") String skuId, @Param("json") String json);
+
+    record SkuTaglineTranslations(String skuId, String taglineTranslationsJson) { }
 
     record SkuRow(
             String skuId,

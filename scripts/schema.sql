@@ -1325,6 +1325,7 @@ CREATE TABLE IF NOT EXISTS nx_product (
   detail_image_urls TEXT NULL,
   badge VARCHAR(64) NULL,
   tagline VARCHAR(255) NULL,
+  tagline_translations_json JSON NULL,
   store_status VARCHAR(32) NULL,
   store_visible TINYINT NOT NULL DEFAULT 1,
   sort_order INT NOT NULL DEFAULT 0,
@@ -1367,6 +1368,10 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'tagline') = 0,
   'ALTER TABLE nx_product ADD COLUMN tagline VARCHAR(255) NULL AFTER badge',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'tagline_translations_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN tagline_translations_json JSON NULL AFTER tagline',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'store_status') = 0,
@@ -3289,6 +3294,7 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   name VARCHAR(128) NOT NULL,
   tier VARCHAR(32) NULL,
   tagline VARCHAR(255) NULL,
+  tagline_translations_json JSON NULL,
   badge VARCHAR(64) NULL,
   gpu VARCHAR(128) NULL,
   vram VARCHAR(64) NULL,
@@ -3339,6 +3345,10 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   KEY idx_admin_device_sku_status (status,is_deleted),
   KEY idx_admin_device_sku_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_admin_device_sku' AND COLUMN_NAME = 'tagline_translations_json') = 0,
+  'ALTER TABLE nx_admin_device_sku ADD COLUMN tagline_translations_json JSON NULL AFTER tagline',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- Gen-2 uses the same server-owned structured gate in read, quote and every
 -- order/replace command. Preserve any rule already edited in E1.

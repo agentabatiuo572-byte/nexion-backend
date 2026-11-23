@@ -558,6 +558,7 @@ $migrations = @(
   # B66: publish the UVT hero for the nexNarrative version that still carries the July seed.
   # Runs last so an operator-published version (or the fresh-install draft) stays authoritative.
   (Join-Path $root "scripts\migrations\20261122_b66_uvt_trust_hero.sql")
+  (Join-Path $root "scripts\migrations\20261123_b70_product_tagline_translations.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

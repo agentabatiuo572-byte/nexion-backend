@@ -14,6 +14,8 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.i18n.AppDisplayText;
+import ffdd.opsconsole.shared.i18n.AuthoringWhitespace;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.common.api.OpsErrorCode;
@@ -417,6 +419,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return e1IdempotentHashed(scope, idempotencyKey, replay.requestHash(), () -> {
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         requireSkuDisplayText(incomingRequest);
+        requireSkuTaglineTranslations(incomingRequest == null ? null : incomingRequest.taglineTranslations());
         String skuId = normalizeSkuId(writeRequest.skuId(), writeRequest.name());
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
@@ -484,6 +487,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return e1IdempotentHashed(scope, idempotencyKey, replay.requestHash(), () -> {
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         requireSkuDisplayText(incomingRequest);
+        requireSkuTaglineTranslations(incomingRequest == null ? null : incomingRequest.taglineTranslations());
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_sku", skuId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -3736,6 +3740,27 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         AppDisplayText.requireNoHan("specDocumentTitle", request.specDocumentTitle());
     }
 
+    private static void requireSkuTaglineTranslations(JsonNode translations) {
+        if (translations == null) return;
+        if (!translations.isObject()) throw new BizException(422, "SKU_TAGLINE_TRANSLATIONS_INVALID");
+        var fields = translations.fields();
+        while (fields.hasNext()) {
+            Map.Entry<String, JsonNode> entry = fields.next();
+            String code = entry.getKey();
+            if (!StringUtils.hasText(code) || !InterfaceLanguages.CODES.contains(code) || "en".equals(code)) {
+                throw new BizException(422, "SKU_TAGLINE_TRANSLATIONS_INVALID");
+            }
+            JsonNode raw = entry.getValue();
+            if (!raw.isTextual()) throw new BizException(422, "SKU_TAGLINE_TRANSLATIONS_INVALID");
+            String value = AuthoringWhitespace.trim(raw.textValue());
+            if (AuthoringWhitespace.isBlank(value)) continue;
+            if (value.codePointCount(0, value.length()) > 255) {
+                throw new BizException(422, "SKU_TAGLINE_TRANSLATION_TOO_LONG");
+            }
+            if (!"zh".equals(code)) AppDisplayText.requireNoHan("taglineTranslations." + code, value);
+        }
+    }
+
     private ApiResult<DeviceSkuView> requireSkuCommand(String idempotencyKey, DeviceSkuUpsertRequest request) {
         ApiResult<Map<String, Object>> command = requireE1Command(idempotencyKey, request == null ? null : request.reason());
         if (command != null) {
@@ -3926,7 +3951,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.reason(),
                 operator(request.operator()),
                 inventoryMode.name(),
-                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode());
+                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode(), request.taglineTranslations());
     }
 
     private DeviceSkuUpsertRequest withTrialEligible(DeviceSkuUpsertRequest request, boolean trialEligible) {
@@ -3941,7 +3966,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.lifecycle(), request.supersededBy(), request.tradeinDiscount(), request.unlockPhase(),
                 request.purchaseGate(), request.imageAssetId(), request.imageObjectKey(), request.imagePreviewUrl(),
                 request.tag(), request.status(), request.reason(), request.operator(), request.inventoryMode(),
-                trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode());
+                trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode(), request.taglineTranslations());
     }
 
     private ProductInventoryMode inventoryMode(String raw) {
@@ -5687,6 +5712,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
             payload = String.valueOf(request);
         }
+        if (containsSkuWithNullTranslations(request)) {
+            // Receipts created before B70 have no such property; rebuild only the
+            // compatibility payload and leave new-field hashes untouched.
+            payload = payload.replace(",\"taglineTranslations\":null", "");
+        }
         return e1Hash(scope, resourceId, payload);
     }
 
@@ -5700,7 +5730,23 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             // The existing PUT receipt must remain recoverable when older clients omit the new revision.
             payload = payload.substring(0, payload.length() - ", expectedRevision=null]".length()) + "]";
         }
+        if (containsSkuWithNullTranslations(request)) {
+            // Older E1 requests have no such field; keep the original Map order
+            // and old DTO string, removing only this field from the compatibility payload.
+            payload = payload.replace(", taglineTranslations=null]", "]");
+        }
         return e1Hash(scope, resourceId, payload);
+    }
+
+    private static boolean containsSkuWithNullTranslations(Object value) {
+        if (value instanceof DeviceSkuUpsertRequest sku) return sku.taglineTranslations() == null;
+        if (value instanceof Map<?, ?> map) {
+            return map.values().stream().anyMatch(OpsDeviceService::containsSkuWithNullTranslations);
+        }
+        if (value instanceof Iterable<?> values) {
+            for (Object item : values) if (containsSkuWithNullTranslations(item)) return true;
+        }
+        return false;
     }
 
     private String e1Hash(String scope, String resourceId, String payload) {
@@ -6057,6 +6103,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         boolean create = "e1_sku_create".equals(command.op());
         DeviceSkuUpsertRequest input = buildSkuUpsertRequest(params, null, null);
         requireSkuDisplayText(input);
+        requireSkuTaglineTranslations(input.taglineTranslations());
         String skuId = create ? normalizeSkuId(input.skuId(), input.name()) : hardwarePolicyTarget(input.skuId());
         DeviceSkuView before = catalogRepository.findSku(skuId).orElse(null);
         if (create && before != null) throw new BizException(422, "SKU_ALREADY_EXISTS");
@@ -6168,7 +6215,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 str(p, "unlockPhase"), buildPurchaseGate(p), str(p, "imageAssetId"),
                 str(p, "imageObjectKey"), str(p, "imagePreviewUrl"), str(p, "tag"),
                 str(p, "status"), reason, operator, str(p, "inventoryMode"),
-                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"), poolCodesParam(p),decimal(p,"monthlyTargetUsdt"),decimal(p,"monthlyTargetBandPct"),boolVal(p,"clearMonthlyTarget"),str(p,"seriesCode"));
+                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"), poolCodesParam(p),decimal(p,"monthlyTargetUsdt"),decimal(p,"monthlyTargetBandPct"),boolVal(p,"clearMonthlyTarget"),str(p,"seriesCode"),taglineTranslationsParam(p));
+    }
+
+    private static JsonNode taglineTranslationsParam(Map<String,Object> params) {
+        if(!params.containsKey("taglineTranslations")) return null;
+        return E1_AUDIT_JSON.valueToTree(params.get("taglineTranslations"));
     }
 
     private static List<String> poolCodesParam(Map<String,Object> params) {

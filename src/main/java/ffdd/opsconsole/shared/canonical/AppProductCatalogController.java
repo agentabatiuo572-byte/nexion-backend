@@ -5,6 +5,7 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -12,18 +13,33 @@ import org.springframework.web.bind.annotation.RestController;
 public class AppProductCatalogController {
     private final AppProductCatalogService service;
 
-    @GetMapping("/api/store/catalog")
+    /** Keeps the existing Java call shape for in-process callers and tests. */
     public ApiResult<Map<String, Object>> catalog(Authentication authentication) {
+        Long userId = authenticatedUserId(authentication);
+        if (userId == null) return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        return service.catalog(userId);
+    }
+
+    @GetMapping("/api/store/catalog")
+    public ApiResult<Map<String, Object>> catalog(
+            Authentication authentication,
+            @RequestParam(value = "locale", required = false) String locale) {
+        Long userId = authenticatedUserId(authentication);
+        if (userId == null) return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        return service.catalog(userId, locale);
+    }
+
+    private Long authenticatedUserId(Authentication authentication) {
         if (authentication == null
                 || !authentication.isAuthenticated()
                 || !(authentication.getDetails() instanceof Map<?, ?> details)
                 || !"USER".equals(String.valueOf(details.get("subjectType")))) {
-            return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+            return null;
         }
         try {
-            return service.catalog(Long.valueOf(String.valueOf(authentication.getPrincipal())));
+            return Long.valueOf(String.valueOf(authentication.getPrincipal()));
         } catch (NumberFormatException ex) {
-            return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+            return null;
         }
     }
 }

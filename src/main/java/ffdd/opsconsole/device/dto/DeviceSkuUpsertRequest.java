@@ -49,7 +49,9 @@ public record DeviceSkuUpsertRequest(
         String reason,
         String operator,
         String inventoryMode,
-        Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, Boolean clearMonthlyTarget, String seriesCode) {
+        Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, Boolean clearMonthlyTarget, String seriesCode,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        com.fasterxml.jackson.databind.JsonNode taglineTranslations) {
     public DeviceSkuUpsertRequest(
         String skuId,
         String name,
@@ -96,7 +98,7 @@ public record DeviceSkuUpsertRequest(
         String operator,
         String inventoryMode,
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, Boolean clearMonthlyTarget) {
-        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, reason, operator, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl, computePoints, allowedPoolCodes, monthlyTargetUsdt, monthlyTargetBandPct, clearMonthlyTarget, null);
+        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, reason, operator, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl, computePoints, allowedPoolCodes, monthlyTargetUsdt, monthlyTargetBandPct, clearMonthlyTarget, null, null);
     }
 
     @com.fasterxml.jackson.annotation.JsonAnySetter
@@ -157,6 +159,6 @@ public record DeviceSkuUpsertRequest(
                 allowedPoolCodes,
                 target,
                 band,
-                clearMonthlyTarget, series);
+                clearMonthlyTarget, series, taglineTranslations);
     }
 }

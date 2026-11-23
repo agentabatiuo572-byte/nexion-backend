@@ -32,6 +32,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
 
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer activeUserEnvironment(@Param("userId") Long userId);
+    @Select("SELECT language FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    String userLanguage(@Param("userId") Long userId);
 
     record ProductArtwork(String sku, String seriesCode, String assetId, String objectKey) {}
 
@@ -314,6 +316,18 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
              ORDER BY p.store_featured DESC,p.sort_order ASC,p.id ASC
             """)
     List<CatalogTargetProduct> listPurchasableCatalogTargets();
+
+    @Select("""
+            <script>
+            SELECT p.product_no AS productNo, p.tagline_translations_json AS taglineTranslationsJson
+              FROM nx_product p
+             WHERE p.is_deleted=0 AND p.product_no IN
+             <foreach collection="productNos" item="productNo" open="(" separator="," close=")">#{productNo}</foreach>
+            </script>
+            """)
+    List<TaglineTranslations> listTaglineTranslations(@Param("productNos") List<String> productNos);
+
+    record TaglineTranslations(String productNo, String taglineTranslationsJson) { }
 
     @Select("""
             SELECT share_yield_min AS minPct, share_yield_max AS maxPct

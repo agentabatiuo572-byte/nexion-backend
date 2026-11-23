@@ -30,10 +30,13 @@ import ffdd.opsconsole.device.dto.DeviceTaskQueryRequest;
 import ffdd.opsconsole.device.dto.DeviceTaskUpsertRequest;
 import ffdd.opsconsole.device.mapper.DeviceCatalogMapper;
 import ffdd.opsconsole.shared.api.PageResult;
+import ffdd.opsconsole.shared.i18n.ProductTaglines;
+import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -67,6 +70,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         mapper.createSkuTable();
         if (mapper.countSkuDocumentTitleColumn() == 0) mapper.addSkuDocumentTitleColumn();
         if (mapper.countSkuDocumentUrlColumn() == 0) mapper.addSkuDocumentUrlColumn();
+        if (mapper.countSkuTaglineTranslationsColumn() == 0) mapper.addSkuTaglineTranslationsColumn();
+        if (mapper.countProductTaglineTranslationsColumn() == 0) mapper.addProductTaglineTranslationsColumn();
         if (mapper.productUpdatedAtPrecision() < 6) {
             mapper.widenProductUpdatedAtPrecision();
         }
@@ -128,9 +133,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
         long offset = (pageNum - 1) * pageSize;
         long total = mapper.countSkus(status, keyword);
-        List<DeviceSkuView> records = mapper.pageSkus(status, keyword, pageSize, offset).stream()
-                .map(this::skuView)
-                .toList();
+        List<DeviceSkuView> records = skuViews(mapper.pageSkus(status, keyword, pageSize, offset));
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 
@@ -140,8 +143,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         long pageNum = normalizePage(request == null ? null : request.pageNum());
         long pageSize = normalizeSize(request == null ? null : request.pageSize());
         long total = mapper.countRecommendableSkus(keyword);
-        List<DeviceSkuView> records = mapper.pageRecommendableSkus(keyword, pageSize, (pageNum - 1) * pageSize)
-                .stream().map(this::skuView).toList();
+        List<DeviceSkuView> records = skuViews(mapper.pageRecommendableSkus(keyword, pageSize, (pageNum - 1) * pageSize));
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 
@@ -152,9 +154,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
 
     @Override
     public List<DeviceSkuView> findSkusByAiUnlocks(String taskId) {
-        return mapper.findSkusByAiUnlocks(taskId).stream()
-                .map(this::skuView)
-                .toList();
+        return skuViews(mapper.findSkusByAiUnlocks(taskId));
     }
 
     @Override
@@ -162,6 +162,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         DeviceCatalogMapper.SkuWrite write = skuWrite(skuId, request, now, now);
         mapper.insertSku(write);
         mapper.upsertSkuMetadata(write);
+        persistTaglineTranslations(skuId, request.taglineTranslations());
         return findSku(skuId).orElseThrow();
     }
 
@@ -172,6 +173,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         int updated = mapper.updateSku(write, expectedUpdatedAt);
         if (updated > 0) {
             mapper.upsertSkuMetadata(write);
+            persistTaglineTranslations(skuId, request.taglineTranslations());
         }
         return updated == 0 ? Optional.empty() : findSku(skuId);
     }
@@ -642,7 +644,31 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
         return mapper.archiveGenerationGate(skuId, now) > 0;
     }
 
+    private List<DeviceSkuView> skuViews(List<DeviceCatalogMapper.SkuRow> rows) {
+        if (rows == null || rows.isEmpty()) return List.of();
+        Map<String, String> translations = new java.util.HashMap<>();
+        List<DeviceCatalogMapper.SkuTaglineTranslations> stored = mapper.findTaglineTranslationsBySkus(
+                rows.stream().map(DeviceCatalogMapper.SkuRow::skuId).toList());
+        if (stored != null) {
+            for (DeviceCatalogMapper.SkuTaglineTranslations row : stored) {
+                translations.put(row.skuId(), row.taglineTranslationsJson());
+            }
+        }
+        return rows.stream().map(row -> skuView(row, translations.get(row.skuId()))).toList();
+    }
+
     private DeviceSkuView skuView(DeviceCatalogMapper.SkuRow row) {
+        return skuView(row, mapper.findTaglineTranslations(row.skuId()));
+    }
+
+    private void persistTaglineTranslations(String skuId, JsonNode translations) {
+        if (translations == null) return;
+        String json = ProductTaglines.jsonFromNode(translations);
+        mapper.updateProductTaglineTranslations(skuId, json);
+        mapper.updateSkuTaglineTranslations(skuId, json);
+    }
+
+    private DeviceSkuView skuView(DeviceCatalogMapper.SkuRow row, String taglineTranslationsJson) {
         var gate = purchaseGate(row.purchaseGateJson());
         Long held = gate != null && gate.quotaCap() != null && gate.quotaSold() != null ? row.purchaseQuotaHeld() : null;
         Long remaining = held == null ? null : Math.max(0, gate.quotaCap() - gate.quotaSold() - held);
@@ -698,7 +724,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.monthlyTargetUsdt(),row.monthlyTargetBandPct(),
                 row.monthlyTargetUsdt()==null?null:ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(row.monthlyTargetUsdt()),
                 row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMin(),
-                row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMax(), row.seriesCode(), row.seriesLocked(), held, remaining).withTaskPolicy(simulationPolicies.productView(row.skuId()));
+                row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMax(), row.seriesCode(), row.seriesLocked(), held, remaining,
+                StringUtils.hasText(taglineTranslationsJson) ? ProductTaglines.read(taglineTranslationsJson) : null).withTaskPolicy(simulationPolicies.productView(row.skuId()));
     }
 
     private DeviceCatalogMapper.SkuWrite skuWrite(String skuId, DeviceSkuUpsertRequest request,

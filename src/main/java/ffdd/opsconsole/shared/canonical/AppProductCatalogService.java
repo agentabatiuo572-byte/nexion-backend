@@ -10,6 +10,9 @@ import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.commerce.application.CommerceAcceptanceRun;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
+import ffdd.opsconsole.shared.i18n.ProductTaglines;
+import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.math.BigDecimal;
 import java.net.URI;
@@ -47,18 +50,25 @@ public class AppProductCatalogService {
     private final ObjectStorageService storageService;
     private final StorefrontSkuImageService skuImageService;
     private final ffdd.opsconsole.device.application.SimulatedTaskPolicyService taskPolicies;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private PlatformExperienceConfigService platformExperience;
 
     public ApiResult<Map<String, Object>> catalog() {
-        return catalog(null);
+        return catalog(null, null);
     }
 
     public ApiResult<Map<String, Object>> catalog(Long userId) {
+        return catalog(userId, null);
+    }
+
+    public ApiResult<Map<String, Object>> catalog(Long userId, String requestedLanguage) {
+        String locale = catalogLocale(userId, requestedLanguage);
         boolean developmentRuntime = false;
         if (!developmentRuntime && fundsSandboxProfileGuard.isLocalSandboxEnabled()) {
             if (userId == null || !commerceAcceptanceSandboxMapper.isSandboxUser(userId)) {
                 return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
             }
-            return sandboxCatalog();
+            return sandboxCatalog(locale);
         }
         if (!developmentRuntime && !fundsSandboxProfileGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
@@ -74,11 +84,12 @@ public class AppProductCatalogService {
                 releaseCandidates.put(target.productNo(), target.unlockPhase());
             }
             Map<String, StorefrontProductReleasePolicy.Decision> releases = productReleasePolicy.evaluateBatch(releaseCandidates);
+            Map<String, String> taglineTranslations = taglineTranslations(targets);
             var taskLevels=taskPolicies.taskLevels(targets.stream().map(AppTradeinMapper.CatalogTargetProduct::productNo).toList());
             List<Map<String, Object>> products = new ArrayList<>();
             LocalDateTime revision = null;
             for (AppTradeinMapper.CatalogTargetProduct target : targets) {
-                var item=product(target, releases.get(target.productNo()));
+                var item=product(target, releases.get(target.productNo()), taglineTranslations.get(target.productNo()), locale);
                 item.put("taskLevels",taskLevels.get(target.productNo()));
                 products.add(item);
                 if (target.updatedAt() != null && (revision == null || target.updatedAt().isAfter(revision))) {
@@ -134,7 +145,7 @@ public class AppProductCatalogService {
                 : ApiResult.fail(403, "PRODUCT_CATALOG_DEVELOPMENT_USER_REQUIRED");
     }
 
-    private ApiResult<Map<String, Object>> sandboxCatalog() {
+    private ApiResult<Map<String, Object>> sandboxCatalog(String locale) {
         try {
             String runId = commerceAcceptanceRun.requireRunId();
             List<CommerceAcceptanceSandboxMapper.CatalogSeed> seeds = commerceAcceptanceSandboxMapper.listEligibleCatalogSeeds();
@@ -149,8 +160,11 @@ public class AppProductCatalogService {
             List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> targets = commerceAcceptanceSandboxMapper.listSandboxCatalog(runId);
             if (targets == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
             var taskLevels=taskPolicies.taskLevels(targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::productNo).toList());
+            Map<String, String> taglineTranslations = taglineTranslationsByProductNo(
+                    targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::productNo).toList());
             List<Map<String, Object>> products = targets.stream().map(target->{
-                var item=sandboxProduct(target);item.put("taskLevels",taskLevels.get(target.productNo()));return item;
+                var item=sandboxProduct(target, locale, taglineTranslations.get(target.productNo()));
+                item.put("taskLevels",taskLevels.get(target.productNo()));return item;
             }).toList();
             LocalDateTime revision = targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::updatedAt)
                     .filter(java.util.Objects::nonNull).max(LocalDateTime::compareTo).orElse(null);
@@ -164,7 +178,7 @@ public class AppProductCatalogService {
         }
     }
 
-    private Map<String, Object> sandboxProduct(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct target) {
+    private Map<String, Object> sandboxProduct(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct target, String locale, String taglineTranslationsJson) {
         return product(new AppTradeinMapper.CatalogTargetProduct(target.productNo(), target.name(), target.tier(),
                 target.priceUsdt(), target.stock(), target.productType(), 0, target.gpuModel(), target.vramTotalGb(),
                 target.hashrate(), target.dailyUsdt(), target.dailyNex(), target.tagline(), target.badge(), target.sold(),
@@ -172,12 +186,14 @@ public class AppProductCatalogService {
                 target.phoneDailyEarn(), target.phoneDailyEarnNex(), target.featuresJson(),
                 target.aiImageGenPerMin(), target.aiLlmTokensPerSec(), target.aiVideoMinPerHour(), target.aiFineTuneMins(), target.aiUnlocks(),
                 target.purchaseGateJson(), null, null, target.inventoryMode(), null, null, target.computePoints(),target.monthlyTargetUsdt(),target.monthlyTargetBandPct()),
-                productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()));
+                productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()), taglineTranslationsJson, locale);
     }
 
     private Map<String, Object> product(
             AppTradeinMapper.CatalogTargetProduct target,
-            StorefrontProductReleasePolicy.Decision release) {
+            StorefrontProductReleasePolicy.Decision release,
+            String taglineTranslationsJson,
+            String locale) {
         String productType = canonicalProductType(target == null ? null : target.deviceType(), target == null ? null : target.tier());
         if (target == null
                 || !StringUtils.hasText(target.productNo())
@@ -203,7 +219,7 @@ public class AppProductCatalogService {
         item.put("id", target.productNo());
         item.put("name", target.name());
         item.put("tier", target.tier());
-        item.put("tagline", text(target.tagline()));
+        item.put("tagline", text(ProductTaglines.resolve(target.tagline(), taglineTranslationsJson, locale)));
         String badge = nullableText(target.badge());
         item.put("badge", badge);
         item.put("badgeKind", badgeKind(badge));
@@ -270,6 +286,34 @@ public class AppProductCatalogService {
                 ? "PRODUCT_SPECS_UNAVAILABLE"
                 : outOfStock ? "PRODUCT_OUT_OF_STOCK" : null);
         return item;
+    }
+
+    private String catalogLocale(Long userId, String requestedLanguage) {
+        List<String> enabled = platformExperience == null
+                ? InterfaceLanguages.CODES : platformExperience.interfaceLanguages();
+        if (StringUtils.hasText(requestedLanguage)) {
+            String requested = InterfaceLanguages.baseCode(requestedLanguage);
+            return enabled.contains(requested) ? requested : "en";
+        }
+        String account = InterfaceLanguages.baseCode(userId == null ? null : tradeinMapper.userLanguage(userId));
+        return enabled.contains(account) ? account : "en";
+    }
+
+    private Map<String, String> taglineTranslations(List<AppTradeinMapper.CatalogTargetProduct> targets) {
+        return taglineTranslationsByProductNo(targets == null ? List.of()
+                : targets.stream().map(AppTradeinMapper.CatalogTargetProduct::productNo).toList());
+    }
+
+    private Map<String, String> taglineTranslationsByProductNo(List<String> productNos) {
+        if (productNos == null || productNos.isEmpty()) return Map.of();
+        Map<String, String> result = new LinkedHashMap<>();
+        List<AppTradeinMapper.TaglineTranslations> stored = tradeinMapper.listTaglineTranslations(productNos);
+        if (stored != null) {
+            for (AppTradeinMapper.TaglineTranslations row : stored) {
+                result.put(row.productNo(), row.taglineTranslationsJson());
+            }
+        }
+        return result;
     }
 
     /**
