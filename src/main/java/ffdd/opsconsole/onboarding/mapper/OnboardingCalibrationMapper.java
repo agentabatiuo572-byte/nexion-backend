@@ -547,6 +547,8 @@ public interface OnboardingCalibrationMapper {
                 (user_id,source_environment,run_id,installation_id,execution_installation_id,user_device_id,hardware_key,changed_at,version)
             VALUES (#{userId},#{sourceEnvironment},#{runId},#{installationId},#{installationId},#{userDeviceId},#{hardwareKey},NOW(6),1)
             ON DUPLICATE KEY UPDATE
+                recovery_key_hash=IF(installation_id=VALUES(installation_id) AND user_device_id=VALUES(user_device_id)
+                    AND (hardware_key='' OR hardware_key=VALUES(hardware_key)),recovery_key_hash,NULL),
                 changed_at=IF(installation_id=VALUES(installation_id)
                     AND (hardware_key='' OR hardware_key=VALUES(hardware_key)),changed_at,NOW(6)),
                 installation_id=VALUES(installation_id),user_device_id=VALUES(user_device_id),
@@ -558,6 +560,95 @@ public interface OnboardingCalibrationMapper {
                          @Param("sourceEnvironment") String sourceEnvironment, @Param("runId") String runId);
 
     record PhoneBindingRow(String installationId, Long userDeviceId, String hardwareKey, long changedAt, long version) { }
+
+    @Select("""
+            SELECT recovery_key_hash FROM nx_phone_binding
+             WHERE user_id=#{userId} AND source_environment=#{environment} AND run_id=#{runId}
+            """)
+    String phoneRecoveryKeyHash(@Param("userId") long userId, @Param("environment") String environment,
+                                @Param("runId") String runId);
+
+    @Update("""
+            UPDATE nx_phone_binding SET recovery_key_hash=#{hash}
+             WHERE user_id=#{userId} AND source_environment=#{environment} AND run_id=#{runId}
+               AND recovery_key_hash IS NULL AND installation_id=#{installationId}
+            """)
+    int enrollPhoneRecoveryKey(@Param("userId") long userId, @Param("environment") String environment,
+                               @Param("runId") String runId, @Param("installationId") String installationId,
+                               @Param("hash") String hash);
+
+    @Update("""
+            UPDATE nx_phone_binding
+               SET installation_id=#{installationId},execution_installation_id=#{installationId}
+             WHERE user_id=#{userId} AND source_environment=#{environment} AND run_id=#{runId}
+               AND version=#{version} AND installation_id=#{previousInstallationId}
+            """)
+    int recoverPhoneBinding(@Param("userId") long userId, @Param("environment") String environment,
+                            @Param("runId") String runId, @Param("installationId") String installationId,
+                            @Param("previousInstallationId") String previousInstallationId, @Param("version") long version);
+
+    @Insert("""
+            INSERT INTO nx_onboarding_calibration
+              (user_id,device_id,user_device_id,signal_json,derived_json,comparison_json,source,server_canonical,
+               source_environment,run_id,config_revision,row_version,idempotency_key,request_hash,activation_status,
+               activation_idempotency_key,activation_request_hash,created_at,updated_at,is_deleted)
+            SELECT previous.user_id,#{installationId},previous.user_device_id,previous.signal_json,previous.derived_json,
+                   previous.comparison_json,previous.source,previous.server_canonical,previous.source_environment,
+                   previous.run_id,previous.config_revision,previous.row_version+1,#{key},#{hash},'ACTIVE',NULL,NULL,NOW(6),NOW(6),0
+              FROM nx_onboarding_calibration AS previous
+             WHERE previous.user_id=#{userId} AND previous.device_id=#{oldInstallationId}
+               AND previous.source_environment=#{environment} AND previous.run_id=#{runId}
+               AND previous.activation_status='ACTIVE' AND previous.is_deleted=0
+            ON DUPLICATE KEY UPDATE
+                user_device_id=VALUES(user_device_id),signal_json=VALUES(signal_json),derived_json=VALUES(derived_json),
+                comparison_json=VALUES(comparison_json),source=VALUES(source),server_canonical=VALUES(server_canonical),
+                config_revision=VALUES(config_revision),row_version=nx_onboarding_calibration.row_version+1,
+                idempotency_key=VALUES(idempotency_key),request_hash=VALUES(request_hash),activation_status='ACTIVE',
+                activation_idempotency_key=NULL,activation_request_hash=NULL,updated_at=NOW(6),is_deleted=0
+            """)
+    int recoverPhoneCalibration(@Param("userId") long userId, @Param("environment") String environment,
+                                @Param("runId") String runId, @Param("oldInstallationId") String oldInstallationId,
+                                @Param("installationId") String installationId, @Param("key") String key,
+                                @Param("hash") String hash);
+
+    @Update("""
+            UPDATE nx_onboarding_calibration
+               SET activation_status='DEFERRED',user_device_id=NULL,row_version=row_version+1,updated_at=NOW(6)
+             WHERE user_id=#{userId} AND device_id=#{installationId} AND source_environment=#{environment}
+               AND run_id=#{runId} AND is_deleted=0 AND activation_status='ACTIVE'
+            """)
+    int retireRecoveredCalibration(@Param("userId") long userId, @Param("environment") String environment,
+                                   @Param("runId") String runId, @Param("installationId") String installationId);
+
+    @Select("""
+            SELECT instance_no FROM nx_user_device
+             WHERE user_id=#{userId} AND id=#{deviceId} AND source_environment=#{environment}
+               AND run_id=#{runId} AND is_deleted=0 AND source_channel='ONBOARDING'
+               AND device_type IN ('MOBILE','PHONE') AND ownership_status='OWNED'
+            """)
+    String ownedPhoneInstance(@Param("userId") long userId, @Param("environment") String environment,
+                              @Param("runId") String runId, @Param("deviceId") long deviceId);
+
+    @Select("""
+            SELECT d.instance_no FROM nx_phone_binding b JOIN nx_user_device d ON d.id=b.user_device_id
+             WHERE b.user_id=#{userId} AND b.source_environment=#{environment} AND b.run_id=#{runId}
+               AND b.installation_id=#{installationId} AND b.recovery_key_hash IS NOT NULL
+               AND d.user_id=b.user_id AND d.source_environment=b.source_environment AND d.run_id=b.run_id
+               AND d.is_deleted=0 AND d.source_channel='ONBOARDING'
+               AND UPPER(d.device_type) IN ('MOBILE','PHONE') AND d.ownership_status='OWNED'
+            """)
+    String currentRecoverablePhoneInstance(@Param("userId") long userId, @Param("environment") String environment,
+                                          @Param("runId") String runId, @Param("installationId") String installationId);
+
+    @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_phone_binding b JOIN nx_user_device d ON d.id=b.user_device_id
+              WHERE b.user_id=#{userId} AND b.source_environment=#{environment} AND b.run_id=#{runId}
+                AND b.installation_id<>#{installationId} AND b.recovery_key_hash IS NOT NULL
+                AND d.user_id=b.user_id AND d.source_environment=b.source_environment AND d.run_id=b.run_id
+                AND d.instance_no=#{instanceNo})
+            """)
+    boolean phoneInstanceBoundToOtherInstallation(@Param("userId") long userId, @Param("environment") String environment,
+            @Param("runId") String runId, @Param("installationId") String installationId, @Param("instanceNo") String instanceNo);
 
     @Select("""
         SELECT r.paused_reason FROM nx_user_device_runtime r

@@ -52,10 +52,17 @@ public class OnboardingCalibrationController {
     public ApiResult<Map<String, Object>> activate(
             @RequestBody(required = false) OnboardingCalibrationService.ActionRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(name = "X-UVEL-IOS-Recovery-Key", required = false) String recoveryKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
         return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
-                : service.activate(userId, action(request, idempotencyKey), authentication);
+                : recoveryKey == null ? service.activate(userId, action(request, idempotencyKey), authentication)
+                : service.activate(userId, action(request, idempotencyKey), authentication, recoveryKey);
+    }
+
+    public ApiResult<Map<String, Object>> activate(OnboardingCalibrationService.ActionRequest request,
+            String idempotencyKey, Authentication authentication) {
+        return activate(request, idempotencyKey, null, authentication);
     }
 
     @PostMapping("/defer")

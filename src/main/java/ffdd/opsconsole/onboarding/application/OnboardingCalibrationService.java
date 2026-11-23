@@ -151,8 +151,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         // activation command succeeds. Keeping the inventory row active here
         // would let task settlement race ahead of the new binding decision.
         if (current != null) {
-            mapper.deactivatePhoneDevice(userId, phoneInstanceNo(userId, scope, deviceId),
-                    scope.sourceEnvironment(), scope.runId());
+            deactivateCurrentCalibrationDevice(userId, scope, deviceId);
         }
         CalibrationRow saved = scope.sandbox()
                 ? mapper.findScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId())
@@ -208,6 +207,12 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> activate(Long userId, ActionRequest request, Authentication authentication) {
+        return activate(userId, request, authentication, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> activate(Long userId, ActionRequest request, Authentication authentication,
+                                                    String recoveryKey) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         if (!validAction(request) || Boolean.TRUE.equals(request.initialOnly()))
             return ApiResult.fail(422, "ONBOARDING_ACTIVATION_REQUEST_INVALID");
@@ -253,9 +258,14 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             return ApiResult.fail(rejection.getCode(), rejection.getMessage(),
                     receiptMap(replacements.reject(locked, command, rejection.getMessage())));
         }
-        Long device = bindPhoneDevice(userId, current, scope);
+        String instanceNo = permit.replacement()
+                ? phoneInstanceNo(userId, scope, deviceId) : currentPhoneInstance(userId, scope, deviceId);
+        Long device = bindPhoneDevice(userId, current, scope, instanceNo);
         if (mapper.savePhoneBinding(userId, deviceId, device, hardwareKey(current), scope.sourceEnvironment(), scope.runId()) < 1)
             throw new BizException(503, "ONBOARDING_PHONE_BIND_FAILED");
+        if (recoveryKey != null && recoveryKey.matches("[a-f0-9]{64}") && isIosCalibration(current)) {
+            mapper.enrollPhoneRecoveryKey(userId, scope.sourceEnvironment(), scope.runId(), deviceId, phoneRecoveryHash(recoveryKey));
+        }
         if (!scope.sandbox()) {
             mapper.restoreBoundPhoneRuntime(userId, device);
             // Only an explicit activation may undo a user stop; login recovery must retain it.
@@ -378,8 +388,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         }
         Long userDeviceId = current.userDeviceId();
         // The deterministic identity also finds legacy calibrations without a device link.
-        mapper.deactivatePhoneDevice(userId, phoneInstanceNo(userId, scope, deviceId),
-                scope.sourceEnvironment(), scope.runId());
+        deactivateCurrentCalibrationDevice(userId, scope, deviceId);
         int changed = scope.sandbox()
                 ? mapper.updateActivationScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId(),
                         current.rowVersion(), userDeviceId, target, key, hash)
@@ -393,14 +402,13 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 : ApiResult.ok(appProject(saved));
     }
 
-    private Long bindPhoneDevice(Long userId, CalibrationRow row, Scope scope) {
+    private Long bindPhoneDevice(Long userId, CalibrationRow row, Scope scope, String instanceNo) {
         Map<String, Object> canonical = project(row);
         int tier = number(canonical.get("tier")).intValue();
         BigDecimal tops = decimal(canonical.get("tops"));
         BigDecimal dailyUsdt = decimal(canonical.get("baseRateUsdt"));
         BigDecimal dailyNex = decimal(canonical.get("baseRateNex"));
         int memoryGb = signalMemoryGb(canonical.get("signals"));
-        String instanceNo = phoneInstanceNo(userId, scope, row.deviceId());
         int changed = mapper.upsertPhoneDevice(userId, instanceNo, "TIER-" + tier,
                 "Mobile compute · " + tops.stripTrailingZeros().toPlainString() + " points",
                 memoryGb, tops, dailyUsdt, dailyNex, scope.sourceEnvironment(), scope.runId());
@@ -493,6 +501,66 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         return Map.of("status",current != null && "ACTIVE".equals(current.activationStatus()) ? "BOUND" : "NEEDS_CALIBRATION");
     }
 
+    /** The entry point locks the account and verifies the current native APP session first. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public Map<String, Object> recoverIosPhone(long userId, String installationId, String recoveryKey) {
+        if (recoveryKey == null || !recoveryKey.matches("[a-f0-9]{64}"))
+            throw new BizException(422, "PHONE_RECOVERY_KEY_INVALID");
+        Scope scope = scope(userId);
+        String environment = scope.sourceEnvironment();
+        String runId = scope.runId();
+        var binding = mapper.phoneBinding(userId, environment, runId);
+        var unavailable = Map.<String, Object>of("status", "UNAVAILABLE");
+        if (binding == null) return unavailable;
+        String enrolledHash = mapper.phoneRecoveryKeyHash(userId, environment, runId);
+        String submittedHash = phoneRecoveryHash(recoveryKey);
+        boolean sameInstallation = binding.installationId().equals(installationId);
+        if (enrolledHash == null ? !sameInstallation : !MessageDigest.isEqual(
+                enrolledHash.getBytes(StandardCharsets.US_ASCII), submittedHash.getBytes(StandardCharsets.US_ASCII))) {
+            return unavailable;
+        }
+        CalibrationRow active = mapper.findForUpdateScoped(userId, binding.installationId(), environment, runId);
+        if (active == null || !Boolean.TRUE.equals(active.serverCanonical()) || !"ACTIVE".equals(active.activationStatus())
+                || !binding.userDeviceId().equals(active.userDeviceId())
+                || mapper.ownedPhoneInstance(userId, environment, runId, binding.userDeviceId()) == null) return unavailable;
+        if (!isIosCalibration(active)) return unavailable;
+        if (sameInstallation) {
+            if (enrolledHash == null && mapper.enrollPhoneRecoveryKey(userId, environment, runId, installationId, submittedHash) != 1)
+                throw new BizException(409, "BINDING_VERSION_CHANGED");
+            return Map.of("status", "BOUND");
+        }
+        if (!scope.sandbox()) {
+            mapper.lockPhoneDevices(userId);
+            if (mapper.phoneReplacementHardPause(userId, binding.userDeviceId()) != null) return unavailable;
+        }
+        String receiptKey = "ios-recovery:" + java.util.UUID.randomUUID();
+        if (mapper.recoverPhoneCalibration(userId, environment, runId, binding.installationId(), installationId,
+                receiptKey, sha256(receiptKey)) < 1
+                || mapper.retireRecoveredCalibration(userId, environment, runId, binding.installationId()) != 1
+                || mapper.recoverPhoneBinding(userId, environment, runId, installationId, binding.installationId(), binding.version()) != 1)
+            throw new BizException(409, "BINDING_VERSION_CHANGED");
+        if (!scope.sandbox()) mapper.restoreBoundPhoneRuntime(userId, binding.userDeviceId());
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action("PHONE_BINDING_RECOVERED").resourceType("PHONE_BINDING")
+                .resourceId(binding.userDeviceId().toString()).bizNo(receiptKey).userId(userId)
+                .actorType("USER").actorId(userId).result("SUCCESS").riskLevel("MEDIUM")
+                .detail(Map.of("bindingVersion", binding.version(), "sourceEnvironment", environment, "runId", runId))
+                .build());
+        return Map.of("status", "RESTORED");
+    }
+
+    private String phoneRecoveryHash(String key) {
+        return sha256("ios-phone-recovery-v1:" + key);
+    }
+
+    private boolean isIosCalibration(CalibrationRow row) {
+        try {
+            return "ios".equals(PhoneCalibrationPolicy.normalize(JSON.readValue(row.signalJson(), Signals.class).platform()));
+        } catch (JsonProcessingException invalid) {
+            throw new BizException(503, "ONBOARDING_CALIBRATION_PAYLOAD_INVALID");
+        }
+    }
+
     String hardwareKey(CalibrationRow row) {
         try {
             Signals signals = JSON.readValue(row.signalJson(), Signals.class);
@@ -517,6 +585,19 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     private String phoneInstanceNo(Long userId, Scope scope, String deviceId) {
         return "PHONE-" + sha256(userId + "|" + scope.sourceEnvironment() + "|"
                 + scope.runId() + "|" + deviceId).substring(0, 48);
+    }
+
+    private String currentPhoneInstance(Long userId, Scope scope, String deviceId) {
+        String boundInstance = mapper.currentRecoverablePhoneInstance(userId, scope.sourceEnvironment(), scope.runId(), deviceId);
+        return boundInstance == null ? phoneInstanceNo(userId, scope, deviceId) : boundInstance;
+    }
+
+    private void deactivateCurrentCalibrationDevice(Long userId, Scope scope, String installationId) {
+        String instance = currentPhoneInstance(userId, scope, installationId);
+        if (!mapper.phoneInstanceBoundToOtherInstallation(userId, scope.sourceEnvironment(), scope.runId(),
+                installationId, instance)) {
+            mapper.deactivatePhoneDevice(userId, instance, scope.sourceEnvironment(), scope.runId());
+        }
     }
 
     private void cancelReplacedPhoneTasks(Long userId, Long keepUserDeviceId) {
