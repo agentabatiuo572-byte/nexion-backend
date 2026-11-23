@@ -23,6 +23,28 @@ public class AdminObjectDisplayNameService {
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public Map<String, String> byUsernames(Collection<String> usernames) {
+        if (usernames == null || usernames.isEmpty()) return Map.of();
+        List<String> normalized = usernames.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (normalized.isEmpty()) return Map.of();
+        try {
+            Map<String, String> names = new LinkedHashMap<>();
+            for (AdminMapper.AdminDisplayName row : adminMapper.findDisplayNamesByUsernames(normalized)) {
+                if (row != null && StringUtils.hasText(row.username()) && StringUtils.hasText(row.displayName())) {
+                    names.put(row.username(), row.displayName().trim());
+                }
+            }
+            return names;
+        } catch (RuntimeException ignored) {
+            return Map.of();
+        }
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public Map<Long, String> byIds(Collection<Long> ids) {
         if (ids == null || ids.isEmpty()) return Map.of();
         List<Long> normalized = ids.stream()

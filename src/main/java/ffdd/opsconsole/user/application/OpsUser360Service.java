@@ -10,6 +10,7 @@ import ffdd.opsconsole.finance.application.OpsFinanceService;
 import ffdd.opsconsole.finance.domain.DepositFlowView;
 import ffdd.opsconsole.finance.domain.WithdrawalOrderView;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
+import ffdd.opsconsole.platform.application.AdminObjectDisplayNameService;
 import ffdd.opsconsole.risk.application.OpsRiskService;
 import ffdd.opsconsole.risk.domain.RiskCaseView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
@@ -79,6 +80,8 @@ public class OpsUser360Service {
     private final EventOutboxService outboxService;
     private final ffdd.opsconsole.finance.application.FinanceSupportReadService financeSupport;
     private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AdminObjectDisplayNameService adminDisplayNames;
 
     @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> detail(String userKey) {
@@ -644,10 +647,69 @@ public class OpsUser360Service {
                 .toList();
         return section(
                 "notifications", notificationSection.get("records"),
-                "activityAudit", activityAudit,
+                "activityAudit", withActorDisplayNames(activityAudit),
                 "checkInRewardAsset", "UVT",
                 "sunsetCompatibility", List.of("legacy points records are read-only migration context"),
                 "sourceStatus", "READY");
+    }
+
+    private List<Map<String, Object>> withActorDisplayNames(List<AuditLogRecord> rows) {
+        if (rows.isEmpty()) return List.of();
+        List<Long> ids = rows.stream()
+                .filter(this::isTrustedAdminActor)
+                .map(AuditLogRecord::getActorId)
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        List<String> usernames = rows.stream()
+                .filter(this::isTrustedAdminActor)
+                .filter(record -> record.getActorId() == null || record.getActorId() <= 0)
+                .map(AuditLogRecord::getActorUsername)
+                .filter(value -> value != null && !value.trim().isEmpty())
+                .map(String::trim)
+                .distinct()
+                .toList();
+        Map<Long, String> namesById = adminDisplayNames == null ? Map.of() : adminDisplayNames.byIds(ids);
+        Map<String, String> namesByUsername = adminDisplayNames == null || usernames.isEmpty()
+                ? Map.of() : adminDisplayNames.byUsernames(usernames);
+        return rows.stream().map(record -> auditRow(record, actorDisplayName(record, namesById, namesByUsername))).toList();
+    }
+
+    private String actorDisplayName(AuditLogRecord record, Map<Long, String> namesById,
+                                    Map<String, String> namesByUsername) {
+        if (!isTrustedAdminActor(record)) return null;
+        Long actorId = record.getActorId();
+        if (actorId != null && actorId > 0) return namesById.get(actorId);
+        if (record.getActorUsername() == null || record.getActorUsername().trim().isEmpty()) return null;
+        return namesByUsername.get(record.getActorUsername().trim());
+    }
+
+    private boolean isTrustedAdminActor(AuditLogRecord record) {
+        return "ADMIN".equals(text(record.getActorType()));
+    }
+
+    private Map<String, Object> auditRow(AuditLogRecord record, String actorDisplayName) {
+        return section(
+                "id", record.getId(),
+                "traceId", record.getTraceId(),
+                "serviceName", record.getServiceName(),
+                "action", record.getAction(),
+                "resourceType", record.getResourceType(),
+                "resourceId", record.getResourceId(),
+                "bizNo", record.getBizNo(),
+                "userId", record.getUserId(),
+                "actorId", record.getActorId(),
+                "actorType", record.getActorType(),
+                "actorUsername", record.getActorUsername(),
+                "actorDisplayName", actorDisplayName,
+                "clientIp", record.getClientIp(),
+                "method", record.getMethod(),
+                "path", record.getPath(),
+                "result", record.getResult(),
+                "riskLevel", record.getRiskLevel(),
+                "detailJson", record.getDetailJson(),
+                "schemaVersion", record.getSchemaVersion(),
+                "createdAt", record.getCreatedAt());
     }
 
     private Map<String, Object> commerce(List<DeviceOrderView> orders) {
