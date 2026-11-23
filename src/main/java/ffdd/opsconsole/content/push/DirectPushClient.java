@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.*;
+import java.security.cert.X509Certificate;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Duration;
 import java.time.Instant;
@@ -17,6 +18,9 @@ import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.Map;
 import java.util.Set;
+import javax.naming.ldap.LdapName;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
@@ -31,6 +35,7 @@ public class DirectPushClient {
     private final ObjectMapper json;
     private final Environment env;
     private final HttpClient http;
+    private HttpClient testApnsHttp;
     private final TokenCache cache = new TokenCache();
     // Accessed only under this client's synchronized authentication methods/response reset.
     private static final class TokenCache {
@@ -84,13 +89,18 @@ public class DirectPushClient {
 
     Result send(long deliveryId, long notificationId, String provider, String token, Map<String,String> alert, String apnsTopic,
                 boolean showConfiguredAlert) {
-        String state=configurationState(provider);
+        boolean testApns = apnsTopic != null;
+        if (testApns && !("APNS".equals(provider) && NativePushService.TEST_APNS_TOPIC.equals(apnsTopic)
+                && Boolean.TRUE.equals(env.getProperty("nexion.deployment.public-test", Boolean.class))))
+            return new Result("BLOCKED","APNS_TOPIC_NOT_CONFIGURED",null);
+        String state = testApns ? (enabled() ? "CONFIGURED" : "DISABLED") : configurationState(provider);
         if (!"CONFIGURED".equals(state)) return new Result("BLOCKED",state,null);
         if (!NativePushService.validNativeToken(provider,"FCM".equals(provider)?"android":"ios",token))
             return new Result("INVALID_TOKEN","INVALID_NATIVE_TOKEN",null);
         boolean sending=false;
         try {
             Map<String,String> data=new java.util.HashMap<>(Map.of("notificationId",Long.toString(notificationId),"deliveryId",Long.toString(deliveryId)));
+            HttpClient transport = http;
             HttpRequest request;
             if ("FCM".equals(provider)) {
                 if (showConfiguredAlert) data.put("displayCopy", "configured");
@@ -100,19 +110,20 @@ public class DirectPushClient {
                 request=request(URI.create("https://fcm.googleapis.com/v1/projects/"+property("fcm.project-id")+"/messages:send"),body)
                         .header("Authorization","Bearer "+access).build();
             } else {
-                if (apnsTopic != null && !(NativePushService.TEST_APNS_TOPIC.equals(apnsTopic)
-                        && env.getProperty("nexion.deployment.public-test", Boolean.class, false)))
-                    return new Result("BLOCKED","APNS_TOPIC_NOT_CONFIGURED",null);
                 String body=json.writeValueAsString(Map.of("aps",Map.of("alert",alert,"sound","default"),
                         "notificationId",data.get("notificationId"),"deliveryId",data.get("deliveryId")));
-                String host="sandbox".equals(property("apns.environment"))?"api.sandbox.push.apple.com":"api.push.apple.com";
-                request=request(URI.create("https://"+host+"/3/device/"+token),body).version(HttpClient.Version.HTTP_2)
-                        .header("authorization","bearer "+apnsJwt()).header("apns-topic",apnsTopic == null ? property("apns.topic") : apnsTopic)
+                String host = !testApns && "sandbox".equals(property("apns.environment"))
+                        ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+                var builder = request(URI.create("https://"+host+"/3/device/"+token),body).version(HttpClient.Version.HTTP_2)
+                        .header("apns-topic",testApns ? apnsTopic : property("apns.topic"))
                         .header("apns-push-type","alert").header("apns-priority","10")
-                        .header("apns-expiration",Long.toString(Instant.now().plusSeconds(3600).getEpochSecond())).build();
+                        .header("apns-expiration",Long.toString(Instant.now().plusSeconds(3600).getEpochSecond()));
+                if (testApns) transport = testApnsTransport();
+                else builder.header("authorization","bearer "+apnsJwt());
+                request = builder.build();
             }
             sending=true;
-            HttpResponse<byte[]> response=http.send(request, ignored -> new LimitedResponse());
+            HttpResponse<byte[]> response=transport.send(request, ignored -> new LimitedResponse());
             return "FCM".equals(provider)?fcmResponse(response):apnsResponse(response);
         } catch (AuthFailure failure) { return failure.result; }
         catch (InterruptedException interrupted) {
@@ -120,6 +131,35 @@ public class DirectPushClient {
         } catch (Exception failure) {
             // Exceptions may embed bearer tokens, private material or full device URLs. Do not log them.
             return new Result(sending?"UNKNOWN":"BLOCKED", sending?"PROVIDER_OUTCOME_UNKNOWN":"PROVIDER_AUTH_UNAVAILABLE",null);
+        }
+    }
+
+    private synchronized HttpClient testApnsTransport() throws Exception {
+        if (testApnsHttp != null) return testApnsHttp;
+        Path path = Path.of(property("apns.test-pkcs12-file"));
+        if (!path.isAbsolute() || !Files.isRegularFile(path) || Files.size(path)>65536)
+            throw new IllegalArgumentException("INVALID_TEST_APNS_CERTIFICATE");
+        char[] password = readSecureFile("apns.test-pkcs12-password-file").strip().toCharArray();
+        try {
+            KeyStore store = KeyStore.getInstance("PKCS12");
+            try (var input = Files.newInputStream(path)) { store.load(input,password); }
+            String alias = store.aliases().nextElement();
+            if (store.size() != 1 || !store.isKeyEntry(alias)) throw new IllegalArgumentException("INVALID_TEST_APNS_KEYSTORE");
+            var certificate = (X509Certificate) store.getCertificate(alias);
+            certificate.checkValidity();
+            String commonName = "Apple Push Services: " + NativePushService.TEST_APNS_TOPIC;
+            if (new LdapName(certificate.getSubjectX500Principal().getName()).getRdns().stream()
+                    .noneMatch(rdn -> "CN".equals(rdn.getType()) && commonName.equals(rdn.getValue())))
+                throw new IllegalArgumentException("INVALID_TEST_APNS_TOPIC");
+            KeyManagerFactory keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            keys.init(store, password);
+            SSLContext tls = SSLContext.getInstance("TLS");
+            tls.init(keys.getKeyManagers(), null, null);
+            testApnsHttp = HttpClient.newBuilder().sslContext(tls).version(HttpClient.Version.HTTP_2)
+                    .connectTimeout(Duration.ofSeconds(3)).followRedirects(HttpClient.Redirect.NEVER).build();
+            return testApnsHttp;
+        } finally {
+            java.util.Arrays.fill(password, '\0');
         }
     }
     private HttpRequest.Builder request(URI uri,String body) {
@@ -203,6 +243,8 @@ public class DirectPushClient {
         if (status==410 && "Unregistered".equals(reason))
             return new Result("INVALID_TOKEN","APNS_"+reason,null);
         if (status==400 && "BadDeviceToken".equals(reason)) return new Result("BLOCKED","APNS_BAD_DEVICE_TOKEN",null);
+        if (status==400 && "TopicDisallowed".equals(reason)) return new Result("BLOCKED","APNS_TOPIC_DISALLOWED",null);
+        if (status==400 && "DeviceTokenNotForTopic".equals(reason)) return new Result("BLOCKED","APNS_DEVICE_TOKEN_NOT_FOR_TOPIC",null);
         if (status==403 && "ExpiredProviderToken".equals(reason)) synchronized(this) {
             cache.apnsToken=null; cache.apnsExpiry=0;
         }
