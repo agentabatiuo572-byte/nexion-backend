@@ -4148,14 +4148,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (h4EventRules != null && H4EventRuleService.CODES.contains(id)) {
             Map<String, Object> rule;
             try { rule = h4EventRules.find(id, false); } catch (RuntimeException ex) { return null; }
-            // Only the onboarding branch actually pays rewardNex as UVT (H4EventEngine:290-296);
-            // other kinds may keep unrelated fields with the same name, so they stay null.
-            if (rule != null && "onboarding".equalsIgnoreCase(H4EventRuleService.text(rule.get("kind")).trim())) {
+            if (rule != null) {
+                // Only the onboarding branch actually pays rewardNex as UVT (H4EventEngine:290-296);
+                // other kinds may keep unrelated fields with the same name, so they stay null.
+                if (!"onboarding".equalsIgnoreCase(H4EventRuleService.text(rule.get("kind")).trim())) return null;
                 Map<String, Object> facts = ruleFacts(rule);
-                BigDecimal uvt = positiveDecimal(facts == null ? null : facts.get("rewardNex"));
-                return uvt == null ? null : rewardPair("UVT", uvt);
+                // Same coercion as the payout path: a historical boolean true really pays 1 UVT.
+                BigDecimal uvt = H4EventRuleService.number(facts == null ? null : facts.get("rewardNex"));
+                return uvt.signum() > 0 ? rewardPair("UVT", uvt) : null;
             }
-            return null;
+            // No rule row: the write path has no rule (hasRule=false) and keeps the legacy pair.
         }
         String asset = H4EventRuleService.text(row.get("rewardType")).trim().toUpperCase(java.util.Locale.ROOT);
         if (!Set.of("UVT", "USDT").contains(asset)) return null;
