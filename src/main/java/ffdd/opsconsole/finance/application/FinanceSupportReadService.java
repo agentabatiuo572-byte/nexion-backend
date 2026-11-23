@@ -102,9 +102,13 @@ public class FinanceSupportReadService {
     }
     private static void observed(Map<String,Object> row,String name,Object value,boolean zeroWhenRead) {
         // Legacy SQL has reconciled subtotals, not customer lifetime/environment coverage.
-        String amount=decimal(value);boolean positive=amount!=null && new BigDecimal(amount).signum()>0;
-        row.put(name,positive?amount:(zeroWhenRead?"0":null));
-        statuses(row).put(name,positive?"PARTIAL":(zeroWhenRead?"READY":"UNKNOWN"));
+        // Only a missing amount or a true zero is a proven zero when the display row asks for it;
+        // a negative legacy subtotal (for example SUM over anomalous statuses) stays unknown.
+        String amount=decimal(value);BigDecimal number=amount==null?null:new BigDecimal(amount);
+        boolean positive=number!=null && number.signum()>0;
+        boolean provenZero=zeroWhenRead && (number==null || number.signum()==0);
+        row.put(name,positive?amount:(provenZero?"0":null));
+        statuses(row).put(name,positive?"PARTIAL":(provenZero?"READY":"UNKNOWN"));
     }
     /** Fields no query reported on yet: the USDT display row proves a zero, everything else unknown. */
     private static void settleUnread(Map<String,Object> row,boolean display) {
