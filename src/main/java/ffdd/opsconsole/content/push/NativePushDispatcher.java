@@ -55,7 +55,7 @@ public class NativePushDispatcher {
                 if (next == null) return null;
                 String token = UUID.randomUUID().toString();
                 mapper.claim(next.id(), token);
-                return new Delivery(next.id(), next.notificationId(), next.installationId(), next.userId(), next.bindingEpoch(), next.attempts() + 1, token);
+                return new Delivery(next.id(), next.notificationId(), next.installationId(), next.userId(), next.bindingEpoch(), next.attempts() + 1, token, next.expiresAt(), next.threadId());
             });
             if (delivery == null) return;
             send(delivery, sandbox);
@@ -80,6 +80,23 @@ public class NativePushDispatcher {
             }
             var notification = mapper.ownedNotification(delivery.notificationId(), delivery.userId());
             if (notification == null) { finish(delivery, "CANCELLED", "NOTIFICATION_REMOVED", null, 0); return; }
+            java.time.Instant effectiveExpiry = effectiveExpiry(delivery, installation);
+            if (effectiveExpiry != null && !java.time.Instant.now().isBefore(effectiveExpiry)) {
+                finish(delivery, "CANCELLED", "PUSH_EXPIRED", null, 0); return;
+            }
+            if (notification.type().startsWith("EARNING_")
+                    && !earningEligible(notification.type(), delivery.userId(), installation)) {
+                finish(delivery, "CANCELLED", "EARNING_INELIGIBLE", null, 0); return;
+            }
+            if (notification.type().startsWith("EARNING_")) {
+                String href = notification.ctaHref();
+                if (href != null && href.startsWith("/pages/me/receipts?receiptNo=")) {
+                    String receipt = href.substring(href.indexOf('=') + 1);
+                    if (mapper.ownedReceipt(receipt, delivery.userId()) == 0) {
+                        finish(delivery, "CANCELLED", "EARNING_RECEIPT_UNAVAILABLE", null, 0); return;
+                    }
+                }
+            }
             if (delivery.attempts() > 5) { finish(delivery, "FAILED", "ATTEMPTS_EXHAUSTED", null, 0); return; }
             boolean nova = notification.isNova();
             boolean enhanced = testBusinessAlerts();
@@ -102,14 +119,24 @@ public class NativePushDispatcher {
                     && NativePushService.TEST_APNS_TOPIC.equals(installation.apnsTopic())
                     && mapper.isNewSignInNotice(notification.id(), delivery.userId());
             DirectPushClient.Result result;
-            if (nova || appUpdate || support || installation.apnsTopic() != null) {
+            boolean earning = notification.type().startsWith("EARNING_");
+            if (nova || appUpdate || support || earning || installation.apnsTopic() != null) {
                 String summary = DirectPushClient.message(notification.language());
                 if (support) summary = DirectPushClient.supportReply(notification.language());
                 if (newSignIn) summary = notification.body();
-                Map<String,String> alert = nova || appUpdate ? Map.of("title", notification.title(), "body", notification.body())
+                Map<String,String> alert = nova || appUpdate || earning
+                        ? Map.of("title", notification.title(), "body", notification.body())
                         : Map.of("title", "UVEL", "body", summary);
-                result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert,
-                        installation.apnsTopic(), nova || appUpdate || support || newSignIn);
+                boolean configuredAlert = nova || appUpdate || support || newSignIn || earning;
+                if (earning || delivery.expiresAt() != null || delivery.threadId() != null) {
+                    result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert,
+                            installation.apnsTopic(), configuredAlert,
+                            effectiveExpiry,
+                            delivery.threadId());
+                } else {
+                    result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert,
+                            installation.apnsTopic(), configuredAlert);
+                }
             } else {
                 result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), notification.language());
             }
@@ -135,6 +162,38 @@ public class NativePushDispatcher {
             int value = config.activeValue("auth.session.idle_ttl_days").map(Integer::parseInt).orElse(30);
             return value >= 7 && value <= 90 ? value : 30;
         } catch (NumberFormatException invalid) { return 30; }
+    }
+
+    private java.time.Instant effectiveExpiry(Delivery delivery, NativePushMapper.Installation installation) {
+        if (delivery.expiresAt() == null) return null;
+        java.time.Instant base = delivery.expiresAt().toInstant(java.time.ZoneOffset.UTC);
+        if (installation.timeZone() == null) return base;
+        try {
+            java.time.ZoneId zone = java.time.ZoneId.of(installation.timeZone());
+            java.time.ZonedDateTime local = java.time.Instant.now().atZone(zone);
+            java.time.ZonedDateTime boundary = local.toLocalDate().atTime(23, 0).atZone(zone);
+            if (!local.isBefore(boundary)) boundary = boundary.plusDays(1);
+            java.time.Instant shortened = boundary.toInstant();
+            return shortened.isBefore(base) ? shortened : base;
+        } catch (RuntimeException failure) {
+            return base;
+        }
+    }
+
+    private boolean earningEligible(String type, long userId, NativePushMapper.Installation installation) {
+        if (!installation.earningPushEligible() || installation.timeZone() == null) return false;
+        var preference = mapper.earningEligibility(userId);
+        String mode = preference == null || preference.mode() == null ? "DAILY" : preference.mode();
+        boolean system = preference == null || !Boolean.FALSE.equals(preference.system());
+        if (!system || "OFF".equals(mode)) return false;
+        if ("EARNING_REALTIME".equals(type) && !"REALTIME".equals(mode)) return false;
+        if ("EARNING_DAILY".equals(type) && !"DAILY".equals(mode)) return false;
+        if ("EARNING_HALF_HOURLY".equals(type) && !"HALF_HOURLY".equals(mode)) return false;
+        java.time.ZoneId zone;
+        try { zone = java.time.ZoneId.of(installation.timeZone()); }
+        catch (RuntimeException failure) { return false; }
+        int hour = java.time.ZonedDateTime.now(zone).getHour();
+        return hour < 23 && hour >= 8;
     }
 
     private boolean testBusinessAlerts() {

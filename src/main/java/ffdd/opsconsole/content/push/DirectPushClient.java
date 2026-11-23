@@ -89,6 +89,11 @@ public class DirectPushClient {
 
     Result send(long deliveryId, long notificationId, String provider, String token, Map<String,String> alert, String apnsTopic,
                 boolean showConfiguredAlert) {
+        return send(deliveryId, notificationId, provider, token, alert, apnsTopic, showConfiguredAlert, null, null);
+    }
+
+    Result send(long deliveryId, long notificationId, String provider, String token, Map<String,String> alert, String apnsTopic,
+                boolean showConfiguredAlert, Instant expiresAt, String threadId) {
         boolean testApns = apnsTopic != null;
         if (testApns && !("APNS".equals(provider) && NativePushService.TEST_APNS_TOPIC.equals(apnsTopic)
                 && Boolean.TRUE.equals(env.getProperty("nexion.deployment.public-test", Boolean.class))))
@@ -97,6 +102,9 @@ public class DirectPushClient {
         if (!"CONFIGURED".equals(state)) return new Result("BLOCKED",state,null);
         if (!NativePushService.validNativeToken(provider,"FCM".equals(provider)?"android":"ios",token))
             return new Result("INVALID_TOKEN","INVALID_NATIVE_TOKEN",null);
+        if (expiresAt != null && !Instant.now().isBefore(expiresAt)) {
+            return new Result("CANCELLED","PUSH_EXPIRED",null);
+        }
         boolean sending=false;
         try {
             Map<String,String> data=new java.util.HashMap<>(Map.of("notificationId",Long.toString(notificationId),"deliveryId",Long.toString(deliveryId)));
@@ -105,21 +113,32 @@ public class DirectPushClient {
             if ("FCM".equals(provider)) {
                 if (showConfiguredAlert) data.put("displayCopy", "configured");
                 String access=accessToken();
+                if (expiresAt != null && !Instant.now().isBefore(expiresAt)) {
+                    return new Result("CANCELLED","PUSH_EXPIRED",null);
+                }
+                long ttl = expiresAt == null ? 3600 : Math.max(1, expiresAt.getEpochSecond() - Instant.now().getEpochSecond());
                 String body=json.writeValueAsString(Map.of("message",Map.of("token",token,"notification",alert,"data",data,
-                        "android",Map.of("priority","high","ttl","3600s","notification",Map.of("channel_id","uvel_notifications")))));
+                        "android",Map.of("priority","high","ttl",ttl+"s","notification",Map.of("channel_id","uvel_notifications")))));
                 request=request(URI.create("https://fcm.googleapis.com/v1/projects/"+property("fcm.project-id")+"/messages:send"),body)
                         .header("Authorization","Bearer "+access).build();
             } else {
-                String body=json.writeValueAsString(Map.of("aps",Map.of("alert",alert,"sound","default"),
+                Map<String,Object> aps=new java.util.HashMap<>();
+                aps.put("alert",alert); aps.put("sound","default");
+                if (threadId != null && !threadId.isBlank()) aps.put("thread-id", threadId);
+                String body=json.writeValueAsString(Map.of("aps",aps,
                         "notificationId",data.get("notificationId"),"deliveryId",data.get("deliveryId")));
                 String host = !testApns && "sandbox".equals(property("apns.environment"))
                         ? "api.sandbox.push.apple.com" : "api.push.apple.com";
                 var builder = request(URI.create("https://"+host+"/3/device/"+token),body).version(HttpClient.Version.HTTP_2)
                         .header("apns-topic",testApns ? apnsTopic : property("apns.topic"))
                         .header("apns-push-type","alert").header("apns-priority","10")
-                        .header("apns-expiration",Long.toString(Instant.now().plusSeconds(3600).getEpochSecond()));
+                        .header("apns-expiration",Long.toString(expiresAt == null
+                                ? Instant.now().plusSeconds(3600).getEpochSecond() : expiresAt.getEpochSecond()));
                 if (testApns) transport = testApnsTransport();
                 else builder.header("authorization","bearer "+apnsJwt());
+                if (expiresAt != null && !Instant.now().isBefore(expiresAt)) {
+                    return new Result("CANCELLED","PUSH_EXPIRED",null);
+                }
                 request = builder.build();
             }
             sending=true;

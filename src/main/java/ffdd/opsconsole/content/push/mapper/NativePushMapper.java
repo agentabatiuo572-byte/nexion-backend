@@ -27,14 +27,20 @@ public interface NativePushMapper {
         }
     }
     record Delivery(long id, long notificationId, String installationId, long userId, long bindingEpoch,
-                    int attempts, String leaseToken) { }
-    record Notification(long id, String type, String ctaHref, String language, String title, String body, Integer updateBuild) {
+                    int attempts, String leaseToken, java.time.LocalDateTime expiresAt, String threadId) {
+        public Delivery(long id, long notificationId, String installationId, long userId, long bindingEpoch,
+                        int attempts, String leaseToken) {
+            this(id, notificationId, installationId, userId, bindingEpoch, attempts, leaseToken, null, null);
+        }
+    }
+    record Notification(long id, String type, String ctaHref, String language, String title, String body,
+                        Integer updateBuild, java.time.LocalDateTime createdAt) {
         @AutomapConstructor public Notification { }
         public Notification(long id, String type, String ctaHref, String language) {
-            this(id, type, ctaHref, language, null, null, null);
+            this(id, type, ctaHref, language, null, null, null, null);
         }
         public Notification(long id, String type, String ctaHref, String language, String title, String body) {
-            this(id, type, ctaHref, language, title, body, null);
+            this(id, type, ctaHref, language, title, body, null, null);
         }
         public boolean isNova() { return type.startsWith("NOVA_"); }
     }
@@ -175,7 +181,7 @@ public interface NativePushMapper {
     int activeIosUpdate(@Param("build") int build, @Param("downloadUrl") String downloadUrl);
 
     @Select("""
-        SELECT id,notification_id,installation_id,user_id,binding_epoch,attempts,lease_token
+        SELECT id,notification_id,installation_id,user_id,binding_epoch,attempts,lease_token,expires_at,thread_id
         FROM nx_native_push_delivery WHERE
           status IN ('QUEUED','RETRY','BLOCKED') AND next_attempt_at<=NOW(6)
         ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
@@ -198,8 +204,8 @@ public interface NativePushMapper {
     int claim(@Param("id") long id, @Param("token") String token);
 
     @Select("""
-        SELECT id,notification_id,installation_id,user_id,binding_epoch,attempts,lease_token FROM nx_native_push_delivery
-        WHERE id=#{id} AND status='SENDING' AND lease_token=#{token} FOR UPDATE
+        SELECT id,notification_id,installation_id,user_id,binding_epoch,attempts,lease_token,expires_at,thread_id
+        FROM nx_native_push_delivery WHERE id=#{id} AND status='SENDING' AND lease_token=#{token} FOR UPDATE
         """)
     Delivery lockClaim(@Param("id") long id, @Param("token") String token);
 
@@ -232,12 +238,16 @@ public interface NativePushMapper {
 
     @Select("""
         SELECT n.id,n.type,n.cta_href,u.language,n.title,n.body,
-          CASE WHEN n.type='APP_UPDATE' THEN CAST(SUBSTRING_INDEX(n.biz_no,':',-1) AS UNSIGNED) END AS update_build
+          CASE WHEN n.type='APP_UPDATE' THEN CAST(SUBSTRING_INDEX(n.biz_no,':',-1) AS UNSIGNED) END AS update_build,
+          n.created_at createdAt
         FROM nx_notification n JOIN nx_user u ON u.id=n.user_id
         WHERE n.id=#{id} AND n.user_id=#{user} AND n.is_deleted=0
           AND n.biz_no NOT LIKE 'STATION1:%'
           AND ((n.type IN ('DEVICE_EXPIRY','DEVICE_ALERT','FUNDS_RESULT','ACCOUNT_SECURITY','SUPPORT_REPLY')
             AND (n.biz_no LIKE 'NATIVE1:%' OR EXISTS(SELECT 1 FROM nx_business_notification_fact f WHERE f.notification_biz_no=n.biz_no AND f.user_id=n.user_id)))
+            OR (n.type IN ('EARNING_FIRST','EARNING_REALTIME','EARNING_DAILY','EARNING_HALF_HOURLY')
+                AND n.biz_no LIKE 'NATIVE1:EARNING:%'
+                AND EXISTS (SELECT 1 FROM nx_native_push_delivery d WHERE d.notification_id=n.id AND d.user_id=n.user_id))
             OR (((n.biz_no LIKE 'NOVA-%' AND LEFT(n.type,5)='NOVA_')
                 OR (n.biz_no LIKE 'APP_UPDATE:ios:%' AND n.type='APP_UPDATE')) AND EXISTS
               (SELECT 1 FROM nx_native_push_delivery d WHERE d.notification_id=n.id AND d.user_id=n.user_id)))
@@ -259,6 +269,18 @@ public interface NativePushMapper {
           AND (LOWER(n.priority)='critical' OR COALESCE(p.notify_system,1)=1)
         """)
     int stillEligible(@Param("id") long id, @Param("user") long user);
+
+    record EarningEligibility(String mode, Boolean system) { }
+
+    @Select("SELECT CASE WHEN earning_push IN ('REALTIME','DAILY','HALF_HOURLY','OFF') THEN earning_push ELSE 'DAILY' END mode,"
+        + " COALESCE(notify_system,1) `system` FROM nx_user_preference WHERE user_id=#{user} AND is_deleted=0 LIMIT 1")
+    EarningEligibility earningEligibility(@Param("user") long user);
+
+    @Select("""
+        SELECT COUNT(*) FROM nx_earning_event WHERE receipt_no=#{receipt} AND user_id=#{user}
+          AND status='POSTED' AND amount>0 AND is_deleted=0
+        """)
+    int ownedReceipt(@Param("receipt") String receipt, @Param("user") long user);
 
     @Select("SELECT COUNT(*) FROM nx_notification n WHERE n.id=#{id} AND " + LIVE_NOVA_CHANNEL)
     int novaChannelEnabled(long id);

@@ -611,6 +611,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                SET is_deleted = 1, updated_at = NOW()
              WHERE user_id = #{userId} AND is_deleted = 0 AND read_flag = 1
                AND CAST(LOWER(REGEXP_REPLACE(COALESCE(priority, ''), #{priorityTrimPattern}, '')) AS BINARY) &lt;&gt; 'critical'
+               AND LOWER(type) NOT IN ('earning_first','earning_realtime','earning_daily','earning_half_hourly')
             </script>
             """)
     int clearReadUserNotifications(@Param("userId") Long userId);
@@ -625,6 +626,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                   FROM nx_notification
                  WHERE user_id = #{userId} AND is_deleted = 0 AND LOWER(priority) = #{priority}
                    AND LOWER(type) <> 'earning_credited'
+                   AND LOWER(type) NOT IN ('earning_first','earning_realtime','earning_daily','earning_half_hourly')
               ) ranked
              WHERE rn > #{cap}
              ORDER BY id
@@ -639,6 +641,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
               FROM nx_notification
              WHERE user_id = #{userId} AND is_deleted = 0
                AND LOWER(priority) = 'low'
+               AND LOWER(type) NOT IN ('earning_first','earning_realtime','earning_daily','earning_half_hourly')
                AND created_at < #{cutoff}
              ORDER BY id
             """)
@@ -662,6 +665,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                       FROM nx_notification
                      WHERE is_deleted = 0 AND LOWER(priority) = #{priority}
                        AND LOWER(type) <> 'earning_credited'
+                       AND LOWER(type) NOT IN ('earning_first','earning_realtime','earning_daily','earning_half_hourly')
                 ) ranked WHERE ranked.rn > #{cap}
             ) overflowed ON overflowed.id = n.id
                SET n.is_deleted = 1, n.updated_at = NOW()
@@ -671,7 +675,9 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
     @Update("""
             UPDATE nx_notification
                SET is_deleted = 1, updated_at = NOW()
-             WHERE is_deleted = 0 AND LOWER(priority) = 'low' AND created_at < #{cutoff}
+             WHERE is_deleted = 0 AND LOWER(priority) = 'low'
+               AND LOWER(type) NOT IN ('earning_first','earning_realtime','earning_daily','earning_half_hourly')
+               AND created_at < #{cutoff}
             """)
     int expireAllLow(@Param("cutoff") LocalDateTime cutoff);
 

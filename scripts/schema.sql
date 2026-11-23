@@ -4162,6 +4162,33 @@ CREATE TABLE IF NOT EXISTS nx_points_ledger (
   KEY idx_points_user_time (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_earning_push_task (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  task_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  user_id BIGINT NOT NULL,
+  kind VARCHAR(24) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  reason VARCHAR(64) NULL,
+  receipt_no VARCHAR(96) NULL,
+  window_start DATETIME(6) NULL,
+  window_end DATETIME(6) NULL,
+  business_zone VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  event_count INT NOT NULL DEFAULT 0,
+  device_count INT NOT NULL DEFAULT 0,
+  usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  uvt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  title VARCHAR(160) NULL,
+  body VARCHAR(512) NULL,
+  cta_href VARCHAR(255) NULL,
+  notification_id BIGINT NULL,
+  expires_at DATETIME(6) NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_earning_push_task_key (task_key),
+  KEY ix_earning_push_task_user (user_id, created_at),
+  KEY ix_earning_push_task_window (user_id, kind, window_start)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_notification (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   biz_no VARCHAR(128) NULL,

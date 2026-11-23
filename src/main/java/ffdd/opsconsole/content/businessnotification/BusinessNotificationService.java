@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.businessnotification;
 
 import ffdd.opsconsole.content.businessnotification.mapper.BusinessNotificationMapper;
+import ffdd.opsconsole.content.push.EarningPushService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -12,13 +13,18 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /** Projects committed facts only. Notification retries never touch financial or device state. */
 @Service
 @RequiredArgsConstructor
 @ConditionalOnProperty(name="nexion.business-notifications.enabled",havingValue="true")
 public class BusinessNotificationService {
+    private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(BusinessNotificationService.class);
     private final BusinessNotificationMapper mapper;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private EarningPushService earningPush;
 
     @Scheduled(fixedDelayString="${nexion.business-notifications.delay-ms:30000}")
     // INSERT ... SELECT must read business sources without retaining shared locks until the scan commits.
@@ -96,6 +102,23 @@ public class BusinessNotificationService {
         if (mapper.notifyEarning(fact,bizNo,text.zh(),text.en(),text.vi())!=1) {
             mapper.dropReceipt(fact.factKey(),fact.userId());
             return 0;
+        }
+        if (earningPush != null) {
+            String receipt = fact.factKey().startsWith("EARNING:") ? fact.factKey().substring(8) : null;
+            Runnable push = () -> {
+                try {
+                    earningPush.onStationFirstWrite(fact.userId(), receipt);
+                } catch (RuntimeException failure) {
+                    LOG.warn("Earning native push generation failed user={} type={}", fact.userId(), failure.getClass().getSimpleName());
+                }
+            };
+            if (TransactionSynchronizationManager.isSynchronizationActive()) {
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override public void afterCommit() { push.run(); }
+                });
+            } else {
+                push.run();
+            }
         }
         return 1;
     }

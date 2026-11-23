@@ -67,3 +67,5 @@ migrations/20261123_purchase_device_placement.sql
 migrations/20261124_b81_order_user_hide.sql
 migrations/20261123_b79_earning_push_preference.sql
 migrations/20261123_b79_native_push_earning_capability.sql
+migrations/20261124_b79_earning_notifications.sql
+migrations/20261124_b79_earning_push.sql

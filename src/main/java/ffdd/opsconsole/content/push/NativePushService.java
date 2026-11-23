@@ -110,6 +110,10 @@ public class NativePushService {
     }
 
     static Route route(Notification n) {
+        return route(n, java.time.Instant.now());
+    }
+
+    static Route route(Notification n, java.time.Instant now) {
         if (n == null) throw new BizException(404, "PUSH_NOTIFICATION_NOT_FOUND");
         String route = n.ctaHref();
         if (n.isNova()) {
@@ -131,9 +135,22 @@ public class NativePushService {
             case "ACCOUNT_SECURITY" -> route.equals("/pages/me/security");
             case "SUPPORT_REPLY" -> route.matches("/pages/support/chat\\?cid=[A-Za-z0-9_-]{1,96}");
             case "APP_UPDATE" -> route.equals("/pages/me/app-update");
+            case "EARNING_FIRST", "EARNING_REALTIME" ->
+                    route.matches("/pages/me/receipts\\?receiptNo=[A-Za-z0-9._:-]{1,96}");
+            case "EARNING_DAILY" ->
+                    route.equals("/pages/me/notifications?section=notifications&filter=finance");
+            case "EARNING_HALF_HOURLY" ->
+                    route.equals("/pages/me/notifications?section=notifications&filter=finance")
+                            || route.matches("/pages/me/receipts\\?receiptNo=[A-Za-z0-9._:-]{1,96}");
             default -> false;
         };
         if (!allowed) throw new BizException(409, "PUSH_ROUTE_UNAVAILABLE");
+        if (n.type().startsWith("EARNING_") && n.createdAt() != null
+                && n.createdAt().plusDays(7).isBefore(java.time.LocalDateTime.now(
+                        ffdd.opsconsole.shared.config.StorageTime.ZONE))
+                && route.startsWith("/pages/me/receipts?")) {
+            return new Route(Long.toString(n.id()), "/pages/me/notifications?section=notifications&filter=finance");
+        }
         return new Route(Long.toString(n.id()), route);
     }
 
@@ -151,6 +168,9 @@ public class NativePushService {
             throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
         if (path.startsWith("/pages/store/order-detail?id=")
                 && mapper.ownedOrder(path.substring(path.indexOf('=') + 1), user) == 0)
+            throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
+        if (path.startsWith("/pages/me/receipts?receiptNo=")
+                && mapper.ownedReceipt(path.substring(path.indexOf('=') + 1), user) == 0)
             throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
         return target;
     }
