@@ -172,6 +172,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private static final String DOWNLOAD_ALLOWED_TARGETS_CONFIG_KEY = "platform.compute.download.allowedTargets";
     private static final String E1_PHASE_SCOPE = "E1";
     private static final int SKU_NAME_MAX_LENGTH = 128;
+    private static final int SKU_BADGE_MAX_LENGTH = 64;
     private static final int SKU_IMAGE_ASSET_ID_MAX_LENGTH = 512;
     private static final int SKU_IMAGE_OBJECT_KEY_MAX_LENGTH = 255;
     private static final int SKU_IMAGE_PREVIEW_URL_MAX_LENGTH = 4096;
@@ -3720,6 +3721,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (request.name() != null && request.name().codePointCount(0, request.name().length()) > SKU_NAME_MAX_LENGTH)
             throw new BizException(422, "SKU_NAME_TOO_LONG");
         AppDisplayText.requireNoHan("name", request.name());
+        if (StringUtils.hasText(request.badge())) {
+            String storedBadge = request.badge().trim();
+            if (storedBadge.codePointCount(0, storedBadge.length()) > SKU_BADGE_MAX_LENGTH)
+                throw new BizException(422, "SKU_BADGE_TOO_LONG");
+        }
         AppDisplayText.requireNoHan("badge", request.badge());
         AppDisplayText.requireNoHan("tagline", request.tagline());
         AppDisplayText.requireNoHan("gpu", request.gpu());
