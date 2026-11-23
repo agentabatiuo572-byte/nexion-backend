@@ -35,6 +35,10 @@ public class H5GrowthApproval {
     static final String EARN_CREATE_BEFORE = "不存在";
     private static final BigDecimal EARN_AMOUNT_MAX = new BigDecimal("100000000");
     private static final String STREAK = "h5_streak_milestone";
+    private static final Set<String> POWER_UP_VALUES =
+            Set.of("powerUpId", "day", "note", "expectedDay", "expectedNote");
+    private static final Set<String> POWER_UP_DAY_VALUES =
+            Set.of("powerUpId", "day", "expectedDay");
     private final OpsGrowthService growth;
     private final OpsGrowthCommandBoundary commands;
     private final SuperAdminAuthorization superAdmins;
@@ -181,24 +185,29 @@ public class H5GrowthApproval {
     }
 
     private static Map<?, ?> values(AuditReplayCommand command) {
-        if (!supports(command) || command.params() == null || !(command.params().get("values") instanceof Map<?, ?> values)
-                || !values.keySet().equals(POWER_UP.equals(command.op())
-                    ? Set.of("powerUpId", "day", "note", "expectedDay", "expectedNote")
-                    : STREAK.equals(command.op()) ? Set.of("milestoneId", "reward", "expectedReward")
-                    : EARN_CREATE.equals(command.op()) ? Set.of("milestoneKey", "label", "sortOrder", "thresholdUsd", "rewardNex")
-                    : Set.of("milestoneKey", "thresholdUsd", "rewardNex", "expectedThresholdUsd", "expectedRewardNex"))) {
+        if (!supports(command) || command.params() == null
+                || !(command.params().get("values") instanceof Map<?, ?> values)) {
             throw new BizException(422, "H5_PROPOSAL_INVALID");
         }
+        Set<?> expected = POWER_UP.equals(command.op())
+                ? (values.keySet().equals(POWER_UP_DAY_VALUES) ? POWER_UP_DAY_VALUES : POWER_UP_VALUES)
+                : STREAK.equals(command.op()) ? Set.of("milestoneId", "reward", "expectedReward")
+                : EARN_CREATE.equals(command.op()) ? Set.of("milestoneKey", "label", "sortOrder", "thresholdUsd", "rewardNex")
+                : Set.of("milestoneKey", "thresholdUsd", "rewardNex", "expectedThresholdUsd", "expectedRewardNex");
+        if (!values.keySet().equals(expected)) throw new BizException(422, "H5_PROPOSAL_INVALID");
         return values;
     }
 
     private static GrowthPowerUpUpdateRequest powerUp(AuditReplayCommand command, String reason) {
         Map<?, ?> values = values(command);
-        if (!(values.get("note") instanceof String note) || !(values.get("expectedNote") instanceof String expectedNote)) {
+        Object note = values.get("note");
+        Object expectedNote = values.get("expectedNote");
+        if ((note != null && !(note instanceof String))
+                || (expectedNote != null && !(expectedNote instanceof String))) {
             throw new BizException(422, "H5_PROPOSAL_INVALID");
         }
-        return new GrowthPowerUpUpdateRequest(integer(values.get("day")), note,
-                integer(values.get("expectedDay")), expectedNote, reason, null);
+        return new GrowthPowerUpUpdateRequest(integer(values.get("day")), (String) note,
+                integer(values.get("expectedDay")), (String) expectedNote, reason, null);
     }
 
     private static GrowthEarnMilestoneUpdateRequest earn(AuditReplayCommand command, String reason) {

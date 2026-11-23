@@ -477,6 +477,7 @@ public class EventOutboxService {
             "staking.opened",
             "store.viewed",
             "tradein.completed",
+            "trial.redeemed",
             "trial.started",
             "voucher.claimed",
             "wallet.reinvest");

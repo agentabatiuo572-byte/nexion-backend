@@ -2837,7 +2837,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("rules", checkInRules());
         response.put("streakMilestones", streakMilestones());
         response.put("streakDistribution", streakDistribution());
-        response.put("powerUps", powerUps());
+        response.put("powerUps", powerUpManagementRows());
         response.put("earnMilestones", earnMilestones());
         response.put("tickInterval", tickInterval());
         response.put("coverage", coverage());
@@ -3169,6 +3169,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         String key = requireText(request.key(), "Power-up key is required");
         if (!Set.of("day", "note").contains(key)) {
             return validation("POWER_UP_KEY_INVALID");
+        }
+        if ("note".equals(key) && !"CHECKIN_MULTIPLIER".equals(current.get().get("effectType"))) {
+            return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
         }
         String value = requireText(request.value(), "value is required");
         String persistedValue = "day".equals(key)
@@ -3731,46 +3734,53 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         ApiResult<Map<String, Object>> guard = requireCommand(
                 idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
-        if (request.day() == null || request.expectedDay() == null
-                || request.expectedNote() == null || request.note() == null) {
+        if (request.day() == null || request.expectedDay() == null) {
             return validation("POWER_UP_EXPECTED_STATE_REQUIRED");
         }
         List<Map<String, Object>> rows = powerUps();
         Optional<Map<String, Object>> current = indexedBusinessRow(rows, powerUpId);
         if (current.isEmpty()) return validation("POWER_UP_ID_INVALID");
         if (Boolean.FALSE.equals(current.get().get("businessAvailable"))) return validation("H5_POWER_UP_BUSINESS_RETIRED");
+        boolean multiplier = "CHECKIN_MULTIPLIER".equals(current.get().get("effectType"));
+        if (multiplier && (request.expectedNote() == null || request.note() == null)) {
+            return validation("POWER_UP_EXPECTED_STATE_REQUIRED");
+        }
         int persistedDay = rowDecimal(current.get(), "day").intValue();
         String persistedNote = String.valueOf(current.get().getOrDefault("note", ""));
         if (persistedDay != request.expectedDay()
-                || !persistedNote.equals(request.expectedNote())) {
+                || (multiplier && !persistedNote.equals(request.expectedNote()))) {
             return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
         int day = bounded(new BigDecimal(request.day()), BigDecimal.ONE, new BigDecimal("365"))
                 .setScale(0, RoundingMode.DOWN).intValueExact();
-        boolean multiplierIncreased = powerUpNoteAmplifies(current.get(), request.note());
+        boolean multiplierIncreased = multiplier && powerUpNoteAmplifies(current.get(), request.note());
         if (day < persistedDay || multiplierIncreased) {
             if (!approved) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
             requireH5Coverage();
         }
         int updated = questEventMapper.isEmpty()
                 ? 0
-                : questEventMapper.get().updatePowerUpConfigCas(
-                        powerUpId, day, request.note(), persistedDay, persistedNote);
+                : multiplier
+                    ? questEventMapper.get().updatePowerUpConfigCas(
+                            powerUpId, day, request.note(), persistedDay, persistedNote)
+                    : questEventMapper.get().updatePowerUpDayCas(powerUpId, day, persistedDay);
         if (updated != 1) return ApiResult.fail(409, "H5_CONFIG_STALE");
+        String nextNote = multiplier ? request.note() : persistedNote;
         audit("H5_POWER_UP_CHANGED", "POWER_UP", String.valueOf(powerUpId), request.operator(), Map.of(
                 "powerUpId", powerUpId,
                 "oldDay", persistedDay,
                 "newDay", day,
                 "oldNote", persistedNote,
-                "newNote", request.note(),
+                "newNote", nextNote,
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         Map<String, Object> response = checkIn().getData();
-        response.put("updated", Map.of(
-                "powerUpId", powerUpId,
-                "source", "nx_streak_power_up",
-                "day", day,
-                "note", request.note()));
+        Map<String, Object> updatedView = new LinkedHashMap<>();
+        updatedView.put("powerUpId", powerUpId);
+        updatedView.put("source", "nx_streak_power_up");
+        updatedView.put("day", day);
+        if (multiplier) updatedView.put("note", request.note());
+        response.put("updated", updatedView);
         return ApiResult.ok(response);
     }
 
@@ -3793,19 +3803,23 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     public ApiResult<H5ConfigReview> previewPowerUpApproval(int powerUpId, GrowthPowerUpUpdateRequest request) {
         var guard = requireCommand("H5_PREVIEW", request == null ? null : request.reason());
         if (guard != null) return ApiResult.fail(guard.getCode(), guard.getMessage());
-        if (request.day() == null || request.expectedDay() == null || request.note() == null || request.expectedNote() == null) {
+        if (request.day() == null || request.expectedDay() == null) {
             return ApiResult.fail(422, "POWER_UP_EXPECTED_STATE_REQUIRED");
         }
         var current = indexedBusinessRow(powerUps(), powerUpId);
         if (current.isEmpty()) return ApiResult.fail(422, "POWER_UP_ID_INVALID");
         if (Boolean.FALSE.equals(current.get().get("businessAvailable"))) return ApiResult.fail(422, "H5_POWER_UP_BUSINESS_RETIRED");
+        boolean multiplier = "CHECKIN_MULTIPLIER".equals(current.get().get("effectType"));
+        if (multiplier && (request.note() == null || request.expectedNote() == null)) {
+            return ApiResult.fail(422, "POWER_UP_EXPECTED_STATE_REQUIRED");
+        }
         int oldDay = rowDecimal(current.get(), "day").intValueExact();
         String oldNote = String.valueOf(current.get().getOrDefault("note", ""));
-        if (oldDay != request.expectedDay() || !oldNote.equals(request.expectedNote())) {
+        if (oldDay != request.expectedDay() || (multiplier && !oldNote.equals(request.expectedNote()))) {
             return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
         int day = bounded(new BigDecimal(request.day()), BigDecimal.ONE, new BigDecimal("365")).intValueExact();
-        boolean multiplierIncreased = powerUpNoteAmplifies(current.get(), request.note());
+        boolean multiplierIncreased = multiplier && powerUpNoteAmplifies(current.get(), request.note());
         if (day >= oldDay && !multiplierIncreased) {
             return ApiResult.fail(422, "H5_APPROVAL_NOT_REQUIRED");
         }
@@ -4875,6 +4889,15 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
      * 权益行来自 {@code nx_streak_power_up},可用性来自各域自己的权威读模型。PC 运营页据此
      * 标出「该档指向的业务当前已停用」,不再让运营看到一条会承诺不可用入口的权益却毫不知情。</p>
      */
+    private List<Map<String, Object>> powerUpManagementRows() {
+        return powerUps().stream().map(row -> {
+            if ("CHECKIN_MULTIPLIER".equals(row.get("effectType"))) return row;
+            Map<String, Object> visible = new LinkedHashMap<>(row);
+            visible.remove("note");
+            return visible;
+        }).toList();
+    }
+
     private List<Map<String, Object>> powerUps() {
         List<Map<String, Object>> rows = growthRows(GrowthQuestEventMapper::powerUps);
         if (rows.isEmpty()) return rows;
