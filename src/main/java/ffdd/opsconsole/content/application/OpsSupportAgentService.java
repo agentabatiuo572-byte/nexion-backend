@@ -60,7 +60,6 @@ public class OpsSupportAgentService {
      */
     private static final List<String> SERVICE_TYPES = List.of("support", "advisor");
     private static final List<String> DEFAULT_TAGS = List.of("账户", "提现", "设备");
-    static final int DEFAULT_MAX_CONCURRENT = 25;
     private static final Set<String> SUPPORT_OPERATOR_ROLES = Set.of("support");
 
     private final SupportAgentRepository repository;
@@ -225,7 +224,7 @@ public class OpsSupportAgentService {
                 defaultPosition(),
                 defaultServiceTypes(),
                 DEFAULT_TAGS,
-                defaultMaxConcurrent(),
+                null,
                 now);
         return repository.findProfile(adminId)
                 // Canonical display types cannot grant legacy routing capability.
@@ -275,7 +274,7 @@ public class OpsSupportAgentService {
         return idempotentCommand(
                 "M5_SUPPORT_AGENT_PROFILE_UPDATE",
                 idempotencyKey,
-                requestHash(String.valueOf(adminId), String.valueOf(request)),
+                requestHash(String.valueOf(adminId), request.commandFingerprint()),
                 () -> updateProfileOnce(adminId, idempotencyKey, request, operator));
     }
 
@@ -309,9 +308,7 @@ public class OpsSupportAgentService {
             serviceTypes = new ArrayList<>(preserved);
         }
         List<String> tags = normalizeTags(request.tags());
-        int maxConcurrent = request.maxConcurrent() == null && currentProfile != null
-                ? currentProfile.maxConcurrent()
-                : boundedInt(request.maxConcurrent(), 0, 40, DEFAULT_MAX_CONCURRENT);
+        Integer maxConcurrent = resolveMaxConcurrent(request.maxConcurrent(), request.maxConcurrentUnlimited(), currentProfile);
         repository.ensureDefaultProfile(adminId, seatType, position, serviceTypes, tags, maxConcurrent, now);
         if (!repository.updateProfileCas(
                 adminId,
@@ -333,7 +330,7 @@ public class OpsSupportAgentService {
                 "idempotencyKey", idempotencyKey.trim(),
                 "position", view.position(),
                 "serviceTypes", view.serviceTypes(),
-                "maxConcurrent", view.maxConcurrent()));
+                "maxConcurrent", maxConcurrent == null ? "不限制" : maxConcurrent));
         return ApiResult.ok(view);
     }
 
@@ -366,7 +363,7 @@ public class OpsSupportAgentService {
         return idempotentCommand(
                 "M1_SUPPORT_SEAT_ASSIGN",
                 idempotencyKey,
-                requestHash(String.valueOf(adminId), String.valueOf(request)),
+                requestHash(String.valueOf(adminId), request.commandFingerprint()),
                 () -> assignSeatOnce(adminId, idempotencyKey, request));
     }
 
@@ -413,9 +410,7 @@ public class OpsSupportAgentService {
         List<String> tags = request.tags() == null && currentProfile != null
                 ? currentProfile.tags()
                 : normalizeTags(request.tags());
-        int maxConcurrent = request.maxConcurrent() == null && currentProfile != null
-                ? currentProfile.maxConcurrent()
-                : boundedInt(request.maxConcurrent(), 0, 40, DEFAULT_MAX_CONCURRENT);
+        Integer maxConcurrent = resolveMaxConcurrent(request.maxConcurrent(), request.maxConcurrentUnlimited(), currentProfile);
         boolean enabled = request.enabled() == null && currentProfile != null
                 ? Boolean.TRUE.equals(currentProfile.enabled())
                 : !Boolean.FALSE.equals(request.enabled());
@@ -454,7 +449,8 @@ public class OpsSupportAgentService {
                 "seatType", view.seatType(),
                 "position", view.position(),
                 "serviceTypes", view.serviceTypes(),
-                "boundUserIds", boundUserIds));
+                "boundUserIds", boundUserIds,
+                "maxConcurrent", maxConcurrent == null ? "不限制" : maxConcurrent));
         return ApiResult.ok(view);
     }
 
@@ -558,7 +554,7 @@ public class OpsSupportAgentService {
         LocalDateTime now = LocalDateTime.now(clock);
         for (Long adminId : missingIds) {
             repository.ensureDefaultProfile(adminId, defaultSeatType(), defaultPosition(), defaultServiceTypes(),
-                    DEFAULT_TAGS, defaultMaxConcurrent(), now);
+                    DEFAULT_TAGS, null, now);
         }
         if (!missingIds.isEmpty()) {
             repository.listProfiles(missingIds).forEach(profile -> profiles.put(profile.adminId(), profile));
@@ -579,7 +575,7 @@ public class OpsSupportAgentService {
                     defaultPosition(),
                     defaultServiceTypes(),
                     DEFAULT_TAGS,
-                    defaultMaxConcurrent(),
+                    null,
                     now));
         }
     }
@@ -756,10 +752,6 @@ public class OpsSupportAgentService {
         return POSITIONS.stream().filter(position -> !POSITION_GENERAL.equals(position)).toList();
     }
 
-    private int defaultMaxConcurrent() {
-        return DEFAULT_MAX_CONCURRENT;
-    }
-
     private boolean dedicatedSupportSeat(String seatType) {
         return SEAT_DEDICATED.equals(normalizeSeatType(seatType, null));
     }
@@ -835,6 +827,9 @@ public class OpsSupportAgentService {
         if (request == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_REQUIRED");
         }
+        if (Boolean.TRUE.equals(request.maxConcurrentUnlimited()) && request.maxConcurrent() != null) {
+            return ApiResult.fail(422, "SUPPORT_AGENT_MAX_CONCURRENT_CONFLICT");
+        }
         if (request.expectedVersion() == null || request.expectedVersion() < 1) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_EXPECTED_VERSION_REQUIRED");
         }
@@ -865,6 +860,9 @@ public class OpsSupportAgentService {
         }
         if (request == null || !StringUtils.hasText(request.position())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_POSITION_REQUIRED");
+        }
+        if (Boolean.TRUE.equals(request.maxConcurrentUnlimited()) && request.maxConcurrent() != null) {
+            return ApiResult.fail(422, "SUPPORT_AGENT_MAX_CONCURRENT_CONFLICT");
         }
         if (request.expectedVersion() == null || request.expectedVersion() < 1) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SUPPORT_AGENT_EXPECTED_VERSION_REQUIRED");
@@ -957,9 +955,10 @@ public class OpsSupportAgentService {
                 .toList();
     }
 
-    private int boundedInt(Integer value, int min, int max, int fallback) {
-        int raw = value == null ? fallback : value;
-        return Math.max(min, Math.min(max, raw));
+    private Integer resolveMaxConcurrent(Integer requested, Boolean unlimited, SupportAgentProfileRecord current) {
+        if (Boolean.TRUE.equals(unlimited)) return null;
+        if (requested != null) return Math.max(0, Math.min(40, requested));
+        return current == null ? null : current.maxConcurrent();
     }
 
     private long normalizePage(Long pageNum) {

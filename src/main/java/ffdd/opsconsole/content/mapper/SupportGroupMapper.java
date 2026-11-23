@@ -219,8 +219,8 @@ public interface SupportGroupMapper {
         ORDER BY a.id FOR SHARE</script>
         """)
     List<Candidate> candidates(Long group);
-    /** Automatic first-inquiry/fallback only; supervisor preview/confirm uses {@link #candidates(Long)}.
-     *  Product decision 2026-11-19: skip offline agents (busy=0) and agents already at max_concurrent; random among ties. */
+    /** First-inquiry and fallback candidates are eligible group members accepting new assignments.
+     *  A non-null cap limits active bindings. */
     @Select("""
         <script>SELECT scope_member.agent_admin_id agentId,a.version accountVersion,p.version profileVersion,
           scope_member.id memberId,scope_member.version memberVersion,scope_q.id qualificationId,scope_q.version qualificationVersion
@@ -229,9 +229,10 @@ public interface SupportGroupMapper {
           JOIN nx_support_account_qualification_history scope_q ON scope_q.admin_id=a.id
         WHERE scope_member.group_id=#{group} AND a.status=1 AND a.is_deleted=0
           AND p.enabled=1 AND p.is_deleted=0 AND p.busy=0
-          AND (SELECT COUNT(*) FROM nx_support_agent_user_assignment auto_assignment
-               WHERE auto_assignment.agent_admin_id=a.id AND auto_assignment.status='ACTIVE'
-                 AND auto_assignment.is_deleted=0) &lt; p.max_concurrent
+          AND (p.max_concurrent IS NULL OR
+               (SELECT COUNT(*) FROM nx_support_agent_user_assignment auto_assignment
+                WHERE auto_assignment.agent_admin_id=a.id AND auto_assignment.status='ACTIVE'
+                  AND auto_assignment.is_deleted=0) &lt; p.max_concurrent)
           AND scope_q.qualification_kind='SERVICE' AND scope_q.state='ENABLED' AND
         """ + UNIQUE_MEMBER + " AND " + UNIQUE_QUALIFICATION + """
           AND EXISTS(SELECT 1 FROM nx_admin_role_relation rr JOIN nx_admin_role r ON r.id=rr.role_id

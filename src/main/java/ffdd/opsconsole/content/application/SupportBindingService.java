@@ -459,8 +459,8 @@ public class SupportBindingService {
 
     /**
      * Supervisor preview/confirm keeps the original candidate set so a frozen ticket is compared with
-     * the same facts. The automatic first-inquiry/fallback path applies the profile pause and
-     * capacity filters (skip busy and at-limit agents); ties are resolved randomly (2026-11-19).
+     * the same facts. Automatic first-inquiry and fallback assignment skip paused agents
+     * and enforce numeric caps. Agents with a null cap have unlimited capacity.
      */
     private List<Candidate> randomCandidates(Long customer,Long group,boolean automatic) {
         Map<String,Object> pool=mapper.poolAttempt(customer);
