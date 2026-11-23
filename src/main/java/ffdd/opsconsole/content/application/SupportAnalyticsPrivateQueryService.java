@@ -12,6 +12,8 @@ import ffdd.opsconsole.device.facade.SupportDeviceReadFacade.DeviceEvidence;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.user.domain.UserInviterView;
+import ffdd.opsconsole.user.domain.UserOpsRepository;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -28,17 +30,22 @@ public class SupportAnalyticsPrivateQueryService {
     private final SupportAnalyticsService stats;
     private final SupportAnalyticsMapper mapper;
     private final SupportFundsReadFacade funds;
+    private final UserOpsRepository users;
     // Existing AppWalletBillsService.allowed and EarningsReleaseService.ASSETS, not a new currency catalog.
     static final Set<String> CURRENCIES=Set.of("USDT","UVT");
     static final Set<Sort> SORTS=Collections.unmodifiableSet(EnumSet.allOf(Sort.class));
     private static final Set<View> FINANCIAL_DETAILS=EnumSet.of(View.NET_CONTRIBUTIONS,View.FIRST_DEPOSITS,View.FIRST_PURCHASES);
+    /** Inviter read failure is per-row evidence, never a reason to fail the whole customer page. */
+    private static final UserInviterView INVITER_UNREAD=UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED);
     public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper) {
-        this.ownership=Objects.requireNonNull(ownership);this.stats=Objects.requireNonNull(stats);this.mapper=Objects.requireNonNull(mapper);
-        this.funds=null;
+        this(ownership,stats,mapper,null,null);
+    }
+    public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper,SupportFundsReadFacade funds) {
+        this(ownership,stats,mapper,funds,null);
     }
     @Autowired
-    public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper,SupportFundsReadFacade funds) {
-        this.ownership=Objects.requireNonNull(ownership);this.stats=Objects.requireNonNull(stats);this.mapper=Objects.requireNonNull(mapper);this.funds=Objects.requireNonNull(funds);
+    public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper,SupportFundsReadFacade funds,UserOpsRepository users) {
+        this.ownership=Objects.requireNonNull(ownership);this.stats=Objects.requireNonNull(stats);this.mapper=Objects.requireNonNull(mapper);this.funds=funds;this.users=users;
     }
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
@@ -390,7 +397,10 @@ public class SupportAnalyticsPrivateQueryService {
     private List<Row> rows(Normalized q,SupportAnalyticsService.QueryEvaluation e,Sources s,List<SupportAnalyticsStats.Customer> selected) {
         List<Row> out=new ArrayList<>();Map<Long,SupportAnalyticsStats.Customer> roots=new HashMap<>();for(var c:selected)roots.put(c.customerId(),c);
         switch(q.view()) {
-            case OVERVIEW,CUSTOMERS,ACTIVITY -> {for(var c:selected)out.add(new Row(c.customerId(),"",customerSort(q,c,s),()->customer(c,s)));}
+            case OVERVIEW,CUSTOMERS,ACTIVITY -> {
+                Map<Long,UserInviterView> inviters=inviters(roots.keySet());
+                for(var c:selected)out.add(new Row(c.customerId(),"",customerSort(q,c,s),()->customer(c,s,inviters.get(c.customerId()))));
+            }
             case FINANCE -> {for(var f:e.evidence().selected)if(roots.containsKey(f.customerId())){var c=roots.get(f.customerId());Object sort=q.sortKey()==Sort.AMOUNT?f.amount():f.succeededAt();
                 out.add(new Row(f.customerId(),f.factId(),sort,map("customerId",Long.toString(f.customerId()),"customerNo",s.display().get(f.customerId()).customerNo(),"nickname",s.display().get(f.customerId()).nickname(),"kind",f.kind().name(),"currency",f.currency(),"amount",decimal(f.amount()),"succeededAt",time(f.succeededAt()),"orderNo",f.orderNo(),"historyStatus",e.evidence().firstHistory.get(f.customerId())==null?"UNKNOWN":e.evidence().firstHistory.get(f.customerId()).status().name())));}}
             case DEVICES -> {if(e.evidence().stock!=null){for(var d:e.evidence().stock.devices())if(roots.containsKey(d.customerId()) && SupportAnalyticsService.productionDevice(d)>=0)out.add(deviceRow(q,d,roots.get(d.customerId()),s,e.evidence(),SupportAnalyticsService.productionDevice(d)==0));for(var d:e.evidence().stock.unknownHoldingDevices())if(roots.containsKey(d.customerId()) && SupportAnalyticsService.productionDevice(d)>=0)out.add(deviceRow(q,d,roots.get(d.customerId()),s,e.evidence(),true));}}
@@ -423,10 +433,10 @@ public class SupportAnalyticsPrivateQueryService {
     static BigDecimal net(List<CustomerCurrencyTotals> totals,String currency){return totals.stream().filter(t->t.currency().equals(currency))
         .map(CustomerCurrencyTotals::net).filter(m->m.status()==Status.AVAILABLE && m.reasons().isEmpty())
         .map(Money::confirmedAmount).filter(Objects::nonNull).findFirst().orElse(null);}
-    private static Map<String,Object> customer(SupportAnalyticsStats.Customer c,Sources s) {
+    private static Map<String,Object> customer(SupportAnalyticsStats.Customer c,Sources s,UserInviterView inviter) {
         var d=s.display().get(c.customerId());var t=s.tasks().get(c.customerId());var m=c.metrics();var statistics=customerStatistics(c);
         var advisor=s.people().stream().filter(p->Objects.equals(p.id(),c.owner().agentId())).findFirst().orElse(null);
-        return map("customerId",Long.toString(c.customerId()),"customerNo",d.customerNo(),"nickname",d.nickname(),"avatar",customerAvatarRef(d),"level",level(d),
+        return map("customerId",Long.toString(c.customerId()),"customerNo",d.customerNo(),"nickname",d.nickname(),"avatar",customerAvatarRef(d),"level",level(d),"inviter",inviter(inviter),
             "customTags",s.tags().stream().filter(tg->tg.customerId().equals(c.customerId())).sorted(Comparator.comparing(CustomerTagRow::id)).map(CustomerTagRow::tag).toList(),
             "systemTags",systemTags(d),"systemTagsStatus","PARTIAL","profileRef","/api/admin/content/support-workbench/customers/"+c.customerId(),
             "registeredAt",time(d.registeredAt()),"assignedAt",utc(d.assignedAt()),"category",c.category().name(),"placement",c.placement().name(),"handoverRequired",c.handoverRequired(),"owner",map("agentId",id(c.owner().agentId()),"groupId",id(c.owner().groupId()),"agentName",advisor==null?null:advisor.nickname()==null?advisor.username():advisor.nickname(),"advisorAvatar",personAvatar(advisor),"advisorAvatarRef",personAvatarRef(advisor,c.customerId())),
@@ -435,6 +445,20 @@ public class SupportAnalyticsPrivateQueryService {
             "task",t==null?map("status","UNAVAILABLE"):map("status",s.taskRead().name(),"enabled",nullableBool(t.enabled()),"due",nullableBool(t.due()),"waitingReply",nullableBool(t.waitingReply()),"firstContact",nullableBool(t.firstContact()),"nextDueAt",utc(t.nextDueAt()),"waitingSinceAt",businessTime(t.waitingSinceAt())),"funds",funds(s,Set.of(c.customerId())));
     }
 
+    /** Direct sponsors for one page in a single read; scheme A keeps only userNo/nickname off-scope. */
+    private Map<Long,UserInviterView> inviters(Collection<Long> customerIds) {
+        if(customerIds==null || customerIds.isEmpty())return Map.of();
+        Map<Long,UserInviterView> out=new LinkedHashMap<>();
+        Map<Long,UserInviterView> found=Map.of();
+        if(users!=null)try {found=users.findInviters(customerIds);found=found==null?Map.of():found;}
+        catch(org.springframework.dao.DataAccessException | IllegalStateException ex) {LOG.warn("Support analytics inviter read unavailable: {}",ex.getClass().getSimpleName());}
+        for(Long id:customerIds)out.put(id,found.getOrDefault(id,INVITER_UNREAD));
+        return out;
+    }
+    private static Map<String,Object> inviter(UserInviterView view) {
+        UserInviterView v=view==null?INVITER_UNREAD:view;
+        return map("state",v.state().name(),"userNo",v.userNo(),"nickname",v.nickname(),"reason",v.reason()==null?null:v.reason().name());
+    }
     static Map<String,Object> customerStatistics(SupportAnalyticsStats.Customer c) {
         var m=c.metrics();var first=c.first().observedCandidate();
         return map("first",map("state",c.first().state().name(),"status",c.first().status().name(),"kind",first==null?null:first.kind(),"currency",first==null?null:first.currency(),"amount",first==null?null:decimal(first.amount()),"succeededAt",first==null?null:time(first.succeededAt())),
