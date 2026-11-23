@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS nx_support_agent_profile (
   position VARCHAR(64) NOT NULL,
   service_types VARCHAR(255) NOT NULL,
   tags VARCHAR(255) NOT NULL,
-  max_concurrent INT NOT NULL DEFAULT 10,
+  max_concurrent INT NULL DEFAULT NULL,
   enabled TINYINT NOT NULL DEFAULT 1,
   transferable TINYINT NOT NULL DEFAULT 1,
   busy TINYINT NOT NULL DEFAULT 0,

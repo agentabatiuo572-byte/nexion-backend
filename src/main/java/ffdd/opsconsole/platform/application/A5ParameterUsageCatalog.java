@@ -109,8 +109,8 @@ final class A5ParameterUsageCatalog {
             disclosure.gate.staking|质押相关业务的风险披露确认入口配置。|AppRepurchaseService; OpsGrowthService
             risk.k1.release.version|多账户释放规则的配置版本标识，供已发布促销关联版本时核对。|PromotionNativeContractResolver
             content.support.load.version|客服负载管理配置版本，保存时用于检查旧配置。|OpsSupportLoadConfigService
-            content.support.load.defaultCap|客服负载视图中的默认接待上限；这里不代表所有分配入口都据此过滤。|OpsSupportLoadConfigService
-            content.support.load.burstCap|客服负载管理的突发上限设置；未据此承诺所有会话入口强制执行。|OpsSupportLoadConfigService
+            content.support.load.defaultCap|客服负载管理视图的默认值。自动分配读取客服档案的同时接待上限，空值表示不限制。|OpsSupportLoadConfigService; SupportGroupMapper
+            content.support.load.burstCap|客服负载管理视图保留的突发上限。自动分配读取客服档案的同时接待上限，空值表示不限制。|OpsSupportLoadConfigService; SupportGroupMapper
             content.support.load.warnPct|仅管理读取：负载告警比例配置，单位百分比；未据此认定有告警发送。|OpsSupportLoadConfigService
             content.support.load.autoBalance|仅管理读取：客服负载自动均衡开关配置；未据此认定所有分配流程自动均衡。|OpsSupportLoadConfigService
             content.support.load.quietHourBalance|仅管理读取：安静时段均衡选项；未确认任务调度消费者。|OpsSupportLoadConfigService
@@ -154,7 +154,7 @@ final class A5ParameterUsageCatalog {
         if (agent.matches()) {
             String meaning = "busy".equals(agent.group(1))
                     ? "未确认：管理负载视图的忙碌状态取自当前坐席可用性；未核实此旧键另有生效消费者。"
-                    : "仅管理读取：该坐席配置的接待上限；不代表所有分配路径均强制执行。";
+                    : "客服负载管理视图保留的坐席上限。自动分配读取客服档案的同时接待上限，空值表示不限制。";
             return new Usage(meaning, "OpsSupportLoadConfigService");
         }
         if (key.startsWith("finance.topup.channel.card.") || key.startsWith("finance.topup.card.")

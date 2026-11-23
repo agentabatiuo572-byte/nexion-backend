@@ -54,7 +54,7 @@ public interface SupportAgentRepository {
             String position,
             List<String> serviceTypes,
             List<String> tags,
-            int maxConcurrent,
+            Integer maxConcurrent,
             LocalDateTime now);
 
     void updateProfile(
@@ -63,7 +63,7 @@ public interface SupportAgentRepository {
             String position,
             List<String> serviceTypes,
             List<String> tags,
-            int maxConcurrent,
+            Integer maxConcurrent,
             boolean enabled,
             boolean transferable,
             boolean busy,
@@ -75,7 +75,7 @@ public interface SupportAgentRepository {
             String position,
             List<String> serviceTypes,
             List<String> tags,
-            int maxConcurrent,
+            Integer maxConcurrent,
             boolean enabled,
             boolean transferable,
             boolean busy,

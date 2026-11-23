@@ -152,7 +152,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
               position VARCHAR(64) NOT NULL,
               service_types VARCHAR(255) NOT NULL,
               tags VARCHAR(255) NOT NULL,
-              max_concurrent INT NOT NULL DEFAULT 10,
+              max_concurrent INT NULL DEFAULT NULL,
               enabled TINYINT NOT NULL DEFAULT 1,
               transferable TINYINT NOT NULL DEFAULT 1,
               busy TINYINT NOT NULL DEFAULT 0,
@@ -351,7 +351,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
               admin_id, seat_type, position, service_types, tags, max_concurrent, enabled, transferable, busy,
               created_at, updated_at, is_deleted
             ) VALUES (
-              #{adminId}, #{seatType}, #{position}, #{serviceTypes}, #{tags}, #{maxConcurrent}, 1, 1, 0,
+              #{adminId}, #{seatType}, #{position}, #{serviceTypes}, #{tags}, #{maxConcurrent,jdbcType=INTEGER}, 1, 1, 0,
               #{now}, #{now}, 0
             )
             ON DUPLICATE KEY UPDATE
@@ -362,7 +362,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                              @Param("position") String position,
                              @Param("serviceTypes") String serviceTypes,
                              @Param("tags") String tags,
-                             @Param("maxConcurrent") int maxConcurrent,
+                             @Param("maxConcurrent") Integer maxConcurrent,
                              @Param("now") LocalDateTime now);
 
     @Update("""
@@ -371,7 +371,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                    position=#{position},
                    service_types=#{serviceTypes},
                    tags=#{tags},
-                   max_concurrent=#{maxConcurrent},
+                   max_concurrent=#{maxConcurrent,jdbcType=INTEGER},
                    enabled=#{enabled},
                    transferable=#{transferable},
                    busy=#{busy},
@@ -384,7 +384,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                       @Param("position") String position,
                       @Param("serviceTypes") String serviceTypes,
                       @Param("tags") String tags,
-                      @Param("maxConcurrent") int maxConcurrent,
+                      @Param("maxConcurrent") Integer maxConcurrent,
                       @Param("enabled") int enabled,
                       @Param("transferable") int transferable,
                       @Param("busy") int busy,
@@ -393,7 +393,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
     @Update("""
             UPDATE nx_support_agent_profile
                SET seat_type=#{seatType}, position=#{position}, service_types=#{serviceTypes}, tags=#{tags},
-                   max_concurrent=#{maxConcurrent}, enabled=#{enabled}, transferable=#{transferable}, busy=#{busy},
+                   max_concurrent=#{maxConcurrent,jdbcType=INTEGER}, enabled=#{enabled}, transferable=#{transferable}, busy=#{busy},
                    version=version+1, updated_at=#{now}, is_deleted=0
              WHERE admin_id=#{adminId} AND version=#{expectedVersion} AND is_deleted=0
             """)
@@ -402,7 +402,7 @@ public interface SupportAgentMapper extends BaseMapper<SupportAgentProfileEntity
                          @Param("position") String position,
                          @Param("serviceTypes") String serviceTypes,
                          @Param("tags") String tags,
-                         @Param("maxConcurrent") int maxConcurrent,
+                         @Param("maxConcurrent") Integer maxConcurrent,
                          @Param("enabled") int enabled,
                          @Param("transferable") int transferable,
                          @Param("busy") int busy,
