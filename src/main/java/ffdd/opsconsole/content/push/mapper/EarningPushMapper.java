@@ -99,7 +99,7 @@ public interface EarningPushMapper {
                (SELECT t.task_class FROM nx_simulated_task t WHERE t.receipt_no=e.receipt_no LIMIT 1) taskClass,
                (SELECT d.id FROM nx_earning_event x JOIN nx_user_device d ON d.id=x.user_device_id
                  WHERE x.receipt_no=e.receipt_no AND x.user_id=e.user_id AND x.is_deleted=0 ORDER BY x.id LIMIT 1) deviceId
-          FROM nx_earning_event e
+          FROM nx_visible_earning_event e
           JOIN nx_earning_notification_cutover c ON c.id=1
          WHERE e.user_id=#{userId} AND e.is_deleted=0 AND e.status='POSTED' AND e.amount>0
            AND e.receipt_no IS NOT NULL AND e.receipt_no<>''
