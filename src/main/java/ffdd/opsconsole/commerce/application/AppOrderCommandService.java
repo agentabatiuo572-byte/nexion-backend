@@ -154,6 +154,34 @@ public class AppOrderCommandService {
         return execute("ORDER_CANCEL", userId, normalized, idempotencyKey, () -> cancelProduction(userId, normalized));
     }
 
+    /**
+     * Hide one of the caller's doubly-expired orders from their own order list. The order row,
+     * payment state, operations reads, refunds and audit history remain untouched.
+     */
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> hide(Long userId, String orderNo, String idempotencyKey) {
+        if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) {
+            return ApiResult.fail(422, "ORDER_HIDE_INPUT_INVALID");
+        }
+        if (!StringUtils.hasText(idempotencyKey)) return ApiResult.fail(400, "IDEMPOTENCY_KEY_REQUIRED");
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && !Integer.valueOf(TransactionDefinition.ISOLATION_READ_COMMITTED).equals(
+                        TransactionSynchronizationManager.getCurrentTransactionIsolationLevel())) {
+            return ApiResult.fail(503, "ORDER_HIDE_ISOLATION_UNAVAILABLE");
+        }
+        if (sandboxGuard.isLocalSandboxEnabled()) return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
+        if (!sandboxGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
+        }
+        String normalized = orderNo.trim();
+        // Same account lock order as cancel/payment; the idempotency action then locks the order.
+        CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
+        if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
+        return execute("ORDER_HIDE", userId, normalized, idempotencyKey,
+                () -> hideProduction(userId, normalized));
+    }
+
     /** User-confirmed checkout payment. Commerce settles only from the canonical NexGrid wallet. */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
     public ApiResult<Map<String, Object>> pay(Long userId, String orderNo, String idempotencyKey) {
@@ -643,6 +671,28 @@ public class AppOrderCommandService {
                 "paymentStatus", "PAID", "orderStatus", "PAID", "canonicalStatus", result.canonicalStatus(),
                 "amountUsdt", order.amountUsdt(), "paidTotalUsdt",order.amountUsdt().setScale(2,java.math.RoundingMode.HALF_UP).toPlainString(),
                 "source", "mock", "sourceEnvironment", "SANDBOX", "runId", runId));
+    }
+
+    private ApiResult<Map<String, Object>> hideProduction(Long userId, String orderNo) {
+        AppOrderCommandMapper.OrderRow order = mapper.lockOrder(orderNo);
+        if (order == null || !userId.equals(order.userId())) return ApiResult.fail(403, "ORDER_FORBIDDEN");
+        if (!"EXPIRED".equalsIgnoreCase(order.orderStatus())
+                || !"EXPIRED".equalsIgnoreCase(order.paymentStatus())) {
+            return ApiResult.fail(409, "ORDER_NOT_HIDEABLE");
+        }
+        if (mapper.hideExpiredOrder(orderNo, userId) != 1) {
+            return ApiResult.fail(409, "ORDER_NOT_HIDEABLE");
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("orderNo", orderNo);
+        data.put("hidden", true);
+        data.put("paymentStatus", order.paymentStatus());
+        data.put("orderStatus", order.orderStatus());
+        data.put("serverCanonical", true);
+        data.put("source", "server");
+        data.put("sourceEnvironment", "PRODUCTION");
+        data.put("runId", "");
+        return ApiResult.ok(data);
     }
 
     private ApiResult<Map<String, Object>> cancelProduction(Long userId, String orderNo) {

@@ -1044,6 +1044,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                    ))
                AND ud.user_id = o.user_id AND ud.is_deleted = 0
              WHERE o.user_id = #{userId} AND o.is_deleted = 0
+               AND NOT (UPPER(o.payment_status) = 'EXPIRED'
+                        AND UPPER(o.order_status) = 'EXPIRED'
+                        AND o.user_hidden_at IS NOT NULL)
                <if test="beforeOrderNo != null and beforeOrderNo != ''">
                AND EXISTS (
                    SELECT 1 FROM nx_order cursor_order

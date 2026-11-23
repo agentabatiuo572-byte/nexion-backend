@@ -380,6 +380,13 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
             """)
     DevelopmentPayOrder lockDevelopmentPayOrder(@Param("orderNo") String orderNo);
 
+    @Update("""
+            UPDATE nx_order SET user_hidden_at=COALESCE(user_hidden_at,NOW(6))
+             WHERE order_no=#{orderNo} AND user_id=#{userId} AND is_deleted=0
+               AND UPPER(payment_status)='EXPIRED' AND UPPER(order_status)='EXPIRED'
+            """)
+    int hideExpiredOrder(@Param("orderNo") String orderNo, @Param("userId") Long userId);
+
     @Select("""
             SELECT COUNT(*)
               FROM nx_order o
