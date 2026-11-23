@@ -43,9 +43,9 @@ public interface SupportPerformanceExportMapper {
             + " VALUES(#{requestKey}, #{requesterId}, NOW())")
     int insertRequest(@Param("requestKey") String requestKey, @Param("requesterId") Long requesterId);
 
-    @Select("SELECT id FROM nx_support_performance_export_request WHERE requester_id=#{requesterId}"
-            + " ORDER BY id DESC LIMIT 1")
-    Long latestRequestId(@Param("requesterId") Long requesterId);
+    /** The batch id of this command only; parallel commands from one account never cross. */
+    @Select("SELECT LAST_INSERT_ID()")
+    Long lastInsertId();
 
     /** An original command key or the numeric batch id both locate this account's batch. */
     @Select("<script>SELECT id FROM nx_support_performance_export_request WHERE requester_id=#{requesterId}"
@@ -96,13 +96,16 @@ public interface SupportPerformanceExportMapper {
     long countMine(@Param("requesterId") Long requesterId, @Param("types") List<String> types,
                    @Param("requestIds") List<String> requestIds);
 
+    /** Every frozen group of the task must sit inside the reviewer's current groups. */
     String APPROVAL_FILTER = " FROM nx_support_performance_export_task"
             + " WHERE status='PENDING_APPROVAL' AND task_type IN ('CUSTOMER_DETAIL','TRANSACTION_DETAIL')"
             + " AND is_deleted=0"
             + "<if test='!allScope'> AND JSON_UNQUOTE(JSON_EXTRACT(scope_json,'$.kind'))='MANAGED_GROUPS'"
             + "<if test='groupIds == null or groupIds.isEmpty()'> AND 1=0</if>"
-            + "<if test='groupIds != null and !groupIds.isEmpty()'> AND JSON_LENGTH(JSON_EXTRACT(scope_json,'$.groupIds'))&lt;=#{groupIds.size}"
-            + "<foreach collection='groupIds' item='gid'> AND JSON_CONTAINS(JSON_EXTRACT(scope_json,'$.groupIds'), JSON_QUOTE(#{gid}))</foreach></if></if>";
+            + "<if test='groupIds != null and !groupIds.isEmpty()'> AND NOT EXISTS(SELECT 1 FROM JSON_TABLE("
+            + "JSON_EXTRACT(scope_json,'$.groupIds'),'$[*]' COLUMNS(frozen VARCHAR(64) PATH '$')) frozen_groups"
+            + " WHERE frozen_groups.frozen NOT IN"
+            + "<foreach collection='groupIds' item='gid' open='(' separator=',' close=')'>#{gid}</foreach>)</if></if>";
 
     @Select("<script>SELECT " + TASK_COLUMNS + APPROVAL_FILTER
             + " ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}</script>")
