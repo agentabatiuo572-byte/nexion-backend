@@ -312,16 +312,16 @@ public class AppHomeOverviewService {
         return linked("workloads", workloads, "deviceRankings", rankings);
     }
 
-    /** The owned device plus the published band of its own monthly target; both feed the daily range. */
-    private record OwnedBase(OwnedDeviceRow row, BigDecimal bandPct) { }
+    /** The owned device plus its product's published monthly target and band for the daily range. */
+    private record OwnedBase(OwnedDeviceRow row, BigDecimal monthlyTargetUsdt, BigDecimal bandPct) { }
 
     private OwnedBase highestCurrentDevice(Long userId,boolean sandbox) {
         var candidates=mapper.activeDeviceCandidates(userId,sandbox);
         var current=monthlyTargets.projections(candidates.stream().map(OwnedDeviceRow::id).toList());
         return candidates.stream().map(d->{
             var p=current.get(d.id());
-            return p==null || p.target()==null ? new OwnedBase(d,null)
-                    : new OwnedBase(new OwnedDeviceRow(d.name(),d.productCode(),d.productTier(),d.deviceType(),p.daily(),d.id(),d.seriesCode()),p.band());
+            return p==null || p.target()==null ? new OwnedBase(d,null,null)
+                    : new OwnedBase(new OwnedDeviceRow(d.name(),d.productCode(),d.productTier(),d.deviceType(),p.daily(),d.id(),d.seriesCode()),p.target(),p.band());
         }).filter(b->b.row().dailyUsdt()!=null && b.row().dailyUsdt().signum()>0)
             .max(java.util.Comparator.comparing((OwnedBase b)->b.row().dailyUsdt()).thenComparing(b->-b.row().id())).orElse(null);
     }
@@ -362,8 +362,8 @@ public class AppHomeOverviewService {
                 "basis", "OWNED_DEVICE_TO_NEXT_CATALOG_PRODUCT",
                 "base", linked("kind", baseKind, "productNo", text(base.productCode()), "name", text(base.name()),
                         "imageUrl", images.get(java.util.Objects.toString(base.productCode(), "")), "dailyUsdt", nonNegative(base.dailyUsdt()),
-                        "dailyEstimateLowUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyLowOf(base.dailyUsdt(), owned.bandPct()),
-                        "dailyEstimateHighUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyHighOf(base.dailyUsdt(), owned.bandPct())),
+                        "dailyEstimateLowUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyLow(owned.monthlyTargetUsdt(), owned.bandPct()),
+                        "dailyEstimateHighUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyHigh(owned.monthlyTargetUsdt(), owned.bandPct())),
                 "target", linked("productNo", text(target.productNo()), "kind", targetKind,
                         "name", text(target.name()), "imageUrl", images.get(target.productNo()),
                         "dailyUsdt", nonNegative(target.dailyUsdt()),
