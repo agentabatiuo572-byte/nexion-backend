@@ -11,13 +11,21 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity> {
+    String SUPPORT_PROCESSING_WITHDRAWAL_STATUSES =
+            "('SUBMITTED','PENDING','REVIEW_PENDING','REVIEWING','EXTENDED_HOLD','DELAYED',"
+                    + "'REVIEW_PASSED','PENDING_CHAIN','PROCESSING','SENT','CHAIN_SUBMITTED') ";
+
     @Select("""
       SELECT asset currency,
        SUM(CASE WHEN status IN ('CONFIRMED','SUCCESS') AND completed_at IS NOT NULL THEN amount ELSE 0 END) principal,
        SUM(CASE WHEN status IN ('CONFIRMED','SUCCESS') AND completed_at IS NOT NULL THEN d2_actual_fee ELSE 0 END) actualFee,
        SUM(CASE WHEN status IN ('CONFIRMED','SUCCESS') AND completed_at IS NOT NULL THEN d2_net_receive ELSE 0 END) net,
-       SUM(CASE WHEN status IN ('SUBMITTED','PENDING','REVIEW_PENDING','REVIEWING','EXTENDED_HOLD','DELAYED',
-         'REVIEW_PASSED','PENDING_CHAIN','PROCESSING','SENT','CHAIN_SUBMITTED') THEN amount ELSE 0 END) processing,
+       SUM(CASE WHEN status IN
+      """ + SUPPORT_PROCESSING_WITHDRAWAL_STATUSES + """
+           THEN amount ELSE 0 END) processing,
+       SUM(CASE WHEN status IN
+      """ + SUPPORT_PROCESSING_WITHDRAWAL_STATUSES + """
+           AND amount<0 THEN 1 ELSE 0 END) negativeProcessingPrincipalRows,
        SUM(CASE WHEN status IN ('CONFIRMED','SUCCESS') AND (completed_at IS NULL OR amount<0) THEN 1 ELSE 0 END) principalAnomalies,
        SUM(CASE WHEN status IN ('CONFIRMED','SUCCESS') AND (completed_at IS NULL OR d2_actual_fee IS NULL
          OR d2_net_receive IS NULL OR d2_actual_fee<0 OR d2_net_receive<0 OR d2_actual_fee+d2_net_receive<>amount) THEN 1 ELSE 0 END) settlementAnomalies,

@@ -47,7 +47,12 @@ public class FinanceSupportReadService {
             put(row,"successfulWithdrawalPrincipalTotal",withdrawal,"principal","principalAnomalies",zero);
             put(row,"successfulWithdrawalFeeTotal",withdrawal,"actualFee","settlementAnomalies",false);
             put(row,"successfulWithdrawalNetTotal",withdrawal,"net","settlementAnomalies",false);
-            put(row,"processingWithdrawalPrincipalTotal",withdrawal,"processing","processingAnomalies",zero);
+            if (zero && ((Number)withdrawal.get("negativeProcessingPrincipalRows")).longValue() > 0) {
+                row.put("processingWithdrawalPrincipalTotal",null);
+                statuses(row).put("processingWithdrawalPrincipalTotal","UNKNOWN");
+            } else {
+                put(row,"processingWithdrawalPrincipalTotal",withdrawal,"processing","processingAnomalies",zero);
+            }
         }
         for(var anomaly:deposits.supportCreditAnomalies(customer)) {
             if(((Number)anomaly.get("anomalies")).longValue()>0) {
