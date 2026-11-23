@@ -115,6 +115,12 @@ public class SupportPerformanceExportService {
             String status = text(item.get("status"));
             if ("LIMIT_EXCEEDED".equals(status)) throw new BizException(422, "EXPORT_ROW_LIMIT");
             if ("EMPTY".equals(status)) throw new BizException(422, "EXPORT_EMPTY");
+            Object reasons = item.get("reasonCodes");
+            boolean denied = reasons instanceof List<?> codes
+                    && codes.stream().anyMatch(code -> "PERMISSION_DENIED".equals(String.valueOf(code)));
+            if ("UNAVAILABLE".equals(status) && denied) {
+                throw new BizException(403, "PERMISSION_DENIED");
+            }
             if (!"AVAILABLE".equals(status)) throw new BizException(503, "EXPORT_SOURCE_UNAVAILABLE");
         }
         mapper.insertRequest(idempotencyKey, actor);
@@ -324,21 +330,16 @@ public class SupportPerformanceExportService {
         }
         String month = text(request == null ? null : request.get("month"));
         Scope scope = resolveScope(actor, request == null ? null : request.get("scope"));
-        if ("MANAGED_GROUPS".equals(scope.kind()) && !supervisorCurrent(actor)) {
-            throw new BizException(403, "PERMISSION_DENIED");
-        }
         List<Type> types = types(request == null ? null : request.get("types"));
         List<Type> permitted = allowedTypes(actor);
-        for (Type type : types) {
-            if (!permitted.contains(type)) throw new BizException(403, "PERMISSION_DENIED");
-        }
+        if (types.stream().noneMatch(permitted::contains)) throw new BizException(403, "PERMISSION_DENIED");
         Window window = month == null ? null : facts.window(month, scope);
         List<Map<String, Object>> items = new ArrayList<>();
         List<TableItem> tables = new ArrayList<>();
         StringBuilder seed = new StringBuilder(month + "|" + scope.kind() + "|" + String.join(",", scope.groupIds()));
         if (window != null) seed.append("|").append(window.sourceVersion()).append("|").append(window.asOf());
         for (Type type : types) {
-            boolean allowed = ownsType(type.name(), actor);
+            boolean allowed = permitted.contains(type);
             Table table = !allowed || window == null ? null : facts.read(type, window, scope);
             Map<String, Object> item = item(type, table, allowed, window);
             items.add(item);
@@ -548,6 +549,7 @@ public class SupportPerformanceExportService {
 
     private boolean outCapable(Long actor) {
         if (superAdmin()) return true;
+        if (!selfEmployed(actor)) return false;
         if (!ownedGroups().isEmpty()) return true;
         // A supervisor qualification without owned groups blocks exports entirely.
         return !managerQualified();
@@ -580,19 +582,39 @@ public class SupportPerformanceExportService {
         return scopes;
     }
 
-    /** Ordinary customer-service employment only buys the applicant's own summary. */
-    private boolean supervisorCurrent(Long actor) {
+    /** Formal employment modes; an empty list means no current support qualification at all. */
+    private List<ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode> employmentModes(Long actor) {
         try {
             var modes = ownership.availableReadModes(actor);
-            return modes != null && (modes.contains(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED)
-                    || modes.contains(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL));
+            return modes == null ? List.of() : modes;
         } catch (RuntimeException ex) {
-            return false;
+            return List.of();
         }
+    }
+
+    private boolean supervisorCurrent(Long actor) {
+        List<ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode> modes = employmentModes(actor);
+        return modes.contains(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED)
+                || modes.contains(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL);
+    }
+
+    private boolean selfEmployed(Long actor) {
+        return !employmentModes(actor).isEmpty();
+    }
+
+    /** Ordinary customer-service employment only buys the applicant's own summary. */
+    private boolean employmentAllows(Long actor, TaskRow task) {
+        if (!selfEmployed(actor)) return false;
+        boolean supervisor = supervisorCurrent(actor);
+        String kind = text(readMap(task.scopeJson()).get("kind"));
+        if ("MANAGED_GROUPS".equals(kind) && !supervisor) return false;
+        if ("SELF".equals(kind) && !"SUMMARY".equals(task.taskType()) && !supervisor) return false;
+        return true;
     }
 
     private List<Type> allowedTypes(Long actor) {
         List<Type> types = new ArrayList<>();
+        if (!selfEmployed(actor)) return types;
         if (owns(SUMMARY_PERMISSION)) types.add(Type.SUMMARY);
         if (supervisorCurrent(actor) && owns(DETAIL_PERMISSION)) {
             types.add(Type.CUSTOMER_DETAIL);
@@ -602,6 +624,7 @@ public class SupportPerformanceExportService {
     }
 
     private Scope resolveScope(Long actor, Object raw) {
+        if (!selfEmployed(actor)) throw new BizException(403, "PERMISSION_DENIED");
         Map<String, Object> scope = raw instanceof Map<?, ?> map ? toStringMap(map) : Map.of();
         String kind = text(scope.get("kind"));
         kind = kind == null || kind.isBlank() ? "SELF" : kind.toUpperCase(Locale.ROOT);
@@ -610,6 +633,7 @@ public class SupportPerformanceExportService {
         if ("ALL".equals(kind) && !superAdmin()) throw new BizException(403, "PERMISSION_DENIED");
         if ("MANAGED_GROUPS".equals(kind)) {
             if (groupIds.isEmpty()) throw new BizException(422, "EXPORT_REQUEST_INVALID");
+            if (!supervisorCurrent(actor)) throw new BizException(403, "PERMISSION_DENIED");
             Set<String> owned = ownedGroups().stream().map(String::valueOf).collect(java.util.stream.Collectors.toSet());
             if (!owned.containsAll(groupIds)) throw new BizException(403, "PERMISSION_DENIED");
         }
@@ -672,19 +696,7 @@ public class SupportPerformanceExportService {
                 ? codes.contains(SUMMARY_PERMISSION)
                 : codes.contains(DETAIL_PERMISSION);
         if (!read || !typed) return false;
-        List<ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode> modes;
-        try {
-            modes = ownership.availableReadModes(applicant);
-        } catch (RuntimeException ex) {
-            return false;
-        }
-        if (modes == null || modes.isEmpty()) return false;
-        boolean supervisor = supervisorCurrent(applicant);
-        String kind = text(readMap(task.scopeJson()).get("kind"));
-        if ("MANAGED_GROUPS".equals(kind) && !supervisor) return false;
-        // An ordinary customer-service agent may only export its own summary.
-        if ("SELF".equals(kind) && !"SUMMARY".equals(task.taskType()) && !supervisor) return false;
-        return true;
+        return employmentAllows(applicant, task);
     }
 
     /** Frozen groups and disclosed customers must still be readable by the original applicant. */
@@ -759,7 +771,8 @@ public class SupportPerformanceExportService {
         boolean fileLive = task.fileCreatedAt() == null
                 || !task.fileCreatedAt().plusDays(FILE_RETENTION_DAYS).isBefore(LocalDateTime.now());
         out.put("canDownload", "READY".equals(task.status()) && self && readCode() && ownsType(task.taskType(), actor)
-                && scopeStillAllowed(actor, task) && disclosedCustomersAllowed(task) && fileLive);
+                && employmentAllows(actor, task) && scopeStillAllowed(actor, task)
+                && disclosedCustomersAllowed(task) && fileLive);
         boolean pending = "PENDING_APPROVAL".equals(task.status());
         out.put("decisionCapabilities", Map.of(
                 "APPROVE", decisionCapability(pending, self, task),
