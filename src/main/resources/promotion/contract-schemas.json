@@ -2045,6 +2045,12 @@
             "type": ["string", "null"],
             "format": "date-time"
           },
+          "firstPurchaseCondition": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/PublicFirstPurchaseCondition" },
+              { "type": "null" }
+            ]
+          },
           "rewardRules": {
             "type": "array",
             "items": {
@@ -2070,6 +2076,26 @@
           "eligibility",
           "eligibilityMessage",
           "rewardRules"
+        ],
+        "additionalProperties": false
+      },
+      "PublicFirstPurchaseCondition": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "FIRST_ELIGIBLE_ORDER",
+              "FIRST_ELIGIBLE_UNIT"
+            ]
+          },
+          "restoreAfterRefund": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mode",
+          "restoreAfterRefund"
         ],
         "additionalProperties": false
       },
