@@ -15,14 +15,14 @@ public class PhoneInstallationController {
     private final PhoneInstallationService service;
     private final OnboardingCalibrationService calibration;
     public record InstallationRequest(String deviceId) { }
-    public record RecoveryRequest(String deviceId, String recoveryKey) { }
+    public record RecoveryRequest(String deviceId, String recoveryKey, String platform) { }
 
     @PostMapping("/recovery")
     @org.springframework.transaction.annotation.Transactional
     public ApiResult<Map<String, Object>> recover(@RequestBody RecoveryRequest request, Authentication authentication) {
         service.requireCurrent(authentication, request.deviceId(), true);
-        return ApiResult.ok(calibration.recoverIosPhone(Long.parseLong(String.valueOf(authentication.getPrincipal())),
-                request.deviceId(), request.recoveryKey()));
+        return ApiResult.ok(calibration.recoverPhone(Long.parseLong(String.valueOf(authentication.getPrincipal())),
+                request.deviceId(), request.recoveryKey(), request.platform()));
     }
 
     @PostMapping("/login")

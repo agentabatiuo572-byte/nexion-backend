@@ -213,6 +213,12 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> activate(Long userId, ActionRequest request, Authentication authentication,
                                                     String recoveryKey) {
+        return activate(userId, request, authentication, recoveryKey, "ios");
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> activate(Long userId, ActionRequest request, Authentication authentication,
+                                                    String recoveryKey, String recoveryPlatform) {
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
         if (!validAction(request) || Boolean.TRUE.equals(request.initialOnly()))
             return ApiResult.fail(422, "ONBOARDING_ACTIVATION_REQUEST_INVALID");
@@ -263,8 +269,9 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         Long device = bindPhoneDevice(userId, current, scope, instanceNo);
         if (mapper.savePhoneBinding(userId, deviceId, device, hardwareKey(current), scope.sourceEnvironment(), scope.runId()) < 1)
             throw new BizException(503, "ONBOARDING_PHONE_BIND_FAILED");
-        if (recoveryKey != null && recoveryKey.matches("[a-f0-9]{64}") && isIosCalibration(current)) {
-            mapper.enrollPhoneRecoveryKey(userId, scope.sourceEnvironment(), scope.runId(), deviceId, phoneRecoveryHash(recoveryKey));
+        if (recoveryKey != null && recoveryKey.matches("[a-f0-9]{64}") && matchesPhonePlatform(current, recoveryPlatform)) {
+            mapper.enrollPhoneRecoveryKey(userId, scope.sourceEnvironment(), scope.runId(), deviceId,
+                    phoneRecoveryHash(recoveryPlatform, recoveryKey));
         }
         if (!scope.sandbox()) {
             mapper.restoreBoundPhoneRuntime(userId, device);
@@ -503,9 +510,12 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
 
     /** The entry point locks the account and verifies the current native APP session first. */
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
-    public Map<String, Object> recoverIosPhone(long userId, String installationId, String recoveryKey) {
+    public Map<String, Object> recoverPhone(long userId, String installationId, String recoveryKey, String requestedPlatform) {
         if (recoveryKey == null || !recoveryKey.matches("[a-f0-9]{64}"))
             throw new BizException(422, "PHONE_RECOVERY_KEY_INVALID");
+        String platform = requestedPlatform == null ? "ios" : requestedPlatform;
+        if (!"ios".equals(platform) && !"android".equals(platform))
+            throw new BizException(422, "PHONE_RECOVERY_PLATFORM_INVALID");
         Scope scope = scope(userId);
         String environment = scope.sourceEnvironment();
         String runId = scope.runId();
@@ -513,7 +523,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         var unavailable = Map.<String, Object>of("status", "UNAVAILABLE");
         if (binding == null) return unavailable;
         String enrolledHash = mapper.phoneRecoveryKeyHash(userId, environment, runId);
-        String submittedHash = phoneRecoveryHash(recoveryKey);
+        String submittedHash = phoneRecoveryHash(platform, recoveryKey);
         boolean sameInstallation = binding.installationId().equals(installationId);
         if (enrolledHash == null ? !sameInstallation : !MessageDigest.isEqual(
                 enrolledHash.getBytes(StandardCharsets.US_ASCII), submittedHash.getBytes(StandardCharsets.US_ASCII))) {
@@ -523,7 +533,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         if (active == null || !Boolean.TRUE.equals(active.serverCanonical()) || !"ACTIVE".equals(active.activationStatus())
                 || !binding.userDeviceId().equals(active.userDeviceId())
                 || mapper.ownedPhoneInstance(userId, environment, runId, binding.userDeviceId()) == null) return unavailable;
-        if (!isIosCalibration(active)) return unavailable;
+        if (!matchesPhonePlatform(active, platform)) return unavailable;
         if (sameInstallation) {
             if (enrolledHash == null && mapper.enrollPhoneRecoveryKey(userId, environment, runId, installationId, submittedHash) != 1)
                 throw new BizException(409, "BINDING_VERSION_CHANGED");
@@ -533,7 +543,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             mapper.lockPhoneDevices(userId);
             if (mapper.phoneReplacementHardPause(userId, binding.userDeviceId()) != null) return unavailable;
         }
-        String receiptKey = "ios-recovery:" + java.util.UUID.randomUUID();
+        String receiptKey = platform + "-recovery:" + java.util.UUID.randomUUID();
         if (mapper.recoverPhoneCalibration(userId, environment, runId, binding.installationId(), installationId,
                 receiptKey, sha256(receiptKey)) < 1
                 || mapper.retireRecoveredCalibration(userId, environment, runId, binding.installationId()) != 1
@@ -549,13 +559,13 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         return Map.of("status", "RESTORED");
     }
 
-    private String phoneRecoveryHash(String key) {
-        return sha256("ios-phone-recovery-v1:" + key);
+    private String phoneRecoveryHash(String platform, String key) {
+        return sha256(platform + "-phone-recovery-v1:" + key);
     }
 
-    private boolean isIosCalibration(CalibrationRow row) {
+    private boolean matchesPhonePlatform(CalibrationRow row, String platform) {
         try {
-            return "ios".equals(PhoneCalibrationPolicy.normalize(JSON.readValue(row.signalJson(), Signals.class).platform()));
+            return platform.equals(PhoneCalibrationPolicy.normalize(JSON.readValue(row.signalJson(), Signals.class).platform()));
         } catch (JsonProcessingException invalid) {
             throw new BizException(503, "ONBOARDING_CALIBRATION_PAYLOAD_INVALID");
         }
