@@ -508,6 +508,9 @@ public class OpsNovaService {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RUNTIME_SOURCE_UNSUPPORTED");
         }
         boolean enabled = request.enabled() == null ? current.get().enabled() : request.enabled();
+        if (enabled && NovaRuntimeAdapterCatalog.RETIRED_CHANNELS.contains(normalizedKey)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RETIRED");
+        }
         if (enabled && !current.get().enabled() && novaRepository.template(normalizedKey)
                 .filter(template -> "PUBLISHED".equals(template.status()))
                 .isEmpty()) {
@@ -557,6 +560,9 @@ public class OpsNovaService {
         }
         if (request.enabled() == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_ENABLED_REQUIRED");
+        }
+        if (request.enabled() && NovaRuntimeAdapterCatalog.RETIRED_CHANNELS.contains(normalizedKey)) {
+            return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "NOVA_CHANNEL_RETIRED");
         }
         novaRepository.ensureTables();
         Optional<NovaChannelView> current = novaRepository.channel(normalizedKey);

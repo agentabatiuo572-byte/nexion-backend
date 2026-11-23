@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AppNotificationPreferenceController {
     private static final Set<String> CATEGORIES = Set.of(
-            "commission", "team", "staking", "market", "genesis", "system");
+            "commission", "team", "staking", "market", "genesis", "system", "earningPush");
     private final NotificationPreferenceService service;
 
     @GetMapping
@@ -37,7 +37,13 @@ public class AppNotificationPreferenceController {
             if (!CATEGORIES.contains(entry.getKey())) {
                 return ApiResult.fail(422, "NOTIFICATION_PREFERENCES_CATEGORY_INVALID");
             }
-            if (!(entry.getValue() instanceof Boolean)) {
+            if ("earningPush".equals(entry.getKey())) {
+                if (!(entry.getValue() instanceof String value)
+                        || !java.util.Arrays.stream(NotificationPreferenceView.EarningPush.values())
+                                .anyMatch(mode -> mode.name().equals(value))) {
+                    return ApiResult.fail(422, "NOTIFICATION_PREFERENCES_VALUE_INVALID");
+                }
+            } else if (!(entry.getValue() instanceof Boolean)) {
                 return ApiResult.fail(422, "NOTIFICATION_PREFERENCES_VALUE_INVALID");
             }
         }
@@ -47,11 +53,17 @@ public class AppNotificationPreferenceController {
                 booleanValue(request, "staking"),
                 booleanValue(request, "market"),
                 booleanValue(request, "genesis"),
-                booleanValue(request, "system")));
+                booleanValue(request, "system"),
+                earningPush(request)));
     }
 
     private Boolean booleanValue(Map<String, Object> request, String key) {
         return request.containsKey(key) ? (Boolean) request.get(key) : null;
+    }
+
+    private NotificationPreferenceView.EarningPush earningPush(Map<String, Object> request) {
+        if (!request.containsKey("earningPush")) return null;
+        return NotificationPreferenceView.EarningPush.valueOf((String) request.get("earningPush"));
     }
 
     private Long authenticatedUserId(Authentication authentication) {

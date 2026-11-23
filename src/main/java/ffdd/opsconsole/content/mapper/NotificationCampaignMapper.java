@@ -6,7 +6,9 @@ import ffdd.opsconsole.content.domain.AppNotificationView;
 import ffdd.opsconsole.content.domain.NotificationActionReceipt;
 import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository.CampaignDeliveryFacts;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -377,7 +379,24 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                    COALESCE(n.cta_label, '') AS ctaLabel,
                    COALESCE(n.cta_href, '') AS ctaHref,
                    n.created_at AS createdAt,
-                   CASE WHEN n.read_flag = 1 THEN COALESCE(n.read_at, n.updated_at) ELSE NULL END AS readAt
+                   CASE WHEN n.read_flag = 1 THEN COALESCE(n.read_at, n.updated_at) ELSE NULL END AS readAt,
+                   CASE WHEN LOWER(n.type)='earning_credited'
+                        THEN NULLIF(SUBSTRING_INDEX(n.cta_href,'receiptNo=',-1),'') END AS earningReceiptNo,
+                   CASE WHEN LOWER(n.type)='earning_credited' THEN (
+                        SELECT SUM(e.amount) FROM nx_earning_event e
+                         WHERE e.receipt_no=SUBSTRING_INDEX(n.cta_href,'receiptNo=',-1) AND e.user_id=n.user_id
+                           AND e.asset='USDT' AND e.status='POSTED' AND e.is_deleted=0 AND e.amount>0) END AS earningUsdt,
+                   CASE WHEN LOWER(n.type)='earning_credited' THEN (
+                        SELECT SUM(e.amount) FROM nx_earning_event e
+                         WHERE e.receipt_no=SUBSTRING_INDEX(n.cta_href,'receiptNo=',-1) AND e.user_id=n.user_id
+                           AND e.asset='UVT' AND e.status='POSTED' AND e.is_deleted=0 AND e.amount>0) END AS earningUvt,
+                   CASE WHEN LOWER(n.type)='earning_credited' THEN (
+                        SELECT d.device_name FROM nx_earning_event e JOIN nx_user_device d ON d.id=e.user_device_id
+                         WHERE e.receipt_no=SUBSTRING_INDEX(n.cta_href,'receiptNo=',-1) AND e.user_id=n.user_id
+                           AND e.is_deleted=0 ORDER BY e.id LIMIT 1) END AS earningDeviceName,
+                   CASE WHEN LOWER(n.type)='earning_credited' THEN (
+                        SELECT t.task_class FROM nx_simulated_task t
+                         WHERE t.receipt_no=SUBSTRING_INDEX(n.cta_href,'receiptNo=',-1) LIMIT 1) END AS earningTaskClass
               FROM nx_notification n
               LEFT JOIN nx_user_preference pref
                 ON pref.user_id = n.user_id AND pref.is_deleted = 0
@@ -399,7 +418,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                <if test='category != null and category != "all"'>
                  <bind name="kindTrimPattern" value="@ffdd.opsconsole.content.mapper.NotificationCampaignMapper@APP_TEXT_TRIM_REGEX" />
                  AND CASE
-                     WHEN CAST(LOWER(REGEXP_REPLACE(n.type, #{kindTrimPattern}, '')) AS BINARY) IN ('wallet','payment_method','withdrawal','order',
+                     WHEN CAST(LOWER(REGEXP_REPLACE(n.type, #{kindTrimPattern}, '')) AS BINARY) IN ('wallet','payment_method','withdrawal','order','earning_credited',
                          'commission','staking','nova_commission','funds_result') THEN 'finance'
                      WHEN CAST(LOWER(REGEXP_REPLACE(n.type, #{kindTrimPattern}, '')) AS BINARY) IN ('device','dailysummary','nova_dailysummary',
                          'nova_upgrade','nova_tradein','device_expiry','device_alert') THEN 'device'
@@ -414,14 +433,37 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
              LIMIT #{limit}
             </script>
             """)
-    List<AppNotificationView> selectUserNotifications(
+    List<NotificationPageRow> selectUserNotifications(
             @Param("userId") Long userId,
             @Param("cursorId") Long cursorId,
             @Param("priority") String priority,
             @Param("limit") int limit,
             @Param("category") String category);
 
-    default List<AppNotificationView> selectUserNotifications(Long userId, Long cursorId, String priority, int limit) {
+    record NotificationPageRow(Long id,String kind,String priority,String title,String body,String ctaLabel,String ctaHref,
+                               LocalDateTime createdAt,LocalDateTime readAt,String earningReceiptNo,BigDecimal earningUsdt,
+                               BigDecimal earningUvt,String earningDeviceName,String earningTaskClass) {
+        public AppNotificationView view() {
+            Map<String,Object> earning=earningReceiptNo==null?null:earningMap();
+            return new AppNotificationView(id,kind,priority,title,body,ctaLabel,ctaHref,createdAt,readAt,earning);
+        }
+        private Map<String,Object> earningMap() {
+            Map<String,Object> out=new java.util.LinkedHashMap<>();
+            out.put("receiptNo",earningReceiptNo);
+            out.put("usdt",money(earningUsdt));
+            out.put("uvt",money(earningUvt));
+            out.put("deviceName",earningDeviceName);
+            out.put("taskClass",earningTaskClass);
+            return out;
+        }
+        private static String money(BigDecimal value) {
+            if(value==null) return null;
+            String text=value.stripTrailingZeros().toPlainString();
+            return text;
+        }
+    }
+
+    default List<NotificationPageRow> selectUserNotifications(Long userId, Long cursorId, String priority, int limit) {
         return selectUserNotifications(userId, cursorId, priority, limit, null);
     }
 
@@ -582,6 +624,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                        ROW_NUMBER() OVER (ORDER BY created_at DESC, id DESC) AS rn
                   FROM nx_notification
                  WHERE user_id = #{userId} AND is_deleted = 0 AND LOWER(priority) = #{priority}
+                   AND LOWER(type) <> 'earning_credited'
               ) ranked
              WHERE rn > #{cap}
              ORDER BY id
@@ -618,6 +661,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                            ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC, id DESC) AS rn
                       FROM nx_notification
                      WHERE is_deleted = 0 AND LOWER(priority) = #{priority}
+                       AND LOWER(type) <> 'earning_credited'
                 ) ranked WHERE ranked.rn > #{cap}
             ) overflowed ON overflowed.id = n.id
                SET n.is_deleted = 1, n.updated_at = NOW()
@@ -631,9 +675,44 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             """)
     int expireAllLow(@Param("cutoff") LocalDateTime cutoff);
 
+    @Select("""
+            <script>
+            SELECT id, user_id AS userId, priority, created_at AS createdAt
+              FROM (
+                SELECT id, user_id, priority, created_at,
+                       ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC, id DESC) AS rn
+                  FROM nx_notification
+                 WHERE is_deleted = 0 AND LOWER(type) = 'earning_credited'
+                 <if test="userId != null">AND user_id = #{userId}</if>
+              ) ranked
+             WHERE rn > #{cap}
+             ORDER BY id
+            </script>
+            """)
+    List<RetentionCandidate> selectOverEarningCap(@Param("cap") int cap, @Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_notification n
+            JOIN (
+                SELECT id FROM (
+                    SELECT id,
+                           ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC, id DESC) AS rn
+                      FROM nx_notification
+                     WHERE is_deleted = 0 AND LOWER(type) = 'earning_credited'
+                ) ranked WHERE ranked.rn > #{cap}
+            ) overflowed ON overflowed.id = n.id
+               SET n.is_deleted = 1, n.updated_at = NOW()
+            """)
+    int pruneAllEarningOverCap(@Param("cap") int cap);
+
     default int pruneNotificationsOverCap(String priority, int cap, Long userId) {
         if (userId == null) return pruneAllOverCap(priority, cap);
         return selectOverCap(priority, cap, userId).stream().mapToInt(this::retireNotification).sum();
+    }
+
+    default int pruneEarningOverCap(int cap, Long userId) {
+        if (userId == null) return pruneAllEarningOverCap(cap);
+        return selectOverEarningCap(cap, userId).stream().mapToInt(this::retireNotification).sum();
     }
 
     default int expireLowPriorityNotifications(LocalDateTime cutoff, Long userId) {

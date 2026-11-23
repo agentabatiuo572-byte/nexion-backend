@@ -7,7 +7,11 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.CurrentAppSessionService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.core.Authentication;
@@ -25,12 +29,17 @@ public class NativePushService {
         this.sessions = sessions;
     }
 
-    public record Registration(String clientId, String provider, String platform, String permission, String appVersion, String apnsTopic, Integer appBuild) {
+    public record Registration(String clientId, String provider, String platform, String permission, String appVersion,
+            String apnsTopic, Integer appBuild, Object timeZone, Object capabilities) {
         public Registration(String clientId, String provider, String platform, String permission, String appVersion) {
-            this(clientId, provider, platform, permission, appVersion, null, null);
+            this(clientId, provider, platform, permission, appVersion, null, null, null, null);
         }
         public Registration(String clientId, String provider, String platform, String permission, String appVersion, String apnsTopic) {
-            this(clientId, provider, platform, permission, appVersion, apnsTopic, null);
+            this(clientId, provider, platform, permission, appVersion, apnsTopic, null, null, null);
+        }
+        public Registration(String clientId, String provider, String platform, String permission, String appVersion,
+                String apnsTopic, Integer appBuild) {
+            this(clientId, provider, platform, permission, appVersion, apnsTopic, appBuild, null, null);
         }
     }
     public record Route(String notificationId, String route) { }
@@ -53,7 +62,8 @@ public class NativePushService {
         if (cidOwner != null && !id.equals(cidOwner)) throw new BizException(409, "PUSH_TOKEN_ALREADY_BOUND");
         Installation next = new Installation(id, canonicalToken(request), request.provider(), hash, session.getUserId(), session.getSessionChainId(),
                 request.platform(), request.permission(), request.appVersion(), old == null ? 1 : old.bindingEpoch(), true,
-                request.apnsTopic(), request.appBuild());
+                request.apnsTopic(), request.appBuild(), normalizedTimeZone(request.timeZone()),
+                normalizedCapabilities(request.capabilities()));
         try {
             if (old == null) mapper.insert(next);
             else {
@@ -143,6 +153,41 @@ public class NativePushService {
                 && mapper.ownedOrder(path.substring(path.indexOf('=') + 1), user) == 0)
             throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
         return target;
+    }
+
+    static String normalizedTimeZone(Object value) {
+        return value instanceof String text ? normalizedTimeZone(text) : null;
+    }
+
+    static String normalizedTimeZone(String value) {
+        if (value == null || value.isBlank() || value.length() > 64
+                || !ZoneId.getAvailableZoneIds().contains(value)) return null;
+        try {
+            return ZoneId.of(value).getId();
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    static String normalizedCapabilities(Object value) {
+        if (!(value instanceof List<?> entries)) return "[]";
+        List<String> values = new ArrayList<>();
+        for (Object entry : entries) {
+            if (!(entry instanceof String text)) return "[]";
+            values.add(text);
+        }
+        return normalizedCapabilities(values);
+    }
+
+    static String normalizedCapabilities(List<String> values) {
+        if (values == null || values.size() > 24) return "[]";
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        for (String value : values) {
+            if (value == null || !value.matches("[a-z0-9_]{1,64}")) return "[]";
+            normalized.add(value);
+        }
+        if (normalized.isEmpty()) return "[]";
+        return "[\"" + String.join("\",\"", normalized) + "\"]";
     }
 
     static boolean validNativeToken(String provider, String platform, String token) {

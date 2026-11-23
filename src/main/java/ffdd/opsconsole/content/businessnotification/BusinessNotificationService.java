@@ -32,12 +32,27 @@ public class BusinessNotificationService {
         mapper.recoveredDeviceIds().forEach(mapper::resetRecoveredDevice);
         mapper.abnormalDevices().forEach(device->mapper.startAbnormalDevice(device.deviceId(),device.userId()));
         mapper.facts().forEach(this::emit);
+        mapper.earningFacts(ffdd.opsconsole.shared.config.StorageTime.offset().getId()).forEach(this::emit);
         mapper.withdrawalFacts(null,false).forEach(this::emit);
         mapper.trialDeadlines().forEach(this::emit);
         for (var fact : mapper.deviceAlerts()) {
             emit(fact);
             mapper.markDeviceAlert(fact.factKey());
         }
+    }
+
+    /**
+     * B79: committed earnings.credited events project immediately from this account's own credit
+     * rows; the scan stays as the backfill path and both share the fact key.
+     */
+    @Transactional(rollbackFor=Exception.class,isolation=Isolation.READ_COMMITTED)
+    public int emitEarning(String receiptNo, Long userId) {
+        if (receiptNo==null || receiptNo.isBlank() || userId==null || userId<=0) return 0;
+        if (mapper.earningCutover()==null) return 0;
+        var facts=mapper.earningFact(receiptNo.trim(),userId,ffdd.opsconsole.shared.config.StorageTime.offset().getId());
+        int written=0;
+        for (var fact:facts) written+=emit(fact);
+        return written;
     }
 
     /** Account-scoped station recovery; it never inserts an outbox event or a native delivery. */
@@ -57,18 +72,32 @@ public class BusinessNotificationService {
         }
     }
 
-    void emit(BusinessNotificationFact fact) {
-        emit(fact,false);
+    int emit(BusinessNotificationFact fact) {
+        return emit(fact,false);
     }
 
-    private void emit(BusinessNotificationFact fact,boolean stationOnly) {
+    /** Returns 1 only when a brand-new station row was really written for this fact. */
+    private int emit(BusinessNotificationFact fact,boolean stationOnly) {
         if (fact.userId()==null || fact.userId()<=0) throw new IllegalArgumentException("NOTIFICATION_RECIPIENT_INVALID");
         Text text = text(fact.messageKey());
         String existing = "deposit".equals(fact.messageKey()) ? mapper.existingTopup(fact.factKey(),fact.userId()) : null;
         if("payment_method".equals(fact.messageKey())) existing=mapper.existingPaymentMethod(fact.factKey(),fact.userId());
         String bizNo = existing==null ? (stationOnly ? "STATION1:"+bizNo(fact.factKey()).substring(8) : bizNo(fact.factKey())) : existing;
-        if (mapper.receipt(fact.factKey(),bizNo,fact.userId())==0) return;
-        mapper.notify(fact,bizNo,text.zh(),text.en(),text.vi());
+        if (mapper.receipt(fact.factKey(),bizNo,fact.userId())==0) return 0;
+        if (!"earning_credited".equals(fact.messageKey())) {
+            // Existing kinds keep their fact row and their upsert semantics (0 or 2 both mean the
+            // notification they already created still stands).
+            return mapper.notify(fact,bizNo,text.zh(),text.en(),text.vi())>0?1:0;
+        }
+        // A plain INSERT makes the first write distinguishable: 1 is a brand-new station row.
+        // 0 rows means the row was already there or the recipient is gone, so only this run's
+        // fact receipt is removed; an INSERT failure rolls the whole emitEarning transaction back
+        // and leaves neither the receipt nor a station row.
+        if (mapper.notifyEarning(fact,bizNo,text.zh(),text.en(),text.vi())!=1) {
+            mapper.dropReceipt(fact.factKey(),fact.userId());
+            return 0;
+        }
+        return 1;
     }
 
     static String bizNo(String key) {
@@ -103,6 +132,7 @@ public class BusinessNotificationService {
         Map.entry("new_signin",new Text("您的账号出现新的登录环境，请检查账号安全。","A new sign-in environment was detected. Review account security.","Phát hiện môi trường đăng nhập mới. Vui lòng kiểm tra bảo mật tài khoản.")),
         Map.entry("support",new Text("客服有新回复，请打开会话查看。","Support sent a new reply. Open your conversation to view it.","Bộ phận hỗ trợ có phản hồi mới. Mở cuộc trò chuyện để xem.")),
         Map.entry("device_alert",new Text("您的设备持续异常，请查看设备状态。","Your device has a persistent issue. Review its status.","Thiết bị đang gặp sự cố kéo dài. Vui lòng kiểm tra trạng thái.")),
+        Map.entry("earning_credited",new Text("收益已到账，请查看该笔收益凭证。","Earnings credited. View this earning receipt.","Thu nhập đã được ghi có. Xem phiếu thu nhập này.")),
         Map.entry("trial_24h",new Text("设备试用将在24小时内结束，请查看试用详情。","Your device trial ends within 24 hours. View trial details.","Dùng thử thiết bị sẽ kết thúc trong 24 giờ. Vui lòng xem chi tiết.")),
         Map.entry("trial_1h",new Text("设备试用将在1小时内结束，请查看试用详情。","Your device trial ends within 1 hour. View trial details.","Dùng thử thiết bị sẽ kết thúc trong 1 giờ. Vui lòng xem chi tiết.")),
         Map.entry("trial_end",new Text("设备试用期已结束，请查看抵扣保留期详情。","Your device trial has ended. View the deduction retention details.","Thời gian dùng thử thiết bị đã kết thúc. Xem thời hạn giữ khấu trừ.")),

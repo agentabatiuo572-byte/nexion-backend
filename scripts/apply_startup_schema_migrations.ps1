@@ -566,6 +566,10 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261123_purchase_device_placement.sql")
   (Join-Path $root "scripts\migrations\20261124_b81_order_user_hide.sql")
   (Join-Path $root "scripts\migrations\20261124_ios_phone_binding_recovery.sql")
+  (Join-Path $root "scripts\migrations\20261123_b79_earning_push_preference.sql")
+  (Join-Path $root "scripts\migrations\20261123_b79_native_push_earning_capability.sql")
+  # B79: register the one-time earning cutover and retire the dailySummary channel once.
+  (Join-Path $root "scripts\migrations\20261124_b79_earning_notifications.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

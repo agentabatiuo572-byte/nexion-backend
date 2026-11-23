@@ -7,12 +7,23 @@ import org.apache.ibatis.annotations.*;
 public interface NativePushMapper {
     record Installation(String installationId, String clientId, String provider, String bindingTokenHash, Long userId,
                         String sessionChainId, String platform, String permission, String appVersion,
-                        long bindingEpoch, boolean active, String apnsTopic, Integer appBuild) {
+                        long bindingEpoch, boolean active, String apnsTopic, Integer appBuild,
+                        String timeZone, String capabilities) {
         @AutomapConstructor public Installation { }
         public Installation(String installationId, String clientId, String provider, String bindingTokenHash, Long userId,
                 String sessionChainId, String platform, String permission, String appVersion, long bindingEpoch, boolean active) {
             this(installationId, clientId, provider, bindingTokenHash, userId, sessionChainId, platform, permission,
-                    appVersion, bindingEpoch, active, null, null);
+                    appVersion, bindingEpoch, active, null, null, null, "[]");
+        }
+        public Installation(String installationId, String clientId, String provider, String bindingTokenHash, Long userId,
+                String sessionChainId, String platform, String permission, String appVersion, long bindingEpoch, boolean active,
+                String apnsTopic, Integer appBuild) {
+            this(installationId, clientId, provider, bindingTokenHash, userId, sessionChainId, platform, permission,
+                    appVersion, bindingEpoch, active, apnsTopic, appBuild, null, "[]");
+        }
+        public boolean earningPushEligible() {
+            return active && timeZone != null && capabilities != null
+                    && capabilities.contains("\"earning_push_v1\"");
         }
     }
     record Delivery(long id, long notificationId, String installationId, long userId, long bindingEpoch,
@@ -28,7 +39,7 @@ public interface NativePushMapper {
         public boolean isNova() { return type.startsWith("NOVA_"); }
     }
 
-    @Select("SELECT installation_id,client_id,provider,binding_token_hash,user_id,session_chain_id,platform,permission,app_version,binding_epoch,active,apns_topic,app_build FROM nx_native_push_installation WHERE installation_id=#{id} FOR UPDATE")
+    @Select("SELECT installation_id,client_id,provider,binding_token_hash,user_id,session_chain_id,platform,permission,app_version,binding_epoch,active,apns_topic,app_build,time_zone,capabilities FROM nx_native_push_installation WHERE installation_id=#{id} FOR UPDATE")
     Installation lockInstallation(String id);
 
     @Select("SELECT installation_id FROM nx_native_push_installation WHERE token_digest=SHA2(CONCAT(#{provider},CHAR(0),#{token}),256)")
@@ -37,15 +48,16 @@ public interface NativePushMapper {
     @Insert("""
         INSERT INTO nx_native_push_installation
         (installation_id,client_id,provider,token_digest,binding_token_hash,user_id,session_chain_id,platform,permission,app_version,
-         binding_epoch,active,bound_at,updated_at,apns_topic,app_build)
+         binding_epoch,active,bound_at,updated_at,apns_topic,app_build,time_zone,capabilities)
         VALUES(#{installationId},#{clientId},#{provider},SHA2(CONCAT(#{provider},CHAR(0),#{clientId}),256),#{bindingTokenHash},#{userId},#{sessionChainId},#{platform},
-         #{permission},#{appVersion},1,1,NOW(6),NOW(6),#{apnsTopic},#{appBuild})
+         #{permission},#{appVersion},1,1,NOW(6),NOW(6),#{apnsTopic},#{appBuild},#{timeZone},#{capabilities})
         """)
     int insert(Installation installation);
 
     @Update("""
         UPDATE nx_native_push_installation SET client_id=#{i.clientId},provider=#{i.provider},token_digest=SHA2(CONCAT(#{i.provider},CHAR(0),#{i.clientId}),256),user_id=#{i.userId},session_chain_id=#{i.sessionChainId},
-          platform=#{i.platform},permission=#{i.permission},app_version=#{i.appVersion},apns_topic=#{i.apnsTopic},app_build=#{i.appBuild},active=1,
+          platform=#{i.platform},permission=#{i.permission},app_version=#{i.appVersion},apns_topic=#{i.apnsTopic},app_build=#{i.appBuild},
+          time_zone=#{i.timeZone},capabilities=#{i.capabilities},active=1,
           binding_epoch=binding_epoch+#{changed},
           bound_at=IF(#{changed}=1,NOW(6),bound_at),
           updated_at=NOW(6) WHERE installation_id=#{i.installationId}

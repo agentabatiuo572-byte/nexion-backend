@@ -94,6 +94,31 @@ public interface BusinessNotificationMapper {
         """)
     List<BusinessNotificationFact> facts();
 
+    /** B79: one fact per receipt with at least one positive posted asset, at or after the cutover. */
+    String EARNING_FACT = """
+        SELECT CONCAT('EARNING:',e.receipt_no) factKey,e.user_id userId,'FUNDS_RESULT' category,
+               'earning_credited' messageKey,CONCAT('/pages/me/receipts?receiptNo=',e.receipt_no) route,
+               MIN(e.wallet_posted_at) occurredAt
+          FROM nx_earning_event e
+          JOIN nx_earning_notification_cutover c ON c.id=1
+          JOIN nx_user u ON u.id=e.user_id AND u.is_deleted=0
+         WHERE e.is_deleted=0 AND e.status='POSTED' AND e.amount>0
+           AND e.receipt_no IS NOT NULL AND e.receipt_no<>''
+           AND CONVERT_TZ(e.wallet_posted_at, #{storageOffset}, '+00:00') >= c.cutover_at
+           AND NOT EXISTS(SELECT 1 FROM nx_business_notification_fact r WHERE r.fact_key=CONCAT('EARNING:',e.receipt_no))
+        """;
+
+    @Select(EARNING_FACT + " GROUP BY e.receipt_no,e.user_id ORDER BY e.receipt_no LIMIT 200")
+    List<BusinessNotificationFact> earningFacts(@Param("storageOffset") String storageOffset);
+
+    /** The committed earnings.credited event carries this account and receipt; the credit rows carry amounts. */
+    @Select(EARNING_FACT + " AND e.receipt_no=#{receiptNo} AND e.user_id=#{userId} GROUP BY e.receipt_no,e.user_id")
+    List<BusinessNotificationFact> earningFact(@Param("receiptNo") String receiptNo, @Param("userId") Long userId,
+                                               @Param("storageOffset") String storageOffset);
+
+    @Select("SELECT cutover_at FROM nx_earning_notification_cutover WHERE id=1")
+    java.time.LocalDateTime earningCutover();
+
     String WITHDRAWAL_EVENT_KEY = "CONCAT('EVENT:',e.event_type,':',SHA2(CASE WHEN e.event_type IN "
         + "('withdraw.confirmed','withdraw.refunded') THEN e.aggregate_id ELSE CONCAT(e.aggregate_id,':',e.event_id) END,256))";
     String WITHDRAWAL_EVENTS = "('withdraw.confirmed','withdraw.refunded','withdraw.failed','withdraw.rejected',"
@@ -269,6 +294,10 @@ public interface BusinessNotificationMapper {
         """)
     String existingTopup(@Param("factKey") String factKey,@Param("userId") Long userId);
 
+    /** A fact row only survives when its station row was really written in the same transaction. */
+    @Delete("DELETE FROM nx_business_notification_fact WHERE fact_key=#{factKey} AND user_id=#{userId}")
+    int dropReceipt(@Param("factKey") String factKey, @Param("userId") Long userId);
+
     @Select("""
         SELECT n.biz_no FROM nx_audit_log a JOIN nx_notification n
           ON n.biz_no=CONCAT('PAYMENT_METHOD_UNBOUND:',a.resource_id,':',JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.idempotencyKey')))
@@ -277,10 +306,15 @@ public interface BusinessNotificationMapper {
         """)
     String existingPaymentMethod(@Param("factKey") String factKey,@Param("userId") Long userId);
 
+    /**
+     * B79: a plain INSERT for the per-receipt earning row. Unlike the shared upsert, the affected
+     * count is unambiguous here: 1 means a new station row, and 0 means no recipient.
+     * The fact receipt rejects regular replays. An insert error rolls back the projection.
+     */
     @Insert("""
         INSERT INTO nx_notification(biz_no,user_id,type,priority,title,body,cta_label,cta_href,
           read_flag,push_status,push_attempts,next_push_at,created_at,updated_at,is_deleted)
-        SELECT #{bizNo},u.id,#{fact.category},CASE WHEN #{fact.category} IN ('FUNDS_RESULT','ACCOUNT_SECURITY') THEN 'critical' ELSE 'high' END,
+        SELECT #{bizNo},u.id,'earning_credited','low',
           CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
             WHEN 'zh' THEN COALESCE(NULLIF(msg.zh_value,''), #{zh})
             WHEN 'vi' THEN COALESCE(NULLIF(msg.vi_value,''), #{vi})
@@ -296,7 +330,35 @@ public interface BusinessNotificationMapper {
             WHEN 'vi' THEN COALESCE(NULLIF(cta.vi_value,''), 'Xem chi tiết')
             ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cta.translations_json,
                      CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(cta.en_value,''),'View details') END,
-          #{fact.route},0,CASE WHEN #{fact.messageKey} LIKE 'withdrawal_%' THEN 'DELIVERED' ELSE 'QUEUED' END,
+          #{fact.route},0,'DELIVERED',0,NOW(),COALESCE(#{fact.occurredAt},NOW()),NOW(),0
+        FROM nx_user u
+        LEFT JOIN nx_i18n_message_version msg ON msg.message_key='notifications.business.earning_credited' AND msg.status='PUBLISHED' AND msg.is_deleted=0
+        LEFT JOIN nx_i18n_message_version cta ON cta.message_key='notifications.details' AND cta.status='PUBLISHED' AND cta.is_deleted=0
+        WHERE u.id=#{fact.userId} AND u.is_deleted=0
+        """)
+    int notifyEarning(@Param("fact") BusinessNotificationFact fact,@Param("bizNo") String bizNo,
+            @Param("zh") String zh,@Param("en") String en,@Param("vi") String vi);
+
+    @Insert("""
+        INSERT INTO nx_notification(biz_no,user_id,type,priority,title,body,cta_label,cta_href,
+          read_flag,push_status,push_attempts,next_push_at,created_at,updated_at,is_deleted)
+        SELECT #{bizNo},u.id,CASE WHEN #{fact.messageKey}='earning_credited' THEN 'earning_credited' ELSE #{fact.category} END,CASE WHEN #{fact.messageKey}='earning_credited' THEN 'low' WHEN #{fact.category} IN ('FUNDS_RESULT','ACCOUNT_SECURITY') THEN 'critical' ELSE 'high' END,
+          CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(msg.zh_value,''), #{zh})
+            WHEN 'vi' THEN COALESCE(NULLIF(msg.vi_value,''), #{vi})
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(msg.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(msg.en_value,''),#{en}) END,
+          CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(msg.zh_value,''), #{zh})
+            WHEN 'vi' THEN COALESCE(NULLIF(msg.vi_value,''), #{vi})
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(msg.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(msg.en_value,''),#{en}) END,
+          CASE LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1))
+            WHEN 'zh' THEN COALESCE(NULLIF(cta.zh_value,''), '查看详情')
+            WHEN 'vi' THEN COALESCE(NULLIF(cta.vi_value,''), 'Xem chi tiết')
+            ELSE COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cta.translations_json,
+                     CONCAT('$.',JSON_QUOTE(LOWER(SUBSTRING_INDEX(REPLACE(TRIM(u.language),'_','-'),'-',1)))))),''),NULLIF(cta.en_value,''),'View details') END,
+          #{fact.route},0,CASE WHEN #{fact.messageKey} LIKE 'withdrawal_%' OR #{fact.messageKey}='earning_credited' THEN 'DELIVERED' ELSE 'QUEUED' END,
           0,NOW(),COALESCE(#{fact.occurredAt},NOW()),NOW(),0
         FROM nx_user u
         LEFT JOIN nx_i18n_message_version msg ON msg.message_key=CONCAT('notifications.business.',#{fact.messageKey}) AND msg.status='PUBLISHED' AND msg.is_deleted=0

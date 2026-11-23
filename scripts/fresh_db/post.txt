@@ -65,3 +65,5 @@ fresh_db/09_h9_home_display_batch.sql
 migrations/20261123_device_slot_replacement.sql
 migrations/20261123_purchase_device_placement.sql
 migrations/20261124_b81_order_user_hide.sql
+migrations/20261123_b79_earning_push_preference.sql
+migrations/20261123_b79_native_push_earning_capability.sql
