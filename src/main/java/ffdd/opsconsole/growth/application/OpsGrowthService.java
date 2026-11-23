@@ -4148,10 +4148,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (h4EventRules != null && H4EventRuleService.CODES.contains(id)) {
             Map<String, Object> rule;
             try { rule = h4EventRules.find(id, false); } catch (RuntimeException ex) { return null; }
-            if (rule != null) {
-                BigDecimal uvt = positiveDecimal(ruleFacts(rule).get("rewardNex"));
+            // Only the onboarding branch actually pays rewardNex as UVT (H4EventEngine:290-296);
+            // other kinds may keep unrelated fields with the same name, so they stay null.
+            if (rule != null && "onboarding".equalsIgnoreCase(H4EventRuleService.text(rule.get("kind")).trim())) {
+                Map<String, Object> facts = ruleFacts(rule);
+                BigDecimal uvt = positiveDecimal(facts == null ? null : facts.get("rewardNex"));
                 return uvt == null ? null : rewardPair("UVT", uvt);
             }
+            return null;
         }
         String asset = H4EventRuleService.text(row.get("rewardType")).trim().toUpperCase(java.util.Locale.ROOT);
         if (!Set.of("UVT", "USDT").contains(asset)) return null;
@@ -4174,8 +4178,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private static Map<String, Object> ruleFacts(Map<String, Object> rule) {
         Object raw = rule.get("rules_json");
         if (raw == null) return Map.of();
-        try { return RULE_DECIMALS.readValue(raw.toString(), new TypeReference<Map<String, Object>>() { }); }
-        catch (Exception ex) { return Map.of(); }
+        try {
+            Map<String, Object> facts = RULE_DECIMALS.readValue(raw.toString(), new TypeReference<Map<String, Object>>() { });
+            return facts == null ? Map.of() : facts;
+        } catch (Exception ex) { return Map.of(); }
     }
 
     private List<Map<String, Object>> questEventRows() {
