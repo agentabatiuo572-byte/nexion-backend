@@ -86,8 +86,11 @@ public class SupportAnalyticsPrivateQueryService {
         rows.sort(rowOrder(q.direction()));
         long offset=(q.pageNum()-1)*q.pageSize();
         int start=(int)Math.min(offset,rows.size()),end=(int)Math.min(offset+q.pageSize(),rows.size());
+        // The inviter batch read only covers the rows that are actually returned; filtering,
+        // ordering and paging stay ahead of it and an empty page issues no query.
+        var pageRows=pageInviters(rows.subList(start,end),q.view(),evaluation.result().currentCustomers(),sources);
         var payload=map("view",q.view().name(),"basis",q.basis().name(),"businessZone",SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),
-            "pageNum",q.pageNum(),"pageSize",q.pageSize(),"total",version.status()==SupportAnalyticsQueryVersion.Status.READY?(long)rows.size():null,"observedTotal",(long)rows.size(),"records",rows.subList(start,end).stream().map(Row::body).toList(),
+            "pageNum",q.pageNum(),"pageSize",q.pageSize(),"total",version.status()==SupportAnalyticsQueryVersion.Status.READY?(long)rows.size():null,"observedTotal",(long)rows.size(),"records",pageRows.stream().map(Row::body).toList(),
             "versionState",version.status().name(),"queryVersion",version.value(),"canContinue",version.status()==SupportAnalyticsQueryVersion.Status.READY && end<rows.size(),
             "recordsStatus",q.view()==View.AGENTS?evaluation.result().personnel().status().name():version.status().name(),
             "selectedCustomerCount",(long)selected.size(),"selectedCurrent",current(stats.selectedCurrent(evaluation,selected)),
@@ -397,10 +400,7 @@ public class SupportAnalyticsPrivateQueryService {
     private List<Row> rows(Normalized q,SupportAnalyticsService.QueryEvaluation e,Sources s,List<SupportAnalyticsStats.Customer> selected) {
         List<Row> out=new ArrayList<>();Map<Long,SupportAnalyticsStats.Customer> roots=new HashMap<>();for(var c:selected)roots.put(c.customerId(),c);
         switch(q.view()) {
-            case OVERVIEW,CUSTOMERS,ACTIVITY -> {
-                Map<Long,UserInviterView> inviters=inviters(roots.keySet());
-                for(var c:selected)out.add(new Row(c.customerId(),"",customerSort(q,c,s),()->customer(c,s,inviters.get(c.customerId()))));
-            }
+            case OVERVIEW,CUSTOMERS,ACTIVITY -> {for(var c:selected)out.add(new Row(c.customerId(),"",customerSort(q,c,s),()->customer(c,s,null)));}
             case FINANCE -> {for(var f:e.evidence().selected)if(roots.containsKey(f.customerId())){var c=roots.get(f.customerId());Object sort=q.sortKey()==Sort.AMOUNT?f.amount():f.succeededAt();
                 out.add(new Row(f.customerId(),f.factId(),sort,map("customerId",Long.toString(f.customerId()),"customerNo",s.display().get(f.customerId()).customerNo(),"nickname",s.display().get(f.customerId()).nickname(),"kind",f.kind().name(),"currency",f.currency(),"amount",decimal(f.amount()),"succeededAt",time(f.succeededAt()),"orderNo",f.orderNo(),"historyStatus",e.evidence().firstHistory.get(f.customerId())==null?"UNKNOWN":e.evidence().firstHistory.get(f.customerId()).status().name())));}}
             case DEVICES -> {if(e.evidence().stock!=null){for(var d:e.evidence().stock.devices())if(roots.containsKey(d.customerId()) && SupportAnalyticsService.productionDevice(d)>=0)out.add(deviceRow(q,d,roots.get(d.customerId()),s,e.evidence(),SupportAnalyticsService.productionDevice(d)==0));for(var d:e.evidence().stock.unknownHoldingDevices())if(roots.containsKey(d.customerId()) && SupportAnalyticsService.productionDevice(d)>=0)out.add(deviceRow(q,d,roots.get(d.customerId()),s,e.evidence(),true));}}
@@ -443,6 +443,21 @@ public class SupportAnalyticsPrivateQueryService {
             "first",statistics.get("first"),"lifetime",statistics.get("lifetime"),"lifetimeStatus",statistics.get("lifetimeStatus"),
             "invitations",statistics.get("invitations"),"devices",devices(m.devices()),"activity",statistics.get("activity"),
             "task",t==null?map("status","UNAVAILABLE"):map("status",s.taskRead().name(),"enabled",nullableBool(t.enabled()),"due",nullableBool(t.due()),"waitingReply",nullableBool(t.waitingReply()),"firstContact",nullableBool(t.firstContact()),"nextDueAt",utc(t.nextDueAt()),"waitingSinceAt",businessTime(t.waitingSinceAt())),"funds",funds(s,Set.of(c.customerId())));
+    }
+
+    /** Current-page customer rows only: ids come from the sliced page, never from the whole match set. */
+    private List<Row> pageInviters(List<Row> page,View view,Collection<SupportAnalyticsStats.Customer> customers,Sources s) {
+        boolean customerRows=view==View.OVERVIEW || view==View.CUSTOMERS || view==View.ACTIVITY;
+        if(!customerRows || page.isEmpty())return page;
+        Map<Long,SupportAnalyticsStats.Customer> byId=new HashMap<>();
+        for(var c:customers)if(c!=null)byId.put(c.customerId(),c);
+        Map<Long,UserInviterView> inviters=inviters(page.stream().map(Row::id).toList());
+        List<Row> out=new ArrayList<>(page.size());
+        for(var row:page) {
+            var c=byId.get(row.id());
+            out.add(c==null?row:new Row(row.id(),row.secondary(),row.sort(),()->customer(c,s,inviters.get(c.customerId()))));
+        }
+        return out;
     }
 
     /** Direct sponsors for one page in a single read; scheme A keeps only userNo/nickname off-scope. */
