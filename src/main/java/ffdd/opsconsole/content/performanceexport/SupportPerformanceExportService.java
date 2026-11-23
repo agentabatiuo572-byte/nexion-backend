@@ -603,9 +603,16 @@ public class SupportPerformanceExportService {
         return !employmentModes(actor).isEmpty();
     }
 
+    /** §0.5: a supervisor with no owned group may not export; judged for the given actor, never the caller. */
+    private boolean exportCapable(Long actor) {
+        if (applicantSuperAdmin(actor)) return true;
+        if (!groupsOf(actor).isEmpty()) return true;
+        return !supervisorCurrent(actor);
+    }
+
     /** Ordinary customer-service employment only buys the applicant's own summary. */
     private boolean employmentAllows(Long actor, TaskRow task) {
-        if (!selfEmployed(actor)) return false;
+        if (!selfEmployed(actor) || !exportCapable(actor)) return false;
         boolean supervisor = supervisorCurrent(actor);
         String kind = text(readMap(task.scopeJson()).get("kind"));
         if ("MANAGED_GROUPS".equals(kind) && !supervisor) return false;
