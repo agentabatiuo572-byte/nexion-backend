@@ -3810,11 +3810,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return ApiResult.fail(422, "H5_APPROVAL_NOT_REQUIRED");
         }
         requireH5Coverage();
+        String oldValue = "连签 " + oldDay + " 天";
+        String newValue = "连签 " + day + " 天";
+        if ("CHECKIN_MULTIPLIER".equals(current.get().get("effectType"))) {
+            oldValue += "；签到倍率：" + oldNote;
+            newValue += "；签到倍率：" + request.note();
+        }
         return ApiResult.ok(new H5ConfigReview(new AuditLockTarget("H", "h5_power_up", String.valueOf(powerUpId)),
-                "放宽连签权益", "连签 " + oldDay + " 天；"
-                        + ("CHECKIN_MULTIPLIER".equals(current.get().get("effectType")) ? "签到倍率：" : "备注：") + oldNote,
-                "连签 " + day + " 天；"
-                        + ("CHECKIN_MULTIPLIER".equals(current.get().get("effectType")) ? "签到倍率：" : "备注：") + request.note()));
+                "放宽连签权益", oldValue, newValue));
     }
 
     @Transactional
