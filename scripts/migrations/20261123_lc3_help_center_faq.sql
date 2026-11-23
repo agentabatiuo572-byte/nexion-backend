@@ -14,10 +14,10 @@ SELECT faq.article_code, faq.category, faq.language, faq.sort_order, faq.title, 
   FROM (
     SELECT 'FAQ-LC3-HELP-01-EN' AS article_code, 'account' AS category, 'en-US' AS language, 10 AS sort_order,
       'How do I create a UVEL account?' AS title,
-      'Tap Sign up and register with your Vietnamese phone number (+84) and the SMS code, or continue with Google, Apple or Telegram. If a friend invited you, open their invite link or enter their invite code during sign-up.' AS content
+      'Tap Sign up and register with your Vietnamese phone number (+84) and the SMS code, or use another option shown on the Sign up page, such as Google, Apple or Telegram. If a friend invited you, open their invite link or enter their invite code during sign-up.' AS content
     UNION ALL SELECT 'FAQ-LC3-HELP-01-VI', 'account', 'vi-VN', 10,
       'Làm sao để tạo tài khoản UVEL?',
-      'Nhấn Đăng ký và đăng ký bằng số điện thoại Việt Nam (+84) cùng mã SMS, hoặc tiếp tục với Google, Apple hay Telegram. Nếu được bạn bè mời, hãy mở liên kết mời hoặc nhập mã mời của họ khi đăng ký.'
+      'Nhấn Đăng ký và đăng ký bằng số điện thoại Việt Nam (+84) cùng mã SMS, hoặc dùng cách khác hiển thị trên trang Đăng ký, như Google, Apple hay Telegram. Nếu được bạn bè mời, hãy mở liên kết mời hoặc nhập mã mời của họ khi đăng ký.'
     UNION ALL SELECT 'FAQ-LC3-HELP-02-EN', 'account', 'en-US', 20,
       'I cannot sign in. What should I do?',
       'Use the same method you signed up with. If you registered with a phone number, you can sign in with your password or an SMS code. If you forgot your password, tap Forgot password? and verify with your phone number. If it still fails, contact support and tell us the time and the error message you saw.'
@@ -26,10 +26,10 @@ SELECT faq.article_code, faq.category, faq.language, faq.sort_order, faq.title, 
       'Hãy dùng đúng cách bạn đã đăng ký. Nếu đăng ký bằng số điện thoại, bạn có thể đăng nhập bằng mật khẩu hoặc mã SMS. Nếu quên mật khẩu, nhấn Quên mật khẩu? và xác minh bằng số điện thoại. Nếu vẫn không được, hãy liên hệ hỗ trợ và cho biết thời gian cùng thông báo lỗi bạn thấy.'
     UNION ALL SELECT 'FAQ-LC3-HELP-03-EN', 'general', 'en-US', 30,
       'How do invite codes and the welcome reward work?',
-      'Sign up with a friend''s invite link or code to join their team. New users who join through an invite receive a welcome reward in UVT, and the friend who invited them can also earn a reward. Your welcome reward is credited after your first paid order. The current amount and conditions are shown in the app.'
+      'Sign up with a friend''s invite link or code to join their team. Eligible new users who join through an invite receive a welcome reward in UVT, and the friend who invited them can also earn a reward. Your welcome reward is credited after your first paid order and the related checks are complete. The current amount, conditions and status are shown in the app.'
     UNION ALL SELECT 'FAQ-LC3-HELP-03-VI', 'general', 'vi-VN', 30,
       'Mã mời và quà chào mừng hoạt động như thế nào?',
-      'Đăng ký bằng liên kết hoặc mã mời của bạn bè để vào đội của họ. Người dùng mới đăng ký qua lời mời sẽ nhận quà chào mừng bằng UVT, và người mời cũng có thể nhận thưởng. Quà chào mừng của bạn được ghi có sau đơn hàng thanh toán đầu tiên. Số tiền và điều kiện hiện tại được hiển thị trong ứng dụng.'
+      'Đăng ký bằng liên kết hoặc mã mời của bạn bè để vào đội của họ. Người dùng mới đủ điều kiện đăng ký qua lời mời sẽ nhận quà chào mừng bằng UVT, và người mời cũng có thể nhận thưởng. Quà chào mừng của bạn được ghi có sau đơn hàng thanh toán đầu tiên và khi các bước kiểm tra liên quan hoàn tất. Số tiền, điều kiện và trạng thái hiện tại được hiển thị trong ứng dụng.'
     UNION ALL SELECT 'FAQ-LC3-HELP-04-EN', 'account', 'en-US', 40,
       'How do I keep my account and funds safe?',
       'Set a Payment PIN in Me and keep it different from your login password. Never share your password, Payment PIN or verification codes with anyone, including people who say they are UVEL staff. UVEL will never ask you to transfer funds to unlock your account. If you forget your Payment PIN, go to Me > Payment PIN and choose Reset payment PIN. After 5 wrong attempts within 15 minutes, the Payment PIN is locked for 15 minutes.'
@@ -86,16 +86,16 @@ SELECT faq.article_code, faq.category, faq.language, faq.sort_order, faq.title, 
       'Người dùng mới đủ điều kiện có thể dùng thử UVELBox S1 trong 3 ngày. Số suất mỗi ngày có hạn. Khoản ghi có khi dùng thử và ưu đãi mua (nếu có) hiển thị trên trang dùng thử. Khi hết thời gian dùng thử, bạn có 7 ngày để quyết định có mua hay không. Không có khoản nào bị trừ tự động; việc mua chỉ diễn ra khi bạn xác nhận.'
     UNION ALL SELECT 'FAQ-LC3-HELP-13-EN', 'hardware', 'en-US', 130,
       'Why does my device''s capacity go down over time?',
-      'Like all hardware, GPUs deliver less useful compute as they age, so device capacity declines gradually according to the schedule for its series. Capacity is part of how estimated daily earnings are calculated, so the estimate goes down as capacity declines.'
+      'Each device series follows a capacity schedule that lowers its capacity step by step over time, reflecting normal hardware wear. Capacity is part of how estimated daily earnings are calculated, so the estimate goes down when capacity goes down.'
     UNION ALL SELECT 'FAQ-LC3-HELP-13-VI', 'hardware', 'vi-VN', 130,
       'Vì sao công suất thiết bị của tôi giảm dần theo thời gian?',
-      'Giống mọi phần cứng, GPU tạo ra ít năng lực tính toán hữu ích hơn khi cũ đi, nên công suất thiết bị giảm dần theo lịch của từng dòng sản phẩm. Công suất là một phần trong cách tính thu nhập ước tính hằng ngày, nên ước tính cũng giảm khi công suất giảm.'
+      'Mỗi dòng thiết bị có một lịch công suất, giảm dần theo thời gian để phản ánh mức hao mòn thông thường của phần cứng. Công suất là một phần trong cách tính thu nhập ước tính hằng ngày, nên ước tính cũng giảm khi công suất giảm.'
     UNION ALL SELECT 'FAQ-LC3-HELP-14-EN', 'deposit', 'en-US', 140,
       'How do I deposit USDT, and what are the minimum and fee?',
-      'Open My Wallet, tap Top-up and choose a network shown in the app. USDT deposits are supported on BEP20 (BNB Smart Chain) and ERC20 (Ethereum); TRC20 is not supported. Always copy the address for the network you selected. The minimum deposit is 10 USDT, and a 1 USDT fee is deducted from each deposit. Funds sent on another network or as another token may not be recoverable.'
+      'Open My Wallet, tap Top-up and choose a network shown on the page. USDT deposits use BEP20 (BNB Smart Chain) or ERC20 (Ethereum) when that network is available; TRC20 is not supported. Always copy the address for the network you selected. The minimum deposit is 10 USDT, and a 1 USDT fee is deducted from each deposit. Funds sent on another network or as another token may not be recoverable.'
     UNION ALL SELECT 'FAQ-LC3-HELP-14-VI', 'deposit', 'vi-VN', 140,
       'Làm sao để nạp USDT, mức tối thiểu và phí là bao nhiêu?',
-      'Vào Ví của tôi, nhấn Nạp tiền và chọn mạng hiển thị trong ứng dụng. Nạp USDT được hỗ trợ qua BEP20 (BNB Smart Chain) và ERC20 (Ethereum); không hỗ trợ TRC20. Luôn sao chép đúng địa chỉ của mạng đã chọn. Số tiền nạp tối thiểu là 10 USDT, và mỗi lần nạp bị trừ phí 1 USDT. Tiền gửi sai mạng hoặc sai loại token có thể không khôi phục được.'
+      'Vào Ví của tôi, nhấn Nạp tiền và chọn mạng hiển thị trên trang. Nạp USDT dùng BEP20 (BNB Smart Chain) hoặc ERC20 (Ethereum) khi mạng đó khả dụng; không hỗ trợ TRC20. Luôn sao chép đúng địa chỉ của mạng đã chọn. Số tiền nạp tối thiểu là 10 USDT, và mỗi lần nạp bị trừ phí 1 USDT. Tiền gửi sai mạng hoặc sai loại token có thể không khôi phục được.'
     UNION ALL SELECT 'FAQ-LC3-HELP-15-EN', 'deposit', 'en-US', 150,
       'My deposit has not arrived. What should I do?',
       'Check that you used the correct network and address, and that the transaction has at least 15 confirmations in a block explorer. After that, the platform verifies the deposit before crediting it. If it still has not arrived, contact support with the transaction hash, amount and network.'
@@ -110,22 +110,22 @@ SELECT faq.article_code, faq.category, faq.language, faq.sort_order, faq.title, 
       'Vào Ví của tôi, nhấn Rút tiền, chọn USDT rồi chọn mạng hiển thị trong ứng dụng. Phí mạng là 1 USDT với BEP20 và 5 USDT với ERC20. Tối thiểu 20 USDT, tối đa 2 lần rút mỗi ngày, và mỗi lần rút tối đa 80% số dư khả dụng. Bạn có thể theo dõi từng lệnh trên trang theo dõi của lệnh đó.'
     UNION ALL SELECT 'FAQ-LC3-HELP-17-EN', 'withdrawal', 'en-US', 170,
       'Can I withdraw to a Vietnamese bank account?',
-      'When Bank account is available as a withdrawal method, you can withdraw in VND. The fee is 1% of the amount, at least 1 USDT and at most 25 USDT, and each request can be 20 to 5,000 USDT. The VND amount is shown in a quote before you confirm, and the quote is held for 10 minutes. Bank withdrawals are paid after a holding period, currently 3 days, and a review.'
+      'When Bank account is available as a withdrawal method, you can withdraw in VND. The fee is 1% of the amount, at least 1 USDT and at most 25 USDT, and each request can be 20 to 5,000 USDT. The VND amount is shown in a quote before you confirm, and the quote is held for 10 minutes. Bank withdrawals have a holding period, currently 3 days. After that, the request is reviewed and, if approved, sent to your bank. Follow its status on the tracking page.'
     UNION ALL SELECT 'FAQ-LC3-HELP-17-VI', 'withdrawal', 'vi-VN', 170,
       'Tôi có thể rút về tài khoản ngân hàng Việt Nam không?',
-      'Khi phương thức Tài khoản ngân hàng khả dụng, bạn có thể rút bằng VND. Phí là 1% số tiền, tối thiểu 1 USDT và tối đa 25 USDT, mỗi lệnh từ 20 đến 5.000 USDT. Số tiền VND hiển thị trong báo giá trước khi bạn xác nhận, và báo giá được giữ trong 10 phút. Lệnh rút về ngân hàng được chi trả sau thời gian chờ, hiện là 3 ngày, và sau khi được xem xét.'
+      'Khi phương thức Tài khoản ngân hàng khả dụng, bạn có thể rút bằng VND. Phí là 1% số tiền, tối thiểu 1 USDT và tối đa 25 USDT, mỗi lệnh từ 20 đến 5.000 USDT. Số tiền VND hiển thị trong báo giá trước khi bạn xác nhận, và báo giá được giữ trong 10 phút. Lệnh rút về ngân hàng có thời gian chờ, hiện là 3 ngày. Sau đó lệnh được xem xét và, nếu được duyệt, sẽ được chuyển đến ngân hàng của bạn. Hãy theo dõi trạng thái trên trang theo dõi.'
     UNION ALL SELECT 'FAQ-LC3-HELP-18-EN', 'withdrawal', 'en-US', 180,
       'Why is my withdrawal under review or unavailable?',
-      'Withdrawals of 500 USDT or more are reviewed manually, and new accounts may wait longer. Other security checks can also add time. You do not need to submit again; follow the request on its tracking page. If Withdraw or a network is unavailable, that channel is temporarily closed, so try again later. If a request takes longer than expected, contact support with the withdrawal number.'
+      'Withdrawals of 500 USDT or more are reviewed manually, and new accounts may wait longer. Other security checks can also add time. You do not need to submit again; follow the request on its tracking page. If you cannot choose a withdrawal method or network, read the message on the page: the channel may be temporarily closed, or an earlier request may need to finish first. If a request takes longer than expected, contact support with the withdrawal number.'
     UNION ALL SELECT 'FAQ-LC3-HELP-18-VI', 'withdrawal', 'vi-VN', 180,
       'Vì sao lệnh rút của tôi đang được xem xét hoặc không khả dụng?',
-      'Lệnh rút từ 500 USDT trở lên được xem xét thủ công, và tài khoản mới có thể phải chờ lâu hơn. Các bước kiểm tra bảo mật khác cũng có thể làm mất thêm thời gian. Bạn không cần gửi lại; hãy theo dõi lệnh trên trang theo dõi. Nếu nút Rút tiền hoặc một mạng không khả dụng, kênh đó đang tạm đóng, hãy thử lại sau. Nếu lệnh lâu hơn dự kiến, hãy liên hệ hỗ trợ kèm mã lệnh rút.'
+      'Lệnh rút từ 500 USDT trở lên được xem xét thủ công, và tài khoản mới có thể phải chờ lâu hơn. Các bước kiểm tra bảo mật khác cũng có thể làm mất thêm thời gian. Bạn không cần gửi lại; hãy theo dõi lệnh trên trang theo dõi. Nếu bạn không chọn được phương thức hoặc mạng rút, hãy đọc thông báo trên trang: kênh có thể đang tạm đóng, hoặc một lệnh trước đó cần hoàn tất trước. Nếu lệnh lâu hơn dự kiến, hãy liên hệ hỗ trợ kèm mã lệnh rút.'
     UNION ALL SELECT 'FAQ-LC3-HELP-19-EN', 'technical', 'en-US', 190,
       'Where do I download or update the official UVEL app?',
-      'Only install UVEL from the official download page or the app store links provided by UVEL. In the app, go to Me > Preferences > About UVEL > App updates to check for a new version. Do not install copies sent to you by other people.'
+      'Only install UVEL from the official download page or the app store links provided by UVEL. In the mobile app, go to Me > Preferences > About UVEL > App updates to check for a new version. If you use UVEL in a web browser, there is nothing to install or update. Do not install copies sent to you by other people.'
     UNION ALL SELECT 'FAQ-LC3-HELP-19-VI', 'technical', 'vi-VN', 190,
       'Tải hoặc cập nhật ứng dụng UVEL chính thức ở đâu?',
-      'Chỉ cài UVEL từ trang tải xuống chính thức hoặc liên kết cửa hàng ứng dụng do UVEL cung cấp. Trong ứng dụng, vào Của tôi > Tùy chọn > Giới thiệu về UVEL > Cập nhật ứng dụng để kiểm tra phiên bản mới. Không cài bản do người khác gửi cho bạn.'
+      'Chỉ cài UVEL từ trang tải xuống chính thức hoặc liên kết cửa hàng ứng dụng do UVEL cung cấp. Trong ứng dụng di động, vào Của tôi > Tùy chọn > Giới thiệu về UVEL > Cập nhật ứng dụng để kiểm tra phiên bản mới. Nếu bạn dùng UVEL trên trình duyệt web, bạn không cần cài đặt hay cập nhật. Không cài bản do người khác gửi cho bạn.'
     UNION ALL SELECT 'FAQ-LC3-HELP-20-EN', 'technical', 'en-US', 200,
       'How do I change the app language? Why are some answers in English?',
       'Go to Me > Language and choose a language. Help answers are available in English and Vietnamese. If you use another language, they are shown in English.'
