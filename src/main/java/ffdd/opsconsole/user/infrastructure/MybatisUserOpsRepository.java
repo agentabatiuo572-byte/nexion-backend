@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.user.domain.UserAccountListEntryView;
 import ffdd.opsconsole.user.domain.UserAccountControlFactView;
 import ffdd.opsconsole.user.domain.UserAccountView;
+import ffdd.opsconsole.user.domain.UserInviterView;
 import ffdd.opsconsole.user.domain.UserAssetAdjustmentView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
 import ffdd.opsconsole.user.domain.UserNotificationView;
@@ -23,6 +24,7 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -166,6 +168,51 @@ public class MybatisUserOpsRepository implements UserOpsRepository {
     @Override
     public Optional<UserAccountView> findById(Long userId) {
         return Optional.ofNullable(mapper.findById(userId));
+    }
+
+    @Override
+    public Map<Long, UserInviterView> findInviters(Collection<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) return Map.of();
+        List<Long> ids = userIds.stream().filter(id -> id != null && id > 0).distinct().sorted().toList();
+        if (ids.isEmpty()) return Map.of();
+        List<UserOpsMapper.UserInviterRow> rows = mapper.pageInviters(ids);
+        if (rows == null || rows.isEmpty()) return Map.of();
+        Map<Long, UserInviterView> result = new LinkedHashMap<>();
+        for (var row : rows) {
+            if (row == null || row.userId() == null || row.userId() <= 0) continue;
+            result.putIfAbsent(row.userId(), inviter(row));
+        }
+        return result;
+    }
+
+    private static UserInviterView inviter(UserOpsMapper.UserInviterRow row) {
+        Long sponsor = row.sponsorUserId();
+        if (sponsor == null || sponsor <= 0) return UserInviterView.none();
+        if (row.inviterId() == null || row.inviterId() <= 0) {
+            return UserInviterView.unknown(UserInviterView.Reason.DANGLING_SPONSOR);
+        }
+        if (!knownSandbox(row.userSandbox()) || !knownSandbox(row.inviterSandbox())) {
+            return UserInviterView.unknown(UserInviterView.Reason.UNKNOWN_ENVIRONMENT);
+        }
+        if (!row.userSandbox().equals(row.inviterSandbox())) {
+            return UserInviterView.unknown(UserInviterView.Reason.ENVIRONMENT_CONFLICT);
+        }
+        if (row.inviterDeleted() == null || row.inviterDeleted() < 0 || row.inviterDeleted() > 1) {
+            return UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED);
+        }
+        String userNo = userNo(row.inviterId());
+        return row.inviterDeleted() == 1
+                ? UserInviterView.deleted(userNo)
+                : UserInviterView.present(userNo, row.inviterNickname());
+    }
+
+    private static boolean knownSandbox(Integer sandbox) {
+        return Integer.valueOf(0).equals(sandbox) || Integer.valueOf(1).equals(sandbox);
+    }
+
+    private static String userNo(long userId) {
+        String digits = Long.toString(userId);
+        return "U" + "0".repeat(Math.max(0, 8 - digits.length())) + digits;
     }
 
     @Override

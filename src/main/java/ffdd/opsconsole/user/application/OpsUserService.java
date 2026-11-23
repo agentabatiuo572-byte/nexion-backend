@@ -34,6 +34,7 @@ import ffdd.opsconsole.user.domain.UserAssetAdjustmentView;
 import ffdd.opsconsole.user.domain.UserCredentialParamView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
+import ffdd.opsconsole.user.domain.UserInviterView;
 import ffdd.opsconsole.user.domain.UserProfileExportFile;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskK1GuardView;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskOverview;
@@ -74,6 +75,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -85,6 +87,7 @@ import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -330,6 +333,26 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
     @Transactional
     public ApiResult<PageResult<UserAccountView>> profilePage(UserQueryRequest request) {
         return profilePage(request, false);
+    }
+
+    /** Batch direct-inviter read for C1 list rows; a failed read maps every requested row to UNKNOWN. */
+    @Transactional(readOnly = true)
+    public Map<Long, UserInviterView> inviters(Collection<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) return Map.of();
+        List<Long> ids = userIds.stream().filter(id -> id != null && id > 0).distinct().toList();
+        if (ids.isEmpty()) return Map.of();
+        Map<Long, UserInviterView> found;
+        try {
+            found = userRepository.findInviters(ids);
+        } catch (DataAccessException ex) {
+            found = Map.of();
+        }
+        if (found == null) found = Map.of();
+        Map<Long, UserInviterView> result = new LinkedHashMap<>();
+        for (Long id : ids) {
+            result.put(id, found.getOrDefault(id, UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED)));
+        }
+        return result;
     }
 
     @Transactional

@@ -18,6 +18,7 @@ import ffdd.opsconsole.user.domain.UserAssetAdjustmentView;
 import ffdd.opsconsole.user.domain.UserCredentialParamView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
 import ffdd.opsconsole.user.domain.UserProfileExportFile;
+import ffdd.opsconsole.user.domain.UserInviterView;
 import ffdd.opsconsole.user.domain.UserProfileListView;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskOverview;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskParamView;
@@ -111,11 +112,13 @@ public class OpsUserController {
         }
         PageResult<UserAccountView> page = result.getData();
         String roleCode = roleResolver.resolveCode();
-        List<UserProfileListView> records = page.getRecords() == null
-                ? List.of()
-                : page.getRecords().stream()
-                        .map(record -> UserProfileListView.from(record, roleCode))
-                        .toList();
+        List<UserAccountView> rows = page.getRecords() == null ? List.of() : page.getRecords();
+        Map<Long, UserInviterView> inviters = rows.isEmpty() ? Map.of() : userService.inviters(
+                rows.stream().map(UserAccountView::id).toList());
+        List<UserProfileListView> records = rows.stream()
+                .map(record -> UserProfileListView.from(record, roleCode, inviters.getOrDefault(record.id(),
+                        UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED))))
+                .toList();
         return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(), records));
     }
 

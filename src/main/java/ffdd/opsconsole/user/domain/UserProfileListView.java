@@ -26,9 +26,14 @@ public record UserProfileListView(
         Long deviceCount,
         Long activeDeviceCount,
         LocalDateTime registeredAt,
-        LocalDateTime lastLoginAt) {
+        LocalDateTime lastLoginAt,
+        UserInviterView inviter) {
 
     public static UserProfileListView from(UserAccountView value, String roleCode) {
+        return from(value, roleCode, null);
+    }
+
+    public static UserProfileListView from(UserAccountView value, String roleCode, UserInviterView inviter) {
         String role = roleCode == null ? "" : roleCode.trim().toUpperCase(Locale.ROOT);
         boolean full = Set.of("SUPER_ADMIN", "RISK", "AUDITOR").contains(role);
         boolean canFinance = full || Set.of("FINANCE", "FINANCE_LEAD", "SUPPORT").contains(role);
@@ -44,6 +49,6 @@ public record UserProfileListView(
                 canSeeRiskBand ? value.riskBand() : null,
                 canSeeDevices ? value.deviceCount() : null,
                 canSeeDevices ? value.activeDeviceCount() : null,
-                value.registeredAt(), value.lastLoginAt());
+                value.registeredAt(), value.lastLoginAt(), inviter);
     }
 }

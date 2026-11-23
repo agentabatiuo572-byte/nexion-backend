@@ -17,6 +17,7 @@ import ffdd.opsconsole.user.infrastructure.UserEntity;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Delete;
@@ -508,6 +509,26 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
     List<UserAccountView> pageUsers(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
                                     @Param("offset") int offset, @Param("pageSize") int pageSize,
                                     @Param("phoneKeyword") String phoneKeyword);
+
+    @Select("""
+            <script>
+            SELECT child.id AS userId,
+                   child.sponsor_user_id AS sponsorUserId,
+                   child.sandbox AS userSandbox,
+                   parent.id AS inviterId,
+                   parent.sandbox AS inviterSandbox,
+                   parent.is_deleted AS inviterDeleted,
+                   parent.nickname AS inviterNickname
+              FROM nx_user child
+              LEFT JOIN nx_user parent ON parent.id = child.sponsor_user_id
+             WHERE child.id IN
+             <foreach collection="userIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<UserInviterRow> pageInviters(@Param("userIds") Collection<Long> userIds);
+
+    record UserInviterRow(Long userId, Long sponsorUserId, Integer userSandbox, Long inviterId,
+                          Integer inviterSandbox, Integer inviterDeleted, String inviterNickname) { }
 
     @Select("<script>SELECT COUNT(*) " + SCOPED_PROFILE_FROM + PROFILE_FILTER
             + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + "</script>")
