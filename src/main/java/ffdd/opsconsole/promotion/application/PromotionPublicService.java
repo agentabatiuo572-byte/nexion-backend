@@ -12,6 +12,7 @@ import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 @Service
 @RequiredArgsConstructor
 public class PromotionPublicService {
+    private static final Set<String> FIRST_PURCHASE_MODES=Set.of("FIRST_ELIGIBLE_ORDER","FIRST_ELIGIBLE_UNIT");
     private final PromotionMapper db;
     private final PromotionEvaluationService evaluator;
     private final PromotionRewardService rewards;
@@ -104,11 +105,13 @@ public class PromotionPublicService {
         // inviter reward. Only the whitelisted mode/restore pair is public; policy ids, executor
         // codes and the rest of the snapshot stay internal, and a promotion without an inviter
         // reward keeps its original payload (null).
+        // text() never returns null, so a published snapshot without $firstPurchase yields an
+        // empty mode that fails the whitelist instead of probing an immutable set with null.
         Map<String,Object> firstPurchaseCondition=null;
-        String firstMode=first==null?null:text(first.get("mode"));
+        String firstMode=text(first==null?null:first.get("mode"));
         if("DIRECT_REFERRAL".equals(contract.get("template"))
                 &&publishedRules.stream().anyMatch(rule->rule.get("inviterReward")!=null)
-                &&Set.of("FIRST_ELIGIBLE_ORDER","FIRST_ELIGIBLE_UNIT").contains(firstMode))
+                &&firstMode!=null&&FIRST_PURCHASE_MODES.contains(firstMode))
             firstPurchaseCondition=values("mode",firstMode,"restoreAfterRefund",Boolean.TRUE.equals(first.get("restoreAfterRefund")));
         return values("activityId",row.get("activity_id"),"version",number(row.get("active_version")),"template",contract.get("template"),"state",state,
             "startsAt",contract.get("startsAt"),"endsAt",contract.get("endsAt"),"serverTime",now.toString(),"title",publicText(contract.get("title")),"terms",publicText(contract.get("terms")),
