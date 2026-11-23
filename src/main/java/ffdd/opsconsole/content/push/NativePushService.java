@@ -16,7 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class NativePushService {
-    static final String TEST_APNS_TOPIC = "ai.uvel.app.test";
+    public static final String TEST_APNS_TOPIC = "ai.uvel.app.test";
     private final NativePushMapper mapper;
     private final CurrentAppSessionService sessions;
 
@@ -25,9 +25,12 @@ public class NativePushService {
         this.sessions = sessions;
     }
 
-    public record Registration(String clientId, String provider, String platform, String permission, String appVersion, String apnsTopic) {
+    public record Registration(String clientId, String provider, String platform, String permission, String appVersion, String apnsTopic, Integer appBuild) {
         public Registration(String clientId, String provider, String platform, String permission, String appVersion) {
-            this(clientId, provider, platform, permission, appVersion, null);
+            this(clientId, provider, platform, permission, appVersion, null, null);
+        }
+        public Registration(String clientId, String provider, String platform, String permission, String appVersion, String apnsTopic) {
+            this(clientId, provider, platform, permission, appVersion, apnsTopic, null);
         }
     }
     public record Route(String notificationId, String route) { }
@@ -39,6 +42,7 @@ public class NativePushService {
                 || !("android".equals(request.platform()) || "ios".equals(request.platform()))
                 || !("granted".equals(request.permission()) || "denied".equals(request.permission()) || "unknown".equals(request.permission()))
                 || request.appVersion() == null || request.appVersion().length() > 64
+                || (request.appBuild() != null && (!TEST_APNS_TOPIC.equals(request.apnsTopic()) || request.appBuild() < 1))
                 || (request.apnsTopic() != null && !("APNS".equals(request.provider()) && TEST_APNS_TOPIC.equals(request.apnsTopic()))))
             throw new BizException(400, "INVALID_PUSH_REGISTRATION");
         String hash = hashToken(token);
@@ -48,7 +52,8 @@ public class NativePushService {
         String cidOwner = mapper.tokenOwner(request.provider(), canonicalToken(request));
         if (cidOwner != null && !id.equals(cidOwner)) throw new BizException(409, "PUSH_TOKEN_ALREADY_BOUND");
         Installation next = new Installation(id, canonicalToken(request), request.provider(), hash, session.getUserId(), session.getSessionChainId(),
-                request.platform(), request.permission(), request.appVersion(), old == null ? 1 : old.bindingEpoch(), true, request.apnsTopic());
+                request.platform(), request.permission(), request.appVersion(), old == null ? 1 : old.bindingEpoch(), true,
+                request.apnsTopic(), request.appBuild());
         try {
             if (old == null) mapper.insert(next);
             else {
@@ -115,6 +120,7 @@ public class NativePushService {
                 || route.matches("/pages/me/wallet-withdraw-tracking\\?id=WD-[A-Z0-9]{1,93}");
             case "ACCOUNT_SECURITY" -> route.equals("/pages/me/security");
             case "SUPPORT_REPLY" -> route.matches("/pages/support/chat\\?cid=[A-Za-z0-9_-]{1,96}");
+            case "APP_UPDATE" -> route.equals("/pages/me/app-update");
             default -> false;
         };
         if (!allowed) throw new BizException(409, "PUSH_ROUTE_UNAVAILABLE");

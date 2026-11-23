@@ -391,6 +391,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261030_test_cloud_legacy_admission.sql")
   (Join-Path $root "scripts\migrations\20261030_native_push_direct_providers.sql")
   (Join-Path $root "scripts\migrations\20261123_native_push_test_nova.sql")
+  (Join-Path $root "scripts\migrations\20261123_test_ios_update_push.sql")
   (Join-Path $root "scripts\migrations\20261030_business_notification_session_indexes.sql")
   (Join-Path $root "scripts\migrations\20261030_payment_password.sql")
   (Join-Path $root "scripts\migrations\20261031_l6_payment_password_route.sql")

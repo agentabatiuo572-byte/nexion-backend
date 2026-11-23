@@ -2,8 +2,12 @@ package ffdd.opsconsole.platform.application;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.content.push.NativePushService;
+import ffdd.opsconsole.content.push.mapper.NativePushMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
@@ -15,6 +19,7 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
@@ -25,12 +30,17 @@ import org.springframework.transaction.annotation.Transactional;
 public class AppUpdateService {
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
+    private final NativePushMapper push;
+    private final AdminOperatorRoleResolver adminRoles;
+    private final Environment environment;
     @Value("${nexion.app-updates.android-download-origin:}")
     private final String androidDownloadOrigin;
     @Value("${nexion.app-updates.resource-public-key:}")
     private final String resourcePublicKey;
     @Value("${nexion.app-updates.ios-resource-bundle-id:}")
     private final String iosResourceBundleId;
+    @Value("${nexion.app-updates.test-ios-install-url:}")
+    private final String testIosInstallUrl;
 
     public record Text(String zh, String en, String vi) {}
     public record Artifact(String artifactId, String platform, String versionName, int latestBuild,
@@ -53,7 +63,7 @@ public class AppUpdateService {
     public record AdminView(String platform, long revision, String status, Policy live, Policy candidate, Policy previous,
                             boolean canRestore, boolean restoring, String requestReason, List<Artifact> artifacts,
                             List<String> allowedActions, List<Event> history, Policy livePackage, Policy liveResource,
-                            Policy previousPackage, Policy previousResource) {}
+                            Policy previousPackage, Policy previousResource, boolean autoPublishOnApproval) {}
 
     // All mutable candidate fields belong to one platform row, locked throughout a command.
     public static class State {
@@ -76,6 +86,8 @@ public class AppUpdateService {
         List<Artifact> available = artifacts(platform);
         Policy pkg = s.livePackage;
         if (pkg != null && !currentArtifact(available, pkg)) pkg = null;
+        if (pkg != null && testIosPackage(platform, pkg.updateType, pkg.downloadUrl)
+                && !NativePushService.TEST_APNS_TOPIC.equals(hostPackage)) pkg = null;
         if (pkg != null && build < pkg.latestBuild)
             return new PublicView(platform, build < pkg.minBuild ? "required" : "optional", pkg);
         Policy resource = s.liveResource;
@@ -119,7 +131,7 @@ public class AppUpdateService {
         }
         if (row.revision != command.revision) throw new BizException(409, "策略已变更，请刷新");
         State state = row.state;
-        if (!actions(state, admin).contains(action))
+        if (!actions(platform, state, admin).contains(action))
             throw new BizException(403, "当前账号或审批状态不允许这项操作");
         Snapshot before = snapshot(state);
         switch (action) {
@@ -163,25 +175,15 @@ public class AppUpdateService {
             case "approve" -> {
                 state.approver = actor;
                 state.status = "approved";
+                if (autoPublish(platform, state)) {
+                    Policy candidate = state.candidate;
+                    publish(platform, state);
+                    int sandbox = UserAuthEnvironment.resolve(environment).orElseThrow() == UserAuthEnvironment.SANDBOX ? 1 : 0;
+                    push.createIosUpdateNotices(candidate.latestBuild, sandbox, NativePushService.TEST_APNS_TOPIC);
+                    push.queueIosUpdateNotices(candidate.latestBuild, sandbox, NativePushService.TEST_APNS_TOPIC);
+                }
             }
-            case "publish" -> {
-                if (state.restoring) {
-                    checkArtifact(platform, state.previousPackage);
-                    checkArtifact(platform, state.previousResource);
-                } else checkArtifact(platform, state.candidate);
-                Policy oldPackage = state.livePackage, oldResource = state.liveResource;
-                if (state.restoring) {
-                    state.livePackage = state.previousPackage;
-                    state.liveResource = state.previousResource;
-                } else if ("resource".equals(state.candidate.updateType)) state.liveResource = state.candidate;
-                else state.livePackage = state.candidate;
-                state.previousPackage = oldPackage;
-                state.previousResource = oldResource;
-                state.previous = state.live;
-                state.canRestore = true;
-                state.live = state.candidate;
-                finishCandidate(state, true);
-            }
+            case "publish" -> publish(platform, state);
             default -> throw new BizException("未知操作");
         }
         long revision = row.revision + 1;
@@ -193,6 +195,38 @@ public class AppUpdateService {
                 """, platform, revision, command.requestId.toString(), hash, actor, AdminActorResolver.resolve(actor), action,
                 reason, encode(before), encode(snapshot(state)));
         return view(platform, new Row(revision, state), admin);
+    }
+
+    private void publish(String platform, State state) {
+        if (state.restoring) {
+            checkArtifact(platform, state.previousPackage);
+            checkArtifact(platform, state.previousResource);
+        } else checkArtifact(platform, state.candidate);
+        Policy oldPackage = state.livePackage, oldResource = state.liveResource;
+        if (state.restoring) {
+            state.livePackage = state.previousPackage;
+            state.liveResource = state.previousResource;
+        } else if ("resource".equals(state.candidate.updateType)) state.liveResource = state.candidate;
+        else state.livePackage = state.candidate;
+        state.previousPackage = oldPackage;
+        state.previousResource = oldResource;
+        state.previous = state.live;
+        state.canRestore = true;
+        state.live = state.candidate;
+        finishCandidate(state, true);
+    }
+
+    private boolean autoPublish(String platform, State state) {
+        return !state.restoring && state.candidate != null
+                && testIosPackage(platform, state.candidate.updateType, state.candidate.downloadUrl);
+    }
+
+    private boolean testIosPackage(String platform, String type, String downloadUrl) {
+        return "ios".equals(platform) && "package".equals(type)
+                && Boolean.TRUE.equals(environment.getProperty("nexion.deployment.public-test", Boolean.class))
+                && UserAuthEnvironment.resolve(environment).isPresent()
+                && testIosInstallUrl.matches("https://[a-z0-9-]+[.]wvedkov[.]cn:8443/api/c/[a-zA-Z0-9]+")
+                && testIosInstallUrl.equals(downloadUrl);
     }
 
     private void checkArtifact(String platform, Policy policy) {
@@ -232,7 +266,8 @@ public class AppUpdateService {
         if ("android".equals(a.platform))
             return androidDownloadOrigin.matches("https://[a-zA-Z0-9.-]+")
                     && a.downloadUrl.equals(androidDownloadOrigin + "/app-updates/android/" + a.sha256 + ".apk");
-        return a.downloadUrl.matches("https://apps[.]apple[.]com/(?:[a-z]{2}/)?app/(?:[A-Za-z0-9_%.-]+/)?id[0-9]+");
+        return testIosPackage(a.platform, a.updateType, a.downloadUrl)
+                || a.downloadUrl.matches("https://apps[.]apple[.]com/(?:[a-z]{2}/)?app/(?:[A-Za-z0-9_%.-]+/)?id[0-9]+");
     }
 
     private boolean trustedResource(Artifact a) {
@@ -282,7 +317,7 @@ public class AppUpdateService {
         s.status = s.candidate == null ? "idle" : "draft";
     }
 
-    private List<String> actions(State s, Authentication admin) {
+    private List<String> actions(String platform, State s, Authentication admin) {
         String actor = admin.getName();
         boolean write = admin.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("platform_a3_write"));
         boolean approve = admin.getAuthorities().stream().anyMatch(a -> a.getAuthority().equals("platform_a2_operation_approve"));
@@ -294,7 +329,10 @@ public class AppUpdateService {
         }
         if (s.status.equals("pending")) {
             if (write && actor.equals(s.submitter)) actions.add("withdraw");
-            if (approve && !actor.equals(s.submitter) && !s.editors.contains(actor)) actions.addAll(List.of("approve","reject"));
+            if (approve && !actor.equals(s.submitter) && !s.editors.contains(actor)
+                    && (!autoPublish(platform, s) || "SUPER_ADMIN".equals(adminRoles.resolveCode()))) {
+                actions.addAll(List.of("approve","reject"));
+            }
         }
         if (write && s.status.equals("approved") && !actor.equals(s.approver)) actions.add("publish");
         return actions;
@@ -338,7 +376,8 @@ public class AppUpdateService {
                 """, (r,n) -> new Event(r.getString(1),r.getString(2),r.getString(3),r.getTimestamp(4).toInstant().toString(),
                         decode(r.getString(5),Snapshot.class),decode(r.getString(6),Snapshot.class)),platform);
         return new AdminView(platform,row.revision,s.status,s.live,s.candidate,s.previous,s.canRestore,s.restoring,
-                s.requestReason,artifacts(platform),actions(s,admin),history,s.livePackage,s.liveResource,s.previousPackage,s.previousResource);
+                s.requestReason,artifacts(platform),actions(platform,s,admin),history,s.livePackage,s.liveResource,
+                s.previousPackage,s.previousResource,autoPublish(platform,s));
     }
 
     private String encode(Object object) {

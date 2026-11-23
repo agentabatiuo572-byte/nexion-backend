@@ -83,17 +83,27 @@ public class NativePushDispatcher {
             if (delivery.attempts() > 5) { finish(delivery, "FAILED", "ATTEMPTS_EXHAUSTED", null, 0); return; }
             boolean nova = notification.isNova();
             boolean enhanced = testBusinessAlerts();
+            boolean appUpdate = "APP_UPDATE".equals(notification.type());
+            if (appUpdate && (!enhanced || !"ios".equals(installation.platform())
+                    || !NativePushService.TEST_APNS_TOPIC.equals(installation.apnsTopic())
+                    || installation.appBuild() == null || notification.updateBuild() == null
+                    || installation.appBuild() >= notification.updateBuild()
+                    || mapper.activeIosUpdate(notification.updateBuild(), env.getProperty("nexion.app-updates.test-ios-install-url", "")) == 0
+                    || killSwitch.notificationEmergencyStop())) {
+                finish(delivery, "CANCELLED", "APP_UPDATE_NOT_APPLICABLE", null, 0);
+                return;
+            }
             if (nova && (!enhanced || mapper.novaChannelEnabled(notification.id()) == 0 || killSwitch.notificationEmergencyStop())) {
                 finish(delivery, "CANCELLED", "NOVA_DISABLED", null, 0);
                 return;
             }
             boolean support = enhanced && "SUPPORT_REPLY".equals(notification.type());
             DirectPushClient.Result result;
-            if (nova || support || installation.apnsTopic() != null) {
-                Map<String,String> alert = nova ? Map.of("title", notification.title(), "body", notification.body())
+            if (nova || appUpdate || support || installation.apnsTopic() != null) {
+                Map<String,String> alert = nova || appUpdate ? Map.of("title", notification.title(), "body", notification.body())
                         : Map.of("title", "UVEL", "body", support ? DirectPushClient.supportReply(notification.language())
                                 : DirectPushClient.message(notification.language()));
-                result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert, installation.apnsTopic(), nova || support);
+                result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert, installation.apnsTopic(), nova || appUpdate || support);
             } else {
                 result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), notification.language());
             }
