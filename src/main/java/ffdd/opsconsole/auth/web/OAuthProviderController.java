@@ -24,7 +24,7 @@ public class OAuthProviderController {
     private final com.fasterxml.jackson.databind.ObjectMapper json;
 
     public record StartRequest(String provider, String intent, String sponsorCode) {}
-    public record CompleteRequest(String provider, String flowId, String flowKey, String receipt, String challengeNo, String code, String captchaTicket) {
+    public record CompleteRequest(String provider, String flowId, String flowKey, String receipt, String challengeNo, String code, String captchaTicket, String deviceName) {
         @Override public String toString() { return "CompleteRequest[REDACTED]"; }
     }
     public record LinkRequest(String flowId, String flowKey, String receipt, String password) {
@@ -122,7 +122,8 @@ public class OAuthProviderController {
             throw new BizException(422, "LOGIN_EXECUTION_CONTEXT_INVALID");
         var context = new AppLoginContext(group, request.getHeader("X-NexGrid-Installation-Id"),
                 Boolean.parseBoolean(capability), request.getHeader("X-NexGrid-Login-Attempt-Id"),
-                request.getHeader("X-NexGrid-Login-Recovery-Key"), "OAUTH", body.provider() + ":" + body.flowId());
+                request.getHeader("X-NexGrid-Login-Recovery-Key"), "OAUTH", body.provider() + ":" + body.flowId(),
+                body.deviceName());
         context.validate();
         return cookies.issue(flows.login(new Proof(body.flowId(), body.flowKey(), body.receipt()), request.getRemoteAddr(),
                 context, body.challengeNo(), body.code(), body.captchaTicket()), request, response);

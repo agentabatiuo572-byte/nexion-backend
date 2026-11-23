@@ -68,7 +68,7 @@ public class AppSingleSessionService {
         session.setInstallationId(context.installationId());
         session.setExecutionSupported(context.executionSupported());
         session.setLoginAttemptId(context.loginAttemptId());
-        session.setDeviceName(context.group().deviceName());
+        session.setDeviceName(context.deviceName() == null ? context.group().deviceName() : context.deviceName());
         session.setClientIp(clientAddress);
         LocalDateTime now = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
         session.setLastActiveAt(now);
