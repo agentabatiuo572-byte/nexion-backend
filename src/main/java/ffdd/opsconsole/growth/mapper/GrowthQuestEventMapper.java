@@ -206,6 +206,20 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     Map<String, Object> lockEventForMutation(@Param("eventId") String eventId);
 
+    /** Non-locking committed read for the side-effect-free legacy reward preview. */
+    @Select("""
+            SELECT id AS rowId, quest_code AS eventCode, target_type AS targetType, target_value AS targetValue,
+                   CAST(status AS SIGNED) AS status, is_deleted AS deleted, starts_at AS startsAt, ends_at AS endsAt,
+                   reward_name AS rewardName, reward_type AS rewardType, reward_amount AS rewardAmount,
+                   (target_value > 0 AND LOWER(target_type) <> 'wheel'
+                    AND (ends_at IS NULL OR (ends_at > UTC_TIMESTAMP()
+                         AND (starts_at IS NULL OR starts_at < ends_at)))) AS rewardWindow
+              FROM nx_event_quest
+             WHERE quest_code = #{eventId}
+               AND target_type IN ('discount','referral','wheel','regional','boost','seasonal','onboarding')
+            """)
+    Map<String, Object> findEventForPreview(@Param("eventId") String eventId);
+
     @Select("""
             SELECT policy_key AS `key`,
                    policy_name AS name,

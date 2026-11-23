@@ -2584,11 +2584,18 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (trialGate != null) {
             return trialGate;
         }
-        if (!lockH4Event()) {
-            return validation("H4_EVENT_MUTEX_UNAVAILABLE");
-        }
         String id = requireText(eventId, "Event id is required");
-        var current = requireEventForMutation(id);
+        Map<String, Object> current;
+        if (review) {
+            // Preview is read-only: use a committed non-locking read and do not take the H4
+            // operation mutex. Submit/publication/approval still take both locks below.
+            current = requireEventForPreview(id);
+        } else {
+            if (!lockH4Event()) {
+                return validation("H4_EVENT_MUTEX_UNAVAILABLE");
+            }
+            current = requireEventForMutation(id);
+        }
         if ("wheel".equalsIgnoreCase(String.valueOf(current.get("targetType")))) {
             return validation("EVENT_WHEEL_REWARD_MANAGED_BY_POOL");
         }
@@ -6444,6 +6451,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private boolean hasEventRule(String eventId, boolean lock) {
         return h4EventRules != null && h4EventRules.find(eventId, lock) != null;
+    }
+
+    private Map<String, Object> requireEventForPreview(String eventId) {
+        var current = questEventMapper.get().findEventForPreview(eventId);
+        if (current == null || !eventId.equals(current.get("eventCode")) || truthy(current.get("deleted"))) {
+            throw new IllegalArgumentException("EVENT_NOT_FOUND");
+        }
+        return current;
     }
 
     private Map<String, Object> requireEventForMutation(String eventId) {
