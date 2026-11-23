@@ -3754,7 +3754,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         int day = bounded(new BigDecimal(request.day()), BigDecimal.ONE, new BigDecimal("365"))
                 .setScale(0, RoundingMode.DOWN).intValueExact();
         boolean multiplierIncreased = multiplier && powerUpNoteAmplifies(current.get(), request.note());
-        if (day < persistedDay || multiplierIncreased) {
+        boolean requiresApproval = multiplier && (day < persistedDay || multiplierIncreased);
+        if (requiresApproval) {
             if (!approved) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
             requireH5Coverage();
         }
@@ -3820,7 +3821,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         int day = bounded(new BigDecimal(request.day()), BigDecimal.ONE, new BigDecimal("365")).intValueExact();
         boolean multiplierIncreased = multiplier && powerUpNoteAmplifies(current.get(), request.note());
-        if (day >= oldDay && !multiplierIncreased) {
+        if (!multiplier || (day >= oldDay && !multiplierIncreased)) {
             return ApiResult.fail(422, "H5_APPROVAL_NOT_REQUIRED");
         }
         requireH5Coverage();
