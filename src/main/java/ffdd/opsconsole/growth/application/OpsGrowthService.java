@@ -4094,9 +4094,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     copy.remove("rewardType");
                     copy.remove("rewardAmount");
                     String id = copy.get("id").toString();
-                    // B77: the persisted single reward pair only; the authored name is never parsed.
-                    copy.put("rewardType", singleRewardType(row));
-                    copy.put("rewardAmount", singleRewardAmount(row));
+                    // B77: the persisted single reward (current rule first, legacy pair second); names never parse.
+                    Map<String,Object> singleReward=singleReward(row,id);
+                    copy.put("rewardType", singleReward==null?null:singleReward.get("type"));
+                    copy.put("rewardAmount", singleReward==null?null:singleReward.get("amount"));
                     copy.put("state", eventStatus(id));
                     copy.put("reward", eventReward(id));
                     copy.put("featured", eventFeatured(id));
@@ -4133,20 +4134,48 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 .toList();
     }
 
-    /** Wheel and multi/device rewards keep null; only one persisted UVT/USDT amount is published. */
-    private static BigDecimal singleReward(Map<String, Object> row) {
+    /** Rule JSON is read with decimals preserved so the published amount keeps the stored precision. */
+    private static final ObjectMapper RULE_DECIMALS = new ObjectMapper()
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+
+    /**
+     * B77 single funded amount: a rule activity publishes its current rule's unique currency reward
+     * (the seven-day event pays rewardNex UVT; streak savers are non-funding and never make it
+     * multi-currency). Legacy events keep their persisted pair. Everything else is null.
+     */
+    private Map<String, Object> singleReward(Map<String, Object> row, String id) {
         if ("wheel".equalsIgnoreCase(H4EventRuleService.text(row.get("kind")).trim())) return null;
+        if (h4EventRules != null && H4EventRuleService.CODES.contains(id)) {
+            Map<String, Object> rule;
+            try { rule = h4EventRules.find(id, false); } catch (RuntimeException ex) { return null; }
+            if (rule != null) {
+                BigDecimal uvt = positiveDecimal(ruleFacts(rule).get("rewardNex"));
+                return uvt == null ? null : rewardPair("UVT", uvt);
+            }
+        }
         String asset = H4EventRuleService.text(row.get("rewardType")).trim().toUpperCase(java.util.Locale.ROOT);
         if (!Set.of("UVT", "USDT").contains(asset)) return null;
-        BigDecimal amount = H4EventRuleService.number(row.get("rewardAmount"));
-        return amount.signum() > 0 ? amount : null;
+        BigDecimal amount = positiveDecimal(row.get("rewardAmount"));
+        return amount == null ? null : rewardPair(asset, amount);
     }
-    private static String singleRewardType(Map<String, Object> row) {
-        return singleReward(row) == null ? null : H4EventRuleService.text(row.get("rewardType")).trim();
+    private static Map<String, Object> rewardPair(String type, BigDecimal amount) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("type", type);
+        out.put("amount", amount.stripTrailingZeros().toPlainString());
+        return out;
     }
-    private static String singleRewardAmount(Map<String, Object> row) {
-        BigDecimal amount = singleReward(row);
-        return amount == null ? null : amount.stripTrailingZeros().toPlainString();
+    private static BigDecimal positiveDecimal(Object value) {
+        if (value == null) return null;
+        try {
+            BigDecimal amount = new BigDecimal(value.toString());
+            return amount.signum() > 0 ? amount : null;
+        } catch (NumberFormatException ex) { return null; }
+    }
+    private static Map<String, Object> ruleFacts(Map<String, Object> rule) {
+        Object raw = rule.get("rules_json");
+        if (raw == null) return Map.of();
+        try { return RULE_DECIMALS.readValue(raw.toString(), new TypeReference<Map<String, Object>>() { }); }
+        catch (Exception ex) { return Map.of(); }
     }
 
     private List<Map<String, Object>> questEventRows() {
