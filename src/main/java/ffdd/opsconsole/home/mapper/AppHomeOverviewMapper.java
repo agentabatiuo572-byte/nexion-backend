@@ -339,7 +339,8 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                    p.price_usdt AS priceUsdt,
                    p.estimated_daily_usdt AS dailyUsdt,
                    p.stock,
-                   p.inventory_mode AS inventoryMode,p.series_code AS seriesCode
+                   p.inventory_mode AS inventoryMode,p.series_code AS seriesCode,
+                   p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct
               FROM nx_product p
              WHERE p.is_deleted = 0
                AND p.store_visible = 1
@@ -401,10 +402,11 @@ public interface AppHomeOverviewMapper extends BaseMapper<Object>, TrialSlotRese
                          String modelName, BigDecimal minReward, BigDecimal maxReward) { }
     record TaskPriceHistoryRow(String taskId, BigDecimal price, LocalDateTime observedAt) { }
     record MarketProductRow(String productNo, String name, String productType, String tier,
-                            BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock, String inventoryMode, String seriesCode) {
+                            BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock, String inventoryMode, String seriesCode,
+                            BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
         public MarketProductRow(String productNo, String name, String productType, String tier,
                                 BigDecimal priceUsdt, BigDecimal dailyUsdt, Integer stock) {
-            this(productNo, name, productType, tier, priceUsdt, dailyUsdt, stock, "FINITE", null);
+            this(productNo, name, productType, tier, priceUsdt, dailyUsdt, stock, "FINITE", null, null, null);
         }
     }
     record PromoRow(String baseReward, String multiplier, Integer countdownDays, Integer countdownHours,

@@ -250,10 +250,8 @@ public class AppProductCatalogService {
         item.put("dailyEarn", target.monthlyTargetUsdt()!=null ? ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(target.monthlyTargetUsdt())
                 : share ? BigDecimal.ZERO : target.dailyUsdt());
         item.put("monthlyEstimateUsdt",target.monthlyTargetUsdt());
-        item.put("dailyEstimateLowUsdt",target.monthlyTargetUsdt()==null || !share ? null : target.monthlyTargetUsdt()
-                .multiply(BigDecimal.ONE.subtract(target.monthlyTargetBandPct().movePointLeft(2))).divide(BigDecimal.valueOf(30),6,java.math.RoundingMode.HALF_UP));
-        item.put("dailyEstimateHighUsdt",target.monthlyTargetUsdt()==null || !share ? null : target.monthlyTargetUsdt()
-                .multiply(BigDecimal.ONE.add(target.monthlyTargetBandPct().movePointLeft(2))).divide(BigDecimal.valueOf(30),6,java.math.RoundingMode.HALF_UP));
+        item.put("dailyEstimateLowUsdt",ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyLow(target.monthlyTargetUsdt(),target.monthlyTargetBandPct()));
+        item.put("dailyEstimateHighUsdt",ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyHigh(target.monthlyTargetUsdt(),target.monthlyTargetBandPct()));
         item.put("dailyEarnNEX", target.dailyNex());
         item.put("shareYieldMin", shareYieldAvailable ? shareYield.minPct() : null);
         item.put("shareYieldMax", shareYieldAvailable ? shareYield.maxPct() : null);

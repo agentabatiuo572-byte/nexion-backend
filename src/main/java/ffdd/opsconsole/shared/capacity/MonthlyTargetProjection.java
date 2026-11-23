@@ -17,6 +17,23 @@ public final class MonthlyTargetProjection {
             throw new BizException(422,"MONTHLY_TARGET_BAND_INVALID");
     }
     public static BigDecimal daily(BigDecimal target) { return target.divide(BigDecimal.valueOf(30),6,RoundingMode.HALF_UP); }
+
+    /** Published daily USDT range: monthly target x (1 -/+ band%) / 30, rounded like {@link #daily}. */
+    public static BigDecimal dailyLow(BigDecimal monthlyTarget, BigDecimal bandPct) { return banded(monthlyTarget, bandPct, true); }
+    public static BigDecimal dailyHigh(BigDecimal monthlyTarget, BigDecimal bandPct) { return banded(monthlyTarget, bandPct, false); }
+
+    /** Same band around an amount already projected for one device (E3 capacity applied by the caller). */
+    public static BigDecimal dailyLowOf(BigDecimal daily, BigDecimal bandPct) {
+        return daily == null || bandPct == null ? null : daily.multiply(BigDecimal.ONE.subtract(bandPct.movePointLeft(2))).setScale(6, RoundingMode.HALF_UP);
+    }
+    public static BigDecimal dailyHighOf(BigDecimal daily, BigDecimal bandPct) {
+        return daily == null || bandPct == null ? null : daily.multiply(BigDecimal.ONE.add(bandPct.movePointLeft(2))).setScale(6, RoundingMode.HALF_UP);
+    }
+    private static BigDecimal banded(BigDecimal monthlyTarget, BigDecimal bandPct, boolean low) {
+        if (monthlyTarget == null || bandPct == null) return null;
+        return monthlyTarget.multiply(BigDecimal.ONE.add(low ? bandPct.movePointLeft(2).negate() : bandPct.movePointLeft(2)))
+                .divide(BigDecimal.valueOf(30), 6, RoundingMode.HALF_UP);
+    }
     public static BigDecimal shareYield(BigDecimal target, BigDecimal band, BigDecimal price, boolean high) {
         return target.multiply(BigDecimal.ONE.add(high ? band.movePointLeft(2) : band.movePointLeft(2).negate()))
                 .multiply(BigDecimal.valueOf(36500)).divide(BigDecimal.valueOf(30).multiply(price),4,RoundingMode.HALF_UP);
