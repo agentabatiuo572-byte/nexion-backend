@@ -78,6 +78,8 @@ public class SupportCustomerProfileService {
             data.put("nickname",user.nickname());String avatar=mapper.avatar(customer);
             data.put("avatar",ffdd.opsconsole.content.domain.SupportCustomerAvatar.ref(customer,avatar));
             data.put("level",first(user.vRank(),user.userLevel()));
+            // B73-BE-07: legacy level keeps its first-non-blank value; the two sources stay separate.
+            data.put("vRank",blank(user.vRank()));data.put("userLevel",blank(user.userLevel()));
             data.put("inviter",inviter(customer,scope.actorId()));
             data.put("phoneMasked",user.phoneMasked());data.put("region",user.countryCode());data.put("registeredAt",businessUtc(user.registeredAt()));
             data.put("lastLoginAt",businessUtc(user.lastLoginAt()));data.put("accountStatus",user.status());return data;
@@ -320,6 +322,7 @@ public class SupportCustomerProfileService {
     private static String text(Map<String,Object> data,String key){return data.get(key)==null?null:data.get(key).toString();}
     private static String amount(Map<String,Object> data,String key){return data.get(key)==null?null:data.get(key)+" USDT";}
     private static String first(String a,String b){return a!=null && !a.isBlank()?a:b!=null && !b.isBlank()?b:null;}
+    private static String blank(String value){return value==null || value.isBlank()?null:value;}
     @SuppressWarnings("unchecked") private static List<String> strings(Object value){return value instanceof List<?>?(List<String>)value:List.of();}
     private static LocalDateTime parseTime(String value){if(value==null)return null;try{return LocalDateTime.ofInstant(Instant.parse(value),ZoneOffset.UTC);}catch(DateTimeException ex){throw new BizException(422,"SUPPORT_FLOW_RANGE_INVALID");}}
 }
