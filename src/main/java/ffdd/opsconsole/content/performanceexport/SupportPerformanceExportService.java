@@ -324,7 +324,14 @@ public class SupportPerformanceExportService {
         }
         String month = text(request == null ? null : request.get("month"));
         Scope scope = resolveScope(actor, request == null ? null : request.get("scope"));
+        if ("MANAGED_GROUPS".equals(scope.kind()) && !supervisorCurrent(actor)) {
+            throw new BizException(403, "PERMISSION_DENIED");
+        }
         List<Type> types = types(request == null ? null : request.get("types"));
+        List<Type> permitted = allowedTypes(actor);
+        for (Type type : types) {
+            if (!permitted.contains(type)) throw new BizException(403, "PERMISSION_DENIED");
+        }
         Window window = month == null ? null : facts.window(month, scope);
         List<Map<String, Object>> items = new ArrayList<>();
         List<TableItem> tables = new ArrayList<>();
@@ -573,10 +580,21 @@ public class SupportPerformanceExportService {
         return scopes;
     }
 
+    /** Ordinary customer-service employment only buys the applicant's own summary. */
+    private boolean supervisorCurrent(Long actor) {
+        try {
+            var modes = ownership.availableReadModes(actor);
+            return modes != null && (modes.contains(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED)
+                    || modes.contains(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL));
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
     private List<Type> allowedTypes(Long actor) {
         List<Type> types = new ArrayList<>();
         if (owns(SUMMARY_PERMISSION)) types.add(Type.SUMMARY);
-        if (owns(DETAIL_PERMISSION)) {
+        if (supervisorCurrent(actor) && owns(DETAIL_PERMISSION)) {
             types.add(Type.CUSTOMER_DETAIL);
             types.add(Type.TRANSACTION_DETAIL);
         }
@@ -661,8 +679,7 @@ public class SupportPerformanceExportService {
             return false;
         }
         if (modes == null || modes.isEmpty()) return false;
-        boolean supervisor = modes.contains(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.MANAGED)
-                || modes.contains(ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode.ALL);
+        boolean supervisor = supervisorCurrent(applicant);
         String kind = text(readMap(task.scopeJson()).get("kind"));
         if ("MANAGED_GROUPS".equals(kind) && !supervisor) return false;
         // An ordinary customer-service agent may only export its own summary.
@@ -779,7 +796,15 @@ public class SupportPerformanceExportService {
     private Map<String, Object> detailView(Long actor, TaskRow task) {
         int level = accessLevel(actor, task);
         if (level == ACCESS_NONE) throw new BizException(404, "EXPORT_TASK_NOT_FOUND");
-        if (level == ACCESS_MINIMAL) return minimalView(task, actor);
+        if (level == ACCESS_MINIMAL) {
+            Map<String, Object> minimal = new LinkedHashMap<>(minimalView(task, actor));
+            minimal.put("requestReason", task.requestReason());
+            minimal.put("columns", null);
+            minimal.put("coverage", null);
+            minimal.put("scopeSummary", null);
+            minimal.put("decisionReason", null);
+            return minimal;
+        }
         Map<String, Object> out = new LinkedHashMap<>(taskView(task, actor));
         out.put("requestReason", task.requestReason());
         out.put("columns", readList(task.columnsJson()));
@@ -809,11 +834,6 @@ public class SupportPerformanceExportService {
         out.put("reasonCodes", List.of());
         out.put("requestedAt", instant(task.createdAt()));
         out.put("approvedAt", task.approvedAt() == null ? null : instant(task.approvedAt()));
-        out.put("requestReason", task.requestReason());
-        out.put("columns", null);
-        out.put("coverage", null);
-        out.put("scopeSummary", null);
-        out.put("decisionReason", null);
         out.put("reviewerId", null);
         out.put("rowCount", null);
         out.put("restrictedHistoryRows", null);
