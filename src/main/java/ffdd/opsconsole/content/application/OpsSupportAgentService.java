@@ -274,7 +274,7 @@ public class OpsSupportAgentService {
         return idempotentCommand(
                 "M5_SUPPORT_AGENT_PROFILE_UPDATE",
                 idempotencyKey,
-                requestHash(String.valueOf(adminId), request.commandFingerprint()),
+                requestHash(String.valueOf(adminId), String.valueOf(request)),
                 () -> updateProfileOnce(adminId, idempotencyKey, request, operator));
     }
 
@@ -363,7 +363,7 @@ public class OpsSupportAgentService {
         return idempotentCommand(
                 "M1_SUPPORT_SEAT_ASSIGN",
                 idempotencyKey,
-                requestHash(String.valueOf(adminId), request.commandFingerprint()),
+                requestHash(String.valueOf(adminId), String.valueOf(request)),
                 () -> assignSeatOnce(adminId, idempotencyKey, request));
     }
 
