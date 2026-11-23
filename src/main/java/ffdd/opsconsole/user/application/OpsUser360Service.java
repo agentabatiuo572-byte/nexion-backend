@@ -25,8 +25,11 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
+import ffdd.opsconsole.team.facade.SupportInvitationReadFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
+import ffdd.opsconsole.user.domain.UserInviterDetailView;
+import ffdd.opsconsole.user.domain.UserInviterView;
 import ffdd.opsconsole.user.domain.UserLatestFundActivityView;
 import ffdd.opsconsole.user.domain.UserNotificationView;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
@@ -80,6 +83,8 @@ public class OpsUser360Service {
     private final EventOutboxService outboxService;
     private final ffdd.opsconsole.finance.application.FinanceSupportReadService financeSupport;
     private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private SupportInvitationReadFacade invitations = roots -> List.of();
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private AdminObjectDisplayNameService adminDisplayNames;
 
@@ -243,7 +248,7 @@ public class OpsUser360Service {
                         "write actions require Idempotency-Key, reason and A2 audit",
                         "media URLs must come from nx_admin media upload APIs",
                         "sunset products are historical compatibility only"));
-        trimForRole(response, role, full, canFinance, canGrowth, canDevices, canCommerce);
+        trimForRole(response, role, full, canFinance, canGrowth, canDevices, canCommerce, inviter(userId));
         if (canFinance) {
             response.put("latestDeposit", latestDepositRead.value());
             response.put("latestDepositStatus", latestDepositRead.ready() ? "READY" : "ERROR");
@@ -342,7 +347,8 @@ public class OpsUser360Service {
             boolean canFinance,
             boolean canGrowth,
             boolean canDevices,
-            boolean canCommerce) {
+            boolean canCommerce,
+            UserInviterDetailView inviter) {
         UserAccountView profile = (UserAccountView) response.get("profile");
         Map<String, Object> projectedProfile = section(
                 "id", profile.id(),
@@ -359,6 +365,7 @@ public class OpsUser360Service {
             projectedProfile.put("walletUsdt", profile.walletUsdt());
             projectedProfile.put("walletNex", profile.walletNex());
         }
+        projectedProfile.put("inviter", inviter);
         if (full) {
             projectedProfile.put("twoFactorEnabled", profile.twoFactorEnabled());
             projectedProfile.put("riskScore", profile.riskScore());
@@ -494,12 +501,59 @@ public class OpsUser360Service {
 
     private Map<String, Object> team(Long userId) {
         List<UserTeamMemberView> rows = userRepository.teamMembers(userId, 20);
+        BigDecimal volume = userRepository.sumTeamVolume(userId);
+        SupportInvitationReadFacade.Invitation tree = invitationTree(userId);
+        boolean complete = tree != null && tree.completeness() == SupportInvitationReadFacade.Completeness.COMPLETE;
+        String countStatus = tree == null ? "FAILED" : switch (tree.completeness()) {
+            case COMPLETE -> "AVAILABLE";
+            case PARTIAL -> "PARTIAL";
+            case UNKNOWN -> "UNKNOWN";
+            case FAILED -> "FAILED";
+        };
+        List<String> countReasons = tree == null ? List.of("SOURCE_READ_FAILED")
+                : tree.reasons().stream().map(Enum::name).sorted().toList();
         return section(
-                "teamSize", userRepository.countTeamMembers(userId),
-                "directCount", userRepository.countDirectTeamMembers(userId),
-                "teamVolumeUsd", money(userRepository.sumTeamVolume(userId)),
+                "teamSize", complete ? tree.total() : null,
+                "directCount", complete ? tree.direct() : null,
+                "withinRewardRange", complete ? tree.withinRewardRange() : null,
+                "beyondRewardRange", complete ? tree.beyondRewardRange() : null,
+                "countStatus", countStatus,
+                "countReasons", countReasons,
+                "teamVolumeUsd", money(volume),
                 "records", rows,
                 "sourceStatus", "READY");
+    }
+
+    private SupportInvitationReadFacade.Invitation invitationTree(Long userId) {
+        try {
+            var rows = invitations.readInvitations(List.of(userId));
+            return rows == null || rows.isEmpty() ? null : rows.get(0);
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private UserInviterDetailView inviter(Long userId) {
+        UserInviterView view;
+        try {
+            view = userService.inviters(List.of(userId)).get(userId);
+        } catch (RuntimeException ex) {
+            view = null;
+        }
+        if (view == null) view = UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED);
+        boolean navigable = view.state() == UserInviterView.State.PRESENT && view.userNo() != null
+                && inviterTargetReadable(view.userNo());
+        return UserInviterDetailView.from(view, navigable);
+    }
+
+    private boolean inviterTargetReadable(String userNo) {
+        if (!supportOwnership.currentSupportReader()) return true;
+        try {
+            Long target = userRepository.findUserIdByLookupKey(userNo).orElse(null);
+            return target != null && supportOwnership.canRead(supportOwnership.actorId(), target);
+        } catch (RuntimeException ex) {
+            return false;
+        }
     }
 
     private Map<String, Object> notifications(Long userId) {
@@ -588,13 +642,17 @@ public class OpsUser360Service {
         return section(
                 "teamSize", teamSection.get("teamSize"),
                 "directCount", teamSection.get("directCount"),
+                "withinRewardRange", teamSection.get("withinRewardRange"),
+                "beyondRewardRange", teamSection.get("beyondRewardRange"),
+                "countStatus", teamSection.get("countStatus"),
+                "countReasons", teamSection.get("countReasons"),
                 "teamVolumeUsd", teamSection.get("teamVolumeUsd"),
                 "members", teamSection.get("records"),
                 "commissionRows", commissionRows,
                 "commissionUsdt", money(sumAsset(commissionRows, "USDT")),
                 "commissionNex", money(sumAsset(commissionRows, "UVT")),
                 "sources", List.of("nx_team_member", "nx_wallet_ledger"),
-                "sourceStatus", "READY");
+                "sourceStatus", teamSection.getOrDefault("sourceStatus", "ERROR"));
     }
 
     private Map<String, Object> vrank(UserAccountView profile, Map<String, Object> teamSection) {

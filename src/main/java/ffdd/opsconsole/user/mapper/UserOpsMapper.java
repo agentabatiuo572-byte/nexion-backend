@@ -839,7 +839,8 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
      * 是入队时写下的反规范化副本,用户改名后它不会跟着变 —— 于是 C1 推荐团队表格
      * 一直显示旧昵称,而同一页的账户摘要显示的是新昵称,同一个人的名字在一屏里对不上。
      * 历史投影的 `member_user_id` 可能与页面展示的 `member_no` 不一致，因此规范 U 编号优先用于
-     * 定位用户；非规范编号仍兼容 `member_user_id`。反规范化昵称只在用户行缺失或被软删时兜底。</p>
+     * 定位用户；非规范编号仍兼容 `member_user_id`。用户行缺失时用反规范化昵称兜底；已删除账户和
+     * 相隔 8 次以上的成员在 LIMIT 前排除。</p>
      */
     @Select("""
             SELECT COALESCE(u.id, tm.member_user_id) AS memberUserId,
@@ -856,10 +857,10 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                                   THEN CAST(SUBSTRING(tm.member_no, 2) AS UNSIGNED)
                               ELSE tm.member_user_id
                           END
-               AND u.is_deleted = 0
              WHERE tm.user_id = #{userId}
                AND tm.is_deleted = 0
-               AND tm.level >= 1
+               AND tm.level BETWEEN 1 AND 7
+               AND (u.id IS NULL OR u.is_deleted = 0)
              ORDER BY tm.level ASC, tm.volume DESC, tm.id DESC
              LIMIT #{limit}
             """)
