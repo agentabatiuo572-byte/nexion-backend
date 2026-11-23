@@ -114,7 +114,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Set<String> CLUSTER_LAYERS = Set.of("ip", "device", "payment");
     private static final Set<String> K1_CLUSTER_SORTS = Set.of("strength_desc", "account_desc");
     private static final Map<String, int[]> K1_INTEGER_PARAMS = Map.of(
-            "maxSignupPerIp24h", new int[]{1, 10},
+            "maxSignupPerIp24h", new int[]{1, 50},
             "maxAccountsPerDevice", new int[]{1, 5},
             "maxAccountsPerPaymentInstrument", new int[]{1, 5});
     private static final Set<String> K1_DECIMAL_PARAMS = Set.of("clusterFreezeSuggestThreshold");

@@ -283,7 +283,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     private void ensureK1Params() {
-        mapper.upsertK1RiskParam("maxSignupPerIp24h", "同 IP 24h 最大注册数", "3", "个", "范围 1-10", "超过阈值参与多账户聚类", 10);
+        mapper.upsertK1RiskParam("maxSignupPerIp24h", "同 IP 24h 最大注册数", "3", "个", "范围 1-50", "超过阈值参与多账户聚类", 10);
         mapper.upsertK1RiskParam("maxAccountsPerDevice", "同设备最大账户数", "2", "个", "范围 1-5", "设备指纹关联阈值", 20);
         mapper.upsertK1RiskParam("maxAccountsPerPaymentInstrument", "同支付工具最大账户数", "2", "个", "范围 1-5", "支付工具关联阈值", 30);
         mapper.upsertK1RiskParam("linkWeight", "关联权重", "设备 0.50 · 支付 0.40 · IP 0.10", "", "三项总和必须为 1", "只计算建议强度，不自动冻结", 40);
