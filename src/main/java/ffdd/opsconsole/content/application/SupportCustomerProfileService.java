@@ -15,6 +15,7 @@ import ffdd.opsconsole.risk.application.OpsRiskService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.user.application.OpsUserService;
+import ffdd.opsconsole.user.domain.UserInviterView;
 import java.time.*;
 import java.util.*;
 import java.util.function.Supplier;
@@ -77,6 +78,7 @@ public class SupportCustomerProfileService {
             data.put("nickname",user.nickname());String avatar=mapper.avatar(customer);
             data.put("avatar",ffdd.opsconsole.content.domain.SupportCustomerAvatar.ref(customer,avatar));
             data.put("level",first(user.vRank(),user.userLevel()));
+            data.put("inviter",inviter(customer,scope.actorId()));
             data.put("phoneMasked",user.phoneMasked());data.put("region",user.countryCode());data.put("registeredAt",businessUtc(user.registeredAt()));
             data.put("lastLoginAt",businessUtc(user.lastLoginAt()));data.put("accountStatus",user.status());return data;
         });
@@ -292,6 +294,26 @@ public class SupportCustomerProfileService {
         var recent=finance.get("recentFlows");if(!(recent instanceof Map<?,?> section) || !(section.get("data") instanceof Map<?,?> data) || !(data.get("records") instanceof List<?> rows))return List.of();
         return rows.stream().map(value->{var row=(Map<String,Object>)value;String amount=row.get("principal")==null?null:row.get("principal")+" "+row.get("currency");
             return new ConversationCustomerProfile.LedgerEntry(text(row,"kind"),text(row,"createdAt"),amount,"DEPOSIT".equals(row.get("kind")),Set.of("SUBMITTED","PENDING","REVIEW_PENDING","PROCESSING").contains(text(row,"status")));}).toList();
+    }
+    private Map<String,Object> inviter(long customer,long actor) {
+        UserInviterView view;
+        try {view=users.inviters(List.of(customer)).get(customer);}
+        catch(RuntimeException ex){view=null;}
+        if(view==null)view=UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED);
+        Long target=null;
+        if(view.state()==UserInviterView.State.PRESENT && view.userNo()!=null) {
+            try {target=users.userIdByUserNo(view.userNo());}
+            catch(RuntimeException ex){target=null;}
+        }
+        boolean navigable=false;
+        if(target!=null) {
+            try {navigable=ownership.canRead(actor,target);}
+            catch(RuntimeException ex){navigable=false;}
+        }
+        var data=new LinkedHashMap<String,Object>();
+        data.put("state",view.state().name());data.put("userNo",view.userNo());data.put("nickname",view.nickname());
+        data.put("reason",view.reason()==null?null:view.reason().name());data.put("navigable",navigable);
+        data.put("customerId",navigable?String.valueOf(target):null);return data;
     }
     private static Map<String,Object> unavailable(String status) {var result=new LinkedHashMap<String,Object>();result.put("status",status);result.put("data",null);result.put("evaluatedAt",Instant.now().toString());if("ERROR".equals(status))result.put("errorHint","Please retry this section");return result;}
     @SuppressWarnings("unchecked") private static Map<String,Object> data(Map<String,Object> groups,String key){var group=(Map<String,Object>)groups.get(key);return group!=null && group.get("data") instanceof Map<?,?> data?(Map<String,Object>)data:Map.of();}

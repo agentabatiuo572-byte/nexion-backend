@@ -87,7 +87,7 @@ public class SupportWorkbenchController {
         productionPathGuard.requireOpsWriteAllowed();
         SupportWorkbenchService.requireSafeId(customerId);
         ownership.requireRead(customerId);
-        return user360.detail(customerId);
+        return user360.detail(customerId, true);
     }
     @GetMapping("/customers/{customerId}/flows")
     @PreAuthorize("hasAnyAuthority('service_m1_read','service_m3_read')")

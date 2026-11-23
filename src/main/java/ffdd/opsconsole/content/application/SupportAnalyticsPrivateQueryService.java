@@ -439,7 +439,7 @@ public class SupportAnalyticsPrivateQueryService {
         var m=c.metrics();var first=c.first().observedCandidate();
         return map("first",map("state",c.first().state().name(),"status",c.first().status().name(),"kind",first==null?null:first.kind(),"currency",first==null?null:first.currency(),"amount",first==null?null:decimal(first.amount()),"succeededAt",first==null?null:time(first.succeededAt())),
             "lifetime",m.lifetime().stream().map(SupportAnalyticsPrivateQueryService::customerMoney).toList(),"lifetimeStatus",m.lifetimeStatus().name(),
-            "invitations",map("direct",count(m.invitations().directCustomers()),"descendants",count(m.invitations().descendantCustomers()),"status",m.invitations().status().name(),"deposits",m.invitations().descendantDeposits().stream().map(x->map("currency",x.currency(),"deposits",money(x.deposits()))).toList()),
+            "invitations",map("direct",count(m.invitations().directCustomers()),"withinRewardRange",count(m.invitations().withinRewardRange()),"beyondRewardRange",count(m.invitations().beyondRewardRange()),"descendants",count(m.invitations().descendantCustomers()),"status",m.invitations().status().name(),"reasons",m.invitations().reasons(),"deposits",m.invitations().descendantDeposits().stream().map(x->map("currency",x.currency(),"deposits",money(x.deposits()))).toList()),
             "activity",map("state",m.activity().state().name(),"status",m.activity().status().name(),"lastEffectiveAt",utc(m.activity().lastEffectiveAt())));
     }
 

@@ -28,7 +28,6 @@ import ffdd.opsconsole.treasury.application.OpsTreasuryService;
 import ffdd.opsconsole.team.facade.SupportInvitationReadFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
-import ffdd.opsconsole.user.domain.UserInviterDetailView;
 import ffdd.opsconsole.user.domain.UserInviterView;
 import ffdd.opsconsole.user.domain.UserLatestFundActivityView;
 import ffdd.opsconsole.user.domain.UserNotificationView;
@@ -103,6 +102,11 @@ public class OpsUser360Service {
 
     @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> detail(Long userId) {
+        return detail(userId, false);
+    }
+
+    @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public ApiResult<Map<String, Object>> detail(Long userId, boolean supportEntry) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
@@ -248,7 +252,7 @@ public class OpsUser360Service {
                         "write actions require Idempotency-Key, reason and A2 audit",
                         "media URLs must come from nx_admin media upload APIs",
                         "sunset products are historical compatibility only"));
-        trimForRole(response, role, full, canFinance, canGrowth, canDevices, canCommerce, inviter(userId));
+        trimForRole(response, role, full, canFinance, canGrowth, canDevices, canCommerce, inviter(userId, supportEntry));
         if (canFinance) {
             response.put("latestDeposit", latestDepositRead.value());
             response.put("latestDepositStatus", latestDepositRead.ready() ? "READY" : "ERROR");
@@ -348,7 +352,7 @@ public class OpsUser360Service {
             boolean canGrowth,
             boolean canDevices,
             boolean canCommerce,
-            UserInviterDetailView inviter) {
+            Map<String, Object> inviter) {
         UserAccountView profile = (UserAccountView) response.get("profile");
         Map<String, Object> projectedProfile = section(
                 "id", profile.id(),
@@ -533,7 +537,7 @@ public class OpsUser360Service {
         }
     }
 
-    private UserInviterDetailView inviter(Long userId) {
+    private Map<String, Object> inviter(Long userId, boolean supportEntry) {
         UserInviterView view;
         try {
             view = userService.inviters(List.of(userId)).get(userId);
@@ -541,19 +545,26 @@ public class OpsUser360Service {
             view = null;
         }
         if (view == null) view = UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED);
-        boolean navigable = view.state() == UserInviterView.State.PRESENT && view.userNo() != null
-                && inviterTargetReadable(view.userNo());
-        return UserInviterDetailView.from(view, navigable);
-    }
-
-    private boolean inviterTargetReadable(String userNo) {
-        if (!supportOwnership.currentSupportReader()) return true;
-        try {
-            Long target = userRepository.findUserIdByLookupKey(userNo).orElse(null);
-            return target != null && supportOwnership.canRead(supportOwnership.actorId(), target);
-        } catch (RuntimeException ex) {
-            return false;
+        boolean present = view.state() == UserInviterView.State.PRESENT && view.userNo() != null;
+        boolean scoped = supportEntry || supportOwnership.currentSupportReader();
+        Long target = null;
+        if (present && scoped) {
+            try {
+                target = userRepository.findUserIdByLookupKey(view.userNo()).orElse(null);
+            } catch (RuntimeException ex) {
+                target = null;
+            }
         }
+        boolean navigable = present;
+        if (present && scoped) {
+            try {navigable = target != null && supportOwnership.canRead(supportOwnership.actorId(), target);}
+            catch (RuntimeException ex) {navigable = false;}
+        }
+        Map<String, Object> result = section(
+                "state", view.state(), "userNo", view.userNo(), "nickname", view.nickname(),
+                "reason", view.reason(), "navigable", navigable);
+        if (supportEntry) result.put("customerId", navigable ? String.valueOf(target) : null);
+        return result;
     }
 
     private Map<String, Object> notifications(Long userId) {

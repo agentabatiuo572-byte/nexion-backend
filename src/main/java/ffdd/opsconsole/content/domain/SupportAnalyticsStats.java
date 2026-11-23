@@ -92,9 +92,14 @@ public final class SupportAnalyticsStats {
     }
     public record InvitationCurrencyTotal(String currency,Money deposits) { }
     /** Descendant identities and per-descendant facts never belong in this projection. */
-    public record InvitationSummary(Count directCustomers,Count descendantCustomers,
-            List<InvitationCurrencyTotal> descendantDeposits,Status status,List<String> reasons) {
+    public record InvitationSummary(Count directCustomers,Count withinRewardRange,Count beyondRewardRange,
+            Count descendantCustomers,List<InvitationCurrencyTotal> descendantDeposits,Status status,List<String> reasons) {
         public InvitationSummary {descendantDeposits=List.copyOf(descendantDeposits);reasons=List.copyOf(reasons);}
+        public InvitationSummary(Count directCustomers,Count descendantCustomers,
+                List<InvitationCurrencyTotal> descendantDeposits,Status status,List<String> reasons) {
+            this(directCustomers,new Count(null,null,status),new Count(null,null,status),descendantCustomers,
+                    descendantDeposits,status,reasons);
+        }
     }
     public record DevicePartition(String dimension,String value,Count devices) { }
     public record DeviceSummary(Count held,Count unknownHolding,List<DevicePartition> partitions,

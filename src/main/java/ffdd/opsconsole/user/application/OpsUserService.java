@@ -667,6 +667,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
     }
 
+    /** Existing lookup-key path used by detail projections; no new read grant is implied. */
+    public Long userIdByUserNo(String userNo) {
+        if (userNo == null || userNo.isBlank()) return null;
+        return userRepository.findUserIdByLookupKey(userNo.trim()).orElse(null);
+    }
+
     private boolean supportReader() { return supportOwnership.currentSupportReader(); }
 
     public ApiResult<List<UserSessionView>> sessions(Long userId, Integer limit) {

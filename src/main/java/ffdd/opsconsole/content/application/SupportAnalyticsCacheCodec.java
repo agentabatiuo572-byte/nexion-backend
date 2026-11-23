@@ -47,7 +47,7 @@ final class SupportAnalyticsCacheCodec {
                 required(customer.first().status());required(customer.first().state());
                 var m=required(customer.metrics());required(m.lifetimeBasis());required(m.lifetimeStatus());
                 m.lifetime().forEach(t->{money(t.deposits());money(t.purchases());money(t.net());});
-                var i=required(m.invitations());required(i.status());count(i.directCustomers());count(i.descendantCustomers());i.descendantDeposits().forEach(t->money(t.deposits()));
+                var i=required(m.invitations());required(i.status());count(i.directCustomers());count(i.withinRewardRange());count(i.beyondRewardRange());count(i.descendantCustomers());i.descendantDeposits().forEach(t->money(t.deposits()));
                 var d=required(m.devices());required(d.status());count(d.held());count(d.unknownHolding());d.partitions().forEach(p->count(p.devices()));activity(m.activity());
             }
             if(ids!=null&&!ids.equals(current))throw new IllegalArgumentException();ids=current;
