@@ -804,6 +804,15 @@ public class AuditReplayBusinessPermissionGuard {
         if (TreasuryThresholdApproval.supports(command)) return treasuryThresholdApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         if (WithdrawalConfigApproval.supports(command))
             return withdrawalConfigApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), approving);
+        if (isE1SuperAdminDecision(command) && !approving) {
+            if (!hasAuthority("device_e1_write")) {
+                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e1_write");
+            }
+            if (!superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+                return ApiResult.fail(403, "E1_SUPER_ADMIN_APPROVAL_REQUIRED");
+            }
+            return ApiResult.ok();
+        }
         if (!approving && !H7VoucherDisposition.isOperation(command)) return ApiResult.ok();
         if (command == null || command.op() == null)
             return ApiResult.fail(403, "A2_BUSINESS_COMMAND_REQUIRED");
@@ -839,6 +848,10 @@ public class AuditReplayBusinessPermissionGuard {
         }
         var permission = validateOrdinaryProposalPermission(command, operation, approving);
         if (permission.getCode() != 0) return permission;
+        if (isE1SuperAdminDecision(command)
+                && !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            return ApiResult.fail(403, "E1_SUPER_ADMIN_APPROVAL_REQUIRED");
+        }
         return "H".equalsIgnoreCase(command.domain()) && "h2_trial_charge".equals(operation)
                 ? ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED") : ApiResult.ok();
     }
@@ -2746,6 +2759,11 @@ public class AuditReplayBusinessPermissionGuard {
                 .findFirst()
                 .orElse(false);
         return sensitive ? "content_i4_trust_section_manage" : "content_i4_publish_standard";
+    }
+
+    private static boolean isE1SuperAdminDecision(AuditReplayCommand command) {
+        if (command == null || !"E".equalsIgnoreCase(command.domain()) || command.op() == null) return false;
+        return Set.of("e1_sku_create", "e1_sku_update", HostingCenterService.OPERATION).contains(command.op());
     }
 
     private boolean hasAuthority(String requiredAuthority) {
