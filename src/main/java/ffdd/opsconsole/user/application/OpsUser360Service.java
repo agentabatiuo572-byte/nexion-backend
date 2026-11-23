@@ -170,7 +170,7 @@ public class OpsUser360Service {
                 : riskScoreRead.ready() && riskScore != null ? "READY" : "UNAVAILABLE");
         Map<String, Object> deviceSection = devices(devices);
         sourceStatus(deviceSection, deviceRead);
-        Read<Map<String,Object>> totalsRead=canFinance?read(()->ApiResult.ok(financeSupport.totals(userId))):Read.hiddenRead();
+        Read<Map<String,Object>> totalsRead=canFinance?read(()->ApiResult.ok(financeSupport.displayTotals(userId))):Read.hiddenRead();
         Map<String,Object> totals=mapOrEmpty(totalsRead.value());
         Map<String, Object> depositSection = deposits(deposits.getRecords(),totals);
         depositSection.put("total",deposits.getTotal());

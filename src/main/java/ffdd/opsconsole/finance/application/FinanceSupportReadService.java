@@ -15,16 +15,36 @@ import org.springframework.transaction.annotation.Transactional;
 public class FinanceSupportReadService {
     private final DepositOrderMapper deposits;
     private final WithdrawalOrderMapper withdrawals;
-    public Map<String,Object> totals(Long customer) {
+    /** Bulk selection evidence: unknown stays unknown so the same customers keep being selected. */
+    public Map<String,Object> totals(Long customer) { return totals(customer,false); }
+
+    /**
+     * Display projection for the USDT column of C1/support profiles (B74). The four reads below
+     * either finish or throw, so a completed read with no credited deposit, no successful
+     * withdrawal principal and no processing principal is a proven decimal zero, not an unknown
+     * amount. Anomalies keep null/UNKNOWN, positive subtotals keep PARTIAL, and other currencies
+     * keep the bulk shape.
+     */
+    public Map<String,Object> displayTotals(Long customer) { return totals(customer,true); }
+
+    private Map<String,Object> totals(Long customer,boolean zeroWhenRead) {
         Map<String,Map<String,Object>> currencies=new TreeMap<>();
+        // The display row starts its three published totals at a proven zero; every anomaly path
+        // below overwrites with null/UNKNOWN and a positive subtotal keeps PARTIAL.
+        if(zeroWhenRead) currencies.put("USDT",row("USDT",true));
         var balances=deposits.supportBalances(customer);
-        for(var balance:balances) currencies.put(text(balance,"currency"),row(text(balance,"currency"),balance.get("availableBalance")));
+        for(var balance:balances) {
+            var row=currencies.computeIfAbsent(text(balance,"currency"),c->row(c));
+            row.put("balance",decimal(balance.get("availableBalance")));row.put("availableBalance",decimal(balance.get("availableBalance")));
+            statuses(row).put("balance",balance.get("availableBalance")==null?"UNKNOWN":"READY");
+            statuses(row).put("availableBalance",balance.get("availableBalance")==null?"UNKNOWN":"READY");
+        }
         for(var credit:deposits.supportCredits(customer)) {
-            var row=currencies.computeIfAbsent(text(credit,"currency"),c->row(c,null));
+            var row=currencies.computeIfAbsent(text(credit,"currency"),c->row(c));
             observed(row,"creditedDepositTotal",credit.get("creditedDepositTotal"));
         }
         for(var withdrawal:withdrawals.supportTotals(customer)) {
-            var row=currencies.computeIfAbsent(text(withdrawal,"currency"),c->row(c,null));
+            var row=currencies.computeIfAbsent(text(withdrawal,"currency"),c->row(c));
             put(row,"successfulWithdrawalPrincipalTotal",withdrawal,"principal","principalAnomalies");
             put(row,"successfulWithdrawalFeeTotal",withdrawal,"actualFee","settlementAnomalies");
             put(row,"successfulWithdrawalNetTotal",withdrawal,"net","settlementAnomalies");
@@ -32,7 +52,7 @@ public class FinanceSupportReadService {
         }
         for(var anomaly:deposits.supportCreditAnomalies(customer)) {
             if(((Number)anomaly.get("anomalies")).longValue()>0) {
-                var row=currencies.computeIfAbsent(text(anomaly,"currency"),c->row(c,null));
+                var row=currencies.computeIfAbsent(text(anomaly,"currency"),c->row(c));
                 row.put("creditedDepositTotal",null);statuses(row).put("creditedDepositTotal","UNKNOWN");
             }
         }
@@ -56,14 +76,20 @@ public class FinanceSupportReadService {
         }
         return Map.of("records",records,"total",deposits.supportFlowCount(q),"pageNum",page,"pageSize",size);
     }
-    private static Map<String,Object> row(String currency,Object balance) {
+    private static Map<String,Object> row(String currency) { return row(currency,false); }
+
+    /** A display row starts its three published totals at a proven zero; anomalies overwrite them. */
+    private static Map<String,Object> row(String currency,boolean zeroTotals) {
         var row=new LinkedHashMap<String,Object>();row.put("currency",currency);var statuses=new LinkedHashMap<String,String>();
         for(String field:List.of("creditedDepositTotal","successfulWithdrawalPrincipalTotal","successfulWithdrawalFeeTotal",
-                "successfulWithdrawalNetTotal","processingWithdrawalPrincipalTotal")) {row.put(field,null);statuses.put(field,"UNKNOWN");}
+                "successfulWithdrawalNetTotal","processingWithdrawalPrincipalTotal")) {
+            boolean zero=zeroTotals&&List.of("creditedDepositTotal","successfulWithdrawalPrincipalTotal","processingWithdrawalPrincipalTotal").contains(field);
+            row.put(field,zero?"0":null);statuses.put(field,zero?"READY":"UNKNOWN");
+        }
         // Successful deposits cannot be refunded; preserve the old field as a policy zero.
         row.put("depositRefundTotal","0");statuses.put("depositRefundTotal","READY");
-        row.put("balance",decimal(balance));row.put("availableBalance",decimal(balance));
-        statuses.put("balance",balance==null?"UNKNOWN":"READY");statuses.put("availableBalance",balance==null?"UNKNOWN":"READY");
+        row.put("balance",null);row.put("availableBalance",null);
+        statuses.put("balance","UNKNOWN");statuses.put("availableBalance","UNKNOWN");
         row.put("fieldStatuses",statuses);return row;
     }
     private static void put(Map<String,Object> row,String name,Map<String,Object> source,String value,String anomalies) {
@@ -73,8 +99,12 @@ public class FinanceSupportReadService {
     }
     private static void observed(Map<String,Object> row,String name,Object value) {
         // Legacy SQL has reconciled subtotals, not customer lifetime/environment coverage.
+        // A display row presets READY/zero, so a finished read without an amount keeps that zero;
+        // every other row keeps the previous null/UNKNOWN meaning.
         String amount=decimal(value);boolean positive=amount!=null && new BigDecimal(amount).signum()>0;
-        row.put(name,positive?amount:null);statuses(row).put(name,positive?"PARTIAL":"UNKNOWN");
+        boolean provenZero="READY".equals(statuses(row).get(name));
+        row.put(name,positive?amount:(provenZero?"0":null));
+        statuses(row).put(name,positive?"PARTIAL":(provenZero?"READY":"UNKNOWN"));
     }
     @SuppressWarnings("unchecked") private static Map<String,String> statuses(Map<String,Object> row){return (Map<String,String>)row.get("fieldStatuses");}
     private static String text(Map<String,Object> row,String key){return String.valueOf(row.get(key));}

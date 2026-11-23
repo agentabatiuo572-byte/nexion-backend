@@ -81,7 +81,7 @@ public class SupportCustomerProfileService {
             data.put("lastLoginAt",businessUtc(user.lastLoginAt()));data.put("accountStatus",user.status());return data;
         });
         result.put("identity",identity);result.put("finance",group(()-> {
-            var legacy=group(()->finance.totals(customer));
+            var legacy=group(()->finance.displayTotals(customer));
             var data=new LinkedHashMap<String,Object>();
             if(legacy.get("data") instanceof Map<?,?> totals)totals.forEach((key,value)->data.put((String)key,value));
             else data.put("byCurrency",List.of());
