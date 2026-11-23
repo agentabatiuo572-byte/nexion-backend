@@ -167,8 +167,8 @@ public final class SupportAnalyticsQueryVersion {
         if (!emptyFinance && input.finance().coverage().stream().anyMatch(c -> c.observedStatus() != SupportPaymentFacts.Status.READY))
             return new Version(Status.UNKNOWN, null);
         for (var tree : input.invitations()) {
-            if (tree.completeness() == SupportInvitationReadFacade.Completeness.FAILED
-                    || tree.reasons().contains(SupportInvitationReadFacade.Reason.SOURCE_READ_FAILED))
+            // A partial invitation tree is a local count limitation, not a whole-generation failure.
+            if (tree.completeness() == SupportInvitationReadFacade.Completeness.FAILED)
                 return new Version(Status.FAILED, null);
             if (tree.completeness() != SupportInvitationReadFacade.Completeness.COMPLETE)
                 return new Version(Status.UNKNOWN, null);
@@ -209,7 +209,9 @@ public final class SupportAnalyticsQueryVersion {
             e.en(f.attributionProof()); e.strings(f.reasons()); }));
         out.rows("invitations", input.invitations(), SupportInvitationReadFacade.Invitation::rootCustomerId,
                 t -> bytes(e -> { e.n(t.rootCustomerId()); e.n(t.rootSandbox()); e.ids(t.directCustomerIds());
-                    e.ids(t.descendantCustomerIds()); e.en(t.completeness()); e.strings(t.reasons().stream().map(Enum::name).toList()); }));
+                    e.ids(t.descendantCustomerIds()); e.n(t.withinRewardRange()); e.n(t.beyondRewardRange());
+                    e.en(t.completeness()); e.strings(t.reasons().stream().map(Enum::name).toList());
+                    e.strings(t.inviterReasons().stream().map(Enum::name).toList()); }));
         out.rows("devices", input.devices(), d -> d.evidence().deviceId(), SupportAnalyticsQueryVersion::device);
         out.rows("unknownHoldingDevices", input.unknownHoldingDevices(), d -> d.evidence().deviceId(), SupportAnalyticsQueryVersion::device);
         var c = input.activityCoverage(); out.s("activityCoverage"); out.time(c.coverageStartAt()); out.time(c.observedThroughAt());
@@ -234,8 +236,10 @@ public final class SupportAnalyticsQueryVersion {
                 || input.descendantFinanceRead()==ReadState.FAILED || input.profilesRead()==ReadState.FAILED || input.fundsRead()==ReadState.FAILED || input.netRead()==ReadState.FAILED
                 || failedFunds(input.funds()) || failedFinance(input.finance()) || failedFinance(input.descendantFinance()))return true;
         if(input.first()!=null && input.first().stream().filter(Objects::nonNull).anyMatch(f->readFailed(f.reasons())))return true;
-        return input.invitations()!=null && input.invitations().stream().filter(Objects::nonNull).anyMatch(t->
-            t.completeness()==SupportInvitationReadFacade.Completeness.FAILED || t.reasons().contains(SupportInvitationReadFacade.Reason.SOURCE_READ_FAILED));
+        // PARTIAL + SOURCE_READ_FAILED stays in the sampled invitation row; only a whole-tree failure
+        // rejects the generation. Other source failures above retain the original rejection.
+        return input.invitations()!=null && input.invitations().stream().filter(Objects::nonNull)
+            .anyMatch(t->t.completeness()==SupportInvitationReadFacade.Completeness.FAILED);
     }
     private static boolean failedFinance(SupportPaymentFacts.Snapshot snapshot) {
         return snapshot!=null && (snapshot.issues().stream().anyMatch(i->i.reason()!=null && i.reason().contains("READ_FAILED"))

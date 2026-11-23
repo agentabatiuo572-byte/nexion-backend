@@ -20,13 +20,27 @@ public interface SupportInvitationReadFacade extends DomainFacade {
     /**
      * Observed, same-environment, retained customer IDs stay inside the server. Deleted intermediates are
      * traversed but excluded, and PARTIAL never promises a complete count. Overlapping roots cannot be added.
+     * {@code withinRewardRange} counts depths 1-7; {@code beyondRewardRange} counts depths 8 and later.
+     * Inviter-only problems are kept apart from the downward {@code reasons} and never affect counts.
      */
     record Invitation(long rootCustomerId, Integer rootSandbox, List<Long> directCustomerIds, List<Long> descendantCustomerIds,
-                      Completeness completeness, Set<Reason> reasons) {
+                      int withinRewardRange, int beyondRewardRange, Completeness completeness, Set<Reason> reasons,
+                      Set<Reason> inviterReasons) {
         public Invitation {
             directCustomerIds = List.copyOf(directCustomerIds);
             descendantCustomerIds = List.copyOf(descendantCustomerIds);
             reasons = Set.copyOf(reasons);
+            inviterReasons = Set.copyOf(inviterReasons);
         }
+
+        /** Source-compatible shape for callers that only provide the old depth-free result. */
+        public Invitation(long rootCustomerId, Integer rootSandbox, List<Long> directCustomerIds,
+                          List<Long> descendantCustomerIds, Completeness completeness, Set<Reason> reasons) {
+            this(rootCustomerId, rootSandbox, directCustomerIds, descendantCustomerIds,
+                    descendantCustomerIds.size(), 0, completeness, reasons, Set.of());
+        }
+
+        public int direct() { return directCustomerIds.size(); }
+        public int total() { return descendantCustomerIds.size(); }
     }
 }

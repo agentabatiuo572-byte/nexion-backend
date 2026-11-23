@@ -548,6 +548,9 @@ public class SupportAnalyticsService {
                         || row.completeness()==SupportInvitationReadFacade.Completeness.COMPLETE && !row.reasons().isEmpty()
                         || row.directCustomerIds().stream().anyMatch(id->id==null || id<=0 || id==row.rootCustomerId())
                         || row.descendantCustomerIds().stream().anyMatch(id->id==null || id<=0 || id==row.rootCustomerId())
+                        || row.withinRewardRange()<0 || row.beyondRewardRange()<0
+                        || (long)row.withinRewardRange()+row.beyondRewardRange()!=row.descendantCustomerIds().size()
+                        || row.directCustomerIds().size()>row.withinRewardRange()
                         || !new HashSet<>(row.descendantCustomerIds()).containsAll(row.directCustomerIds())
                         || new HashSet<>(row.directCustomerIds()).size()!=row.directCustomerIds().size()
                         || new HashSet<>(row.descendantCustomerIds()).size()!=row.descendantCustomerIds().size()
