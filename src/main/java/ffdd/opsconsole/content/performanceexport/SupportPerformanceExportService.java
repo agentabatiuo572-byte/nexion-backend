@@ -250,7 +250,8 @@ public class SupportPerformanceExportService {
         Long actor = actorId();
         TaskRow task = required(taskId);
         if (!task.requesterId().equals(actor) || !readCode() || !ownsType(task.taskType(), actor)
-                || !scopeStillAllowed(actor, task) || !disclosedCustomersAllowed(task)) {
+                || !employmentAllows(actor, task) || !scopeStillAllowed(actor, task)
+                || !disclosedCustomersAllowed(task)) {
             throw new BizException(403, "PERMISSION_DENIED");
         }
         if (!"READY".equals(task.status())) throw new BizException(409, "EXPORT_NOT_READY");
@@ -277,7 +278,7 @@ public class SupportPerformanceExportService {
         if (mapper.tokenExists(hash, taskId, actor) == 0) throw new BizException(403, "EXPORT_TOKEN_INVALID");
         if (mapper.tokenExpired(hash, LocalDateTime.now()) > 0) throw new BizException(410, "EXPORT_TOKEN_EXPIRED");
         if (!"READY".equals(task.status())) throw new BizException(409, "EXPORT_NOT_READY");
-        if (!scopeStillAllowed(actor, task) || !disclosedCustomersAllowed(task)) {
+        if (!employmentAllows(actor, task) || !scopeStillAllowed(actor, task) || !disclosedCustomersAllowed(task)) {
             throw new BizException(409, "EXPORT_SCOPE_CHANGED");
         }
         LocalDateTime created = mapper.fileCreatedAt(taskId);
