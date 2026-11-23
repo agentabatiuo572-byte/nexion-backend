@@ -13,11 +13,13 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.math.BigDecimal;
 import java.net.URI;
+import java.text.Normalizer;
 import java.time.LocalDateTime;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -202,7 +204,9 @@ public class AppProductCatalogService {
         item.put("name", target.name());
         item.put("tier", target.tier());
         item.put("tagline", text(target.tagline()));
-        item.put("badge", nullableText(target.badge()));
+        String badge = nullableText(target.badge());
+        item.put("badge", badge);
+        item.put("badgeKind", badgeKind(badge));
         boolean share = "Share".equals(target.tier());
         AppTradeinMapper.ShareYieldRange shareYield = share
                 ? tradeinMapper.findShareYieldRange(target.productNo()) : null;
@@ -369,6 +373,33 @@ public class AppProductCatalogService {
 
     private String nullableText(String value) {
         return StringUtils.hasText(value) ? value : null;
+    }
+
+    private static String badgeKind(String badge) {
+        if (badge == null) return null;
+        String label = Normalizer.normalize(badge, Normalizer.Form.NFKC)
+                .replaceAll("(?U)\\s+", " ").trim().toLowerCase(Locale.ROOT);
+        return switch (label) {
+            case "" -> null;
+            case "recommended", "推荐", "đề xuất", "рекомендуем",
+                    "ұсынылады", "tavsiya", "rekomendasi", "disyorkan",
+                    "mungkahi" -> "recommended";
+            case "best seller", "热销", "bán chạy nhất", "bán chạy",
+                    "хит продаж", "хит", "xit", "terlaris",
+                    "pinakamabenta" -> "bestSeller";
+            case "trending", "上升", "正热", "xu hướng",
+                    "đang hot", "в тренде", "танымал", "ommabop",
+                    "naik daun", "sohor kini" -> "trending";
+            case "upgrade pick", "升级首选", "nên nâng cấp", "для улучшения",
+                    "жаңарту үшін", "yangilash uchun", "pilihan upgrade", "pilihan naik taraf",
+                    "pang-upgrade", "lựa chọn nâng cấp" -> "upgradePick";
+            case "flagship", "旗舰", "hàng đầu", "флагман",
+                    "flagman", "unggulan", "perdana" -> "flagship";
+            case "low barrier", "低门槛", "rào cản thấp", "лёгкий старт",
+                    "төмен кіру шегі", "oson boshlash", "mudah mulai", "mudah dimulakan",
+                    "mababang entry" -> "lowBarrier";
+            default -> "custom";
+        };
     }
 
     private String decimalText(BigDecimal value) {
