@@ -96,6 +96,26 @@ public class AppCanonicalBoundaryController {
                 : service.deactivateDevice(userId, deviceId, request.expectedVersion(), idempotencyKey);
     }
 
+    @PostMapping("/api/devices/slot-replacement")
+    public ApiResult<Map<String, Object>> replaceDevice(
+            @RequestBody DeviceReplacementRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String key,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.replaceDevice(userId, request.oldDeviceId(),
+                request.newDeviceId(), request.oldExpectedVersion(), request.newExpectedVersion(), key, false);
+    }
+
+    @PostMapping("/api/devices/slot-replacement/cancel")
+    public ApiResult<Map<String, Object>> cancelDeviceReplacement(
+            @RequestBody DeviceReplacementRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String key,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.replaceDevice(userId, request.oldDeviceId(),
+                request.newDeviceId(), request.oldExpectedVersion(), request.newExpectedVersion(), key, true);
+    }
+
     @PostMapping("/api/device/{deviceId}/deactivate-after-task")
     public ApiResult<Map<String, Object>> deactivateAfterTask(
             @PathVariable Long deviceId,
@@ -240,6 +260,9 @@ public class AppCanonicalBoundaryController {
 
     public record DeviceDeactivateRequest(Long expectedVersion) {
     }
+
+    public record DeviceReplacementRequest(
+            Long oldDeviceId, Long newDeviceId, Long oldExpectedVersion, Long newExpectedVersion) {}
 
     public record OtpVerifyRequest(String challengeNo, String code, Boolean clientRegexAccepted) {
     }

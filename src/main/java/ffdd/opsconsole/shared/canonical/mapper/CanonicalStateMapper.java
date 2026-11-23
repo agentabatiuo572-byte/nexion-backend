@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.canonical.mapper;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.canonical.infrastructure.CanonicalUserEntity;
+import ffdd.opsconsole.shared.canonical.OrderDeviceDelivery;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -14,7 +15,7 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, TrialSlotReservationMapper, OrderCreateReceiptMapper, PurchaseGateQuotaMapper {
-    // All purchase entrypoints count unfulfilled gift promises against the same account slots.
+    // Purchases still count active devices and earlier promises of activation slots.
     /** Old trial conversions already fulfilled a single device but used PAID/ACTIVE.
      * Preserve history and require the exact settled claim/device/order relationship.
      * A later legitimate deactivation must not resurrect the order reservation.
@@ -64,11 +65,13 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
               AND gift_order.is_deleted=0 AND (gift_order.inventory_reserved=1
                 OR UPPER(gift_order.payment_status) IN ('PAID','CONFIRMED','SUCCESS'))
             """;
+    String LEGACY_PROMOTION_SLOT_PROMISE =
+            " AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.snapshot_json,'$.inventoryOverflowAllowed')),'false')='false' ";
     String PROMOTION_RESERVED_AMOUNT_BASE = """
             SELECT SUM(r.amount) FROM nx_promotion_reservation r
                        WHERE r.beneficiary_id=#{userId} AND r.asset='DEVICE'
                          AND r.status IN ('RESERVED','COMMITTED')
-            """;
+            """ + LEGACY_PROMOTION_SLOT_PROMISE;
     String PROMOTION_RESERVED_AMOUNT = PROMOTION_RESERVED_AMOUNT_BASE+" AND EXISTS ("+PROMOTION_RESERVATION_ORDER+") ";
     String LOCK_PROMOTION_RESERVED_AMOUNT = PROMOTION_RESERVED_AMOUNT_BASE+" AND EXISTS ("+PROMOTION_RESERVATION_ORDER+" FOR SHARE) ";
     String FULFILLED_PROMOTION_RESERVATION = """
@@ -1072,6 +1075,18 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
              ORDER BY sort_order, id
             """)
     List<UserOrderLineItem> userOrderLineItems(@Param("orderNo") String orderNo);
+
+    @Select("""
+            <script>
+            SELECT source_order_no orderNo,id deviceId,activated_on_delivery activatedOnDelivery
+              FROM nx_user_device
+             WHERE user_id=#{userId} AND source_channel='ORDER' AND source_environment='PRODUCTION'
+               AND run_id='' AND activated_on_delivery IS NOT NULL AND source_order_no IN
+               <foreach collection="orderNos" item="orderNo" open="(" separator="," close=")">#{orderNo}</foreach>
+             ORDER BY id
+            </script>
+            """)
+    List<OrderDeviceDelivery> userOrderDeviceDeliveries(@Param("userId") Long userId, @Param("orderNos") List<String> orderNos);
 
     @Select("""
             SELECT COALESCE((

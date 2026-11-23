@@ -562,6 +562,8 @@ $migrations = @(
   # Runs last so an operator-published version (or the fresh-install draft) stays authoritative.
   (Join-Path $root "scripts\migrations\20261122_b66_uvt_trust_hero.sql")
   (Join-Path $root "scripts\migrations\20261123_b70_product_tagline_translations.sql")
+  (Join-Path $root "scripts\migrations\20261123_device_slot_replacement.sql")
+  (Join-Path $root "scripts\migrations\20261123_purchase_device_placement.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

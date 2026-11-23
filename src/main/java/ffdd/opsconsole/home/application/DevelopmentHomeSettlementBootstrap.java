@@ -1,5 +1,6 @@
 package ffdd.opsconsole.home.application;
 
+import ffdd.opsconsole.device.application.DeviceSlotReplacementCompletion;
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper;
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentActiveTask;
 import ffdd.opsconsole.home.mapper.DevelopmentHomeSettlementMapper.DevelopmentE3CapacityConfig;
@@ -69,6 +70,8 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
     private final DeviceTransaction deviceTransaction;
     private final EventOutboxService outboxService;
     private final AuditLogService auditLogService;
+    @Autowired
+    private DeviceSlotReplacementCompletion slotReplacementCompletion;
     @SuppressWarnings("ArchitectureConfigField")
     private final String countryCode;
     @SuppressWarnings("ArchitectureConfigField")
@@ -171,6 +174,7 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
         // Serialize the empty-active-task decision on the canonical device row. Each device is
         // advanced in its own REQUIRES_NEW transaction so a settlement failure rolls back only
         // that device and cannot stall the rest of the fleet.
+        if (slotReplacementCompletion != null && mapper.lockDevelopmentTaskOwner(candidate.userId()) == null) return 0;
         DevelopmentTaskDevice device = mapper.lockDevelopmentTaskDevice(
                 candidate.userId(), candidate.userDeviceId());
         if (device == null) return 0;
@@ -229,6 +233,7 @@ public class DevelopmentHomeSettlementBootstrap implements ApplicationRunner {
         if (mapper.deactivatePendingDevelopmentDevice(
                 device.userId(), device.userDeviceId(), device.rowVersion(), now) != 1) return 0;
         mapper.markDevelopmentDeviceRuntimeDeactivated(device.userId(), device.userDeviceId(), now);
+        if (slotReplacementCompletion != null) slotReplacementCompletion.afterDeactivation(device.userId(), device.userDeviceId());
         DevelopmentHomeSettlementMapper.UserEventAttribution attribution =
                 mapper.developmentUserEventAttribution(device.userId());
         if (attribution == null || attribution.accountAgeMonths() == null || attribution.accountAgeMonths() < 0

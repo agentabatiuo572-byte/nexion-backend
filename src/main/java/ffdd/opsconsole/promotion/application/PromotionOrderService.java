@@ -124,12 +124,6 @@ public class PromotionOrderService {
         for(String key:List.of("amountUsdt","subtotalUsdt","discountUsdt","bundlePolicyVersion"))
             require(text(currentPrice.get(key)).equals(text(pub.get(key))),"PROMOTION_QUOTE_PRICE_CHANGED");
         if(!activity.isEmpty())require(quotes.currentlyAvailable(activity,contract,maps(stored.get("awards"))),"PROMOTION_CAPACITY_UNAVAILABLE");
-        Map<Long,Long> addedSlots=new HashMap<>();
-        for(Selection item:items)
-            addedSlots.merge(buyerId,(long)item.quantity(),Long::sum);
-        for(Map<String,Object> award:maps(stored.get("awards"))){Map<String,Object> r=map(award.get("reward"));
-            if("DEVICE".equals(r.get("type")))addedSlots.merge(number(award.get("beneficiaryId")),number(r.get("quantity")),Long::sum);}
-        for(var additional:addedSlots.entrySet())require(db.occupiedDeviceSlots(additional.getKey())+additional.getValue()<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
         stored.put("products",productSnapshots);
         return new CreationPlan(quote.id(),buyerId,accounts,List.copyOf(productNos),
             activity.isEmpty()?Instant.MAX:instant(contract.get("endsAt")),stored);
@@ -182,6 +176,7 @@ public class PromotionOrderService {
                 usage(activity,beneficiary,role,rule,0,1);
                 if(orderUses.add(beneficiary+":"+role))usage(activity,beneficiary,role,"",1,0);
                 Map<String,Object> snapshot=copy(plan.snapshot());snapshot.put("award",award);snapshot.put("payBy",payBy.toString());
+                if ("DEVICE".equals(asset)) snapshot.put("inventoryOverflowAllowed", true);
                 changed(db.write("""
                     INSERT INTO nx_promotion_reservation(reservation_id,activity_id,version,order_no,order_line_id,buyer_id,beneficiary_id,
                       beneficiary_role,rule_id,reward_rule_id,unit_seq,asset,product_no,amount,snapshot_json,snapshot_hash,pay_by)
@@ -256,14 +251,6 @@ public class PromotionOrderService {
         Map<String,Object> snapshot=parse(rows.get(0).get("snapshot_json")),contract=map(snapshot.get("contract"));
         String activity=text(rows.get(0).get("activity_id"));db.activity(activity,true);lockCapacity(activity,participantsForOrder(orderNo));
         for(Long participant:participantsForOrder(orderNo))require("ACTIVE".equals(db.user(participant,true).get("status")),"PROMOTION_ACCOUNT_FROZEN");
-        boolean unreserved=order.containsKey("inventory_reserved")&&number(order.get("inventory_reserved"))==0;
-        for(Long beneficiary:rows.stream().filter(r->"DEVICE".equals(r.get("asset")))
-                .map(r->number(r.get("beneficiary_id"))).collect(java.util.stream.Collectors.toCollection(TreeSet::new))){
-            long additional=unreserved?rows.stream().filter(r->"DEVICE".equals(r.get("asset"))
-                &&number(r.get("beneficiary_id"))==beneficiary).mapToLong(r->number(r.get("amount"))).sum():0;
-            if(unreserved&&beneficiary.equals(buyerId))additional+=number(order.get("quantity"));
-            require(db.occupiedDeviceSlots(beneficiary)+additional<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
-        }
         require(evaluator.firstPurchaseStillValid(contract,map(snapshot.get("policies")),buyerId,maps(snapshot.get("awards")),orderNo),"PROMOTION_PAYMENT_ELIGIBILITY_LOST");
     }
     private Map<String,BigDecimal> giftQuantities(List<Map<String,Object>> rows){

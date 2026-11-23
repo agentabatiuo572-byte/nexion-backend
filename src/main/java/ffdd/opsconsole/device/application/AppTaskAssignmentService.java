@@ -80,6 +80,8 @@ public class AppTaskAssignmentService {
     private final AppTaskAssignmentMapper mapper;
     private final AdminIdempotencyService idempotencyService;
     private final EventOutboxService outboxService;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceSlotReplacementCompletion slotReplacement;
     private final AuditLogService auditLogService;
     private final ComputeTaskProofVerifier proofVerifier;
     private final Environment environment;
@@ -524,7 +526,10 @@ public class AppTaskAssignmentService {
                 && !mapper.hasActiveProductionTask(userId, deviceId)) {
             deactivated = mapper.deactivatePendingDeviceAfterLeaseExpiry(
                     userId, deviceId, device.rowVersion(), now) == 1;
-            if (deactivated) mapper.markRuntimeDeactivated(userId, deviceId, now);
+            if (deactivated) {
+                mapper.markRuntimeDeactivated(userId, deviceId, now);
+                slotReplacement.afterDeactivation(userId, deviceId);
+            }
             if (!deactivated && !mapper.hasActiveProductionTask(userId, deviceId)) {
                 // Preserve the expired task as a retry candidate when the device CAS lost without a new
                 // active task explaining it; committing here would strand pending_deactivate indefinitely.
@@ -884,6 +889,7 @@ public class AppTaskAssignmentService {
             mapper.clearRuntimeTask(userId, task.deviceId(), taskNo, now);
             if (mapper.deactivatePendingDevice(userId, task.deviceId(), now) > 0) {
                 mapper.markRuntimeDeactivated(userId, task.deviceId(), now);
+                slotReplacement.afterDeactivation(userId, task.deviceId());
                 deferredDeviceVersion = mapper.deviceRowVersion(userId, task.deviceId());
                 if (deferredDeviceVersion == null) {
                     throw new BizException(409, "TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_STATE_UNAVAILABLE");

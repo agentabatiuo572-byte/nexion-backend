@@ -20,6 +20,8 @@ public class SimulatedTaskLifecycleService {
     private final CanonicalStateMapper canonical;
     private final AuditLogService audit;
     private final EventOutboxService outbox;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceSlotReplacementCompletion slotReplacement;
 
     @Transactional
     public boolean finalizeStopped(long userId,long deviceId) {
@@ -36,6 +38,7 @@ public class SimulatedTaskLifecycleService {
         if(attribution==null)throw new BizException(409,"USER_EVENT_ATTRIBUTION_UNAVAILABLE");
         if(canonical.deactivatePendingComputeV2Device(userId,deviceId,device.rowVersion())!=1)return false;
         canonical.markDeviceRuntimeDeactivated(deviceId);
+        slotReplacement.afterDeactivation(userId, deviceId);
         var state=Map.<String,Object>of("userId",userId,"deviceId",deviceId,"instanceNo",device.instanceNo(),
                 "previousStatus",device.status(),"status","DEACTIVATED","rowVersion",device.rowVersion()+1,
                 "generation",runtime.generation(),"executionMode","SIMULATED");

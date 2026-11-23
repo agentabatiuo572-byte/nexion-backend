@@ -134,6 +134,7 @@ public class PurchasePaymentService {
             throw new BizException(422,"EXTERNAL_PAYMENT_CREDENTIAL_FORBIDDEN");
         user(owner,false);
         requireNoActiveIntent(owner, kind, payload, Map.of());
+        if ("CAPACITY_REPLACE".equals(kind)) throw new BizException(409,"CAPACITY_REPLACEMENT_PURCHASE_RETIRED");
         ready(method);
         return tx(()->{
             user(owner,true);
@@ -331,18 +332,19 @@ public class PurchasePaymentService {
                         "targetProductId",q.targetProductId(),"targetPrice",q.targetPriceUsdt().toPlainString(),"discount",q.discountUsdt().toPlainString());
             }
             case "CAPACITY_REPLACE":case "CAPACITY_KEEP":{
+                boolean replace = "CAPACITY_REPLACE".equals(kind);
                 var q = require(tradeins.externalCapacityQuote(owner,
-                        new AppCapacityReplaceQuoteRequest(text(payload.get("targetProductNo"))), lockReplacement, reservation));
-                String wanted="CAPACITY_REPLACE".equals(kind)?"REPLACE_REQUIRED":"CAPACITY_AVAILABLE";
-                if(!wanted.equals(q.decision()))throw new BizException(409,"CAPACITY_REPLACEMENT_SOURCE_CHANGED");
-                if (checkReplacementSource && "CAPACITY_REPLACE".equals(kind)) {
+                        new AppCapacityReplaceQuoteRequest(text(payload.get("targetProductNo"))), lockReplacement, replace, reservation));
+                if (replace && !"REPLACE_REQUIRED".equals(q.decision()))
+                    throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
+                if (checkReplacementSource && replace) {
                     Long requestedSourceId = capacitySourceId(payload);
                     if (requestedSourceId == null || !requestedSourceId.equals(q.sourceDeviceId())) {
                         throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
                     }
                     tradeins.requireRecyclableSource(owner, q.sourceDeviceId());
                 }
-                var source=q.sourceDeviceId()==null?null:db.one("SELECT id,row_version,status,ownership_status FROM nx_user_device WHERE id=? AND user_id=?",q.sourceDeviceId(),owner);
+                var source=replace&&q.sourceDeviceId()!=null?db.one("SELECT id,row_version,status,ownership_status FROM nx_user_device WHERE id=? AND user_id=?",q.sourceDeviceId(),owner):null;
                 if(target!=null)target.productNo=q.targetProductNo();
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"targetProductId",q.targetProductId(),"source",source);
             }
@@ -420,6 +422,8 @@ public class PurchasePaymentService {
             if(!quoteId.equals(existing.get("quote_id")))throw new BizException(409,"IDEMPOTENCY_KEY_CONFLICT");
             return new CreatePreflight(originalQuote, existing);
         }
+        // New replacement quotes are retired. The owner's original stored quote
+        // can still proceed through the existing one-use, expiry and pricing checks.
         requireUnusedQuote(quoteId);
         requireNoActiveIntent(owner, text(originalQuote.get("kind")), parse(originalQuote.get("payload_json")),
                 parse(originalQuote.get("quote_json")));

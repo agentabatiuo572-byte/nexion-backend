@@ -235,6 +235,14 @@ public interface SimulatedTaskMapper {
             WHERE user_device_id=#{r.deviceId} AND user_id=#{r.userId} AND instance_no=#{r.instanceNo}
             """)
     int updateRuntime(@Param("r")RuntimeRow row);
+
+    @Update("""
+            UPDATE nx_simulated_device_runtime
+               SET stop_after_current=0,finish_after_at=NULL,state='RUNNING'
+             WHERE user_id=#{userId} AND user_device_id=#{deviceId}
+               AND stop_after_current=1 AND stop_at IS NULL AND current_task_no IS NOT NULL
+            """)
+    int cancelPendingSlotStop(long userId, long deviceId);
     @Insert("""
             INSERT INTO nx_simulated_task(task_no,receipt_no,user_id,user_device_id,instance_no,generation,product_id,product_code,
               product_tier,device_name,device_type,gpu_model,vram_total_gb,task_type_id,task_type_version,product_policy_version,e3_version,

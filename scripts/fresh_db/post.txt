@@ -62,3 +62,5 @@ migrations/20261109_phone_menu_visibility.sql
 # The migration inserts only when the registry row, lifecycle row and domain extension are absent.
 migrations/20261118_h4_wheel_award_event_registry.sql
 fresh_db/09_h9_home_display_batch.sql
+migrations/20261123_device_slot_replacement.sql
+migrations/20261123_purchase_device_placement.sql

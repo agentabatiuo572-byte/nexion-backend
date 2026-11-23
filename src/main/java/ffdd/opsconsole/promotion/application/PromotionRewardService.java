@@ -93,7 +93,6 @@ public class PromotionRewardService {
         Map<String,Object> reserved=reservation(reward),snapshot=verifiedSnapshot(reward);
         require(hash(snapshot).equals(reward.get("snapshot_hash"))&&"COMMITTED".equals(reserved.get("status")),"PROMOTION_REWARD_SNAPSHOT_INVALID");
         Map<String,Object> spec=map(map(snapshot.get("award")).get("reward"));String asset=asset(spec.get("type"));
-        if("DEVICE".equals(asset)) testCloudAdmission.requireCapacity(Math.toIntExact(number(spec.get("quantity"))));
         String attempt=id("PA"),posting="PROMOTION-ISSUE-"+obligationId,entry=null;
         changed(db.write("INSERT INTO nx_promotion_reward_attempt(attempt_id,obligation_id,command_id,action,status,evidence_json,started_at) VALUES(?,?,?,'ISSUE','PROCESSING',JSON_OBJECT(),NOW(6))",attempt,obligationId,commandId));
         changed(db.write("UPDATE nx_promotion_reward SET status='PROCESSING',last_command_id=?,revision=revision+1,updated_at=NOW(6) WHERE obligation_id=?",commandId,obligationId));
@@ -117,7 +116,6 @@ public class PromotionRewardService {
         return currentView(obligationId);
     }
     private void issueDevices(Map<String,Object> reward,Map<String,Object> snapshot,Map<String,Object> spec){
-        require(db.occupiedDeviceSlots(number(reward.get("beneficiary_id")))<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
         String productNo=text(spec.get("giftProductNo"));Map<String,Object> currentSku = db.product(productNo,true);
         Map<String,Object> profile=PromotionPolicyResolver.resolveReference(map(snapshot.get("policies")),map(spec.get("deviceRightsProfile")));
         Map<String,Object> rights=map(profile.get("resolvedDeviceRights"));
@@ -132,16 +130,23 @@ public class PromotionRewardService {
         require(watts!=null,"PROMOTION_GIFT_POWER_UNAVAILABLE");
         var hostingPool = hostingCenters.requirePool();
         int count=Math.toIntExact(number(spec.get("quantity")));
+        long occupied = db.occupiedDeviceSlots(number(reward.get("beneficiary_id")));
+        if (!Boolean.TRUE.equals(snapshot.get("inventoryOverflowAllowed"))) occupied -= count;
+        int activatedQuantity = (int) Math.max(0, Math.min(count, db.deviceSlotCap() - occupied));
+        testCloudAdmission.requireCapacity(activatedQuantity);
         for(int i=0;i<count;i++){
+            boolean activate = i < activatedQuantity;
             String instance="PG-"+sha256(text(reward.get("obligation_id"))+":"+i).substring(0,48);
             changed(db.write("""
                 INSERT INTO nx_user_device(user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                   generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,source_channel,
-                  source_environment,run_id,status,hashrate,daily_usdt,daily_nex,last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,is_deleted)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','','ACTIVE',?,?,?,NOW(),NOW(),NOW(),0,0,0)
+                  source_environment,run_id,status,hashrate,daily_usdt,daily_nex,last_seen_at,purchased_at,activated_at,activated_on_delivery,
+                  pending_deactivate,row_version,is_deleted)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','',?,?,?,?,IF(?,NOW(),NULL),NOW(),IF(?,NOW(),NULL),?,0,0,0)
                 """,reward.get("beneficiary_id"),reward.get("order_no"),product.get("id"),productNo,product.get("tier"),currentSku.get("series_code"),instance,product.get("name"),type,
                 product.get("generation"),product.get("gpu_model"),product.get("vram_total_gb"),watts,hostingPool.assign(instance),
-                decimal(product.get("hashrate")),decimal(product.get("estimated_daily_usdt")),decimal(product.get("daily_nex"))));
+                activate ? "ACTIVE" : "INVENTORY",decimal(product.get("hashrate")),decimal(product.get("estimated_daily_usdt")),
+                decimal(product.get("daily_nex")),activate,activate,activate));
             Map<String,Object> device=db.requiredRow("SELECT id FROM nx_user_device WHERE instance_no=?",instance);
             changed(db.write("INSERT INTO nx_promotion_device_receipt(obligation_id,device_unit_seq,device_id,instance_no,profile_id,profile_version,rights_snapshot_json) VALUES(?,?,?,?,?,?,?)",
                 reward.get("obligation_id"),i,device.get("id"),instance,profile.get("policyId"),number(profile.get("version")),json(rights)));
@@ -420,7 +425,11 @@ public class PromotionRewardService {
     private Map<String,Object> view(Map<String,Object> row,boolean admin,boolean currentRead){
         String id=text(row.get("obligation_id"));Map<String,Object> snapshot=verifiedSnapshot(row),spec=ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(map(map(snapshot.get("award")).get("reward")));
         String lock=currentRead?" FOR UPDATE":"";
-        List<Map<String,Object>> devices=db.list("SELECT device_id,instance_no,created_at FROM nx_promotion_device_receipt WHERE obligation_id=? ORDER BY device_unit_seq"+lock,id);
+        List<Map<String,Object>> devices=db.list("""
+            SELECT r.device_id,r.instance_no,r.created_at,CAST(d.activated_on_delivery AS UNSIGNED) activated_on_delivery
+              FROM nx_promotion_device_receipt r LEFT JOIN nx_user_device d ON d.id=r.device_id
+             WHERE r.obligation_id=? ORDER BY r.device_unit_seq
+            """+lock,id);
         List<Map<String,Object>> holds=db.list("SELECT refund_request_id FROM nx_promotion_refund_hold WHERE order_no=? AND status IN ('HELD','OUTCOME_UNKNOWN','EXECUTED') ORDER BY refund_request_id"+lock,row.get("order_no"));
         List<Map<String,Object>> reversalRows=db.list("SELECT basis_type,recovered,outstanding,evidence_json FROM nx_promotion_reversal WHERE obligation_id=?"+lock,id);
         var refund=reversalRows.stream().filter(r->"WHOLE_ORDER_REFUND".equals(r.get("basis_type"))).findFirst();
@@ -428,9 +437,14 @@ public class PromotionRewardService {
             "outstanding",refund.map(r->decimal(r.get("outstanding"))).orElseGet(()->reversalRows.stream().map(r->decimal(r.get("outstanding"))).reduce(BigDecimal.ZERO,BigDecimal::add)));
         Object issuedAt=devices.isEmpty()?null:devices.get(0).get("created_at");
         if(devices.isEmpty()&&row.get("original_earnings_entry_no")!=null)issuedAt=db.requiredRow("SELECT created_at FROM nx_wallet_ledger WHERE biz_no=? AND user_id=? AND asset=? AND biz_type='PROMOTION_REWARD' AND direction='IN' AND status='SUCCESS'"+lock,row.get("original_ledger_no"),row.get("beneficiary_id"),spec.get("type")).get("created_at");
-        Object receipt=row.get("original_earnings_entry_no")!=null||!devices.isEmpty()?values("ledgerBizNo",row.get("original_ledger_no"),"earningsEntryNo",row.get("original_earnings_entry_no"),
+        Map<String,Object> receipt=row.get("original_earnings_entry_no")!=null||!devices.isEmpty()?values("ledgerBizNo",row.get("original_ledger_no"),"earningsEntryNo",row.get("original_earnings_entry_no"),
             "deviceIds",devices.stream().map(d->number(d.get("device_id"))).toList(),"instanceNos",devices.stream().map(d->text(d.get("instance_no"))).toList(),
             "source","DEVICE".equals(spec.get("type"))?"PROMOTION_GIFT":"PROMOTION_REWARD","issuedAt",instant(issuedAt).toString()):null;
+        if (!devices.isEmpty() && devices.stream().allMatch(device -> device.get("activated_on_delivery") != null)) {
+            var deliveries = devices.stream().map(device -> new ffdd.opsconsole.shared.canonical.OrderDeviceDelivery(
+                    text(row.get("order_no")), number(device.get("device_id")), number(device.get("activated_on_delivery")) == 1)).toList();
+            ffdd.opsconsole.shared.canonical.OrderDeviceDelivery.project(receipt, deliveries);
+        }
         Map<String,Object> result=values("obligationId",id,"activityId",row.get("activity_id"),"version",number(row.get("version")),"orderNo",row.get("order_no"),"orderLineId",text(row.get("order_line_id")),
             "ruleId",row.get("rule_id"),"rewardRuleId",row.get("reward_rule_id"),"unitSeq",number(row.get("unit_seq")),"beneficiaryRole",row.get("beneficiary_role"),"reward",spec,
             "state",row.get("status"),"revision",number(row.get("revision")),"refundHold",!holds.isEmpty(),"refundRequestIds",holds.stream().map(h->text(h.get("refund_request_id"))).toList(),

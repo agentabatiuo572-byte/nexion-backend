@@ -2300,6 +2300,14 @@
           "quantity": {
             "$ref": "#/components/schemas/Quantity"
           },
+          "assignableSlots": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "inventoryQuantity": {
+            "type": "integer",
+            "minimum": 0
+          },
           "items": {
             "type": "array",
             "items": {
@@ -2859,6 +2867,28 @@
               "type": "integer",
               "minimum": 1
             }
+          },
+          "activatedDeviceIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "inventoryDeviceIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "activatedQuantity": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "inventoryQuantity": {
+            "type": "integer",
+            "minimum": 0
           },
           "instanceNos": {
             "type": "array",

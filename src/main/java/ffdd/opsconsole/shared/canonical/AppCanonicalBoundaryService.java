@@ -1,6 +1,8 @@
 package ffdd.opsconsole.shared.canonical;
 
 import ffdd.opsconsole.device.application.HostingCenterService;
+import ffdd.opsconsole.device.application.DeviceSlotReplacementCompletion;
+import ffdd.opsconsole.device.mapper.DeviceSlotReplacementMapper;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher.UserAttribution;
@@ -62,6 +64,10 @@ public class AppCanonicalBoundaryService {
     private HostingCenterService hostingCenters;
     @Autowired
     private BusinessProductImages productImages;
+    @Autowired
+    private DeviceSlotReplacementMapper slotReplacements;
+    @Autowired
+    private DeviceSlotReplacementCompletion slotReplacementCompletion;
 
     private static final ZoneId SERVER_ZONE = StorageTime.ZONE;
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -211,6 +217,9 @@ public class AppCanonicalBoundaryService {
             return ApiResult.fail(403, "DEVICE_FORBIDDEN");
         }
         if (!expectedVersion.equals(device.rowVersion())) return ApiResult.fail(409, "DEVICE_VERSION_CONFLICT");
+        if (slotReplacements.isWaiting(userId, deviceId)) {
+            return ApiResult.fail(409, "DEVICE_REPLACEMENT_PENDING");
+        }
         if (Set.of("PHONE", "MOBILE").contains(normalizeState(device.deviceType(), ""))) {
             return ApiResult.fail(409, "PHONE_CALIBRATION_ACTIVATION_REQUIRED");
         }
@@ -271,13 +280,68 @@ public class AppCanonicalBoundaryService {
     }
 
     @Transactional
+    public ApiResult<Map<String, Object>> replaceDevice(Long userId, Long oldDeviceId, Long newDeviceId,
+            Long oldVersion, Long newVersion, String idempotencyKey, boolean cancel) {
+        if (oldDeviceId == null || newDeviceId == null || oldDeviceId <= 0 || newDeviceId <= 0
+                || oldDeviceId.equals(newDeviceId)) return ApiResult.fail(422, "DEVICE_ID_REQUIRED");
+        if (oldVersion == null || newVersion == null || oldVersion < 0 || newVersion < 0) {
+            return ApiResult.fail(422, "DEVICE_VERSION_REQUIRED");
+        }
+        if (!StringUtils.hasText(idempotencyKey)) return ApiResult.fail(422, "IDEMPOTENCY_KEY_REQUIRED");
+        if (!cancel) testCloudAdmission.lock();
+        var gate = productionDeviceUserGate(userId);
+        if (gate != null) return gate;
+        return executeOnce(cancel ? "DEVICE_SLOT_REPLACEMENT_CANCEL" : "DEVICE_SLOT_REPLACEMENT", userId, idempotencyKey,
+                linked("oldDeviceId", oldDeviceId, "newDeviceId", newDeviceId,
+                        "oldVersion", oldVersion, "newVersion", newVersion), () -> {
+            var oldDevice = mapper.lockDeviceForUserCommand(oldDeviceId);
+            var newDevice = mapper.lockDeviceForUserCommand(newDeviceId);
+            if (oldDevice == null || newDevice == null || !userId.equals(oldDevice.userId())
+                    || !userId.equals(newDevice.userId()) || !"OWNED".equals(oldDevice.ownershipStatus())
+                    || !"OWNED".equals(newDevice.ownershipStatus())) return ApiResult.fail(403, "DEVICE_FORBIDDEN");
+            if (!oldVersion.equals(oldDevice.rowVersion()) || !newVersion.equals(newDevice.rowVersion())) {
+                return ApiResult.fail(409, "DEVICE_VERSION_CONFLICT");
+            }
+            Long pendingSuccessor = slotReplacements.successor(userId, oldDeviceId);
+            String status;
+            if (cancel) {
+                if (!newDeviceId.equals(pendingSuccessor) || !oldDevice.pendingDeactivate()
+                        || slotReplacements.cancelDeactivation(userId, oldDeviceId, oldVersion) != 1) {
+                    return ApiResult.fail(409, "DEVICE_REPLACEMENT_STATE_CHANGED");
+                }
+                slotReplacements.unbind(userId, oldDeviceId);
+                computeV2Lifecycle.cancelSimulatedSlotStop(userId, oldDeviceId);
+                status = "CANCELLED";
+            } else {
+                if (!isSlotOccupyingActiveState(oldDevice.status())
+                        || oldDevice.activatedAt() == null || oldDevice.deactivatedAt() != null
+                        || oldDevice.pendingDeactivate() || newDevice.activatedAt() != null
+                        || !Set.of("INACTIVE", "INVENTORY", "DEACTIVATED").contains(newDevice.status())
+                        || Set.of("PHONE", "MOBILE").contains(newDevice.deviceType())
+                        || pendingSuccessor != null || slotReplacements.isWaiting(userId, newDeviceId)
+                        || mapper.lockOccupiedDeviceSlotCount(userId, false) > mapper.deviceSlotCap()) {
+                    return ApiResult.fail(409, "DEVICE_REPLACEMENT_STATE_CHANGED");
+                }
+                testCloudAdmission.requireSlotReplacementCapacity(oldDeviceId, newDeviceId);
+                slotReplacements.bind(userId, oldDeviceId, newDeviceId);
+                var stop = deactivateAfterTaskInternal(userId, oldDeviceId, oldVersion, idempotencyKey);
+                if (stop.getCode() != 0) throw new BizException(stop.getCode(), stop.getMessage());
+                status = slotReplacements.successor(userId, oldDeviceId) == null ? "COMPLETED" : "PENDING";
+            }
+            return ApiResult.ok(linked("status", status, "oldDeviceId", oldDeviceId, "newDeviceId", newDeviceId));
+        });
+    }
+
+    @Transactional
     public ApiResult<Map<String, Object>> deactivateDevice(
             Long userId, Long deviceId, Long expectedVersion, String idempotencyKey) {
         ApiResult<Map<String, Object>> gate = productionDeviceUserGate(userId);
         if (gate != null) return gate;
         return executeOnce("DEVICE_DEACTIVATE", userId, idempotencyKey,
                 linked("deviceId", deviceId, "expectedVersion", expectedVersion),
-                () -> deactivateDeviceInternal(userId, deviceId, expectedVersion, idempotencyKey));
+                () -> deviceId != null && slotReplacements.successor(userId, deviceId) != null
+                        ? ApiResult.fail(409, "DEVICE_REPLACEMENT_PENDING")
+                        : deactivateDeviceInternal(userId, deviceId, expectedVersion, idempotencyKey));
     }
 
     @Transactional
@@ -358,6 +422,7 @@ public class AppCanonicalBoundaryService {
         // an event/audit failure must not leave either side partially stopped.
         mapper.cancelActiveDeviceTasks(userId, deviceId);
         mapper.markDeviceRuntimeDeactivated(deviceId);
+        slotReplacementCompletion.afterDeactivation(userId, deviceId);
         long nextVersion = expectedVersion + 1;
         Map<String, Object> state = linked(
                 "deviceId", device.id(), "instanceNo", device.instanceNo(), "status", "DEACTIVATED",
@@ -466,9 +531,19 @@ public class AppCanonicalBoundaryService {
             }
         }
         List<Map<String, Object>> devices = new ArrayList<>();
+        Map<Long, DeviceSlotReplacementMapper.Pending> pendingReplacements = new LinkedHashMap<>();
+        if (!sandboxRuntime && !developmentRuntime) {
+            for (var pending : slotReplacements.pending(userId)) {
+                pendingReplacements.put(pending.oldDeviceId(), pending);
+                pendingReplacements.put(pending.newDeviceId(), pending);
+            }
+        }
         for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
             Map<String, Object> projection = projectE3Capacity(device, capacityConfig, capacityNow);
             if (projection == null) continue;
+            if (pendingReplacements.containsKey(device.id())) {
+                projection.put("replacement", pendingReplacements.get(device.id()));
+            }
             CanonicalStateMapper.DeviceRealizedToday realized = realizedByDevice.get(device.id());
             projection.put("todayEarningsUsdt", realized == null
                     ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
@@ -937,9 +1012,16 @@ public class AppCanonicalBoundaryService {
         Map<String, Map<String, Object>> trialSettlements = page.stream()
                 .anyMatch(row -> row.orderNo() != null && row.orderNo().startsWith("TRC-"))
                 ? trialSettlements(userId) : Map.of();
+        List<String> paidOrderNos = page.stream()
+                .filter(order -> "PAID".equals(order.paymentStatus()))
+                .map(CanonicalStateMapper.UserOrder::orderNo).toList();
+        Map<String, List<OrderDeviceDelivery>> deliveries = paidOrderNos.isEmpty() ? Map.of()
+                : mapper.userOrderDeviceDeliveries(userId, paidOrderNos).stream()
+                    .collect(Collectors.groupingBy(OrderDeviceDelivery::orderNo));
         List<OrderImageTarget> imageTargets = new ArrayList<>();
         List<Map<String, Object>> orders = page.stream().map(row -> {
             Map<String, Object> projected = projectUserOrder(userId, row, overlays.get(row.orderNo()), imageTargets);
+            OrderDeviceDelivery.project(projected, deliveries.getOrDefault(row.orderNo(), List.of()));
             imageTargets.add(new OrderImageTarget(projected, row.firstItemSku()));
             Map<String, Object> trial = trialSettlements.get(row.orderNo());
             if (trial != null) projected.put("trialSettlement", trial);
@@ -1577,20 +1659,6 @@ public class AppCanonicalBoundaryService {
                 productReleasePolicy.evaluate(product.productNo(), product.unlockPhase());
         if (!release.available()) {
             return ApiResult.fail(409, "PRODUCT_NOT_RELEASED");
-        }
-        // A capacity quote is a UX aid, never the invariant.  The ordinary order
-        // command is the last server-authoritative boundary before money/order
-        // side effects, so it must reject a full account even when a client skips
-        // or races the quote endpoint.  Capacity replacement uses its own locked
-        // transaction which removes one active device before adding the target.
-        {
-            int activeDevices = Math.max(0, mapper.lockActiveDeviceCount(userId, developmentRuntime));
-            int reservedDevices = Math.max(0, mapper.lockReservedDeviceOrderCount(userId, developmentRuntime));
-            int slotCap = Math.max(1, mapper.deviceSlotCap());
-            int trial = developmentRuntime ? 0 : mapper.lockReservedTrialSlotCount(userId);
-            if ((long) activeDevices + reservedDevices + trial + qty > slotCap) {
-                return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
-            }
         }
         if (inventoryMode == ProductInventoryMode.FINITE
                 && (product.stock() == null || product.stock() < qty)) {

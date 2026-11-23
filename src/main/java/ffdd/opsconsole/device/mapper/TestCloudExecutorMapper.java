@@ -54,7 +54,7 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
            AND d.deactivated_at IS NULL AND d.activated_at IS NOT NULL AND d.purchased_at IS NOT NULL
            AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
            AND o.subtotal_usdt>0 AND o.amount_usdt>=0
-           AND ((d.source_channel='ORDER' AND o.activation_status='ACTIVATED'
+           AND ((d.source_channel='ORDER' AND o.activation_status IN ('ACTIVATED','INVENTORY')
            AND ((d.purchased_at>=#{cutoff} AND d.activated_at>=#{cutoff}) OR """ + LEGACY_ADMISSION + """
            )
            AND (o.product_id=d.product_id OR EXISTS(SELECT 1 FROM nx_order_item oi

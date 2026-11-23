@@ -167,16 +167,17 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
         requireKey(key);
         String digest=hash(String.valueOf(summary));
         independent.executeWithoutResult(tx -> {
+            String legacyScope=legacyScope(userId,kind);
+            Map<String,Object> legacy=legacyScope==null ? null : repo.legacy(legacyScope,key);
+            if ("capacity-replace".equals(kind) && legacy==null && repo.command(userId,kind,key,false)==null) {
+                throw new BizException(409,"CAPACITY_REPLACEMENT_PURCHASE_RETIRED");
+            }
             repo.ensure(userId);
             repo.insertCommand(userId,kind,key,digest,clock.millis());
-            String legacyScope=legacyScope(userId,kind);
-            if (legacyScope!=null) {
-                Map<String,Object> legacy=repo.legacy(legacyScope,key);
-                if (legacy!=null && "SUCCEEDED".equals(legacy.get("status")) && legacy.get("response_json")!=null) {
-                    if (!digest.equals(legacy.get("request_hash"))) throw new BizException(409,"PAYMENT_COMMAND_INPUT_CHANGED");
-                    ApiResult<?> receipt=decode(String.valueOf(legacy.get("response_json")),ApiResult.class);
-                    repo.importCommand(userId,kind,key,receipt.getCode()==0 ? "SUCCEEDED" : "REJECTED",String.valueOf(legacy.get("response_json")));
-                }
+            if (legacy!=null && "SUCCEEDED".equals(legacy.get("status")) && legacy.get("response_json")!=null) {
+                if (!digest.equals(legacy.get("request_hash"))) throw new BizException(409,"PAYMENT_COMMAND_INPUT_CHANGED");
+                ApiResult<?> receipt=decode(String.valueOf(legacy.get("response_json")),ApiResult.class);
+                repo.importCommand(userId,kind,key,receipt.getCode()==0 ? "SUCCEEDED" : "REJECTED",String.valueOf(legacy.get("response_json")));
             }
         });
         return transaction.execute(tx -> {

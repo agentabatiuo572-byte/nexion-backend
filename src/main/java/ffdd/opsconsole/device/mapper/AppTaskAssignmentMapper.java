@@ -918,7 +918,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                AND d.series_code='CLOUD_SHARE' AND UPPER(d.device_type) IN ('SHARE','CLOUD_SHARE')
                AND o.is_deleted=0 AND o.payment_status='PAID'
-               AND o.order_status='COMPLETED' AND o.activation_status='ACTIVATED'
+               AND o.order_status='COMPLETED' AND o.activation_status IN ('ACTIVATED','INVENTORY')
                AND o.amount_usdt>0
                AND (o.product_id=d.product_id OR EXISTS (
                    SELECT 1 FROM nx_order_item oi WHERE oi.order_no=o.order_no
@@ -957,8 +957,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                AND ((d.ownership_status='OWNED' AND d.deactivated_at IS NULL
                      AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                      AND o.payment_status='PAID' AND o.order_status='COMPLETED'
-                     AND (o.activation_status='ACTIVATED' OR (d.source_channel='TRADE_IN'
-                          AND o.order_type='TRADE_IN' AND o.activation_status='INVENTORY')))
+                     AND (o.activation_status='ACTIVATED' OR (o.activation_status='INVENTORY'
+                          AND (d.source_channel='ORDER' OR (d.source_channel='TRADE_IN' AND o.order_type='TRADE_IN')))))
                  OR (d.ownership_status='REFUNDED' AND d.deactivated_at>=#{completedAt}
                      AND o.payment_status='REFUNDED' AND o.order_status='REFUNDED'
                      AND o.order_type<>'TRIAL_CONVERT'))

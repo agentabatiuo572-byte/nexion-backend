@@ -2,6 +2,7 @@ package ffdd.opsconsole.commerce.mapper;
 
 import static ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper.HELD;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.canonical.OrderDeviceDelivery;
 import ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
@@ -32,18 +33,18 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
     int countDirectPaymentIntentsBlockingExpiry(@Param("orderNo") String orderNo);
     @Update("UPDATE nx_order SET paid_at=#{paidAt} WHERE order_no=#{orderNo} AND payment_status='PAID'")
     int recordVerifiedPaidAt(@Param("orderNo") String orderNo,@Param("paidAt") java.time.LocalDateTime paidAt);
-    /** The pending order is already included once; do not add its quantity again at payment. */
+    /** Count other orders and older gifts that still promise an activation slot. */
     @Select("SELECT (" + CanonicalStateMapper.ACTIVE_DEVICE_COUNT
             + " AND COALESCE(u.sandbox,0)=0 FOR SHARE) + ("
             + CanonicalStateMapper.LOCK_RESERVED_DEVICE_ORDERS
-            + " AND COALESCE(u.sandbox,0)=0 FOR SHARE) + EXISTS("
+            + " AND o.order_no<>#{orderNo} AND COALESCE(u.sandbox,0)=0 FOR SHARE) + EXISTS("
             + ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper.RESERVED_TRIAL + " FOR SHARE)")
-    long lockOccupiedDeviceSlotCount(@Param("userId") Long userId);
+    long lockOccupiedDeviceSlotCount(@Param("userId") Long userId, @Param("orderNo") String orderNo);
 
     @Select("SELECT 6")
     int deviceSlotCap();
 
-    @org.apache.ibatis.annotations.Select("SELECT COUNT(*) FROM nx_order WHERE order_no=#{orderNo} AND user_id=#{userId} AND payment_status='PAID' AND order_status='COMPLETED' AND activation_status='ACTIVATED' AND is_deleted=0")
+    @org.apache.ibatis.annotations.Select("SELECT COUNT(*) FROM nx_order WHERE order_no=#{orderNo} AND user_id=#{userId} AND payment_status='PAID' AND order_status='COMPLETED' AND activation_status IN ('ACTIVATED','INVENTORY') AND is_deleted=0")
     int countCompletedPaidOrder(@org.apache.ibatis.annotations.Param("userId") Long userId,@org.apache.ibatis.annotations.Param("orderNo") String orderNo);
     String ORDER_PAYMENT_QUANTITY =
             "CASE WHEN UPPER(COALESCE(o.order_type,'SINGLE'))='BUNDLE' THEN oi.quantity ELSE o.quantity END";
@@ -489,7 +490,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
             UPDATE nx_order o
               JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
                SET o.payment_no=#{paymentNo},o.payment_status='PAID',o.order_status='COMPLETED',
-                   o.activation_status='ACTIVATED',o.paid_at=COALESCE(o.paid_at,NOW(6)),
+                   o.activation_status=#{activationStatus},o.paid_at=COALESCE(o.paid_at,NOW(6)),
                    o.updated_at=GREATEST(NOW(6),o.updated_at + INTERVAL 1 MICROSECOND)
              WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.is_deleted=0
                AND u.status='ACTIVE' AND u.is_deleted=0
@@ -499,9 +500,10 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
                AND NOT EXISTS (SELECT 1 FROM nx_promotion_order_receipt pr
                                 WHERE pr.order_no=o.order_no AND pr.pay_by<=NOW(6))
             """)
-    int markDevelopmentOrderActivated(@Param("orderNo") String orderNo,
+    int markDevelopmentOrderDelivered(@Param("orderNo") String orderNo,
                                       @Param("userId") Long userId,
-                                      @Param("paymentNo") String paymentNo);
+                                      @Param("paymentNo") String paymentNo,
+                                      @Param("activationStatus") String activationStatus);
 
     @Insert("""
             INSERT IGNORE INTO nx_payment_record
@@ -527,7 +529,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
               (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,
                ownership_status,source_channel,source_environment,run_id,status,hashrate,daily_usdt,daily_nex,
-               last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
+               last_seen_at,purchased_at,activated_at,activated_on_delivery,pending_deactivate,row_version,created_at,updated_at,is_deleted)
             SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),p.series_code,#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'UVEL accelerator'),
@@ -536,16 +538,17 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
                    #{hostingCenter},
                    CASE WHEN o.quantity > 0 THEN o.amount_usdt/o.quantity ELSE p.price_usdt END,
-                   'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
+                   'OWNED','ORDER','PRODUCTION','',CASE WHEN #{activate} THEN 'ACTIVE' ELSE 'INVENTORY' END,
+                   GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
-                   NOW(),NOW(),NOW(),0,0,NOW(),NOW(),0
+                   CASE WHEN #{activate} THEN NOW() END,NOW(),CASE WHEN #{activate} THEN NOW() END,#{activate},0,0,NOW(),NOW(),0
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
               JOIN nx_product p ON p.id=o.product_id AND p.is_deleted=0
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.is_deleted=0
                AND o.payment_status='PAID' AND o.order_status='COMPLETED'
-               AND o.activation_status='ACTIVATED' AND #{unitIndex} >= 0 AND #{unitIndex} < o.quantity
+               AND o.activation_status IN ('ACTIVATED','INVENTORY') AND #{unitIndex} >= 0 AND #{unitIndex} < o.quantity
                AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
                      (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                       AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0))
@@ -554,14 +557,15 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
                                 @Param("userId") Long userId,
                                 @Param("instanceNo") String instanceNo,
                                 @Param("unitIndex") Integer unitIndex,
-                                @Param("hostingCenter") String hostingCenter);
+                                @Param("hostingCenter") String hostingCenter,
+                                @Param("activate") boolean activate);
 
     @Insert("""
             INSERT IGNORE INTO nx_user_device
               (user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,
                ownership_status,source_channel,source_environment,run_id,status,hashrate,daily_usdt,daily_nex,
-               last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,created_at,updated_at,is_deleted)
+               last_seen_at,purchased_at,activated_at,activated_on_delivery,pending_deactivate,row_version,created_at,updated_at,is_deleted)
             SELECT #{userId},o.order_no,p.id,p.product_no,COALESCE(p.tier,'STANDARD'),p.series_code,#{instanceNo},p.name,
                    COALESCE(NULLIF(p.product_type,''),'BOX'),GREATEST(COALESCE(p.generation,1),1),
                    COALESCE(NULLIF(p.gpu_model,''),NULLIF(s.gpu,''),'UVEL accelerator'),
@@ -570,9 +574,10 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
                          ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
                    #{hostingCenter},
                    CASE WHEN oi.quantity > 0 THEN oi.line_amount_usdt/oi.quantity ELSE p.price_usdt END,
-                   'OWNED','ORDER','PRODUCTION','','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
+                   'OWNED','ORDER','PRODUCTION','',CASE WHEN #{activate} THEN 'ACTIVE' ELSE 'INVENTORY' END,
+                   GREATEST(COALESCE(p.hashrate,0),0),
                    GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),
-                   NOW(),NOW(),NOW(),0,0,NOW(),NOW(),0
+                   CASE WHEN #{activate} THEN NOW() END,NOW(),CASE WHEN #{activate} THEN NOW() END,#{activate},0,0,NOW(),NOW(),0
               FROM nx_order o
               JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0
               JOIN nx_order_item oi ON oi.order_no=o.order_no AND oi.product_id=#{productId}
@@ -581,7 +586,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.order_type='BUNDLE'
                AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
-               AND o.activation_status='ACTIVATED'
+               AND o.activation_status IN ('ACTIVATED','INVENTORY')
                AND (UPPER(p.product_type) IN ('SHARE','CLOUD_SHARE') OR
                      (UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
                       AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) > 0))
@@ -591,7 +596,17 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
                            @Param("productId") Long productId,
                            @Param("instanceNo") String instanceNo,
                            @Param("unitIndex") Integer unitIndex,
-                                @Param("hostingCenter") String hostingCenter);
+                           @Param("hostingCenter") String hostingCenter,
+                           @Param("activate") boolean activate);
+
+    @Select("""
+            SELECT source_order_no orderNo,id deviceId,activated_on_delivery activatedOnDelivery
+              FROM nx_user_device
+             WHERE user_id=#{userId} AND source_order_no=#{orderNo} AND source_channel='ORDER'
+               AND source_environment='PRODUCTION' AND run_id='' AND activated_on_delivery IS NOT NULL
+             ORDER BY id
+            """)
+    List<OrderDeviceDelivery> purchasedDeviceDeliveries(@Param("userId") Long userId, @Param("orderNo") String orderNo);
 
     @Select("""
             SELECT id deviceId,instance_no instanceNo

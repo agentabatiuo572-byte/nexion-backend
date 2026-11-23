@@ -120,7 +120,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                AND UPPER(COALESCE(d.source_environment, ''))='PRODUCTION' AND COALESCE(d.run_id, '')=''
                AND UPPER(COALESCE(o.payment_status, ''))='PAID'
                AND UPPER(COALESCE(o.order_status, ''))='COMPLETED'
-               AND UPPER(COALESCE(o.activation_status, ''))='ACTIVATED'
+               AND UPPER(COALESCE(o.activation_status, '')) IN ('ACTIVATED','INVENTORY')
              ORDER BY d.user_id, d.id
             """)
     List<DevelopmentDeviceTarget> developmentPurchasedDevices();
@@ -153,7 +153,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                                      WHERE o.order_no=d.source_order_no AND o.user_id=d.user_id
                                        AND UPPER(COALESCE(o.payment_status, ''))='PAID'
                                        AND UPPER(COALESCE(o.order_status, ''))='COMPLETED'
-                                       AND UPPER(COALESCE(o.activation_status, ''))='ACTIVATED'
+                                       AND UPPER(COALESCE(o.activation_status, '')) IN ('ACTIVATED','INVENTORY')
                                        AND o.is_deleted=0))
                )
                AND ((NOT EXISTS (SELECT 1 FROM nx_simulated_device_runtime sim WHERE sim.user_device_id=d.id)
@@ -178,6 +178,9 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
              ORDER BY minVram, updated_at DESC, id DESC
             """)
     List<DevelopmentTaskConfig> developmentTaskPool();
+
+    @Select("SELECT id FROM nx_user WHERE id=#{userId} AND sandbox=0 AND is_deleted=0 AND status='ACTIVE' FOR UPDATE")
+    Long lockDevelopmentTaskOwner(@Param("userId") Long userId);
 
     @Select("""
             SELECT d.user_id AS userId, d.id AS userDeviceId, d.instance_no AS instanceNo,
@@ -209,7 +212,7 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                                       WHERE o.order_no=d.source_order_no AND o.user_id=d.user_id
                                         AND UPPER(COALESCE(o.payment_status, ''))='PAID'
                                         AND UPPER(COALESCE(o.order_status, ''))='COMPLETED'
-                                        AND UPPER(COALESCE(o.activation_status, ''))='ACTIVATED'
+                                        AND UPPER(COALESCE(o.activation_status, '')) IN ('ACTIVATED','INVENTORY')
                                         AND o.is_deleted=0))
                 )
               LIMIT 1 FOR UPDATE

@@ -28,6 +28,8 @@ public class ComputeV2DeviceLifecycleService {
     private final Set<Long> enrolled;
     private final SimulatedTaskService simulated;
     private final SimulatedTaskLifecycleService simulatedLifecycle;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceSlotReplacementCompletion slotReplacement;
     @SuppressWarnings("ArchitectureConfigField") // Derived from the constructor-injected environment.
     private final String scope;
     private final AtomicLong cursor=new AtomicLong();
@@ -47,6 +49,10 @@ public class ComputeV2DeviceLifecycleService {
 
     /** Caller owns its existing user/device command transaction; cancellation runs only after commit. */
     public boolean manages(long device){return simulated.manages(device) || runtime.isPresent() && enrolled.contains(device);}
+
+    public void cancelSimulatedSlotStop(long userId, long deviceId) {
+        if (simulated.manages(deviceId)) simulated.cancelPendingSlotStop(userId, deviceId);
+    }
 
     public boolean deferDeactivation(long user,long device,Long expectedVersion) {
         if(simulated.manages(device) && (simulated.runtimesByUser(user).containsKey(device)
@@ -187,6 +193,7 @@ public class ComputeV2DeviceLifecycleService {
             if(attribution==null)throw error("USER_EVENT_ATTRIBUTION_UNAVAILABLE");
             if(mapper.deactivatePendingComputeV2Device(user,device,row.rowVersion())!=1)return false;
             mapper.markDeviceRuntimeDeactivated(device);
+            slotReplacement.afterDeactivation(user, device);
             outbox.publishUserEvent("USER_DEVICE",row.instanceNo(),"device.deactivated",user,attribution.phase(),
                     attribution.accountAgeMonths(),attribution.cohort(),Map.of("userId",user,"deviceId",device,
                         "instanceNo",row.instanceNo(),"previousStatus",row.status(),"status","DEACTIVATED",

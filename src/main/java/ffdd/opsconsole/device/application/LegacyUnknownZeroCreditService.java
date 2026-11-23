@@ -38,6 +38,8 @@ public class LegacyUnknownZeroCreditService {
     private final AppTaskAssignmentMapper assignments;
     private final AuditLogService audit;
     private final EventOutboxService outbox;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceSlotReplacementCompletion slotReplacement;
     private final ObjectMapper json;
     private final Environment environment;
     private final Clock clock;
@@ -148,6 +150,7 @@ public class LegacyUnknownZeroCreditService {
         if (number(device.get("pendingDeactivate"))==1) {
             if (assignments.deactivatePendingDevice(c.ownerId(),c.deviceId(),now)!=1) throw denied("LEGACY_UNKNOWN_DEVICE_CHANGED");
             assignments.markRuntimeDeactivated(c.ownerId(),c.deviceId(),now);deactivated=true;
+            slotReplacement.afterDeactivation(c.ownerId(), c.deviceId());
             Long rowVersion=assignments.deviceRowVersion(c.ownerId(),c.deviceId());
             if (rowVersion==null) throw denied("LEGACY_UNKNOWN_DEVICE_CHANGED");
             var attribution=assignments.userEventAttribution(c.ownerId());

@@ -3279,6 +3279,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     if (before == null) {
                         return new TradeinActionResult(404, "DEVICE_NOT_FOUND", null);
                     }
+                    if (lockAndCheckPendingSlotReplacement(before)) {
+                        return new TradeinActionResult(409, "DEVICE_SLOT_REPLACEMENT_PENDING", null);
+                    }
                     LocalDateTime now = LocalDateTime.now(clock);
                     String tradeInNo = "TI-" + now.format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
                             + "-" + trusted.deviceId();
@@ -3390,6 +3393,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                     OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
+        if (lockAndCheckPendingSlotReplacement(device)) {
+            return ApiResult.fail(409, "DEVICE_SLOT_REPLACEMENT_PENDING");
+        }
+        if (device.userId() != null && deviceRepository.restoreOccupiesProductionSlot(deviceId)
+                && deviceRepository.countOccupiedSlotsForE5Activation(device.userId()) >= e5MaxDevicesPerUser()) {
+            return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
+        }
         testCloudAdmission.requireRestoreCapacity(deviceId);
         DeviceOpsView restored = deviceRepository.restoreDevice(deviceId, LocalDateTime.now(clock)).orElse(device);
         audit("E3B_DEVICE_RESTORE", "DEVICE", String.valueOf(deviceId), request.operator(), Map.of(
@@ -3494,6 +3504,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (!deviceRepository.lockUserForE5Activation(before.userId())) {
                 return ApiResult.fail(409, "DEVICE_ACTIVATION_LOCK_UNAVAILABLE");
             }
+            if (deviceRepository.deviceHasPendingReplacement(before.userId(), deviceId)) {
+                return ApiResult.fail(409, "DEVICE_SLOT_REPLACEMENT_PENDING");
+            }
             if (deviceRepository.countOccupiedSlotsForE5Activation(before.userId()) >= slotCap) {
                 return ApiResult.fail(409, "MAX_DEVICES_PER_USER_EXCEEDED");
             }
@@ -3531,6 +3544,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (before == null) {
                 return ApiResult.fail(404, "DEVICE_NOT_FOUND");
             }
+            if (lockAndCheckPendingSlotReplacement(before)) {
+                return ApiResult.fail(409, "DEVICE_SLOT_REPLACEMENT_PENDING");
+            }
             DeviceOpsView updated = deviceRepository
                     .deactivateE5Device(deviceId, unbind, LocalDateTime.now(clock)).orElse(null);
             if (updated == null) {
@@ -3544,6 +3560,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     trustedOperator, trusted.reason(), idempotencyKey);
             return ApiResult.ok(updated);
         });
+    }
+
+    private boolean lockAndCheckPendingSlotReplacement(DeviceOpsView device) {
+        if (device.userId() == null || device.userId() <= 0) return false;
+        deviceRepository.lockUserForE5Activation(device.userId());
+        return deviceRepository.deviceHasPendingReplacement(device.userId(), device.id());
     }
 
     @Transactional(rollbackFor = Exception.class)

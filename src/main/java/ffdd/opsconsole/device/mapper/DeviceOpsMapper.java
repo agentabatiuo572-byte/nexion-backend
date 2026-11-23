@@ -503,6 +503,20 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
     String deviceOwnershipStatus(@Param("deviceId") Long deviceId);
 
     @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_device_slot_replacement
+                           WHERE user_id=#{userId} AND (old_device_id=#{deviceId} OR new_device_id=#{deviceId}) FOR SHARE)
+            """)
+    boolean deviceHasPendingReplacement(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
+
+    @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_user_device d JOIN nx_user u ON u.id=d.user_id
+                           WHERE d.id=#{deviceId} AND d.is_deleted=0 AND d.ownership_status='OWNED'
+                             AND d.status='RECYCLED' AND d.activated_at IS NOT NULL
+                             AND d.source_environment='PRODUCTION' AND d.run_id='' AND u.sandbox=0 FOR SHARE)
+            """)
+    boolean restoreOccupiesProductionSlot(@Param("deviceId") Long deviceId);
+
+    @Select("""
             SELECT AVG(ageMonths) AS averageAgeMonths,
                    COALESCE(SUM(CASE WHEN ageMonths > #{midEnd} THEN 1 ELSE 0 END), 0) AS cliffDeviceCount,
                    COALESCE(SUM(CASE WHEN ageMonths <= #{earlyEnd} THEN 1 ELSE 0 END), 0) AS earlyDeviceCount,
@@ -511,7 +525,7 @@ public interface DeviceOpsMapper extends BaseMapper<UserDeviceEntity> {
                   SELECT TIMESTAMPDIFF(MONTH, COALESCE(d.purchased_at, d.activated_at, d.created_at), NOW()) AS ageMonths
                     FROM nx_user_device d
                    WHERE d.is_deleted = 0
-                     AND d.status NOT IN ('RECYCLED','DEACTIVATED','INACTIVE','RETIRED')
+                     AND d.status NOT IN ('RECYCLED','DEACTIVATED','INACTIVE','INVENTORY','RETIRED')
               ) device_age
             """)
     TradeinOverviewMetrics tradeinOverviewMetrics(@Param("earlyEnd") int earlyEnd, @Param("midEnd") int midEnd);

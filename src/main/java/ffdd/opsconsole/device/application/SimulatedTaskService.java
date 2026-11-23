@@ -177,6 +177,10 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         });
     }
 
+    void cancelPendingSlotStop(long userId, long deviceId) {
+        mapper.cancelPendingSlotStop(userId, deviceId);
+    }
+
     /** The caller holds the user and OWNED device locks until the replacement transaction ends. */
     RuntimeRow lockReplacementRuntime(long userId, long deviceId, String instanceNo, boolean activated, boolean computeV2Enrolled) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {

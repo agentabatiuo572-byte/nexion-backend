@@ -162,6 +162,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.pending_deactivate=0
+               AND NOT EXISTS (SELECT 1 FROM nx_device_slot_replacement swap WHERE swap.new_device_id=d.id)
              LIMIT 1
             """)
     SourceDevice findSourceDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
@@ -191,6 +192,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.pending_deactivate=0
+               AND NOT EXISTS (SELECT 1 FROM nx_device_slot_replacement swap WHERE swap.new_device_id=d.id FOR SHARE)
              LIMIT 1 FOR UPDATE OF d
             """)
     SourceDevice lockSourceDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
@@ -220,6 +222,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.pending_deactivate=0
+               AND NOT EXISTS (SELECT 1 FROM nx_device_slot_replacement swap WHERE swap.new_device_id=d.id)
              ORDER BY d.id
             """)
     List<SourceDevice> listTradeinSourceCandidates(@Param("userId") Long userId);
@@ -531,7 +534,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                #{row.discountUsdt},#{row.walletDebitUsdt},
                GREATEST((SELECT compute_points FROM nx_product WHERE id=#{row.productId})
                  - COALESCE((SELECT compute_points FROM nx_product WHERE id=#{row.sourceProductId}),0),0),
-               'PAID','COMPLETED','ACTIVATED',NOW(6),NOW(),NOW(),0)
+               'PAID','COMPLETED',CASE WHEN #{row.activateTarget} THEN 'ACTIVATED' ELSE 'INVENTORY' END,NOW(6),NOW(),NOW(),0)
             """)
     int insertCapacityKeepOrder(@Param("row") PaidOrderWrite row);
 
@@ -575,8 +578,10 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},p.series_code,
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
                #{row.vramTotalGb},CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
-               #{hostingCenter},#{row.targetPriceUsdt},'OWNED','ORDER','ACTIVE',#{row.hashrate},
-               #{row.dailyUsdt},#{row.dailyNex},NOW(),NOW(),NOW(),0,NOW(),NOW(),0
+               #{hostingCenter},#{row.targetPriceUsdt},'OWNED','ORDER',
+               CASE WHEN #{row.activated} THEN 'ACTIVE' ELSE 'INACTIVE' END,#{row.hashrate},
+               #{row.dailyUsdt},#{row.dailyNex},NOW(),CASE WHEN #{row.activated} THEN NOW() END,
+               CASE WHEN #{row.activated} THEN NOW() END,0,NOW(),NOW(),0
               FROM nx_admin_device_sku s
               JOIN nx_product p ON p.id=#{row.productId} AND p.product_no=s.sku_id
              WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0

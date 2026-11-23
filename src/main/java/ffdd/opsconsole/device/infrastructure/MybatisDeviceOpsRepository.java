@@ -204,6 +204,16 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
     }
 
     @Override
+    public boolean deviceHasPendingReplacement(Long userId, Long deviceId) {
+        return mapper.deviceHasPendingReplacement(userId, deviceId);
+    }
+
+    @Override
+    public boolean restoreOccupiesProductionSlot(Long deviceId) {
+        return mapper.restoreOccupiesProductionSlot(deviceId);
+    }
+
+    @Override
     public boolean lockUserForE5Activation(Long userId) {
         return mapper.lockUserForE5Activation(userId) != null;
     }

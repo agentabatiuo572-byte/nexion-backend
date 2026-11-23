@@ -6,6 +6,7 @@ public record AppCapacityReplaceQuoteResponse(
         String decision,
         Integer activeDevices,
         Integer maxActiveDevices,
+        Integer assignableSlots,
         Long sourceDeviceId,
         String sourceDeviceName,
         Long targetProductId,
