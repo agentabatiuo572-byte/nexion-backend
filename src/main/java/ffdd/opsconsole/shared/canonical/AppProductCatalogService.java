@@ -435,7 +435,7 @@ public class AppProductCatalogService {
                     "đang hot", "в тренде", "танымал", "ommabop",
                     "naik daun", "sohor kini" -> "trending";
             case "upgrade pick", "升级首选", "nên nâng cấp", "для улучшения",
-                    "жаңарту үшін", "yangilash uchun", "pilihan upgrade", "pilihan naik taraf",
+                    "жаңарту үшін", "жақсартуға ұсынылады", "yangilash uchun", "pilihan upgrade", "pilihan naik taraf",
                     "pang-upgrade", "lựa chọn nâng cấp" -> "upgradePick";
             case "flagship", "旗舰", "hàng đầu", "флагман",
                     "flagman", "unggulan", "perdana" -> "flagship";
