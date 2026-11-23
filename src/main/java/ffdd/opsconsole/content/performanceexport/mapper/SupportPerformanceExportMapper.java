@@ -39,6 +39,31 @@ public interface SupportPerformanceExportMapper {
                    @Param("columnsJson") String columnsJson, @Param("coverageJson") String coverageJson,
                    @Param("contentJson") String contentJson, @Param("disclosedCustomersJson") String disclosedCustomersJson);
 
+    @Insert("INSERT INTO nx_support_performance_export_request(request_key, requester_id, created_at)"
+            + " VALUES(#{requestKey}, #{requesterId}, NOW())")
+    int insertRequest(@Param("requestKey") String requestKey, @Param("requesterId") Long requesterId);
+
+    @Select("SELECT id FROM nx_support_performance_export_request WHERE requester_id=#{requesterId}"
+            + " ORDER BY id DESC LIMIT 1")
+    Long latestRequestId(@Param("requesterId") Long requesterId);
+
+    /** An original command key or the numeric batch id both locate this account's batch. */
+    @Select("<script>SELECT id FROM nx_support_performance_export_request WHERE requester_id=#{requesterId}"
+            + " AND (request_key=#{key}<if test='numeric'> OR CAST(id AS CHAR)=#{key}</if>)</script>")
+    java.util.List<Long> requestIdsForKey(@Param("requesterId") Long requesterId, @Param("key") String key,
+                                          @Param("numeric") boolean numeric);
+
+    @Select("SELECT " + "id,request_id AS requestId,requester_id AS requesterId,task_type AS taskType,"
+            + "scope_json AS scopeJson,window_json AS windowJson,preview_version AS previewVersion,"
+            + "request_reason AS requestReason,status,version,row_count AS rowCount,"
+            + "restricted_rows AS restrictedRows,columns_json AS columnsJson,coverage_json AS coverageJson,"
+            + "content_json AS contentJson,disclosed_customers_json AS disclosedCustomersJson,"
+            + "generation_error AS generationError,reviewer_id AS reviewerId,"
+            + "decision_reason AS decisionReason,approved_at AS approvedAt,file_name AS fileName,"
+            + "file_created_at AS fileCreatedAt,delivered_at AS deliveredAt,created_at AS createdAt"
+            + " FROM nx_support_performance_export_task WHERE request_id=#{requestId} AND is_deleted=0 ORDER BY id")
+    java.util.List<TaskRow> listByRequest(@Param("requestId") String requestId);
+
     String TASK_COLUMNS = "id,request_id AS requestId,requester_id AS requesterId,task_type AS taskType,"
             + "scope_json AS scopeJson,window_json AS windowJson,preview_version AS previewVersion,"
             + "request_reason AS requestReason,status,version,row_count AS rowCount,"
@@ -55,26 +80,37 @@ public interface SupportPerformanceExportMapper {
             + " WHERE request_id=#{requestId} AND task_type=#{taskType} AND is_deleted=0 LIMIT 1")
     TaskRow findTaskByRequestAndType(@Param("requestId") String requestId, @Param("taskType") String taskType);
 
-    @Select("<script>SELECT " + TASK_COLUMNS + " FROM nx_support_performance_export_task"
-            + " WHERE requester_id=#{requesterId} AND is_deleted=0"
-            + "<if test='requestKey != null'> AND request_id=#{requestKey}</if>"
+    String MINE_FILTER = " FROM nx_support_performance_export_task"
+            + " WHERE requester_id=#{requesterId} AND is_deleted=0 AND task_type IN"
+            + "<foreach collection='types' item='type' open='(' separator=',' close=')'>#{type}</foreach>"
+            + "<if test='requestIds != null'> AND request_id IN"
+            + "<foreach collection='requestIds' item='rid' open='(' separator=',' close=')'>#{rid}</foreach></if>";
+
+    @Select("<script>SELECT " + TASK_COLUMNS + MINE_FILTER
             + " ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}</script>")
-    List<TaskRow> listMine(@Param("requesterId") Long requesterId, @Param("requestKey") String requestKey,
+    List<TaskRow> listMine(@Param("requesterId") Long requesterId, @Param("types") List<String> types,
+                           @Param("requestIds") List<String> requestIds,
                            @Param("offset") int offset, @Param("limit") int limit);
 
-    @Select("<script>SELECT COUNT(*) FROM nx_support_performance_export_task"
-            + " WHERE requester_id=#{requesterId} AND is_deleted=0"
-            + "<if test='requestKey != null'> AND request_id=#{requestKey}</if></script>")
-    long countMine(@Param("requesterId") Long requesterId, @Param("requestKey") String requestKey);
+    @Select("<script>SELECT COUNT(*)" + MINE_FILTER + "</script>")
+    long countMine(@Param("requesterId") Long requesterId, @Param("types") List<String> types,
+                   @Param("requestIds") List<String> requestIds);
 
-    @Select("SELECT " + TASK_COLUMNS + " FROM nx_support_performance_export_task"
+    String APPROVAL_FILTER = " FROM nx_support_performance_export_task"
             + " WHERE status='PENDING_APPROVAL' AND task_type IN ('CUSTOMER_DETAIL','TRANSACTION_DETAIL')"
-            + " AND is_deleted=0 ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}")
-    List<TaskRow> listApprovals(@Param("offset") int offset, @Param("limit") int limit);
+            + " AND is_deleted=0"
+            + "<if test='!allScope'> AND JSON_UNQUOTE(JSON_EXTRACT(scope_json,'$.kind'))='MANAGED_GROUPS'"
+            + "<if test='groupIds == null or groupIds.isEmpty()'> AND 1=0</if>"
+            + "<if test='groupIds != null and !groupIds.isEmpty()'> AND JSON_LENGTH(JSON_EXTRACT(scope_json,'$.groupIds'))&lt;=#{groupIds.size}"
+            + "<foreach collection='groupIds' item='gid'> AND JSON_CONTAINS(JSON_EXTRACT(scope_json,'$.groupIds'), JSON_QUOTE(#{gid}))</foreach></if></if>";
 
-    @Select("SELECT COUNT(*) FROM nx_support_performance_export_task"
-            + " WHERE status='PENDING_APPROVAL' AND task_type IN ('CUSTOMER_DETAIL','TRANSACTION_DETAIL') AND is_deleted=0")
-    long countApprovals();
+    @Select("<script>SELECT " + TASK_COLUMNS + APPROVAL_FILTER
+            + " ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}</script>")
+    List<TaskRow> listApprovals(@Param("allScope") boolean allScope, @Param("groupIds") List<String> groupIds,
+                                @Param("offset") int offset, @Param("limit") int limit);
+
+    @Select("<script>SELECT COUNT(*)" + APPROVAL_FILTER + "</script>")
+    long countApprovals(@Param("allScope") boolean allScope, @Param("groupIds") List<String> groupIds);
 
     @Update("""
             UPDATE nx_support_performance_export_task

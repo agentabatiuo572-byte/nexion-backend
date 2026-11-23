@@ -20,6 +20,15 @@ WHERE r.role_code = 'SUPER_ADMIN' AND r.status = 1 AND r.is_deleted = 0
   AND p.resource_type = 'API' AND p.status = 1 AND p.is_deleted = 0
 ON DUPLICATE KEY UPDATE is_deleted = 0, updated_at = NOW();
 
+CREATE TABLE IF NOT EXISTS nx_support_performance_export_request (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  request_key VARCHAR(128) NULL,
+  requester_id BIGINT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_support_perf_export_request_key (requester_id, request_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_support_performance_export_task (
   id BIGINT NOT NULL AUTO_INCREMENT,
   request_id VARCHAR(40) NOT NULL,
