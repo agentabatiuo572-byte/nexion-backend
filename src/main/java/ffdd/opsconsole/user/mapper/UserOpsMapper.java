@@ -838,6 +838,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND u.is_deleted = 0
              WHERE tm.user_id = #{userId}
                AND tm.is_deleted = 0
+               AND tm.level >= 1
              ORDER BY tm.level ASC, tm.volume DESC, tm.id DESC
              LIMIT #{limit}
             """)
@@ -847,6 +848,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             SELECT COUNT(*)
               FROM nx_team_member
              WHERE user_id = #{userId}
+               AND level >= 1
                AND is_deleted = 0
             """)
     long countTeamMembers(@Param("userId") Long userId);
