@@ -129,12 +129,13 @@ public interface NativePushMapper {
         SELECT DISTINCT CONCAT('APP_UPDATE:ios:',#{build}),u.id,'APP_UPDATE',
           CASE LOWER(LEFT(u.language,2)) WHEN 'zh' THEN '有新版本' WHEN 'vi' THEN 'Có phiên bản mới' ELSE 'New version available' END,
           CASE LOWER(LEFT(u.language,2))
-            WHEN 'zh' THEN CONCAT('构建 ',#{build},' 已发布，点击查看更新。')
-            WHEN 'vi' THEN CONCAT('Bản dựng ',#{build},' đã phát hành. Nhấn để xem bản cập nhật.')
-            ELSE CONCAT('Build ',#{build},' is ready. Tap to view the update.')
+            WHEN 'zh' THEN CONCAT(#{versionName},' 已发布，点击查看更新。')
+            WHEN 'vi' THEN CONCAT('Phiên bản ',#{versionName},' đã phát hành. Nhấn để xem bản cập nhật.')
+            ELSE CONCAT('Version ',#{versionName},' is ready. Tap to view the update.')
           END, '/pages/me/app-update', 'NATIVE_ONLY'
         """ + IOS_UPDATE_INSTALLATIONS)
-    int createIosUpdateNotices(@Param("build") int build, @Param("sandbox") int sandbox, @Param("testTopic") String testTopic);
+    int createIosUpdateNotices(@Param("build") int build, @Param("versionName") String versionName,
+                               @Param("sandbox") int sandbox, @Param("testTopic") String testTopic);
 
     @Insert("""
         INSERT IGNORE INTO nx_native_push_delivery
@@ -230,6 +231,13 @@ public interface NativePushMapper {
               (SELECT 1 FROM nx_native_push_delivery d WHERE d.notification_id=n.id AND d.user_id=n.user_id)))
         """)
     Notification ownedNotification(@Param("id") long id, @Param("user") long user);
+
+    @Select("""
+        SELECT EXISTS(SELECT 1 FROM nx_notification n
+          JOIN nx_business_notification_fact f ON f.notification_biz_no=n.biz_no AND f.user_id=n.user_id
+          WHERE n.id=#{id} AND n.user_id=#{user} AND f.fact_key LIKE 'SESSION:%')
+        """)
+    boolean isNewSignInNotice(@Param("id") long id, @Param("user") long user);
 
     @Select("""
         SELECT COUNT(*) FROM nx_notification n LEFT JOIN nx_user_preference p ON p.user_id=n.user_id AND p.is_deleted=0

@@ -179,7 +179,7 @@ public class AppUpdateService {
                     Policy candidate = state.candidate;
                     publish(platform, state);
                     int sandbox = UserAuthEnvironment.resolve(environment).orElseThrow() == UserAuthEnvironment.SANDBOX ? 1 : 0;
-                    push.createIosUpdateNotices(candidate.latestBuild, sandbox, NativePushService.TEST_APNS_TOPIC);
+                    push.createIosUpdateNotices(candidate.latestBuild, candidate.versionName, sandbox, NativePushService.TEST_APNS_TOPIC);
                     push.queueIosUpdateNotices(candidate.latestBuild, sandbox, NativePushService.TEST_APNS_TOPIC);
                 }
             }

@@ -98,12 +98,18 @@ public class NativePushDispatcher {
                 return;
             }
             boolean support = enhanced && "SUPPORT_REPLY".equals(notification.type());
+            boolean newSignIn = enhanced && "ACCOUNT_SECURITY".equals(notification.type())
+                    && NativePushService.TEST_APNS_TOPIC.equals(installation.apnsTopic())
+                    && mapper.isNewSignInNotice(notification.id(), delivery.userId());
             DirectPushClient.Result result;
             if (nova || appUpdate || support || installation.apnsTopic() != null) {
+                String summary = DirectPushClient.message(notification.language());
+                if (support) summary = DirectPushClient.supportReply(notification.language());
+                if (newSignIn) summary = notification.body();
                 Map<String,String> alert = nova || appUpdate ? Map.of("title", notification.title(), "body", notification.body())
-                        : Map.of("title", "UVEL", "body", support ? DirectPushClient.supportReply(notification.language())
-                                : DirectPushClient.message(notification.language()));
-                result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert, installation.apnsTopic(), nova || appUpdate || support);
+                        : Map.of("title", "UVEL", "body", summary);
+                result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert,
+                        installation.apnsTopic(), nova || appUpdate || support || newSignIn);
             } else {
                 result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), notification.language());
             }
