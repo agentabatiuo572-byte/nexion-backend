@@ -4094,6 +4094,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     copy.remove("rewardType");
                     copy.remove("rewardAmount");
                     String id = copy.get("id").toString();
+                    // B77: the persisted single reward pair only; the authored name is never parsed.
+                    copy.put("rewardType", singleRewardType(row));
+                    copy.put("rewardAmount", singleRewardAmount(row));
                     copy.put("state", eventStatus(id));
                     copy.put("reward", eventReward(id));
                     copy.put("featured", eventFeatured(id));
@@ -4128,6 +4131,22 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     return copy;
                 })
                 .toList();
+    }
+
+    /** Wheel and multi/device rewards keep null; only one persisted UVT/USDT amount is published. */
+    private static BigDecimal singleReward(Map<String, Object> row) {
+        if ("wheel".equalsIgnoreCase(H4EventRuleService.text(row.get("kind")).trim())) return null;
+        String asset = H4EventRuleService.text(row.get("rewardType")).trim().toUpperCase(java.util.Locale.ROOT);
+        if (!Set.of("UVT", "USDT").contains(asset)) return null;
+        BigDecimal amount = H4EventRuleService.number(row.get("rewardAmount"));
+        return amount.signum() > 0 ? amount : null;
+    }
+    private static String singleRewardType(Map<String, Object> row) {
+        return singleReward(row) == null ? null : H4EventRuleService.text(row.get("rewardType")).trim();
+    }
+    private static String singleRewardAmount(Map<String, Object> row) {
+        BigDecimal amount = singleReward(row);
+        return amount == null ? null : amount.stripTrailingZeros().toPlainString();
     }
 
     private List<Map<String, Object>> questEventRows() {
