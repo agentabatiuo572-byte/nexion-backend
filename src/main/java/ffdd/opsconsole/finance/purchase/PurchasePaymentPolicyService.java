@@ -2,6 +2,7 @@ package ffdd.opsconsole.finance.purchase;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.finance.cregis.CregisDepositPolicy;
 import ffdd.opsconsole.finance.cregis.CregisDepositPolicyService;
 import ffdd.opsconsole.finance.mapper.PurchasePaymentMapper;
 import ffdd.opsconsole.shared.audit.*;
@@ -27,6 +28,7 @@ public class PurchasePaymentPolicyService {
         return maps(current().get("channels")).stream().filter(row->method.equals(row.get("paymentMethod")))
                 .findFirst().orElseThrow(()->new BizException(422,"PURCHASE_PAYMENT_METHOD_INVALID"));
     }
+    CregisDepositPolicy rechargePolicy(){return cregis.current();}
     public BigDecimal topupMinimum(){return new BigDecimal(text(channel("HDPAY_BANK").get("minTopupPrincipal")));}
     @Transactional(rollbackFor=Exception.class)
     @SuppressWarnings("unchecked")

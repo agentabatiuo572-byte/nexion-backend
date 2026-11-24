@@ -15,6 +15,7 @@ import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
 import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
 import ffdd.opsconsole.shared.canonical.OrderDeviceDelivery;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
@@ -241,6 +242,67 @@ public class AppOrderCommandService {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
         if (!Integer.valueOf(0).equals(mapper.activeUserEnvironment(userId))) throw new BizException(403,"COMMERCE_PRODUCTION_USER_REQUIRED");
         return payFromWallet(userId, orderNo, reservation);
+    }
+
+    public Map<String, Object> orderTopupFacts(long userId, String orderNo) {
+        var order = mapper.orderTopupSnapshot(userId, orderNo, pendingOrderTtlMinutes);
+        if (order == null) throw new BizException(404, "ORDER_NOT_FOUND");
+        BigDecimal amount = order.amountUsdt();
+        BigDecimal balance = order.balanceUsdt();
+        if (amount == null || amount.signum() < 0 || balance == null || order.deadlineAt() == null) {
+            throw new BizException(503, "ORDER_TOPUP_READ_FAILED");
+        }
+
+        String canonical = AppCanonicalBoundaryService.storedOrderCanonicalStatus(
+                order.paymentStatus(), order.orderStatus(), order.activationStatus(), order.paidAt(), order.activatedAt());
+        boolean pending = "PENDING".equalsIgnoreCase(order.paymentStatus())
+                && "PENDING_PAYMENT".equalsIgnoreCase(order.orderStatus())
+                && "WAITING_PAYMENT".equalsIgnoreCase(order.activationStatus());
+        var payment = pending ? null : mapper.orderTopupPayment(userId, order.orderNo());
+        boolean paid = payment != null || order.paidAt() != null
+                || "PAID".equalsIgnoreCase(order.paymentStatus())
+                || "refunded".equals(canonical) || "chargeback".equals(canonical);
+        String state = paid ? "PAID" : pending ? "PENDING" : "CLOSED";
+
+        String blocker = "NONE";
+        String reviewReason = null;
+        String intentNo = null;
+        if ("PENDING".equals(state)) {
+            var direct = mapper.activeDirectPaymentForTopup(order.orderNo());
+            if (direct != null && direct.userId() != userId) throw new BizException(503, "ORDER_TOPUP_READ_FAILED");
+            if (direct != null && !"MANUAL_REVIEW".equals(direct.status())) {
+                blocker = "OPEN_INTENT";
+                intentNo = direct.intentNo();
+            } else if (direct != null) {
+                blocker = "NEEDS_REVIEW";
+                reviewReason = "FINANCE_REVIEW";
+            } else if (mapper.countNonCancellableHdPaySessions(order.orderNo()) > 0) {
+                blocker = "NEEDS_REVIEW";
+                reviewReason = "BANK_SESSION";
+            }
+        }
+
+        boolean payable = "PENDING".equals(state) && !order.expired() && "NONE".equals(blocker);
+        BigDecimal shortfall = payable && amount.signum() > 0
+                ? amount.subtract(balance).max(BigDecimal.ZERO) : BigDecimal.ZERO;
+        LocalDateTime paidAt = order.paidAt() != null ? order.paidAt() : payment == null ? null : payment.paidAt();
+        Map<String, Object> facts = new LinkedHashMap<>();
+        facts.put("orderNo", order.orderNo());
+        facts.put("state", state);
+        facts.put("canonicalStatus", canonical);
+        facts.put("payable", payable);
+        facts.put("deadlineAt", "PENDING".equals(state)
+                ? order.deadlineAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toString() : null);
+        facts.put("amountDueUsdt", amount.signum() == 0 ? "0" : amount.toPlainString());
+        facts.put("walletAvailableUsdt", balance.toPlainString());
+        facts.put("shortfallUsdt", shortfall.signum() == 0 ? "0" : shortfall.toPlainString());
+        facts.put("blocker", blocker);
+        facts.put("intentNo", intentNo);
+        facts.put("reviewReason", reviewReason);
+        facts.put("paidAt", paid && paidAt != null
+                ? paidAt.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toString() : null);
+        facts.put("paidAmountUsdt", paid && payment != null ? payment.paidAmountUsdt() : null);
+        return facts;
     }
 
     private ApiResult<Map<String, Object>> payFromWallet(Long userId, String orderNo) {

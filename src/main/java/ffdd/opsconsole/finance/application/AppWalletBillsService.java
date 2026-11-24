@@ -72,7 +72,7 @@ public class AppWalletBillsService {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> list(Long userId) {
         requireProductionUser(userId);
-        List<Map<String, Object>> bills = mapper.rows(userId, 200).stream().map(this::bill).toList();
+        List<Map<String, Object>> bills = billRows(userId, mapper.rows(userId, 200));
         Map<String, Object> result = base();
         result.put("bills", bills);
         result.put("nextCursor", null);
@@ -125,7 +125,7 @@ public class AppWalletBillsService {
                 : mapper.rowsFiltered(userId, pageSize, offset,
                         filter.asset(), filter.direction(), filter.category());
         Map<String, Object> result = base();
-        result.put("bills", rows.stream().map(this::bill).toList());
+        result.put("bills", billRows(userId, rows));
         result.put("page", page);
         result.put("pageSize", pageSize);
         result.put("total", total);
@@ -144,7 +144,7 @@ public class AppWalletBillsService {
         List<AppWalletBillsMapper.LedgerRow> pageRows = hasMore ? fetched.subList(0, pageSize) : fetched;
         long total = filter.empty() ? mapper.count(userId) : mapper.countFiltered(userId, filter.asset(), filter.direction(), filter.category());
         Map<String, Object> result = base();
-        result.put("bills", pageRows.stream().map(this::bill).toList());
+        result.put("bills", billRows(userId, pageRows));
         result.put("page", page);
         result.put("pageSize", pageSize);
         result.put("total", total);
@@ -219,6 +219,30 @@ public class AppWalletBillsService {
         result.put("source", "server");
         result.put("sourceEnvironment", "PRODUCTION");
         return result;
+    }
+
+    private List<Map<String, Object>> billRows(long userId, List<AppWalletBillsMapper.LedgerRow> rows) {
+        var ids = rows.stream().filter(this::chainTopup).map(AppWalletBillsMapper.LedgerRow::id).toList();
+        var deposits = ids.isEmpty() ? Map.<Long, List<AppWalletBillsMapper.DepositDetail>>of()
+                : mapper.depositDetails(userId, ids).stream()
+                    .collect(Collectors.groupingBy(AppWalletBillsMapper.DepositDetail::ledgerId));
+        return rows.stream().map(row -> {
+            var item = bill(row);
+            if (chainTopup(row)) {
+                var matches = deposits.getOrDefault(row.id(), List.of());
+                var deposit = matches.size() == 1 ? matches.get(0) : null;
+                item.put("deposit", deposit == null ? null : Map.of(
+                        "network", "60".equals(deposit.chainId()) ? "ERC20" : "BEP20",
+                        "txHash", deposit.txid(), "grossAmountUsdt", deposit.grossAmount().toPlainString(),
+                        "feeUsdt", deposit.feeAmount().toPlainString(),
+                        "creditedUsdt", deposit.netAmount().toPlainString()));
+            }
+            return item;
+        }).toList();
+    }
+
+    private boolean chainTopup(AppWalletBillsMapper.LedgerRow row) {
+        return "CHAIN_TOPUP".equals(row.bizType()) && "USDT".equals(row.asset()) && "IN".equals(row.direction());
     }
 
     private Map<String, Object> bill(AppWalletBillsMapper.LedgerRow row) {

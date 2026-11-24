@@ -41,6 +41,20 @@ public class PurchasePaymentService {
     @Value("${PURCHASE_QUOTA_HOLD_ENABLED:false}")
     private boolean quotaHoldEnabled;
 
+    @Value("${NEXION_ORDER_USDT_TOPUP_ENABLED:false}")
+    private boolean orderUsdtTopupEnabled;
+
+    public boolean orderUsdtTopupEnabled() {
+        return orderUsdtTopupEnabled;
+    }
+
+    private void requireDirectMethod(String kind, String method) {
+        if (orderUsdtTopupEnabled && "ORDER_PAY".equals(kind)
+                && ("CREGIS_USDT_BSC".equals(method) || "CREGIS_USDT_ERC20".equals(method))) {
+            throw new BizException(409, "ORDER_USDT_USE_TOPUP");
+        }
+    }
+
     private final PurchasePaymentMapper db;
     private final PurchaseQuotaHolds quotaHolds;
     private final PurchasePaymentPolicyService policy;
@@ -134,6 +148,7 @@ public class PurchasePaymentService {
             throw new BizException(422,"EXTERNAL_PAYMENT_CREDENTIAL_FORBIDDEN");
         user(owner,false);
         requireNoActiveIntent(owner, kind, payload, Map.of());
+        requireDirectMethod(kind, method);
         if ("CAPACITY_REPLACE".equals(kind)) throw new BizException(409,"CAPACITY_REPLACEMENT_PURCHASE_RETIRED");
         ready(method);
         return tx(()->{
@@ -427,6 +442,7 @@ public class PurchasePaymentService {
         requireUnusedQuote(quoteId);
         requireNoActiveIntent(owner, text(originalQuote.get("kind")), parse(originalQuote.get("payload_json")),
                 parse(originalQuote.get("quote_json")));
+        requireDirectMethod(text(originalQuote.get("kind")), text(originalQuote.get("payment_method")));
         return new CreatePreflight(originalQuote, null);
     }
 
@@ -540,6 +556,31 @@ public class PurchasePaymentService {
         }catch(BizException refused){throw refused;}
         catch(RuntimeException unavailable){throw new BizException(503,"PURCHASE_PAYMENT_LOOKUP_UNAVAILABLE");}
     }
+    @org.springframework.transaction.annotation.Transactional(readOnly = true,
+            isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public Map<String,Object> orderTopupFacts(long owner, String orderNo, CregisNetwork network) {
+        if (!orderUsdtTopupEnabled) throw new BizException(409, "ORDER_USDT_TOPUP_DISABLED");
+        var facts = orders.orderTopupFacts(owner, orderNo.trim());
+        Object intentNo = facts.remove("intentNo");
+        Map<String,Object> openIntent = null;
+        if (intentNo != null) {
+            var intent = db.one(SELECT+" AND user_id=?", intentNo, owner);
+            if (intent == null) throw new BizException(503, "ORDER_TOPUP_READ_FAILED");
+            openIntent = Map.of("intentNo", intentNo, "paymentMethod", intent.get("payment_method"),
+                    "paymentAllowed", view(intent, false).get("paymentAllowed"));
+        }
+        var recharge = policy.rechargePolicy();
+        BigDecimal shortfall = new BigDecimal((String) facts.get("shortfallUsdt"));
+        BigDecimal suggested = shortfall.signum() == 0 ? BigDecimal.ZERO
+                : shortfall.add(recharge.feeUsdt()).max(recharge.minDepositUsdt());
+        facts.put("openIntent", openIntent);
+        facts.put("network", network.network());
+        facts.put("minDepositUsdt", recharge.minDepositUsdt().toPlainString());
+        facts.put("depositFeeUsdt", recharge.feeUsdt().toPlainString());
+        facts.put("suggestedTransferUsdt", suggested.toPlainString());
+        return facts;
+    }
+
     /** Called only after the existing callback verifier accepted the provider signature. */
     public boolean observeHdCallback(HdPayCallbackVerifier.VerifiedCallback callback){
         var row=db.one(SELECT,callback.merchantOrderId());if(row==null)return false;

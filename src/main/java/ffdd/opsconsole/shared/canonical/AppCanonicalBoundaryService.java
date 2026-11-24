@@ -1079,9 +1079,8 @@ public class AppCanonicalBoundaryService {
         LocalDateTime stateAt = overlay == null ? null : overlay.updatedAt();
         // Historical fulfillment used PAID/PAID/ACTIVE. Normalize only when
         // timestamps prove both payment and activation; preserve the stored row.
-        if (overlay == null && "PAID".equals(paymentStatus) && "PAID".equals(orderStatus)
-                && "ACTIVE".equals(activationStatus) && order.paidAt() != null
-                && order.activatedAt() != null && !order.activatedAt().isBefore(order.paidAt())) {
+        if (overlay == null && legacyActivated(paymentStatus, orderStatus, activationStatus,
+                order.paidAt(), order.activatedAt())) {
             orderStatus = "COMPLETED";
             activationStatus = "ACTIVATED";
         }
@@ -1144,7 +1143,22 @@ public class AppCanonicalBoundaryService {
         return projected;
     }
 
-    private String canonicalOrderStatus(String paymentStatus, String orderStatus, String activationStatus) {
+    public static String storedOrderCanonicalStatus(String paymentStatus, String orderStatus, String activationStatus,
+                                                    LocalDateTime paidAt, LocalDateTime activatedAt) {
+        String payment = normalizeState(paymentStatus, "PENDING");
+        String order = normalizeState(orderStatus, "PENDING_PAYMENT");
+        String activation = normalizeState(activationStatus, "WAITING_PAYMENT");
+        return legacyActivated(payment, order, activation, paidAt, activatedAt)
+                ? "activated" : canonicalOrderStatus(payment, order, activation);
+    }
+
+    private static boolean legacyActivated(String payment, String order, String activation,
+                                           LocalDateTime paidAt, LocalDateTime activatedAt) {
+        return "PAID".equals(payment) && "PAID".equals(order) && "ACTIVE".equals(activation)
+                && paidAt != null && activatedAt != null && !activatedAt.isBefore(paidAt);
+    }
+
+    private static String canonicalOrderStatus(String paymentStatus, String orderStatus, String activationStatus) {
         if (orderStatus.contains("CHARGEBACK") || paymentStatus.contains("CHARGEBACK")) return "chargeback";
         if (orderStatus.contains("REFUND") || paymentStatus.contains("REFUND")
                 || activationStatus.contains("REFUND")) return "refunded";
@@ -1771,7 +1785,7 @@ public class AppCanonicalBoundaryService {
         return ApiResult.fail(409, code);
     }
 
-    private String normalizeState(String value, String fallback) {
+    private static String normalizeState(String value, String fallback) {
         return StringUtils.hasText(value) ? value.trim().toUpperCase(Locale.ROOT) : fallback;
     }
 

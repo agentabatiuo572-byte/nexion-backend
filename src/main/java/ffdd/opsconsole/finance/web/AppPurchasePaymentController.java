@@ -1,19 +1,46 @@
 package ffdd.opsconsole.finance.web;
 
 import ffdd.opsconsole.finance.purchase.*;
+import ffdd.opsconsole.finance.cregis.CregisNetwork;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.*;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
+import org.springframework.transaction.TransactionException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
-@RestController @RequestMapping("/api/app") @RequiredArgsConstructor
+@RestController @RequestMapping("/api/app") @RequiredArgsConstructor @Slf4j
 public class AppPurchasePaymentController {
     private final PurchasePaymentService service;
     private final PurchasePaymentPolicyService policy;
     @GetMapping("/purchase-payment-policy")
-    public ApiResult<Map<String,Object>> policy(Authentication auth){owner(auth);return ApiResult.ok(policy.current());}
+    public ApiResult<Map<String,Object>> policy(Authentication auth) {
+        owner(auth);
+        var result = policy.current();
+        if (service.orderUsdtTopupEnabled()) result.put("orderPayUsdtRoute", "WALLET_TOPUP");
+        return ApiResult.ok(result);
+    }
+
+    @GetMapping("/orders/{orderNo}/usdt-topup")
+    public ApiResult<Map<String,Object>> orderTopup(Authentication auth, @PathVariable String orderNo,
+                                                   @RequestParam(required = false) String network) {
+        long userId = owner(auth);
+        if (!"BEP20".equals(network) && !"ERC20".equals(network)) {
+            throw new BizException(400, "ORDER_TOPUP_NETWORK_INVALID");
+        }
+        try {
+            return ApiResult.ok(service.orderTopupFacts(userId, orderNo, CregisNetwork.valueOf(network)));
+        } catch (BizException unavailable) {
+            if (unavailable.getCode() == 503) throw new BizException(503, "ORDER_TOPUP_READ_FAILED");
+            throw unavailable;
+        } catch (DataAccessException | TransactionException | IllegalStateException unavailable) {
+            log.warn("Could not read the order top-up snapshot", unavailable);
+            throw new BizException(503, "ORDER_TOPUP_READ_FAILED");
+        }
+    }
     @PostMapping("/purchase-payment-quotes")
     public ApiResult<Map<String,Object>> quote(Authentication auth,@RequestBody Map<String,Object> body){return ApiResult.ok(service.quote(owner(auth),body));}
     @PostMapping("/purchase-payment-intents")

@@ -18,8 +18,22 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuotaPurchaseMapper {
-    @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent p JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo} AND p.status NOT IN ('DELIVERED','EXPIRED')")
+    String ACTIVE_DIRECT_ORDER_PAYMENT = """
+              FROM nx_purchase_payment_intent p
+              JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo'))
+             WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo} AND p.status NOT IN ('DELIVERED','EXPIRED')
+            """;
+
+    @Select("SELECT COUNT(*) " + ACTIVE_DIRECT_ORDER_PAYMENT)
     int countActiveDirectPaymentIntent(@Param("orderNo") String orderNo);
+
+    @Select("SELECT p.intent_no intentNo,p.user_id userId,p.status "
+            + ACTIVE_DIRECT_ORDER_PAYMENT
+            + " ORDER BY (p.user_id<>o.user_id) DESC,(p.status='MANUAL_REVIEW'),p.created_at DESC,p.intent_no DESC LIMIT 1")
+    DirectPaymentBlock activeDirectPaymentForTopup(@Param("orderNo") String orderNo);
+
+    record DirectPaymentBlock(String intentNo, long userId, String status) { }
+
     @Select("SELECT COUNT(*) FROM nx_purchase_payment_intent p JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo}")
     int countDirectPaymentIntents(@Param("orderNo") String orderNo);
     @Select("""
@@ -391,19 +405,60 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
             """)
     int hideExpiredOrder(@Param("orderNo") String orderNo, @Param("userId") Long userId);
 
-    @Select("""
-            SELECT COUNT(*)
-              FROM nx_order o
-             WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.is_deleted=0
-               AND UPPER(o.payment_status)='PENDING'
-               AND UPPER(o.order_status)='PENDING_PAYMENT'
-               AND (o.created_at <= DATE_SUB(NOW(6), INTERVAL #{ttlMinutes} MINUTE)
-                    OR EXISTS (SELECT 1 FROM nx_promotion_order_receipt pr
-                                WHERE pr.order_no=o.order_no AND pr.pay_by<=NOW(6)))
-            """)
+    String WALLET_PAYMENT_DEADLINE = """
+            LEAST(DATE_ADD(o.created_at, INTERVAL #{ttlMinutes} MINUTE),
+                  COALESCE(pr.pay_by, DATE_ADD(o.created_at, INTERVAL #{ttlMinutes} MINUTE)))
+            """;
+
+    @Select("SELECT COUNT(*) FROM nx_order o LEFT JOIN nx_promotion_order_receipt pr ON pr.order_no=o.order_no"
+            + " WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.is_deleted=0"
+            + " AND UPPER(o.payment_status)='PENDING' AND UPPER(o.order_status)='PENDING_PAYMENT'"
+            + " AND (" + WALLET_PAYMENT_DEADLINE + ")<=NOW(6)")
     int countExpiredPayableOrder(@Param("orderNo") String orderNo,
                                  @Param("userId") Long userId,
                                  @Param("ttlMinutes") int ttlMinutes);
+
+    @Select("""
+            SELECT o.order_no orderNo,o.amount_usdt amountUsdt,o.payment_status paymentStatus,
+                   o.order_status orderStatus,o.activation_status activationStatus,o.paid_at paidAt,
+                   (SELECT d.activated_at FROM nx_user_device d WHERE d.user_id=o.user_id
+                      AND d.source_order_no=o.order_no AND d.is_deleted=0 AND d.source_channel IN ('ORDER','TRIAL')
+                    ORDER BY d.id LIMIT 1) activatedAt,
+                   w.usdt_available balanceUsdt,
+            """ + WALLET_PAYMENT_DEADLINE + " AS deadlineAt, (" + WALLET_PAYMENT_DEADLINE + ")<=NOW(6) AS expired " + """
+              FROM nx_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.sandbox=0 AND u.status='ACTIVE' AND u.is_deleted=0
+              LEFT JOIN nx_user_wallet w ON w.user_id=u.id AND w.is_deleted=0
+              LEFT JOIN nx_promotion_order_receipt pr ON pr.order_no=o.order_no
+             WHERE o.user_id=#{userId} AND o.order_no=#{orderNo} AND o.is_deleted=0
+            """)
+    OrderTopupSnapshot orderTopupSnapshot(@Param("userId") long userId, @Param("orderNo") String orderNo,
+                                          @Param("ttlMinutes") int ttlMinutes);
+
+    record OrderTopupSnapshot(String orderNo, BigDecimal amountUsdt, String paymentStatus, String orderStatus,
+                              String activationStatus, LocalDateTime paidAt, LocalDateTime activatedAt,
+                              BigDecimal balanceUsdt, LocalDateTime deadlineAt, boolean expired) { }
+
+    @Select("""
+            SELECT COALESCE(i.paid_at,p.paid_at) paidAt,
+                   COALESCE(JSON_UNQUOTE(JSON_EXTRACT(i.quote_json,'$.totalUsdt')),
+                            CASE WHEN p.provider='VOUCHER' THEN '0' ELSE CAST(p.amount_usdt AS CHAR) END) paidAmountUsdt
+              FROM nx_order o
+              LEFT JOIN nx_purchase_payment_intent i ON i.intent_no=o.payment_no AND i.user_id=o.user_id
+                   AND i.kind='ORDER_PAY' AND i.receipt_json IS NOT NULL
+                   AND JSON_UNQUOTE(JSON_EXTRACT(i.receipt_json,'$.orderNo'))=o.order_no
+              LEFT JOIN nx_payment_record p ON p.id=(
+                   SELECT r.id FROM nx_payment_record r WHERE r.user_id=o.user_id AND r.order_no=o.order_no
+                     AND (o.payment_no IS NULL OR r.payment_no=o.payment_no) AND r.is_deleted=0 AND r.currency='USDT'
+                     AND r.payment_status IN ('PAID','REFUNDED','CHARGEBACK')
+                     AND r.provider IN ('UVEL_WALLET','USDT_WALLET','UVEL_USDT_WALLET','VOUCHER')
+                   ORDER BY r.id DESC LIMIT 1)
+             WHERE o.user_id=#{userId} AND o.order_no=#{orderNo} AND o.is_deleted=0
+               AND (i.intent_no IS NOT NULL OR p.id IS NOT NULL)
+            """)
+    OrderTopupPayment orderTopupPayment(@Param("userId") long userId, @Param("orderNo") String orderNo);
+
+    record OrderTopupPayment(LocalDateTime paidAt, String paidAmountUsdt) { }
 
     @Select("""
             SELECT product_id productId,product_no productNo,quantity,sort_order sortOrder
