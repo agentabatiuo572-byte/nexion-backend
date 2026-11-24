@@ -11,7 +11,18 @@ import org.apache.ibatis.annotations.Select;
 
 @Mapper
 public interface CregisDepositPolicyMapper extends BaseMapper<CregisDepositPolicyEntity> {
-    @Select("SELECT EXISTS(SELECT 1 FROM nx_cregis_deposit_policy_snapshot s JOIN nx_purchase_payment_policy p ON p.id=1 WHERE s.project_id=#{projectId} AND s.chain_id=#{network.policyChainId,javaType=java.lang.String} AND s.token_id=#{network.policyTokenId,javaType=java.lang.String} AND s.txid=#{txid} AND s.created_at>=p.created_at)")
+    @Select("""
+            SELECT EXISTS(
+              SELECT 1 FROM nx_cregis_deposit_policy_snapshot s
+              JOIN nx_purchase_payment_policy p ON p.id=1
+              LEFT JOIN nx_cregis_deposit_decimal_cutover c ON c.id=1
+              WHERE s.project_id=#{projectId}
+                AND s.chain_id=#{network.policyChainId,javaType=java.lang.String}
+                AND s.token_id=#{network.policyTokenId,javaType=java.lang.String}
+                AND s.txid=#{txid} AND s.created_at>=p.created_at
+                AND (s.chain_id NOT IN ('BSC','ETH') OR c.effective_at IS NULL OR s.created_at<c.effective_at)
+            )
+            """)
     boolean integerPrincipalRequired(@Param("network") CregisNetwork network,@Param("projectId") long projectId,@Param("txid") String txid);
     @Select("SELECT id FROM nx_cregis_deposit_policy_lock WHERE id=1 FOR UPDATE")
     Integer lockPolicy();

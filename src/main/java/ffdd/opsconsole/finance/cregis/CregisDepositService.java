@@ -1048,8 +1048,7 @@ public class CregisDepositService {
         requireReviewProofFresh(proof);
         var policy = policies.snapshot(network,config.getProjectId(),txid);
         if (policy.version()!=proof.policyVersion() || policy.feeUsdt().compareTo(proof.feeAmount()) != 0 || proof.confirmations() < policy.confirmations()) throw new IllegalStateException("CREGIS_REVIEW_POLICY_CHANGED");
-        if(policies.integerPrincipalRequired(network,config.getProjectId(),txid)
-                &&amount.compareTo(policy.minDepositUsdt())<0)
+        if (amount.compareTo(policy.minDepositUsdt()) < 0)
             throw new BizException(409,"CREGIS_TOPUP_PRINCIPAL_REQUIRES_EXCEPTION");
         BigDecimal net = amount.subtract(policy.feeUsdt());
         if (net.signum()<=0) throw new IllegalStateException("CREGIS_REVIEW_NET_INVALID");

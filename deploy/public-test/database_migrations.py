@@ -1116,7 +1116,7 @@ def apply(sha, *, rollback_check=False):
     support_order = support_prepare(pending)
     cregis_parts = cregis_prepare(pending)
     user, password, root_password, storage_zone = credentials()
-    b84_files = {'20261124_b84_a_exposure_alert.sql'}
+    b84_files = {'20261124_b84_a_exposure_alert.sql', '20261124_b84_b_deposit_decimal_cutover.sql'}
     storage_offset = {'Asia/Shanghai': '+08:00', 'Asia/Ho_Chi_Minh': '+07:00'}.get(
         storage_zone.strip() or 'Asia/Shanghai')
     if any(name in b84_files for name, _ in pending):
