@@ -100,18 +100,21 @@ public class SupportPerformanceSampler {
                             row.startsAt().toInstant(ZoneOffset.UTC),
                             row.endsAt() == null ? null : row.endsAt().toInstant(ZoneOffset.UTC))).toList();
             var reviews = history.channelReviews(LocalDateTime.ofInstant(directory.asOf(), ZoneOffset.UTC));
+            var verifiedFirstCustomers = firstSource.coveredCustomers();
+            var unverifiedFirstBirth = reviews.stream().anyMatch(review -> "FIRST_PAYMENT_HISTORY".equals(review.channel()))
+                    ? earliestUnverifiedBirth(source.subjects(), verifiedFirstCustomers) : null;
             var eventsByMonth = events.stream().collect(java.util.stream.Collectors.groupingBy(event ->
                     ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(event.effectiveAt()).toString()));
             var months = new ArrayList<SupportPerformance.Month>();
             var subtotals = new ArrayList<SupportPerformance.MonthlySubtotal>();
             for (var month : directory.months()) {
                 var monthEvents = eventsByMonth.getOrDefault(month.month(), List.of());
-                months.add(coverage(month, monthEvents, first, reviews, capture));
+                months.add(coverage(month, monthEvents, first, reviews, capture, unverifiedFirstBirth));
                 subtotals.addAll(cache.monthlySubtotals(month, monthEvents));
             }
             var snapshot = new SupportPerformance.Snapshot(directory.definitionVersion(), directory.sourceVersion(),
                     directory.historyStart(), directory.asOf(), SupportPerformance.Generation.READY, months, events,
-                    capture.purchases.issues(), subtotals, bindings, first, firstSource.coveredCustomers(), null);
+                    capture.purchases.issues(), subtotals, bindings, first, verifiedFirstCustomers, null);
             return new SupportPerformanceCache.DaySnapshot(snapshot, SupportPerformanceCache.RankEvidence.capture(leaderboard));
         } catch (RuntimeException failure) {
             cache.markRefreshFailed(capture.directory.asOf());
@@ -120,9 +123,21 @@ public class SupportPerformanceSampler {
         }
     }
 
+    private Instant earliestUnverifiedBirth(Collection<Long> subjects, java.util.Set<Long> verified) {
+        var unresolved = subjects.stream().filter(id -> !verified.contains(id)).toList();
+        LocalDateTime earliest = null;
+        for (int start = 0; start < unresolved.size(); start += 200) {
+            LocalDateTime birth = history.earliestCustomerBirth(
+                    unresolved.subList(start, Math.min(start + 200, unresolved.size())));
+            if (birth == null) return Instant.MIN;
+            if (earliest == null || birth.isBefore(earliest)) earliest = birth;
+        }
+        return earliest == null ? null : earliest.atZone(ffdd.opsconsole.shared.config.StorageTime.ZONE).toInstant();
+    }
+
     private static SupportPerformance.Month coverage(SupportPerformance.Month month, List<SupportPerformance.Event> events,
             List<SupportPerformance.FirstPayment> first,
-            List<SupportPerformanceHistoryMapper.ChannelReview> reviews, Capture capture) {
+            List<SupportPerformanceHistoryMapper.ChannelReview> reviews, Capture capture, Instant unverifiedFirstBirth) {
         var channels = new java.util.LinkedHashMap<String, SupportPerformance.ChannelCoverage>();
         var options = new ArrayList<>(SupportPerformance.INFLOW_CHANNELS);
         options.addAll(SupportPerformance.WITHDRAWAL_CHANNELS);
@@ -142,6 +157,15 @@ public class SupportPerformanceSampler {
             if (verified.stream().anyMatch(event -> event.attribution().state() == SupportPerformance.AttributionState.UNKNOWN)) {
                 reasons.add(SupportPerformance.Reason.ATTRIBUTION_UNKNOWN);
             }
+            if ("CHAIN_TOPUP".equals(channel) || "VN_BANK_TOPUP".equals(channel)) {
+                var published = verified.stream().filter(event -> event.kind() == SupportPerformance.Kind.INFLOW)
+                        .map(SupportPerformance.Event::id).collect(java.util.stream.Collectors.toSet());
+                if (capture.deposits.stream().anyMatch(deposit -> month.contains(deposit.creditedAt())
+                        && channel.equals(SupportPerformanceAggregation.depositChannel(deposit.source(), deposit.sourceBusinessId()))
+                        && !published.contains(deposit.factId()))) {
+                    reasons.add(SupportPerformance.Reason.SOURCE_INCOMPLETE);
+                }
+            }
             if (channel.endsWith("DIRECT_PURCHASE")) {
                 for (var issue : capture.purchases.issues()) {
                     if (issue.paymentMethod() != null && ("HDPAY_BANK".equals(issue.paymentMethod())
@@ -160,8 +184,7 @@ public class SupportPerformanceSampler {
                 reasons.add(SupportPerformance.Reason.WITHDRAWAL_TIME_UNVERIFIED);
             }
             if (withdrawal && events.stream().anyMatch(event -> channel.equals(event.channel())
-                    && event.kind() == SupportPerformance.Kind.WITHDRAWAL_REFERENCE
-                    && "CONFIRMED".equals(event.sourceStatus()))) {
+                    && event.settlementUnknown())) {
                 reasons.add(SupportPerformance.Reason.WITHDRAWAL_SETTLEMENT_UNVERIFIED);
             }
             boolean attested = reviews.stream().anyMatch(review -> month.month().equals(review.month())
@@ -182,7 +205,8 @@ public class SupportPerformanceSampler {
                 ? SupportPerformance.Coverage.PARTIAL : SupportPerformance.Coverage.UNKNOWN;
         var firstInMonth = first.stream().filter(payment -> month.contains(payment.at())).toList();
         String firstDigest = SupportPerformance.digest(firstInMonth.toString());
-        boolean firstComplete = firstInMonth.stream().allMatch(payment -> payment.confirmed()
+        boolean firstComplete = (unverifiedFirstBirth == null || !unverifiedFirstBirth.isBefore(month.to()))
+                && firstInMonth.stream().allMatch(payment -> payment.confirmed()
                         && payment.attribution().state() != SupportPerformance.AttributionState.UNKNOWN)
                 && reviews.stream().anyMatch(review -> "FIRST_PAYMENT_HISTORY".equals(review.channel())
                         && month.month().equals(review.month()) && firstDigest.equals(review.evidenceDigest())

@@ -178,7 +178,8 @@ public class SupportPerformanceReadService {
                             "unknown", privateAmounts(bucket(selected, AttributionState.UNKNOWN), window, complete))
                     : null);
         }
-        var disclosed = selected.stream().filter(e -> visibleCustomers.containsKey(e.customerId())).toList();
+        var disclosed = selected.stream().filter(e -> e.attribution().state() != AttributionState.UNKNOWN
+                && visibleCustomers.containsKey(e.customerId())).toList();
         List<Map<String, Object>> records;
         List<FirstPayment> firstFacts = List.of(), visibleFirst = List.of();
         if (eventsView) {

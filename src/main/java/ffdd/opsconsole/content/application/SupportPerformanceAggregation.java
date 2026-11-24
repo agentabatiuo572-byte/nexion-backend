@@ -164,8 +164,12 @@ public final class SupportPerformanceAggregation {
     }
 
     private static String depositChannel(SupportPaymentFacts.Fact fact) {
-        return switch (fact.source()) {
-            case DEPOSIT_ORDER -> fact.sourceBusinessId().matches("CR-[0-9]+") ? "CHAIN_TOPUP" : null;
+        return depositChannel(fact.source(), fact.sourceBusinessId());
+    }
+
+    static String depositChannel(SupportPaymentFacts.Source source, String businessId) {
+        return switch (source) {
+            case DEPOSIT_ORDER -> businessId.matches("CR-[0-9]+") ? "CHAIN_TOPUP" : null;
             case VIETQR, HDPAY -> "VN_BANK_TOPUP";
             default -> null;
         };
@@ -248,8 +252,7 @@ public final class SupportPerformanceAggregation {
         if (row == null || row.boundaryUncertain()) return UNKNOWN;
         if (row.bindingId() == null) {
             if (row.routeId() == null) return UNKNOWN;
-            return row.routeGroupId() == null ? new EventAttribution(AttributionState.UNASSIGNED, null, null)
-                    : new EventAttribution(AttributionState.UNKNOWN, null, row.routeGroupId());
+            return new EventAttribution(AttributionState.UNASSIGNED, null, null);
         }
         if (row.qualificationId() == null || !"ENABLED".equals(row.qualificationState())) return UNKNOWN;
         if (row.membershipId() == null || (row.routeId() != null && !Objects.equals(row.routeGroupId(), row.groupId()))) {

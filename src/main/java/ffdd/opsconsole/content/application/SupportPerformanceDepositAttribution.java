@@ -77,7 +77,8 @@ final class SupportPerformanceDepositAttribution {
         if ("KNOWN".equals(row.agentStatus()) && "UNASSIGNED".equals(row.groupStatus())) {
             return new EventAttribution(AttributionState.AGENT_WITHOUT_GROUP, row.agentAdminId(), null);
         }
-        if ("UNASSIGNED".equals(row.agentStatus()) && "UNASSIGNED".equals(row.groupStatus())) {
+        if ("UNASSIGNED".equals(row.agentStatus())
+                && ("UNASSIGNED".equals(row.groupStatus()) || "KNOWN".equals(row.groupStatus()))) {
             return new EventAttribution(AttributionState.UNASSIGNED, null, null);
         }
         return new EventAttribution(AttributionState.UNKNOWN,

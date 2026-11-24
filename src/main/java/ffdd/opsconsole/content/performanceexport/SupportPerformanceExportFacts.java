@@ -186,12 +186,12 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
                         .forEach(row -> allowed.put(row.customerId(), row));
             }
         }
-        var disclosed = monthEvents.stream().filter(event -> allowed.containsKey(event.customerId())).toList();
+        var disclosed = monthEvents.stream().filter(event -> identifiable(event, allowed)).toList();
         var agentNames = names.byIds(disclosed.stream().map(event -> event.attribution().agentId())
                 .filter(Objects::nonNull).distinct().toList());
         List<Map<String, String>> rows = new ArrayList<>();
         if (type == Type.CUSTOMER_DETAIL) {
-            var cumulative = portfolio.stream().filter(event -> allowed.containsKey(event.customerId())).collect(Collectors.toMap(
+            var cumulative = portfolio.stream().filter(event -> identifiable(event, allowed)).collect(Collectors.toMap(
                             CustomerAgent::of, Event::deltaUsdt, BigDecimal::add));
             disclosed.stream().collect(Collectors.groupingBy(CustomerAgent::of, LinkedHashMap::new, Collectors.toList()))
                     .forEach((key, events) -> rows.add(customer(window, month, coverage, events, allowed.get(key.customerId()),
@@ -204,7 +204,7 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
             disclosed.forEach(event -> rows.add(transaction(event, allowed.get(event.customerId()).customerNo(),
                     event.attribution().agentId() == null ? null : agentNames.get(event.attribution().agentId()), groups, coverage)));
         }
-        var restricted = monthEvents.stream().filter(event -> !allowed.containsKey(event.customerId())).toList();
+        var restricted = monthEvents.stream().filter(event -> !identifiable(event, allowed)).toList();
         if (!restricted.isEmpty()) {
             // One anonymous subtotal; none of its source identifiers enter the frozen export.
             Map<String, String> summary = new LinkedHashMap<>();
@@ -232,6 +232,11 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
     private Map<Long, String> groupNames() {
         return leaderboard.groups().stream().filter(group -> group.name() != null)
                 .collect(Collectors.toMap(SupportLeaderboardMapper.Group::id, SupportLeaderboardMapper.Group::name));
+    }
+
+    private static boolean identifiable(Event event, Map<Long, RootDisplayRow> allowed) {
+        return event.attribution().state() != SupportPerformance.AttributionState.UNKNOWN
+                && allowed.containsKey(event.customerId());
     }
 
     private static Map<String, String> customer(Window window, SupportPerformance.Month month, Coverage coverage,

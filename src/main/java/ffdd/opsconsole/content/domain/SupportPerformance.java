@@ -65,13 +65,14 @@ public final class SupportPerformance {
             if (kind == Kind.REFERENCE) return "EXCLUDED";
             if (kind != Kind.WITHDRAWAL_REFERENCE) return "EFFECTIVE";
             return switch (sourceStatus) {
-                case "REVIEW_REJECTED", "ADDRESS_INVALID", "TX_FAILED", "TX_ORPHANED", "REFUNDED" -> "EXCLUDED";
+                case "REVIEW_REJECTED", "ADDRESS_INVALID", "TX_FAILED", "REFUNDED" -> "EXCLUDED";
                 default -> "PENDING_REVIEW";
             };
         }
 
         public boolean settlementUnknown() {
-            return kind == Kind.WITHDRAWAL_REFERENCE && "CONFIRMED".equals(sourceStatus);
+            return kind == Kind.WITHDRAWAL_REFERENCE
+                    && ("CONFIRMED".equals(sourceStatus) || "TX_ORPHANED".equals(sourceStatus));
         }
 
         public boolean vndBusiness() {

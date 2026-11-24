@@ -54,6 +54,14 @@ public interface SupportPerformanceHistoryMapper {
         """)
     List<Evidence> atEvents(@Param("points") List<Point> points);
 
+    @Select("""
+        <script>
+        SELECT MIN(created_at) FROM nx_user WHERE sandbox=0 AND id IN
+        <foreach collection="customers" item="id" open="(" separator="," close=")">#{id}</foreach>
+        </script>
+        """)
+    LocalDateTime earliestCustomerBirth(@Param("customers") List<Long> customers);
+
     record Witness(String layer, long rowId, long subjectId, Long relatedId, String state, long version,
                    LocalDateTime startsAt, LocalDateTime endsAt) { }
 
