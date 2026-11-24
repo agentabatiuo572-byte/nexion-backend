@@ -364,7 +364,8 @@ public class AdminCommandInvestigationService {
                 && Set.of("L_BI_REPORT_CREATE", "ADMIN.REPORT_EXPORTED").contains(action);
         if (scope.startsWith("L_BI_REPORT_ACTION_")) return "BI_REPORT".equals(fact.getResourceType())
                 && action.equals("L_BI_REPORT_" + scope.substring("L_BI_REPORT_ACTION_".length()));
-        if (scope.startsWith("E2_POOL_")) return Set.of("E2_TASK_POOL_RANDOM_ADDED", "E2_TASK_POOL_STATUS_CHANGED").contains(action);
+        if (scope.startsWith("E2_POOL_")) return Set.of("E2_TASK_POOL_RANDOM_ADDED", "E2_TASK_POOL_STATUS_CHANGED",
+                "E2_TASK_POOL_TASK_CREATED", "E2_TASK_POOL_TASK_UPDATED").contains(action);
         // AuditLogService stores action canonically uppercase, so the whitelist must match the
         // persisted value (e.g. ADMIN.DEVICE_PAUSED) rather than the lowercase writer alias.
         if (scope.startsWith("E5_DEVICE_")) return (scope.startsWith("E5_DEVICE_BATCH_") ? "USER_DEVICE_BATCH" : "DEVICE").equals(fact.getResourceType())

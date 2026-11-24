@@ -1,6 +1,7 @@
 package ffdd.opsconsole.device.application;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.mapper.TaskPoolMapper;
 import ffdd.opsconsole.device.mapper.TaskPoolMapper.*;
@@ -10,6 +11,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.*;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.i18n.AppDisplayText;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -38,6 +40,14 @@ public class TaskPoolService {
     private final Clock clock;
     public record RandomAdd(Integer count,List<String> taskClasses,String idempotencyKey,String reason) { }
     public record Status(List<String> taskTypeIds,Boolean enabled,String idempotencyKey,String reason) { }
+    public record CreateTask(JsonNode name, JsonNode taskClass, JsonNode durationMinutes, JsonNode baseReward,
+                             JsonNode enabled, JsonNode idempotencyKey, JsonNode reason) { }
+    public record UpdateTask(JsonNode name, JsonNode taskClass, JsonNode durationMinutes, JsonNode baseReward,
+                             JsonNode expectedVersion, JsonNode idempotencyKey, JsonNode reason) { }
+    private record TaskFields(String name, String taskClass, int durationMinutes, String baseReward) { }
+    private static final Map<String, Integer> WEIGHT_UNITS =
+            Map.of("EM", 10, "SP", 11, "IG", 12, "LL", 13, "FT", 14, "VG", 15);
+
     private record Snapshot(List<Pool> pools,List<TypeVersion> types,List<Reference> references) { }
     private Snapshot snapshot(LocalDateTime at) {return new Snapshot(mapper.pools(),mapper.types(at),mapper.references(at));}
 
@@ -79,7 +89,8 @@ public class TaskPoolService {
         var row=new LinkedHashMap<String,Object>();
         row.put("taskTypeId",t.taskTypeId());row.put("name",t.name());row.put("taskClass",t.taskClass());row.put("durationMinutes",t.durationSeconds()/60);
         row.put("enabled",t.enabled());row.put("version",t.version());row.put("effectiveAt",t.effectiveAt());
-        if("PHONE".equals(t.poolCode())) {row.put("baseReward",t.baseReward().toPlainString());row.put("asset",t.asset());}
+        row.put("baseReward", t.baseReward().setScale(6).toPlainString());
+        row.put("asset", t.asset());
         return row;
     }
     @Transactional
@@ -93,10 +104,8 @@ public class TaskPoolService {
             policies.lockE3Configuration();var p=mapper.lock(code);pool(code,p==null?List.of():List.of(p),true);
             var at=LocalDateTime.now(clock);var data=snapshot(at);
             var finalPool=new ArrayList<>(data.types().stream().filter(t->code.equals(t.poolCode())).toList());
-            int enabled=(int)finalPool.stream().filter(TypeVersion::enabled).count();
-            if(finalPool.size()+request.count()>300)throw new TaskPoolException("TASK_POOL_TOTAL_LIMIT",Map.of("limit",300,"total",finalPool.size(),"requested",request.count()));
-            if(enabled+request.count()>200)throw new TaskPoolException("TASK_POOL_ENABLED_LIMIT",Map.of("limit",200,"enabled",enabled,"requested",request.count()));
-            var names=new HashSet<String>();for(var t:finalPool)names.add(t.name());
+            requireCapacity(finalPool, request.count(), request.count());
+            var names=new HashSet<String>();for(var t:finalPool)names.add(t.name().strip());
             var created=new ArrayList<TypeVersion>();var random=ThreadLocalRandom.current();
             // Independent English content combinations exceed the per-pool cap even with a single class filter.
             String[] styles={"watercolor","detailed","minimal","abstract","modern","cinematic","natural","technical","creative","multilingual","compact","structured","expressive","semantic","focused","dynamic","balanced","colorful","documentary","precise","contextual","regional","adaptive","classic","digital","studio","urban","scientific","conversational","illustrated","professional","educational"};
@@ -114,7 +123,8 @@ public class TaskPoolService {
                 int min=switch(cls){case "EM"->30;case "SP"->45;case "IG","LL"->60;default->90;};
                 int max=switch(cls){case "EM"->60;case "SP"->90;default->120;};
                 int minutes=min+5*random.nextInt((max-min)/5+1);
-                var t=new TypeVersion("DT-"+UUID.randomUUID().toString().replace("-",""),1,at,taskName,cls,minutes*60,BigDecimal.valueOf(random.nextLong(100000,1100000),6),"USDT",true,code);
+                BigDecimal weight = BigDecimal.valueOf(minutes * WEIGHT_UNITS.get(cls), 4).setScale(6);
+                var t=new TypeVersion(newTaskId(),1,at,taskName,cls,minutes*60,weight,"USDT",true,code);
                 created.add(t);finalPool.add(t);
             }
             policies.validateDeviceBatch(finalPool); // Once, on the final batch; no publishType loop or B1/A2.
@@ -125,6 +135,126 @@ public class TaskPoolService {
             return ApiResult.ok(Map.of("created",created.stream().map(this::taskView).toList(),"pool",poolView(p,new Snapshot(data.pools(),all,data.references()))));
         });
     }
+    @Transactional
+    public ApiResult<Map<String, Object>> createTask(String code, CreateTask request) {
+        String reason = text(request.reason());
+        reason(reason);
+        var fields = taskFields(request.name(), request.taskClass(), request.durationMinutes(), request.baseReward());
+        if (request.enabled() == null || !request.enabled().isBoolean()) {
+            throw new BizException(422, "TASK_POOL_STATUS_REQUIRED");
+        }
+        return writeTask(code, null, fields, request.enabled().booleanValue(), null,
+                text(request.idempotencyKey()), reason.trim());
+    }
+
+    @Transactional
+    public ApiResult<Map<String, Object>> updateTask(String code, String taskTypeId, UpdateTask request) {
+        String reason = text(request.reason());
+        reason(reason);
+        var fields = taskFields(request.name(), request.taskClass(), request.durationMinutes(), request.baseReward());
+        var revision = request.expectedVersion();
+        if (revision == null || !revision.isIntegralNumber() || !revision.canConvertToLong() || revision.longValue() < 1) {
+            throw new BizException(422, "TASK_TYPE_VERSION_REQUIRED");
+        }
+        return writeTask(code, taskTypeId, fields, false, revision.longValue(),
+                text(request.idempotencyKey()), reason.trim());
+    }
+
+    private TaskFields taskFields(JsonNode rawName, JsonNode rawClass, JsonNode duration, JsonNode rawReward) {
+        String name = text(rawName);
+        if (name != null) name = name.strip();
+        if (name == null || name.isEmpty() || name.codePointCount(0, name.length()) > 128) {
+            throw new BizException(422, "TASK_NAME_INVALID");
+        }
+        AppDisplayText.requireNoHan("name", name);
+        String taskClass = text(rawClass);
+        if (taskClass == null || !WEIGHT_UNITS.containsKey(taskClass)) throw new BizException(422, "TASK_CLASS_INVALID");
+        int minutes = duration == null ? 0 : duration.intValue();
+        if (duration == null || !duration.isIntegralNumber() || !duration.canConvertToInt()
+                || minutes < 5 || minutes > 120 || minutes % 5 != 0) {
+            throw new BizException(422, "TASK_DURATION_INVALID");
+        }
+        String text = text(rawReward);
+        if (text == null || !text.matches("[0-9]{1,12}(?:\\.[0-9]{1,6})?")) {
+            throw new BizException(422, "TASK_WEIGHT_INVALID");
+        }
+        BigDecimal weight = new BigDecimal(text);
+        if (weight.signum() == 0) throw new BizException(422, "TASK_WEIGHT_INVALID");
+        return new TaskFields(name, taskClass, minutes, text);
+    }
+
+    private String text(JsonNode value) {
+        return value == null ? null : value.textValue();
+    }
+
+    private ApiResult<Map<String, Object>> writeTask(String code, String taskTypeId, TaskFields fields,
+            boolean enabledOnCreate, Long expectedVersion, String key, String reason) {
+        boolean creating = taskTypeId == null;
+        var body = new LinkedHashMap<String, Object>(Map.of("pool", code, "fields", fields, "reason", reason));
+        if (creating) {
+            body.put("enabled", enabledOnCreate);
+        } else {
+            body.put("taskTypeId", taskTypeId);
+            body.put("expectedVersion", expectedVersion);
+        }
+        return batch(creating ? "E2_POOL_CREATE" : "E2_POOL_UPDATE", key, body, () -> {
+            policies.lockE3Configuration();
+            var locked = mapper.lock(code);
+            var p = pool(code, locked == null ? List.of() : List.of(locked), true);
+            var at = LocalDateTime.now(clock);
+            var data = snapshot(at);
+            var finalPool = new ArrayList<>(data.types().stream().filter(t -> code.equals(t.poolCode())).toList());
+            TypeVersion previous = null;
+            if (creating) {
+                requireCapacity(finalPool, 1, enabledOnCreate ? 1 : 0);
+            } else {
+                previous = finalPool.stream().filter(t -> taskTypeId.equals(t.taskTypeId())).findFirst()
+                        .orElseThrow(() -> new BizException(422, "TASK_TYPE_NOT_IN_POOL"));
+                if (previous.version() != expectedVersion) throw new BizException(409, "TASK_TYPE_VERSION_CONFLICT");
+                finalPool.remove(previous);
+            }
+            if (finalPool.stream().anyMatch(t -> t.name().strip().equals(fields.name()))) {
+                throw new BizException(422, "TASK_NAME_DUPLICATE");
+            }
+            var task = new TypeVersion(creating ? newTaskId() : taskTypeId, creating ? 1 : previous.version() + 1,
+                    at, fields.name(), fields.taskClass(), fields.durationMinutes() * 60,
+                    new BigDecimal(fields.baseReward()).setScale(6), "USDT",
+                    creating ? enabledOnCreate : previous.enabled(), code);
+            finalPool.add(task);
+            policies.validateDeviceBatch(finalPool);
+            versions.insertType(task);
+
+            var view = taskView(task);
+            if (creating) {
+                event("E2_TASK_POOL_TASK_CREATED", code, reason, Map.of("taskTypeId", task.taskTypeId(),
+                        "version", task.version(), "task", view));
+                if (task.enabled()) wakes.afterCommitPools(List.of(code));
+            } else {
+                event("E2_TASK_POOL_TASK_UPDATED", code, reason, Map.of("taskTypeId", task.taskTypeId(),
+                        "version", task.version(), "before", taskView(previous), "after", view));
+            }
+            var all = new ArrayList<>(data.types().stream().filter(t -> !code.equals(t.poolCode())).toList());
+            all.addAll(finalPool);
+            return ApiResult.ok(Map.of("task", view, "pool", poolView(p, new Snapshot(data.pools(), all, data.references()))));
+        });
+    }
+
+    private void requireCapacity(List<TypeVersion> pool, int requested, int requestedEnabled) {
+        if (pool.size() + requested > 300) {
+            throw new TaskPoolException("TASK_POOL_TOTAL_LIMIT",
+                    Map.of("limit", 300, "total", pool.size(), "requested", requested));
+        }
+        long enabled = pool.stream().filter(TypeVersion::enabled).count();
+        if (requestedEnabled > 0 && enabled + requestedEnabled > 200) {
+            throw new TaskPoolException("TASK_POOL_ENABLED_LIMIT",
+                    Map.of("limit", 200, "enabled", enabled, "requested", requestedEnabled));
+        }
+    }
+
+    private String newTaskId() {
+        return "DT-" + UUID.randomUUID().toString().replace("-", "");
+    }
+
     @Transactional
     public ApiResult<Map<String,Object>> status(String code,Status request) {
         reason(request==null?null:request.reason());var ids=ids(request.taskTypeIds());

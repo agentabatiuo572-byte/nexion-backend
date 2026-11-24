@@ -549,6 +549,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261120_lc_e3_capacity_defaults.sql")
   (Join-Path $root "scripts\migrations\20261101_compute_v2_task_policy.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_phone_tasks.sql")
+  # B85 seeds empty DEVICE pools before LC2 so a fresh install has only the new catalog.
+  (Join-Path $root "scripts\migrations\20261124_b85_device_task_catalog.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_catalog.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_a4_event_registry.sql")
   (Join-Path $root "scripts\migrations\20261120_lc02_hdpay_withdrawal_schema.sql")
