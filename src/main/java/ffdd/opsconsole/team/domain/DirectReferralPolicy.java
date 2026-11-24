@@ -11,11 +11,21 @@ public record DirectReferralPolicy(long policyVersion, Instant effectiveAt, Rule
     public record Amounts(BigDecimal usdt, BigDecimal nex) {
         public boolean payable() { return usdt.signum() > 0 && nex.signum() > 0; }
     }
-    public record Rule(Boolean enabled, BigDecimal totalRatePct, BigDecimal usdtSharePct, Integer coolingDays) {
+    public record Rule(Boolean enabled, BigDecimal totalRatePct, BigDecimal usdtSharePct, Integer coolingDays,
+                       BigDecimal level2RatePct) {
+        public Rule {
+            if (level2RatePct == null) level2RatePct = BigDecimal.ZERO;
+        }
+
+        public Rule(Boolean enabled, BigDecimal totalRatePct, BigDecimal usdtSharePct, Integer coolingDays) {
+            this(enabled, totalRatePct, usdtSharePct, coolingDays, BigDecimal.ZERO);
+        }
         private static final BigDecimal HUNDRED = new BigDecimal("100");
         public void validate() {
             if (enabled == null || totalRatePct == null || usdtSharePct == null || coolingDays == null
                     || totalRatePct.signum() < 0 || totalRatePct.compareTo(HUNDRED) > 0
+                    || level2RatePct.signum() < 0 || level2RatePct.compareTo(HUNDRED) > 0
+                    || level2RatePct.stripTrailingZeros().scale() > 6
                     || usdtSharePct.signum() < 0 || usdtSharePct.compareTo(HUNDRED) > 0
                     || totalRatePct.stripTrailingZeros().scale() > 6 || usdtSharePct.stripTrailingZeros().scale() > 6
                     || coolingDays < 0 || coolingDays > 365
@@ -39,10 +49,15 @@ public record DirectReferralPolicy(long policyVersion, Instant effectiveAt, Rule
         public boolean amplifies(Rule before) {
             if (!Boolean.TRUE.equals(enabled)) return false;
             if (before == null || !Boolean.TRUE.equals(before.enabled)) return true;
-            return totalRatePct.multiply(usdtSharePct).compareTo(before.totalRatePct.multiply(before.usdtSharePct)) > 0
-                    || totalRatePct.multiply(HUNDRED.subtract(usdtSharePct))
-                        .compareTo(before.totalRatePct.multiply(HUNDRED.subtract(before.usdtSharePct))) > 0
+            return spendsMore(totalRatePct, before.totalRatePct, before)
+                    || spendsMore(level2RatePct, before.level2RatePct, before)
                     || coolingDays < before.coolingDays;
+        }
+
+        private boolean spendsMore(BigDecimal rate, BigDecimal oldRate, Rule before) {
+            return rate.multiply(usdtSharePct).compareTo(oldRate.multiply(before.usdtSharePct)) > 0
+                    || rate.multiply(HUNDRED.subtract(usdtSharePct))
+                        .compareTo(oldRate.multiply(HUNDRED.subtract(before.usdtSharePct))) > 0;
         }
     }
 }

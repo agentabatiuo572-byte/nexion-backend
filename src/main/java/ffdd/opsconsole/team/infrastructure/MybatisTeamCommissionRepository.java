@@ -58,6 +58,8 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
             case "teamGv" -> mapper.updateVRankTeamGv(rank, value) > 0;
             case "legCount" -> mapper.updateVRankLegCount(rank, value) > 0;
             case "legRank" -> mapper.updateVRankLegRank(rank, value == null ? null : String.valueOf(value)) > 0;
+            case "purchaseL1Rate" -> mapper.updatePurchaseL1Rate(rank, value) > 0;
+            case "purchaseL2Rate" -> mapper.updatePurchaseL2Rate(rank, value) > 0;
             default -> false;
         };
     }

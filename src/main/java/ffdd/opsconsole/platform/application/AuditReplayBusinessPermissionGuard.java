@@ -862,6 +862,24 @@ public class AuditReplayBusinessPermissionGuard {
         return permission.getCode() != 0 ? permission : validateApprovalPreconditions(command);
     }
 
+    boolean supersededPurchaseRate(AuditReplayCommand command) {
+        if (command == null || !"F".equalsIgnoreCase(command.domain()) || configFacade == null) return false;
+        boolean changesBaseRate = switch (text(command.op()).toLowerCase(Locale.ROOT)) {
+            case "f_unilevel_rule", "f_ui_config" -> purchaseRankBaseKey(command.params());
+            case "f_config_batch" -> fConfigBatchCommands(command.params()).stream()
+                    .anyMatch(item -> purchaseRankBaseKey(item.params()));
+            default -> false;
+        };
+        if (!changesBaseRate) return false;
+        var policies = directPolicies == null ? null : directPolicies.getIfAvailable();
+        if (policies != null) policies.lockSevenLayerRevision();
+        return ffdd.opsconsole.team.application.PurchaseRankPolicy.cutover(configFacade, true) != null;
+    }
+
+    private boolean purchaseRankBaseKey(Map<String, Object> params) {
+        return Set.of("F.unilevel.L1", "F.unilevel.L2").contains(value(params, "key"));
+    }
+
     /** Execution preconditions stay on the actual approval path, after its shared qualification. */
     ApiResult<Void> validateApprovalPreconditions(AuditReplayCommand command) {
         if (HardwareQuotaApproval.supports(command)) return ApiResult.ok();
@@ -1473,6 +1491,9 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.ok(new DelegatedProposalDescriptor("调整第 " + month + " 月合规大额线", id,
                     before.toPlainString(), proposed.toPlainString(), "H1", "param", true, target));
         }
+        if (supersededPurchaseRate(command)) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, "F2_PURCHASE_RATE_SET_BY_BENEFICIARY_RANK_IN_F1");
+        }
         DelegatedProposalDescriptor descriptor = delegatedDescriptor(command);
         if (descriptor == null) {
             return delegated || command != null && "h8_referral_settlement_user".equalsIgnoreCase(text(command.op()))
@@ -1727,7 +1748,8 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if ("f_unilevel_bootstrap".equals(operation)) {
             var request = ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest.UnilevelBootstrap.from(params);
-            var unilevelRows = OpsTeamService.unilevelBootstrapLayerRates(request);
+            var unilevelRows = OpsTeamService.unilevelBootstrapLayerRates(request,
+                    !ffdd.opsconsole.team.application.PurchaseRankPolicy.active(configFacade));
             String unilevelAfter = unilevelRows.stream().map(row -> row.get("level")
                     + ": usdtPct=" + ((java.math.BigDecimal) row.get("usdtPct")).stripTrailingZeros().toPlainString()
                     + ", nexPerUsd=" + ((java.math.BigDecimal) row.get("nexReward")).stripTrailingZeros().toPlainString())
@@ -1766,13 +1788,15 @@ public class AuditReplayBusinessPermissionGuard {
                 throw new ffdd.opsconsole.shared.exception.BizException(409,"DIRECT_REFERRAL_VERSION_CONFLICT");
             boolean amplifies = (Integer.valueOf(2).equals(request.schemaVersion())?service.purchaseAmplifies(request.effectivePurchase(),Integer.valueOf(2).equals(current.get("policySchemaVersion"))?(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"):ffdd.opsconsole.team.domain.DirectReferralPolicy.DISABLED):request.purchase().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase")))
                     || request.deviceEarning().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning"));
+            if (amplifies) service.requirePayoutCoverage();
             boolean v2=Integer.valueOf(2).equals(request.schemaVersion());
+            String purchaseBasis = service.purchaseBaseRateSummary();
             var beforePurchase=Integer.valueOf(2).equals(current.get("policySchemaVersion"))?(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"):ffdd.opsconsole.team.domain.DirectReferralPolicy.DISABLED;
-            String beforeSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；L1原预算 "+service.sevenLayerReference().get("baseRatePct")+"%；统一冷却 "+service.sevenLayerReference().get("coolingDays")+" 天；"+(beforePurchase.enabled()?"购买拆分 USDT "+beforePurchase.usdtSharePct()+"%":"购买未拆分，全额USDT加旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning")):
+            String beforeSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；"+purchaseBasis+"；统一冷却 "+service.sevenLayerReference().get("coolingDays")+" 天；"+(beforePurchase.enabled()?"购买拆分 USDT "+beforePurchase.usdtSharePct()+"%":"购买未拆分，全额USDT加旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning")):
                     directPolicySummary(((Number) current.get("policyVersion")).longValue(),
                             (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("purchase"),
                             (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("deviceEarning"));
-            String afterSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；L1原预算及冷却不变；"+(request.purchaseSplit().enabled()?"购买拆分 USDT "+request.purchaseSplit().usdtSharePct()+"%，拆分UVT替代旧额外UVT":"购买拆分关闭，恢复全额USDT和旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary(request.deviceEarning()):directPolicySummary(request.expectedVersion()+1,request.effectivePurchase(),request.deviceEarning());
+            String afterSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；"+purchaseBasis+"；统一冷却不变；"+(request.purchaseSplit().enabled()?"购买拆分 USDT "+request.purchaseSplit().usdtSharePct()+"%，拆分UVT替代旧额外UVT":"购买拆分关闭，恢复全额USDT和旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary(request.deviceEarning()):directPolicySummary(request.expectedVersion()+1,request.effectivePurchase(),request.deviceEarning());
             return new DelegatedProposalDescriptor("好友奖励双币政策", "current",beforeSummary,afterSummary,
                     "F2", amplifies?"fund":"param", amplifies,
                     new AuditLockTarget("F","direct_referral_policy","current"));
@@ -2449,7 +2473,8 @@ public class AuditReplayBusinessPermissionGuard {
 
     private static String directRuleSummary(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule rule) {
         return (rule.enabled() ? "启用" : "停用")
-                + "，总比例 " + rule.totalRatePct().stripTrailingZeros().toPlainString() + "%"
+                + "，一级 " + rule.totalRatePct().stripTrailingZeros().toPlainString() + "%"
+                + "，二级 " + rule.level2RatePct().stripTrailingZeros().toPlainString() + "%"
                 + "，USDT " + rule.usdtSharePct().stripTrailingZeros().toPlainString() + "%"
                 + " / UVT " + new java.math.BigDecimal("100").subtract(rule.usdtSharePct()).stripTrailingZeros().toPlainString() + "%"
                 + "，等待 " + rule.coolingDays() + " 天";

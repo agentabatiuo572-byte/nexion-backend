@@ -50,6 +50,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    c.team_compute_points AS teamComputePoints,
                    c.required_downline_count AS legCount,
                    c.required_downline_rank AS legRank,
+                   c.purchase_l1_rate AS purchaseL1Rate,
+                   c.purchase_l2_rate AS purchaseL2Rate,
                    c.unilevel_depth AS unilevelDepth,
                    c.peer_bonus_rate AS peerBonusRate,
                    c.leadership_votes AS votes,
@@ -80,7 +82,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND c.status = 1
              GROUP BY c.id, c.rank_code, c.title_cn, c.self_compute_points, c.direct_refs,
                       c.team_compute_points, c.required_downline_count, c.required_downline_rank,
-                      c.unilevel_depth, c.peer_bonus_rate, c.leadership_votes,
+                      c.unilevel_depth, c.peer_bonus_rate, c.leadership_votes, c.purchase_l1_rate, c.purchase_l2_rate,
                       c.status, c.physical_reward, c.sort_order
              ORDER BY c.sort_order ASC, c.id ASC
             """)
@@ -92,13 +94,26 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    direct_refs AS directRefs,
                    team_compute_points AS teamGv,
                    required_downline_count AS legCount,
-                   required_downline_rank AS legRank
+                   required_downline_rank AS legRank,
+                   purchase_l1_rate AS purchaseL1Rate, purchase_l2_rate AS purchaseL2Rate
               FROM nx_v_rank_config
              WHERE rank_code = #{rank} AND is_deleted = 0 AND status = 1
              FOR UPDATE
             """)
     @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
     Map<String, Object> lockVRankPolicy(@Param("rank") String rank);
+
+    @Update("UPDATE nx_v_rank_config SET purchase_l1_rate=#{value} WHERE rank_code=#{rank} AND is_deleted=0")
+    int updatePurchaseL1Rate(@Param("rank") String rank, @Param("value") Object value);
+
+    @Update("UPDATE nx_v_rank_config SET purchase_l2_rate=#{value} WHERE rank_code=#{rank} AND is_deleted=0")
+    int updatePurchaseL2Rate(@Param("rank") String rank, @Param("value") Object value);
+
+    @Select("""
+            SELECT rank_code AS rankCode, purchase_l1_rate AS purchaseL1Rate, purchase_l2_rate AS purchaseL2Rate
+              FROM nx_v_rank_config WHERE is_deleted=0 AND status=1 ORDER BY rank_code
+            """)
+    List<Map<String, Object>> purchaseRankRates();
 
     @Update("""
             UPDATE nx_v_rank_config

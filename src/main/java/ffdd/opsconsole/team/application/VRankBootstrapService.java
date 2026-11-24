@@ -32,6 +32,12 @@ public class VRankBootstrapService {
         for (int index = 0; index < 9; index++) {
             mapper.insertRank(request.ranks().get(index), index);
         }
+        if (mapper.enablePurchaseRankCoverageCheck() == 1) {
+            audit.recordRequired(AuditLogWriteRequest.builder().action("F_PURCHASE_RANK_SEEDED")
+                    .resourceType("TEAM_POLICY").resourceId("team.purchase-rank.cutover-at")
+                    .actorUsername(context.operator()).riskLevel("HIGH")
+                    .detail(Map.of("rankCount", 9, "operationId", A2ReplayContext.operationId())).build());
+        }
         audit.recordRequired(AuditLogWriteRequest.builder().action("F_TEAM_VRANK_BOOTSTRAPPED")
                 .resourceType("TEAM_POLICY").resourceId("vrank_bootstrap/current")
                 .actorUsername(context.operator()).riskLevel("HIGH")

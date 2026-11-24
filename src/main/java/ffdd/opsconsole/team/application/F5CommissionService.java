@@ -747,11 +747,12 @@ public class F5CommissionService {
     }
 
     private AnomalySnapshot layerRatioAnomalies(List<Map<String, Object>> rows) {
-        Map<Integer, BigDecimal> theory = new LinkedHashMap<>();
-        for (Map<String, Object> row : mapper.theoreticalLayerRates()) {
+        boolean rankBased = PurchaseRankPolicy.active(configFacade);
+        Map<Integer, BigDecimal> configuredTheory = new LinkedHashMap<>();
+        for (Map<String, Object> row : rankBased ? List.<Map<String, Object>>of() : mapper.theoreticalLayerRates()) {
             Long layer = longValue(row.get("layer"));
             if (layer != null && row.get("theoreticalPct") != null) {
-                theory.put(layer.intValue(), decimal(row.get("theoreticalPct")));
+                configuredTheory.put(layer.intValue(), decimal(row.get("theoreticalPct")));
             }
         }
         Map<String, List<Map<String, Object>>> byCurrency = new LinkedHashMap<>();
@@ -760,30 +761,46 @@ public class F5CommissionService {
                 byCurrency.computeIfAbsent(text(row.get("currency")), ignored -> new ArrayList<>()).add(row);
             }
         }
-        BigDecimal theoryTotal = theory.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        Map<Long, BigDecimal> snapshotTheory = new LinkedHashMap<>();
+        if (rankBased && !byCurrency.isEmpty()) {
+            var ids = byCurrency.values().stream().flatMap(List::stream)
+                    .map(row -> longValue(row.get("eventId"))).filter(java.util.Objects::nonNull).toList();
+            if (!ids.isEmpty()) {
+                for (var row : mapper.snapshotLayerAmounts(ids)) {
+                    if (row.get("expectedAmount") != null) {
+                        snapshotTheory.put(longValue(row.get("eventId")), decimal(row.get("expectedAmount")));
+                    }
+                }
+            }
+        }
         BigDecimal threshold = layerRatioThreshold();
         List<Map<String, Object>> anomalies = new ArrayList<>();
         List<Map<String, Object>> comparisons = new ArrayList<>();
         for (Map.Entry<String, List<Map<String, Object>>> currency : byCurrency.entrySet()) {
-            if (!"USDT".equals(currency.getKey())) {
+            if (!rankBased && !"USDT".equals(currency.getKey())) {
                 comparisons.add(linked("currency", currency.getKey(), "available", false,
                         "reason", "F5_LAYER_RATIO_THEORY_UNAVAILABLE", "layers", null,
                         "theoreticalPct", null, "deviation", null));
                 continue;
             }
             Map<Integer, BigDecimal> actual = new LinkedHashMap<>();
+            Map<Integer, BigDecimal> theory = rankBased ? new LinkedHashMap<>() : configuredTheory;
             boolean missingLayer = false;
             for (Map<String, Object> row : currency.getValue()) {
                 Long layer = longValue(row.get("layer"));
-                if (layer == null || !theory.containsKey(layer.intValue())) {
+                BigDecimal expected = rankBased ? snapshotTheory.get(longValue(row.get("eventId")))
+                        : layer == null ? null : theory.get(layer.intValue());
+                if (layer == null || expected == null || (rankBased && expected.signum() <= 0)) {
                     missingLayer = true;
                 } else {
                     actual.merge(layer.intValue(), decimal(row.get("amount")), BigDecimal::add);
+                    if (rankBased) theory.merge(layer.intValue(), expected, BigDecimal::add);
                 }
             }
             BigDecimal networkTotal = actual.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-            String unavailable = theory.isEmpty() || theoryTotal.signum() <= 0
-                    ? "F5_LAYER_RATIO_THEORY_UNAVAILABLE"
+            BigDecimal theoryTotal = theory.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+            String unavailable = rankBased && missingLayer ? "F5_LAYER_RATIO_SNAPSHOT_UNAVAILABLE"
+                    : theoryTotal.signum() <= 0 ? "F5_LAYER_RATIO_THEORY_UNAVAILABLE"
                     : missingLayer ? "F5_LAYER_RATIO_LAYER_UNAVAILABLE"
                     : networkTotal.signum() <= 0 ? "F5_LAYER_RATIO_SAMPLE_UNAVAILABLE" : null;
             if (unavailable != null) {
@@ -814,7 +831,8 @@ public class F5CommissionService {
                 }
             }
             comparisons.add(linked("currency", currency.getKey(), "available", true, "reason", null,
-                    "basis", "CURRENT_ACTIVE_UNILEVEL_USDT_RATE", "layers", List.copyOf(layers)));
+                    "basis", rankBased ? "ORDER_SETTLEMENT_SNAPSHOT" : "CURRENT_ACTIVE_UNILEVEL_USDT_RATE",
+                    "layers", List.copyOf(layers)));
         }
         return new AnomalySnapshot(List.copyOf(anomalies), List.copyOf(comparisons));
     }

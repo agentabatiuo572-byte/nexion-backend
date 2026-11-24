@@ -231,7 +231,9 @@ public class OpsTeamService implements AuditReplayable {
 
     private static final List<String> VRANK_LEVELS = List.of(
             "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8");
-    private static final Set<String> VRANK_THRESHOLD_FIELDS = Set.of("selfBuy", "directRefs", "teamGv", "legCount", "legRank");
+    private static final List<String> PURCHASE_RANK_FIELDS = List.of("purchaseL1Rate", "purchaseL2Rate");
+    private static final Set<String> VRANK_THRESHOLD_FIELDS = Set.of(
+            "selfBuy", "directRefs", "teamGv", "legCount", "legRank", "purchaseL1Rate", "purchaseL2Rate");
     private static final Set<String> VRANK_ORDERED_FIELDS = Set.of("selfBuy", "teamGv", "legCount", "legRank");
     private static final long MAX_SAFE_COMPUTE_POINTS = 9_007_199_254_740_991L;
     private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "uvt", "voucher", "sku", "custom");
@@ -997,7 +999,13 @@ public class OpsTeamService implements AuditReplayable {
         var orderedThresholds = lockOrderedVRankThresholds("threshold".equals(action) ? field : null);
         Map<String, Object> before = currentVRankPolicy(rank);
         if (!request.expectedRevision().equals(before.get("policyRevision"))) {
-            throw new BizException(409, "VRANK_POLICY_VERSION_CONFLICT");
+            // Existing tickets already hold the rank lock and cannot change either new rate.
+            var legacy = new LinkedHashMap<>(before);
+            PURCHASE_RANK_FIELDS.forEach(legacy::remove);
+            if (!A2ReplayContext.isReplaying() || field != null && PURCHASE_RANK_FIELDS.contains(field)
+                    || !request.expectedRevision().equals(vRankPolicyRevision(legacy))) {
+                throw new BizException(409, "VRANK_POLICY_VERSION_CONFLICT");
+            }
         }
         Map<String, Object> after = new LinkedHashMap<>(before);
         Map<String, Object> reward = Map.of();
@@ -1060,6 +1068,7 @@ public class OpsTeamService implements AuditReplayable {
 
     private void validateVRankThresholdOrder(List<Map<String, Object>> rows, String rank, String field,
                                              Map<String, Object> after) {
+        if (rows.isEmpty()) return;
         requireVRankThresholdOrder(rows, rank, field, vRankOrderValue(after, field));
     }
 
@@ -1111,6 +1120,9 @@ public class OpsTeamService implements AuditReplayable {
         }
         fields.put("legRank", textValue(row, "legRank", "NONE").toUpperCase(Locale.ROOT));
         fields.put("rewards", rewards.stream().map(this::vRankPolicyRewardFields).toList());
+        for (String field : PURCHASE_RANK_FIELDS) {
+            fields.put(field, decimalValue(row.get(field), BigDecimal.ZERO).stripTrailingZeros());
+        }
         fields.put("policyRevision", vRankPolicyRevision(fields));
         return fields;
     }
@@ -1169,16 +1181,22 @@ public class OpsTeamService implements AuditReplayable {
     private Map<String, Object> vRankPolicyReviewFields(Map<String, Object> policy) {
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("等级", policy.get("rank"));
-        for (String field : List.of("selfBuy", "teamGv", "directRefs", "legCount", "legRank")) {
+        for (String field : List.of("selfBuy", "teamGv", "directRefs", "legCount", "legRank",
+                "purchaseL1Rate", "purchaseL2Rate")) {
             if (!policy.containsKey(field)) continue;
             String label = switch (field) {
                 case "selfBuy" -> "自购算力点";
                 case "teamGv" -> "团队算力点";
                 case "directRefs" -> "直接邀请人数";
                 case "legCount" -> "达标分支数";
+                case "purchaseL1Rate" -> "好友购买一级比例";
+                case "purchaseL2Rate" -> "好友购买二级比例";
                 default -> "分支最低等级";
             };
             Object value = policy.get(field);
+            if (PURCHASE_RANK_FIELDS.contains(field)) {
+                value = ((BigDecimal) value).movePointRight(2).stripTrailingZeros().toPlainString() + "%";
+            }
             fields.put(label, "NONE".equals(value) ? "未设置"
                     : value instanceof BigDecimal decimal ? decimal.toPlainString() : value);
         }
@@ -1211,6 +1229,9 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private boolean loosensVRankCondition(Map<String, Object> before, Map<String, Object> after, String field) {
+        if (PURCHASE_RANK_FIELDS.contains(field)) {
+            return ((BigDecimal) after.get(field)).compareTo((BigDecimal) before.get(field)) > 0;
+        }
         if (!"legCount".equals(field) && !"legRank".equals(field)) {
             return decimalValue(after.get(field), BigDecimal.ZERO).compareTo(decimalValue(before.get(field), BigDecimal.ZERO)) < 0;
         }
@@ -1724,10 +1745,12 @@ public class OpsTeamService implements AuditReplayable {
             String idempotencyKey,
             TeamCommissionConfigUpdateRequest request,
             String key) {
+        if (!isUnilevelRuleKey(key)) return ApiResult.fail(422, "F2_UNILEVEL_KEY_INVALID");
         String value = normalizeUiValue(request.value());
         var sevenPolicy=directPolicies==null?null:directPolicies.getIfAvailable();
         if(sevenPolicy!=null)sevenPolicy.lockSevenLayerRevision();
         int layerNo = unilevelLayerNo(key);
+        requireUnilevelBaseRateEditable(configFacade, key, true);
         if (layerNo == 1 && !key.startsWith("F.unilevel.nex.")) {
             return ApiResult.fail(422, "F2_L1_DIRECT_RATE_FIXED_AT_10_PERCENT");
         }
@@ -1760,9 +1783,21 @@ public class OpsTeamService implements AuditReplayable {
         return ApiResult.ok(response);
     }
 
+    public static void requireUnilevelBaseRateEditable(PlatformConfigFacade config, String key, boolean currentRead) {
+        if (Set.of("F.unilevel.L1", "F.unilevel.L2").contains(key)
+                && config != null && PurchaseRankPolicy.cutover(config, currentRead) != null) {
+            throw new BizException(422, "F2_PURCHASE_RATE_SET_BY_BENEFICIARY_RANK_IN_F1");
+        }
+    }
+
     /** Shared input boundary for the A2 proposal and its eventual execution. */
     public static List<Map<String, Object>> unilevelBootstrapLayerRates(
             TeamCommissionConfigUpdateRequest.UnilevelBootstrap request) {
+        return unilevelBootstrapLayerRates(request, true);
+    }
+
+    public static List<Map<String, Object>> unilevelBootstrapLayerRates(
+            TeamCommissionConfigUpdateRequest.UnilevelBootstrap request, boolean fixedL1) {
         List<Map<String, Object>> rows = new ArrayList<>(7);
         for (var layer : request.layers()) {
             BigDecimal usdtPct;
@@ -1783,7 +1818,7 @@ public class OpsTeamService implements AuditReplayable {
         }
         // Reuse the exact L1-L7 completeness, L1=10%, USDT 0-100 and UVT >= 0 checks.
         try {
-            UnilevelCommissionService.requireCompleteLayerRates(rows);
+            UnilevelCommissionService.requireCompleteLayerRates(rows, fixedL1);
         } catch (BizException invalid) {
             throw new BizException(422, invalid.getMessage());
         }
@@ -1813,7 +1848,8 @@ public class OpsTeamService implements AuditReplayable {
         if (!commissionRepository.lockAllUnilevelRules().isEmpty()) {
             throw new BizException(409, "F2_UNILEVEL_RULES_ALREADY_CONFIGURED");
         }
-        List<Map<String, Object>> rows = unilevelBootstrapLayerRates(request);
+        List<Map<String, Object>> rows = unilevelBootstrapLayerRates(request,
+                configFacade == null || PurchaseRankPolicy.cutover(configFacade, true) == null);
         requirePayoutIncreaseCoverage(true);
         for (int index = 0; index < rows.size(); index++) {
             var row = rows.get(index);
@@ -2351,13 +2387,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private static boolean isUnilevelRuleKey(String key) {
-        if (!key.startsWith("F.unilevel.L") && !key.startsWith("F.unilevel.nex.L")) {
-            return false;
-        }
-        String raw = key.startsWith("F.unilevel.nex.L")
-                ? key.substring("F.unilevel.nex.L".length())
-                : key.substring("F.unilevel.L".length());
-        return StringUtils.hasText(raw) && raw.chars().allMatch(Character::isDigit);
+        return key.matches("F[.]unilevel[.](?:nex[.])?L[1-7]");
     }
 
     /**
@@ -2487,6 +2517,9 @@ public class OpsTeamService implements AuditReplayable {
         row.put("pop", intValue(raw.get("pop"), 0));
         List<Map<String, Object>> rewards = commissionRepository.vRankRewards(level);
         row.put("rewards", rewards.stream().map(this::normalizeRewardMap).toList());
+        for (String field : PURCHASE_RANK_FIELDS) {
+            row.put(field, decimalValue(raw.get(field), BigDecimal.ZERO));
+        }
         row.put("policyRevision", vRankPolicyFields(row, rewards).get("policyRevision"));
         row.put("source", "nx_v_rank_config + nx_team_member");
         return row;
@@ -4074,6 +4107,18 @@ public class OpsTeamService implements AuditReplayable {
 
     private String normalizeVRankThreshold(String rank, String field, String raw) {
         String value = normalizeUiValue(raw);
+        if (PURCHASE_RANK_FIELDS.contains(field)) {
+            BigDecimal rate;
+            try {
+                rate = new BigDecimal(value).stripTrailingZeros();
+            } catch (NumberFormatException invalid) {
+                throw new BizException(422, "VRANK_PURCHASE_RATE_INVALID");
+            }
+            if (rate.signum() < 0 || rate.compareTo(BigDecimal.ONE) > 0 || rate.scale() > 4) {
+                throw new BizException(422, "VRANK_PURCHASE_RATE_INVALID");
+            }
+            return rate.toPlainString();
+        }
         if ("legRank".equals(field)) {
             String target = value.toUpperCase(Locale.ROOT);
             if (!"NONE".equals(target) && (!activeVRankLevels().contains(target)
@@ -4097,6 +4142,7 @@ public class OpsTeamService implements AuditReplayable {
             case "selfBuy", "teamGv" -> parseDecimal(value).longValueExact();
             case "directRefs", "legCount" -> parseDecimal(value).intValueExact();
             case "legRank" -> "NONE".equals(value) ? null : value;
+            case "purchaseL1Rate", "purchaseL2Rate" -> new BigDecimal(value);
             default -> throw new IllegalArgumentException("Unsupported F1 V-Rank threshold field");
         };
     }

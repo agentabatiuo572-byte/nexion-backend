@@ -21,6 +21,27 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
            AND o.status IN ('FAILED','DEAD') AND o.is_deleted=0
         """)
     int resumePausedDeliveries();
+
+    @Update("""
+        UPDATE nx_event_consumer_delivery d JOIN nx_event_outbox o ON o.event_id=d.event_id
+           SET d.status='FAILED',d.attempt_count=0,d.dead_at=NULL,d.next_retry_at=NOW(),d.updated_at=NOW(),
+               o.status='FAILED',o.retry_count=0,o.next_retry_at=NOW(),o.updated_at=NOW()
+         WHERE BINARY d.consumer_group='direct-referral-settlement' AND BINARY d.event_type='earnings.credited'
+           AND BINARY d.aggregate_type='COMPUTE_TASK' AND d.status IN ('FAILED','DEAD')
+           AND BINARY d.last_error='DIRECT_REFERRAL_PRICE_UNAVAILABLE' AND d.is_deleted=0
+           AND BINARY o.event_type='earnings.credited' AND BINARY o.aggregate_type='COMPUTE_TASK'
+           AND o.status IN ('FAILED','DEAD') AND o.is_deleted=0
+           AND EXISTS (SELECT 1 FROM nx_direct_referral_settlement s
+                        WHERE s.source_environment=#{env} AND s.run_id=#{run}
+                          AND s.source_type='direct_device_earning' AND s.layer_no=1
+                          AND s.source_ref=JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.receipt_no')) COLLATE utf8mb4_bin
+                          AND CAST(s.source_user_id AS CHAR)=JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.user_id')))
+           AND NOT EXISTS (SELECT 1 FROM nx_direct_referral_settlement s
+                            WHERE s.source_environment=#{env} AND s.run_id=#{run} AND s.source_type='direct_device_earning'
+                              AND s.source_ref=JSON_UNQUOTE(JSON_EXTRACT(o.payload,'$.receipt_no')) COLLATE utf8mb4_bin
+                              AND (s.status='WAITING_CALCULATION' OR s.status IN ('COOLING','FROZEN') AND s.usdt_event_id IS NULL))
+        """)
+    int resumeCalculatedEarningDeliveries(@Param("env") String env, @Param("run") String run);
     @Select("SELECT usdt_rate*100 usdtPct,nex_per_usd nexReward FROM nx_commission_rule WHERE commission_type='UNILEVEL' AND layer_no=1 AND status=1 AND is_deleted=0 ORDER BY id LIMIT 1")
     List<Map<String,Object>> sevenLayerReference();
     String POLICY_AT_SQL = "SELECT policy_version policyVersion,effective_at effectiveAt,purchase_json purchaseJson,device_earning_json deviceEarningJson FROM nx_direct_referral_policy WHERE effective_at<=#{at} ORDER BY effective_at DESC,policy_version DESC LIMIT 1";
@@ -112,6 +133,20 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
     Long lockUser(@Param("id") Long id,@Param("sandbox") int sandbox);
     @Select("SELECT w.usdt_available usdt,w.nex_available nex FROM nx_user_wallet w JOIN nx_user u ON u.id=w.user_id AND u.sandbox=#{sandbox} AND u.is_deleted=0 WHERE w.user_id=#{id} AND w.sandbox=#{sandbox} AND w.is_deleted=0 FOR UPDATE")
     Wallet lockWallet(@Param("id") Long id,@Param("sandbox") int sandbox);
+
+    @Select("SELECT sponsor_user_id FROM nx_user WHERE id=#{id} AND sandbox=#{sandbox} AND is_deleted=0")
+    Long earningUpline(@Param("id") Long id, @Param("sandbox") int sandbox);
+
+    @Select("SELECT id FROM nx_compute_receipt WHERE receipt_no=#{ref} FOR UPDATE")
+    Long lockEarningReceipt(String ref);
+
+    @Select("""
+            SELECT * FROM nx_direct_referral_settlement
+             WHERE source_environment=#{env} AND run_id=#{runId}
+               AND source_type='direct_device_earning' AND source_ref=#{ref}
+             ORDER BY layer_no FOR UPDATE
+            """)
+    List<Map<String,Object>> lockEarningGroups(@Param("env") String env, @Param("runId") String run, @Param("ref") String ref);
     record Wallet(BigDecimal usdt,BigDecimal nex) { }
     @Select("SELECT settlement_no FROM nx_direct_referral_settlement WHERE source_environment=#{env} AND run_id=#{runId} AND source_type=#{kind} AND source_ref=#{ref} AND layer_no=1")
     String existing(@Param("env") String env,@Param("runId") String runId,@Param("kind") String kind,@Param("ref") String ref);
@@ -155,6 +190,14 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
     @Update("UPDATE nx_direct_referral_settlement SET nex_usdt_price=#{price},price_locked_at=#{at},basis_usdt=#{basis},amount_usdt=#{usdt},amount_nex=#{nex},status=#{status},reason=#{reason},updated_at=NOW() WHERE settlement_no=#{no} AND status='WAITING_CALCULATION' AND nex_usdt_price IS NULL")
     int calculated(@Param("no") String no,@Param("price") BigDecimal price,@Param("at") LocalDateTime at,@Param("basis") BigDecimal basis,
        @Param("usdt") BigDecimal usdt,@Param("nex") BigDecimal nex,@Param("status") String status,@Param("reason") String reason);
+    @Update("""
+        UPDATE nx_direct_referral_settlement
+           SET nex_usdt_price=#{price}, price_locked_at=#{at}, basis_usdt=#{basis}
+         WHERE settlement_no=#{no} AND status='REJECTED' AND nex_usdt_price IS NULL
+        """)
+    int priceRejectedEarning(@Param("no") String no, @Param("price") BigDecimal price,
+                             @Param("at") LocalDateTime at, @Param("basis") BigDecimal basis);
+
     @Select("SELECT settlement_no FROM nx_direct_referral_settlement WHERE source_environment=#{env} AND run_id=#{runId} AND settlement_no>#{cursor} AND (status='WAITING_CALCULATION' OR status IN ('COOLING','FROZEN') AND usdt_event_id IS NULL) ORDER BY settlement_no LIMIT 100")
     List<String> waitingCalculation(@Param("env") String env,@Param("runId") String run,@Param("cursor") String cursor);
     @Select("""

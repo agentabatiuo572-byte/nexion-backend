@@ -1284,6 +1284,12 @@ public class OpsAuditCenterService {
         if (promotions != null && !Objects.equals(lockedRefundOrder, refundOrderNo(ticketCommand)))
             return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_REFUND_COMMAND_CHANGED");
         boolean makerMatches = Objects.equals(makerId, actorId);
+        if (STATUS_APPROVED.equals(nextStatus) && replayBusinessPermissionGuard.supersededPurchaseRate(ticketCommand)) {
+            // A pre-cutover ticket must release its lock without changing the legacy rates.
+            nextStatus = STATUS_REJECTED;
+            auditAction = "A2_OPERATION_REJECTED";
+            ticket.setAfterValue("配置已失效：第 1、2 层按受益人等级，请在团队等级晋升设置调整。");
+        }
         AuditReplayCommand cmd = STATUS_APPROVED.equals(nextStatus) ? ticketCommand : null;
         Long avatarMaker = A2ReplayContext.isAvatarCommand(cmd)
                 ? boundMakerId(ticket.getCommandJson(), "avatarMakerAdminId") : null;

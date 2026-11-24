@@ -527,6 +527,28 @@ public interface F5CommissionMapper {
             """)
     List<Map<String, Object>> theoreticalLayerRates();
 
+    @Select("""
+            <script>
+            SELECT e.id AS eventId,
+                   CASE WHEN e.currency='UVT' THEN r.legacy_nex ELSE r.budget_usdt END AS expectedAmount
+              FROM nx_commission_event e
+              JOIN nx_direct_referral_settlement s
+                ON (e.currency='USDT' AND s.usdt_event_id=e.id OR e.currency='UVT' AND s.nex_event_id=e.id)
+               AND s.source_type='network' AND s.source_ref=e.order_no AND s.layer_no=e.layer_no
+               AND s.beneficiary_user_id=e.user_id AND s.source_user_id=e.source_user_id
+              JOIN nx_unilevel_order_settlement o
+                ON o.source_environment=s.source_environment AND o.run_id=s.run_id AND o.order_no=s.source_ref
+               AND o.source_user_id=s.source_user_id AND o.settlement_mode='SEVEN_V2'
+              JOIN JSON_TABLE(o.chain_and_rules, '$.layers[*]' COLUMNS(
+                   layer_no INT PATH '$.layer', beneficiary BIGINT PATH '$.beneficiaryUserId',
+                   budget_usdt DECIMAL(18,6) PATH '$.budgetUsdt', legacy_nex DECIMAL(18,6) PATH '$.legacyNex'
+              )) AS r ON r.layer_no=s.layer_no AND r.beneficiary=s.beneficiary_user_id
+             WHERE NOT (o.split_enabled=1 AND s.layer_no=1)
+               AND e.id IN <foreach collection="eventIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<Map<String, Object>> snapshotLayerAmounts(@Param("eventIds") List<Long> eventIds);
+
     @Update("""
             UPDATE nx_commission_event
                SET status = 'UNLOCKED',

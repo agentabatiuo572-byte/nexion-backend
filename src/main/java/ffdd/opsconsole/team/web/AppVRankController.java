@@ -152,7 +152,8 @@ public class AppVRankController {
     }
 
     private List<Map<String, Object>> rankRows(Map<Integer, String> titleOverrides) {
-        BigDecimal directBonus = directBonus();
+        boolean rankRates = ffdd.opsconsole.team.application.PurchaseRankPolicy.active(configFacade);
+        BigDecimal directBonus = rankRates ? null : directBonus();
         List<Map<String, Object>> rows = new ArrayList<>();
         for (Map<String, Object> source : commissionRepository.vRankRows()) {
             String rankCode = String.valueOf(source.getOrDefault("v", ""));
@@ -172,7 +173,11 @@ public class AppVRankController {
             row.put("teamComputePoints", source.get("teamComputePoints"));
             row.put("requiredDownlineRank", source.get("legRank"));
             row.put("requiredDownlineCount", source.get("legCount"));
-            row.put("directBonus", directBonus);
+            if (rankRates) {
+                row.put("purchaseL1Rate", decimal(source.get("purchaseL1Rate")));
+                row.put("purchaseL2Rate", decimal(source.get("purchaseL2Rate")));
+            }
+            row.put("directBonus", rankRates ? row.get("purchaseL1Rate") : directBonus);
             row.put("unilevelDepth", parseDepth(source.get("unilevelDepth")));
             row.put("peerBonus", decimal(source.get("peerBonusRate")));
             row.put("leadershipVotes", integer(source.get("votes")));
