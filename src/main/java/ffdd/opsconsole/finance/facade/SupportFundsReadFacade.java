@@ -18,12 +18,12 @@ public interface SupportFundsReadFacade extends DomainFacade {
     NetSnapshot readNetContributions(Collection<Long> customerIds, Runnable batchRead, WithdrawalCapture withdrawals);
 
     /** Optional observation of a single interval from the same verified read. */
-    record WithdrawalCapture(Instant from,Instant to,Consumer<ConfirmedChainWithdrawal> accept) {
+    record WithdrawalCapture(Instant from,Instant to,Consumer<ConfirmedWithdrawal> accept,Runnable readFailed) {
         public boolean contains(Instant at) {return !at.isBefore(from) && at.isBefore(to);}
     }
-    record ConfirmedChainWithdrawal(String withdrawalNo,long customerId,String network,Instant completedAt,
+    record ConfirmedWithdrawal(String withdrawalNo,long customerId,String rail,Instant completedAt,
             BigDecimal walletDebitUsdt,BigDecimal feeUsdt,BigDecimal networkFeeUsdt,BigDecimal receivedUsdt,
-            String evidenceKey) { }
+            BigDecimal receivedVnd,String evidenceKey,String settlementEventId) { }
 
     record NetSnapshot(List<NetCustomer> customers,List<ContributionOrigin> origins,List<ContributionChange> changes) {
         public NetSnapshot {customers=List.copyOf(customers);origins=List.copyOf(origins);changes=List.copyOf(changes);}

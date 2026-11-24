@@ -12,6 +12,7 @@ import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.*;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.finance.mapper.SupportFundReadMapper;
+import ffdd.opsconsole.finance.mapper.SupportFundReadMapper.BankSettlementEvent;
 import ffdd.opsconsole.finance.mapper.ComputeV2SettlementMapper;
 import ffdd.opsconsole.finance.compute.v2.ComputeV2FundEvidence;
 import ffdd.opsconsole.market.facade.SupportGenesisReadFacade;
@@ -159,6 +160,9 @@ public class SupportFundReadService {
             var withdrawalRows=mapper.withdrawals(ids);var ledgers=mapper.ledgers(ids);
             Integer withdrawalPrecision=withdrawalRows.isEmpty()?Integer.valueOf(0):mapper.withdrawalSuccessPrecision();
             var audits=mapper.withdrawalAudits(ids);var banks=mapper.bankReservations(ids);var attempts=mapper.withdrawalAttempts(ids);
+            var bankEvents=withdrawals!=null && withdrawalRows.stream().anyMatch(row->
+                    "BANK-VND".equals(row.get("chain")) && "CONFIRMED".equals(row.get("status")))
+                    ?bankSettlementEvents(roots,withdrawals):Map.<String,List<BankSettlementEvent>>of();
             var paymentLedgers=mapper.paymentLedgers(ids);var earnings=mapper.earningsSources(ids);
             var earningsRecoveries=mapper.earningsRecoveries(ids);
             var earningsInput=new SupportFundEarningsEvidence.Inputs(earnings,earningsRecoveries,mapper.earningsAppliedProofs(ids),
@@ -194,14 +198,15 @@ public class SupportFundReadService {
             require(snapshot()==connection,Gap.READ_FAILED);
             var result=new ArrayList<NetCustomer>();
             var publicOrigins=new ArrayList<ContributionOrigin>();var publicChanges=new ArrayList<ContributionChange>();
-            var confirmed=withdrawals==null?null:new ArrayList<ConfirmedChainWithdrawal>();
+            var confirmed=withdrawals==null?null:new ArrayList<ConfirmedWithdrawal>();
             // Validate peers internally. Only the caller's roots and their original contributions leave this service.
             for(var component:components) {
                 var componentRoots=roots.stream().filter(component::contains).toList();if(componentRoots.isEmpty())continue;
                 var gaps=new ArrayList<Gap>();var tail=new HashMap<Long,Cash>();var verified=new ArrayList<Operation>();
                 var originFacts=new HashMap<String,String>();var holdings=new ArrayList<Holding>();
-                var componentWithdrawals=withdrawals==null?null:new ArrayList<ConfirmedChainWithdrawal>();
-                var capture=withdrawals==null?null:new WithdrawalCapture(withdrawals.from(),withdrawals.to(),componentWithdrawals::add);
+                var componentWithdrawals=withdrawals==null?null:new ArrayList<ConfirmedWithdrawal>();
+                var capture=withdrawals==null?null:new WithdrawalCapture(withdrawals.from(),withdrawals.to(),
+                        componentWithdrawals::add,withdrawals.readFailed());
                 try {
                     var componentOps=ops.stream().filter(row->parties(number(row,"id"),partyIndex).stream().anyMatch(component::contains)).toList();
                     var componentRaw=raw.stream().filter(row->component.contains(number(row,"newUserId"))
@@ -232,7 +237,7 @@ public class SupportFundReadService {
                                 catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
                             }
                             case "SUPPORT_PAYMENT" -> stamp=payment(row,source,proof,events,paymentHistory,paymentLedgers,paymentSources,paymentAudits,trials,earnings,representedEarnings,originFacts,represented,trialRefunds);
-                            case "SUPPORT_WITHDRAWAL" -> stamp=withdrawal(row,source,proof,events,withdrawalRows,ledgers,audits,banks,attempts,withdrawalPhases,withdrawalPrecision,componentOps,capture);
+                            case "SUPPORT_WITHDRAWAL" -> stamp=withdrawal(row,source,proof,events,withdrawalRows,ledgers,audits,banks,attempts,withdrawalPhases,withdrawalPrecision,componentOps,capture,bankEvents);
                             case "SUPPORT_EARNINGS" -> {
                                 SupportFundEarningsEvidence.Verified earning;
                                 try {earning=earningsEvidence.verify(row,source,proof,events,componentEarnings,trialRefunds.recoveries().get(source.path("entry").path("entryNo").asText()));}
@@ -736,7 +741,7 @@ public class SupportFundReadService {
     private Stamp withdrawal(Map<String,Object> op,JsonNode source,JsonNode proof,List<Event> events,List<Map<String,Object>> orders,
             List<Map<String,Object>> allLedgers,List<Map<String,Object>> audits,List<Map<String,Object>> banks,
             List<Map<String,Object>> attempts,Set<String> represented,Integer precision,List<Map<String,Object>> operations,
-            WithdrawalCapture capture) {
+            WithdrawalCapture capture,Map<String,List<BankSettlementEvent>> bankEvents) {
         require("SUPPORT_WITHDRAWAL_FUND_V1".equals(source.path("schemaVersion").asText()) &&"nx_withdrawal_order".equals(op.get("sourceTable")),Gap.SOURCE);
         String no=source.path("withdrawalNo").asText(),phase=text(op,"phase");
         keys(source,Set.of("schemaVersion","customerId","withdrawalNo","phase","order","reservationLedgers","gross","netReceive","actualFee","nexBurned","succeededAt","bankReservation","submissionAudits"));
@@ -796,19 +801,63 @@ public class SupportFundReadService {
             return null;
         }else {require("RESERVE".equals(phase),Gap.UNSUPPORTED_SOURCE);return null;}
         require(precision!=null &&precision>=0 &&precision<=6,Gap.SOURCE);
-        if(capture!=null && order.get("chain") instanceof String chain && CHAIN_WITHDRAWAL_NETWORKS.contains(chain)
-                && "provider".equals(recorded.path("payoutSource").asText())
-                && !recorded.path("chainTxHash").asText("").isBlank()) {
+        if(capture!=null && order.get("chain") instanceof String chain) {
             var completedAt=at.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant();
             if(capture.contains(completedAt)) {
-                var networkFee=reserveLedgers.stream().filter(row->"WITHDRAW_NETWORK_FEE".equals(row.get("bizType")))
-                    .map(row->decimal(row.get("amount"))).reduce(BigDecimal.ZERO,BigDecimal::add);
-                capture.accept().accept(new ConfirmedChainWithdrawal(no,customer,chain.substring("USDT-".length()),completedAt,
-                    decimal(order.get("amount")),decimal(order.get("actualFee")),networkFee,decimal(order.get("netReceive")),
-                    text(op,"operationKey")));
+                var gross=decimal(order.get("amount"));
+                var fee=decimal(order.get("actualFee"));
+                var net=decimal(order.get("netReceive"));
+                var evidence=text(op,"operationKey");
+                if(CHAIN_WITHDRAWAL_NETWORKS.contains(chain) && "provider".equals(recorded.path("payoutSource").asText())
+                        && !recorded.path("chainTxHash").asText("").isBlank()) {
+                    var networkFee=reserveLedgers.stream().filter(row->"WITHDRAW_NETWORK_FEE".equals(row.get("bizType")))
+                            .map(row->decimal(row.get("amount"))).reduce(BigDecimal.ZERO,BigDecimal::add);
+                    capture.accept().accept(new ConfirmedWithdrawal(no,customer,chain,completedAt,
+                            gross,fee,networkFee,net,null,evidence,null));
+                }else if("BANK-VND".equals(chain) && "hdpay".equals(recorded.path("payoutSource").asText())) {
+                    var settlement=verifiedBankSettlement(no,customer,at,gross,recorded.path("providerCid").asText(),
+                            bankEvents.getOrDefault(no,List.of()));
+                    if(settlement!=null)capture.accept().accept(new ConfirmedWithdrawal(no,customer,chain,completedAt,
+                            gross,fee,null,net,settlement.receivedVnd(),evidence,settlement.eventId()));
+                }
             }
         }
         return new Stamp(no,at,DateTimeFormatConfig.BUSINESS_ZONE.getId(),precision);
+    }
+
+    private Map<String,List<BankSettlementEvent>> bankSettlementEvents(List<Long> ids,WithdrawalCapture capture) {
+        var zone=DateTimeFormatConfig.BUSINESS_ZONE;
+        try {
+            return mapper.bankSettlementEvents(ids,LocalDateTime.ofInstant(capture.from(),zone),LocalDateTime.ofInstant(capture.to(),zone))
+                    .stream().collect(java.util.stream.Collectors.groupingBy(BankSettlementEvent::withdrawalNo));
+        } catch(org.springframework.dao.DataAccessException failure) {
+            capture.readFailed().run();
+            return Map.of();
+        }
+    }
+
+    private record VerifiedBankSettlement(BigDecimal receivedVnd,String eventId) { }
+
+    private VerifiedBankSettlement verifiedBankSettlement(String no,long customer,LocalDateTime completedAt,BigDecimal gross,
+            String recordedProvider,List<BankSettlementEvent> events) {
+        if(events.size()!=1)return null;
+        var event=events.get(0);
+        String provider=Long.toString(event.providerOrderId());
+        if(!provider.equals(recordedProvider))return null;
+        final JsonNode payload;
+        try {payload=codec.read(event.payload());}
+        catch(IllegalArgumentException invalidEvent) {return null;}
+        var amount=payload.path("amount");
+        var vnd=payload.path("amount_vnd");
+        if(!event.eventId().equals(payload.path("event_id").asText()) || !no.equals(payload.path("withdrawal_id").asText())
+                || !Long.toString(customer).equals(payload.path("user_id").asText())
+                || !"BANK-VND".equals(payload.path("rail").asText()) || !"HDPAY".equals(payload.path("provider").asText())
+                || !provider.equals(payload.path("provider_order_id").asText()) || !"CONFIRMED".equals(payload.path("state").asText())
+                || !"HDPAY_PAYOUT_CONFIRMED".equals(payload.path("reason").asText())
+                || !completedAt.toString().equals(payload.path("confirmed_at").asText()) || !"USDT".equals(payload.path("currency").asText())
+                || !amount.isNumber() || amount.decimalValue().compareTo(gross)!=0 || !vnd.isNumber()
+                || vnd.decimalValue().signum()<=0 || vnd.decimalValue().compareTo(event.quotedVnd())!=0)return null;
+        return new VerifiedBankSettlement(vnd.decimalValue(),event.eventId());
     }
     private List<Point> points(List<Map<String,Object>> legs,JsonNode proof,List<Map<String,Object>> raw,List<Event> events) {
         var trace=proof.path("cashTrace");require(trace.isArray() &&trace.size()==legs.size(),Gap.CASH_TRACE);

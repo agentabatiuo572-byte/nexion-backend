@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.mapper;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -91,6 +92,30 @@ public interface SupportFundReadMapper {
         +" ON q.quote_no=p.quote_no AND q.user_id=p.user_id AND q.withdrawal_no=p.withdrawal_no WHERE p.user_id IN "
         +IDS+" ORDER BY p.user_id,p.withdrawal_no</script>") @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> bankReservations(@Param("ids") List<Long> ids);
+    @Select("""
+        <script>
+        SELECT w.withdrawal_no withdrawalNo, e.event_id eventId, p.provider_order_id providerOrderId,
+               q.amount_vnd quotedVnd, e.payload
+          FROM nx_withdrawal_order w
+          JOIN nx_hdpay_payout p ON p.withdrawal_no=w.withdrawal_no AND p.user_id=w.user_id
+          JOIN nx_bank_payout_quote q ON q.quote_no=p.quote_no AND q.user_id=w.user_id AND q.withdrawal_no=w.withdrawal_no
+          JOIN nx_event_outbox e ON e.aggregate_type='WITHDRAWAL' AND e.aggregate_id=w.withdrawal_no
+               AND e.event_type='withdraw.confirmed' AND e.is_server_authoritative=1 AND e.is_deleted=0
+         WHERE w.status='CONFIRMED' AND w.asset='USDT'
+           AND w.completed_at &gt;= #{from} AND w.completed_at &lt; #{to}
+           AND w.user_id IN
+        """+IDS+"""
+           AND EXISTS (SELECT 1 FROM nx_withdrawal_payout_ledger l WHERE
+        """+BankWithdrawalMapper.PROVIDER_SETTLEMENT_PROOF+"""
+           )
+         ORDER BY w.withdrawal_no,e.id
+        </script>
+        """)
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    List<BankSettlementEvent> bankSettlementEvents(@Param("ids") List<Long> ids,
+            @Param("from") LocalDateTime from,@Param("to") LocalDateTime to);
+    record BankSettlementEvent(String withdrawalNo,String eventId,long providerOrderId,BigDecimal quotedVnd,String payload) { }
+
     @Select("<script>SELECT user_id userId,idempotency_key idempotencyKey,status,withdrawal_no withdrawalNo,"
         +"created_at createdAt FROM nx_withdrawal_attempt_control WHERE user_id IN "+IDS+" ORDER BY user_id,idempotency_key</script>")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE) List<Map<String,Object>> withdrawalAttempts(@Param("ids") List<Long> ids);

@@ -1,6 +1,6 @@
 package ffdd.opsconsole.content.domain;
 
-import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedChainWithdrawal;
+import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedWithdrawal;
 import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -45,13 +45,13 @@ public final class SupportPerformance {
      */
     public record Snapshot(String definitionVersion, String sourceVersion, Instant historyStart,
                            Instant asOf, Generation generation, List<Month> months,
-                           List<ConfirmedChainWithdrawal> observedChainWithdrawals) {
+                           List<ConfirmedWithdrawal> observedWithdrawals) {
         public Snapshot {
             if (!DEFINITION_VERSION.equals(definitionVersion) || sourceVersion == null
                     || sourceVersion.isBlank() || historyStart == null || !HISTORY_START.equals(historyStart)
                     || asOf == null || asOf.isBefore(HISTORY_START) || generation == null || months == null) throw invalid();
             months = List.copyOf(months);
-            observedChainWithdrawals = observedChainWithdrawals == null ? List.of() : List.copyOf(observedChainWithdrawals);
+            observedWithdrawals = observedWithdrawals == null ? List.of() : List.copyOf(observedWithdrawals);
             if (!months.isEmpty()) {
                 Month first = months.get(0), last = months.get(months.size() - 1);
                 if (!first.from().equals(HISTORY_START) || !last.to().equals(asOf)) throw invalid();
@@ -80,10 +80,10 @@ public final class SupportPerformance {
                     expected = actual.plusMonths(1);
                 }
             }
-            if (!observedChainWithdrawals.isEmpty()) {
+            if (!observedWithdrawals.isEmpty()) {
                 if (months.isEmpty()) throw invalid();
                 var last = months.get(months.size() - 1);
-                if (observedChainWithdrawals.stream().anyMatch(fact -> fact.completedAt() == null
+                if (observedWithdrawals.stream().anyMatch(fact -> fact.completedAt() == null
                         || fact.completedAt().isBefore(last.from()) || !fact.completedAt().isBefore(last.to()))) throw invalid();
             }
         }
