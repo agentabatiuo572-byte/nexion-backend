@@ -167,39 +167,41 @@ public interface AppPayoutAddressMapper {
     @Insert("""
             INSERT INTO nx_user_payout_address
               (user_id,network,address,status,effective_at,next_change_allowed_at,version,created_at,updated_at,is_deleted)
-            VALUES(#{userId},#{network},#{address},'ACTIVE',DATE_ADD(NOW(),INTERVAL 24 HOUR),
-                   DATE_ADD(NOW(),INTERVAL 7 DAY),0,NOW(),NOW(),0)
+            VALUES(#{userId},#{network},#{address},'ACTIVE',DATE_ADD(NOW(),INTERVAL #{hours} HOUR),
+                   DATE_ADD(NOW(),INTERVAL #{days} DAY),0,NOW(),NOW(),0)
             """)
     int insert(@Param("userId") Long userId, @Param("network") String network,
-               @Param("address") String address);
+               @Param("address") String address, @Param("hours") int hours, @Param("days") int days);
 
     @Insert("""
             INSERT INTO nx_user_payout_address_sandbox
               (run_id,user_id,network,address,status,effective_at,next_change_allowed_at,version,created_at,updated_at,is_deleted)
-            VALUES(#{runId},#{userId},#{network},#{address},'ACTIVE',DATE_ADD(NOW(),INTERVAL 24 HOUR),
-                   DATE_ADD(NOW(),INTERVAL 7 DAY),0,NOW(),NOW(),0)
+            VALUES(#{runId},#{userId},#{network},#{address},'ACTIVE',DATE_ADD(NOW(),INTERVAL #{hours} HOUR),
+                   DATE_ADD(NOW(),INTERVAL #{days} DAY),0,NOW(),NOW(),0)
             """)
     int sandboxInsert(@Param("runId") String runId, @Param("userId") Long userId,
-                      @Param("network") String network, @Param("address") String address);
+                      @Param("network") String network, @Param("address") String address,
+                      @Param("hours") int hours, @Param("days") int days);
 
     @Update("""
             UPDATE nx_user_payout_address
-               SET address=#{address},status='ACTIVE',effective_at=DATE_ADD(NOW(),INTERVAL 24 HOUR),
-                   next_change_allowed_at=DATE_ADD(NOW(),INTERVAL 7 DAY),version=version+1,updated_at=NOW()
+               SET address=#{address},status='ACTIVE',effective_at=DATE_ADD(NOW(),INTERVAL #{hours} HOUR),
+                   next_change_allowed_at=DATE_ADD(NOW(),INTERVAL #{days} DAY),version=version+1,updated_at=NOW()
              WHERE user_id=#{userId} AND network=#{network} AND version=#{version} AND is_deleted=0
             """)
     int update(@Param("userId") Long userId, @Param("network") String network,
-               @Param("address") String address, @Param("version") Long version);
+               @Param("address") String address, @Param("version") Long version,
+               @Param("hours") int hours, @Param("days") int days);
 
     @Update("""
             UPDATE nx_user_payout_address_sandbox
-               SET address=#{address},status='ACTIVE',effective_at=DATE_ADD(NOW(),INTERVAL 24 HOUR),
-                   next_change_allowed_at=DATE_ADD(NOW(),INTERVAL 7 DAY),version=version+1,updated_at=NOW()
+               SET address=#{address},status='ACTIVE',effective_at=DATE_ADD(NOW(),INTERVAL #{hours} HOUR),
+                   next_change_allowed_at=DATE_ADD(NOW(),INTERVAL #{days} DAY),version=version+1,updated_at=NOW()
              WHERE run_id=#{runId} AND user_id=#{userId} AND network=#{network} AND version=#{version} AND is_deleted=0
             """)
     int sandboxUpdate(@Param("runId") String runId, @Param("userId") Long userId,
                       @Param("network") String network, @Param("address") String address,
-                      @Param("version") Long version);
+                      @Param("version") Long version, @Param("hours") int hours, @Param("days") int days);
 
     @Insert("""
             INSERT INTO nx_user_payout_address_history

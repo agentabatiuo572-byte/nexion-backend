@@ -234,8 +234,11 @@ class AppPayoutAddressWithdrawalRaceMySqlIntegrationTest {
         AdminIdempotencyService idempotency = mock(AdminIdempotencyService.class);
         doAnswer(invocation -> ((Supplier<?>) invocation.getArgument(4)).get()).when(idempotency)
                 .execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any());
+        var config = mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class);
+        org.mockito.Mockito.when(config.activeValuesByKeys(any())).thenReturn(java.util.Map.of(
+                PayoutAddressProtection.EFFECTIVE_DELAY_KEY, "24", PayoutAddressProtection.CHANGE_COOLDOWN_KEY, "7"));
         return new AppPayoutAddressService(mapper, mock(WithdrawalNetworkPolicy.class), mock(ffdd.opsconsole.auth.application.UserOtpDeliveryService.class),
-                mock(AuditLogService.class), idempotency, otp, null, null);
+                mock(AuditLogService.class), idempotency, otp, null, null, config);
     }
 
     @SuppressWarnings("unchecked")

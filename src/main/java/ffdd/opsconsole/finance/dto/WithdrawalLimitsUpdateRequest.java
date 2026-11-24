@@ -22,6 +22,8 @@ public class WithdrawalLimitsUpdateRequest {
     private Map<String, Boolean> networkEnabled;
     private BigDecimal smallAmountThresholdUsd;
     private Integer payoutSlaHours;
+    private BigDecimal addressEffectiveDelayHours;
+    private BigDecimal addressChangeCooldownDays;
     private Integer cooldownDays;
     private BigDecimal penaltyFeeRate;
     private Boolean complianceHoldEnabled;
@@ -64,6 +66,16 @@ public class WithdrawalLimitsUpdateRequest {
         payoutSlaHours = value;
         presentFields.add("payoutSlaHours");
     }
+    public BigDecimal getAddressEffectiveDelayHours() { return addressEffectiveDelayHours; }
+    @JsonSetter public void setAddressEffectiveDelayHours(BigDecimal value) {
+        addressEffectiveDelayHours = value;
+        presentFields.add("addressEffectiveDelayHours");
+    }
+    public BigDecimal getAddressChangeCooldownDays() { return addressChangeCooldownDays; }
+    @JsonSetter public void setAddressChangeCooldownDays(BigDecimal value) {
+        addressChangeCooldownDays = value;
+        presentFields.add("addressChangeCooldownDays");
+    }
     public Integer getCooldownDays() { return cooldownDays; }
     @JsonSetter public void setCooldownDays(Integer value) { cooldownDays = value; presentFields.add("cooldownDays"); }
     public BigDecimal getPenaltyFeeRate() { return penaltyFeeRate; }
@@ -93,7 +105,7 @@ public class WithdrawalLimitsUpdateRequest {
                 "dailyLimitCount", "balanceMaxRatio", "minUsdt", "networkFeeRatio",
                 "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate", "networkConfirmFeeUsd",
                 "networkEnabled",
-                "smallAmountThresholdUsd", "payoutSlaHours"));
+                "smallAmountThresholdUsd", "payoutSlaHours", "addressEffectiveDelayHours", "addressChangeCooldownDays"));
         return fields;
     }
 }

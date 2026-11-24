@@ -63,6 +63,8 @@ final class A5ParameterUsageCatalog {
             withdrawal.nex_fee_offset_rate|提现策略读取的 UVT 手续费抵扣配置值。|AppWithdrawalService
             withdrawal.small_amount_threshold_usd|判定提现是否满足小额条件的金额阈值，单位 USDT。|AppWithdrawalService
             withdrawal.payout_sla_hours|提现处理时限，单位小时；由持有截止时间加该时长计算最迟处理时刻。|AppWithdrawalService
+            withdrawal.address_effective_delay_hours|链上提现地址首次绑定或更换成功后，到地址生效的小时数。|OpsFinanceService; AppPayoutAddressService
+            withdrawal.address_change_cooldown_days|链上提现地址保存成功后，到允许再次更换的天数。|OpsFinanceService; AppPayoutAddressService
             finance.payout_vnd.values|越南盾提现配置的字段集合，按 D7 配置服务解析。|PayoutVndConfigService
             finance.payout_vnd.version|越南盾提现配置版本，供 D7 读取和更新校验。|PayoutVndConfigService
             store.bundle.discount.2.rate|组合购达到两件时使用的折扣配置（比例）。|BundleDiscountPolicy

@@ -121,7 +121,7 @@ public class AppWithdrawalService {
         Map<String, String> policyValues;
         try {
             policyValues = config.activeValuesByKeys(List.of(
-                    "withdrawal.d5.version", "withdrawal.network_confirm_fee_usd.trc20",
+                    "withdrawal.d5.version", PayoutAddressProtection.QUOTE_VERSION_KEY, "withdrawal.network_confirm_fee_usd.trc20",
                     "withdrawal.network_confirm_fee_usd.bep20", "withdrawal.network_confirm_fee_usd.erc20",
                     "withdrawal.nex_fee_offset_rate", "withdrawal.small_amount_threshold_usd",
                     "withdrawal.payout_sla_hours", "withdrawal.trc20.enabled",
@@ -878,7 +878,7 @@ public class AppWithdrawalService {
         Map<String, String> policyValues;
         try {
             policyValues = config.activeValuesByKeys(List.of(
-                    "withdrawal.d5.version", "withdrawal.network_confirm_fee_usd.trc20",
+                    "withdrawal.d5.version", PayoutAddressProtection.QUOTE_VERSION_KEY, "withdrawal.network_confirm_fee_usd.trc20",
                     "withdrawal.network_confirm_fee_usd.bep20", "withdrawal.network_confirm_fee_usd.erc20",
                     "withdrawal.nex_fee_offset_rate", "withdrawal.small_amount_threshold_usd",
                     "withdrawal.payout_sla_hours", "withdrawal.trc20.enabled",
@@ -892,7 +892,9 @@ public class AppWithdrawalService {
     private PolicySnapshot currentPolicy(Map<String, String> policyValues, java.util.function.Supplier<List<String>> enabledNetworks) {
         long version;
         try {
-            version = requiredDecimal("withdrawal.d5.version", policyValues).longValueExact();
+            String versionKey = policyValues.containsKey(PayoutAddressProtection.QUOTE_VERSION_KEY)
+                    ? PayoutAddressProtection.QUOTE_VERSION_KEY : "withdrawal.d5.version";
+            version = requiredDecimal(versionKey, policyValues).longValueExact();
         } catch (RuntimeException ex) {
             throw new BizException(503, "D5_POLICY_VERSION_UNAVAILABLE");
         }
