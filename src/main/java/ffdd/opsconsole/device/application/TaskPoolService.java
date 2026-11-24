@@ -7,11 +7,13 @@ import ffdd.opsconsole.device.mapper.TaskPoolMapper;
 import ffdd.opsconsole.device.mapper.TaskPoolMapper.*;
 import ffdd.opsconsole.device.mapper.SimulatedTaskPolicyMapper;
 import ffdd.opsconsole.device.mapper.SimulatedTaskPolicyMapper.TypeVersion;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.*;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.i18n.AppDisplayText;
+import ffdd.opsconsole.shared.i18n.AuthoringWhitespace;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -137,27 +139,25 @@ public class TaskPoolService {
     }
     @Transactional
     public ApiResult<Map<String, Object>> createTask(String code, CreateTask request) {
-        String reason = text(request.reason());
-        reason(reason);
+        String reason = taskWriteReason(request.reason());
         var fields = taskFields(request.name(), request.taskClass(), request.durationMinutes(), request.baseReward());
         if (request.enabled() == null || !request.enabled().isBoolean()) {
             throw new BizException(422, "TASK_POOL_STATUS_REQUIRED");
         }
         return writeTask(code, null, fields, request.enabled().booleanValue(), null,
-                text(request.idempotencyKey()), reason.trim());
+                text(request.idempotencyKey()), reason);
     }
 
     @Transactional
     public ApiResult<Map<String, Object>> updateTask(String code, String taskTypeId, UpdateTask request) {
-        String reason = text(request.reason());
-        reason(reason);
+        String reason = taskWriteReason(request.reason());
         var fields = taskFields(request.name(), request.taskClass(), request.durationMinutes(), request.baseReward());
         var revision = request.expectedVersion();
         if (revision == null || !revision.isIntegralNumber() || !revision.canConvertToLong() || revision.longValue() < 1) {
             throw new BizException(422, "TASK_TYPE_VERSION_REQUIRED");
         }
         return writeTask(code, taskTypeId, fields, false, revision.longValue(),
-                text(request.idempotencyKey()), reason.trim());
+                text(request.idempotencyKey()), reason);
     }
 
     private TaskFields taskFields(JsonNode rawName, JsonNode rawClass, JsonNode duration, JsonNode rawReward) {
@@ -205,9 +205,7 @@ public class TaskPoolService {
             var data = snapshot(at);
             var finalPool = new ArrayList<>(data.types().stream().filter(t -> code.equals(t.poolCode())).toList());
             TypeVersion previous = null;
-            if (creating) {
-                requireCapacity(finalPool, 1, enabledOnCreate ? 1 : 0);
-            } else {
+            if (!creating) {
                 previous = finalPool.stream().filter(t -> taskTypeId.equals(t.taskTypeId())).findFirst()
                         .orElseThrow(() -> new BizException(422, "TASK_TYPE_NOT_IN_POOL"));
                 if (previous.version() != expectedVersion) throw new BizException(409, "TASK_TYPE_VERSION_CONFLICT");
@@ -215,6 +213,9 @@ public class TaskPoolService {
             }
             if (finalPool.stream().anyMatch(t -> t.name().strip().equals(fields.name()))) {
                 throw new BizException(422, "TASK_NAME_DUPLICATE");
+            }
+            if (creating) {
+                requireCapacity(finalPool, 1, enabledOnCreate ? 1 : 0);
             }
             var task = new TypeVersion(creating ? newTaskId() : taskTypeId, creating ? 1 : previous.version() + 1,
                     at, fields.name(), fields.taskClass(), fields.durationMinutes() * 60,
@@ -305,6 +306,14 @@ public class TaskPoolService {
         String trimmed=reason.trim();
         int length=trimmed.codePointCount(0,trimmed.length());
         if(length<8||length>200)throw new BizException(422,"REASON_LENGTH_INVALID");
+    }
+    private String taskWriteReason(JsonNode value) {
+        String reason = text(value);
+        if (reason == null) throw new BizException(422, "REASON_LENGTH_INVALID");
+        String normalized = AuthoringWhitespace.trim(reason).trim();
+        int visible = A2RuntimePolicy.visibleCodePointCount(normalized.replaceAll("\\p{Zs}+", ""));
+        if (visible < 8 || visible > 200) throw new BizException(422, "REASON_LENGTH_INVALID");
+        return normalized;
     }
     private void event(String event,String code,String reason,Map<String,Object> detail) {
         var payload=new LinkedHashMap<String,Object>(detail);payload.put("poolCode",code);payload.put("reason",reason.trim());
