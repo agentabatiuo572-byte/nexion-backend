@@ -470,6 +470,18 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
             """)
     ReceiptRow receipt(@Param("userId") Long userId, @Param("receiptNo") String receiptNo);
 
+    // A notification can outlive receipt visibility, so read its task class from the source rows.
+    String EARNING_TASK_CLASS_BY_RECEIPT = """
+            SELECT CASE WHEN t.task_no LIKE 'SIM-%' THEN s.task_class ELSE t.task_type END
+              FROM nx_compute_receipt r
+              JOIN nx_compute_task t ON t.task_no = r.task_no
+                AND t.user_id = r.user_id AND t.user_device_id = r.user_device_id
+                AND t.source_environment = r.source_environment AND t.is_deleted = 0
+              LEFT JOIN nx_simulated_task s ON s.task_no = t.task_no COLLATE utf8mb4_unicode_ci
+                AND s.user_id = r.user_id AND s.receipt_no = r.receipt_no COLLATE utf8mb4_unicode_ci
+             WHERE r.source_environment = 'PRODUCTION' AND r.is_deleted = 0
+            """;
+
     @Select("""
             <script>
             SELECT r.receipt_no receiptNo,

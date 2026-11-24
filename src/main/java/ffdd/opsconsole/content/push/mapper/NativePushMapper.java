@@ -277,10 +277,9 @@ public interface NativePushMapper {
     EarningEligibility earningEligibility(@Param("user") long user);
 
     @Select("""
-        SELECT COUNT(*) FROM nx_earning_event WHERE receipt_no=#{receipt} AND user_id=#{user}
-          AND status='POSTED' AND amount>0 AND is_deleted=0
+        SELECT receipt_no FROM nx_earning_push_task WHERE notification_id=#{id} AND user_id=#{user}
         """)
-    int ownedReceipt(@Param("receipt") String receipt, @Param("user") long user);
+    String earningReceiptNo(@Param("id") long id, @Param("user") long user);
 
     @Select("SELECT COUNT(*) FROM nx_notification n WHERE n.id=#{id} AND " + LIVE_NOVA_CHANNEL)
     int novaChannelEnabled(long id);

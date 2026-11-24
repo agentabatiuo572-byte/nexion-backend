@@ -1,5 +1,6 @@
 package ffdd.opsconsole.content.push.mapper;
 
+import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -52,9 +53,12 @@ public interface EarningPushMapper {
                MIN(CONVERT_TZ(e.wallet_posted_at,#{offset},'+00:00')) postedAt,
                COALESCE(SUM(CASE WHEN e.asset='USDT' AND e.amount&gt;0 THEN e.amount ELSE 0 END),0) usdt,
                COALESCE(SUM(CASE WHEN e.asset='UVT' AND e.amount&gt;0 THEN e.amount ELSE 0 END),0) uvt,
-               (SELECT d.device_name FROM nx_earning_event x JOIN nx_user_device d ON d.id=x.user_device_id
+               (SELECT d.name FROM nx_earning_event x JOIN nx_user_device d ON d.id=x.user_device_id
                  WHERE x.receipt_no=e.receipt_no AND x.user_id=e.user_id AND x.is_deleted=0 ORDER BY x.id LIMIT 1) deviceName,
-               (SELECT t.task_class FROM nx_simulated_task t WHERE t.receipt_no=e.receipt_no LIMIT 1) taskClass,
+               (
+        """ + AppTaskAssignmentMapper.EARNING_TASK_CLASS_BY_RECEIPT + """
+                AND r.user_id=e.user_id AND r.receipt_no=e.receipt_no
+               ) taskClass,
                (SELECT d.id FROM nx_earning_event x JOIN nx_user_device d ON d.id=x.user_device_id
                  WHERE x.receipt_no=e.receipt_no AND x.user_id=e.user_id AND x.is_deleted=0 ORDER BY x.id LIMIT 1) deviceId
           FROM nx_earning_event e
@@ -94,9 +98,12 @@ public interface EarningPushMapper {
                MIN(CONVERT_TZ(e.wallet_posted_at,#{offset},'+00:00')) postedAt,
                COALESCE(SUM(CASE WHEN e.asset='USDT' AND e.amount>0 THEN e.amount ELSE 0 END),0) usdt,
                COALESCE(SUM(CASE WHEN e.asset='UVT' AND e.amount>0 THEN e.amount ELSE 0 END),0) uvt,
-               (SELECT d.device_name FROM nx_earning_event x JOIN nx_user_device d ON d.id=x.user_device_id
+               (SELECT d.name FROM nx_earning_event x JOIN nx_user_device d ON d.id=x.user_device_id
                  WHERE x.receipt_no=e.receipt_no AND x.user_id=e.user_id AND x.is_deleted=0 ORDER BY x.id LIMIT 1) deviceName,
-               (SELECT t.task_class FROM nx_simulated_task t WHERE t.receipt_no=e.receipt_no LIMIT 1) taskClass,
+               (
+        """ + AppTaskAssignmentMapper.EARNING_TASK_CLASS_BY_RECEIPT + """
+                AND r.user_id=e.user_id AND r.receipt_no=e.receipt_no
+               ) taskClass,
                (SELECT d.id FROM nx_earning_event x JOIN nx_user_device d ON d.id=x.user_device_id
                  WHERE x.receipt_no=e.receipt_no AND x.user_id=e.user_id AND x.is_deleted=0 ORDER BY x.id LIMIT 1) deviceId
           FROM nx_visible_earning_event e
@@ -174,10 +181,11 @@ public interface EarningPushMapper {
                      @Param("notificationId") Long notificationId);
 
     @Update("""
-        UPDATE nx_earning_push_task SET event_count=#{eventCount},device_count=#{deviceCount},
+        UPDATE nx_earning_push_task SET receipt_no=#{receiptNo},event_count=#{eventCount},device_count=#{deviceCount},
           usdt=#{usdt},uvt=#{uvt},updated_at=NOW(6) WHERE id=#{id}
         """)
-    int freezeTask(@Param("id") long id,@Param("eventCount") int eventCount,@Param("deviceCount") int deviceCount,
+    int freezeTask(@Param("id") long id,@Param("receiptNo") String receiptNo,
+                   @Param("eventCount") int eventCount,@Param("deviceCount") int deviceCount,
                    @Param("usdt") BigDecimal usdt,@Param("uvt") BigDecimal uvt);
 
     @Insert("""

@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.push;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper.Delivery;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.UserAccountBlocklistVerifier;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
@@ -27,6 +28,7 @@ public class NativePushDispatcher {
     private final TransactionTemplate transaction;
     private final TransactionTemplate discoveryTransaction;
     @Autowired private OpsKillSwitchService killSwitch;
+    @Autowired private NativePushService pushService;
 
     public NativePushDispatcher(NativePushMapper mapper, AuthSessionMapper sessions, UserAccountBlocklistVerifier blocklist,
             PlatformConfigFacade config, DirectPushClient provider, Environment env, PlatformTransactionManager transactions) {
@@ -84,17 +86,16 @@ public class NativePushDispatcher {
             if (effectiveExpiry != null && !java.time.Instant.now().isBefore(effectiveExpiry)) {
                 finish(delivery, "CANCELLED", "PUSH_EXPIRED", null, 0); return;
             }
-            if (notification.type().startsWith("EARNING_")
-                    && !earningEligible(notification.type(), delivery.userId(), installation)) {
+            boolean earning = notification.type().startsWith("EARNING_");
+            if (earning && !earningEligible(notification.type(), delivery.userId(), installation)) {
                 finish(delivery, "CANCELLED", "EARNING_INELIGIBLE", null, 0); return;
             }
-            if (notification.type().startsWith("EARNING_")) {
-                String href = notification.ctaHref();
-                if (href != null && href.startsWith("/pages/me/receipts?receiptNo=")) {
-                    String receipt = href.substring(href.indexOf('=') + 1);
-                    if (mapper.ownedReceipt(receipt, delivery.userId()) == 0) {
-                        finish(delivery, "CANCELLED", "EARNING_RECEIPT_UNAVAILABLE", null, 0); return;
-                    }
+            if (earning) {
+                try {
+                    // Push carries only the notification ID. Resolve checks the target again when tapped.
+                    pushService.earningRoute(notification, delivery.userId());
+                } catch (BizException invalidRoute) {
+                    finish(delivery, "CANCELLED", "EARNING_RECEIPT_UNAVAILABLE", null, 0); return;
                 }
             }
             if (delivery.attempts() > 5) { finish(delivery, "FAILED", "ATTEMPTS_EXHAUSTED", null, 0); return; }
@@ -119,7 +120,6 @@ public class NativePushDispatcher {
                     && NativePushService.TEST_APNS_TOPIC.equals(installation.apnsTopic())
                     && mapper.isNewSignInNotice(notification.id(), delivery.userId());
             DirectPushClient.Result result;
-            boolean earning = notification.type().startsWith("EARNING_");
             if (nova || appUpdate || support || earning || installation.apnsTopic() != null) {
                 String summary = DirectPushClient.message(notification.language());
                 if (support) summary = DirectPushClient.supportReply(notification.language());
