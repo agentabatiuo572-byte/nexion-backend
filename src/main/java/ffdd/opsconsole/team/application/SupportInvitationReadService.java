@@ -49,7 +49,10 @@ public class SupportInvitationReadService implements SupportInvitationReadFacade
         while (!frontier.isEmpty()) {
             List<Row> rows;
             try { rows = mapper.children(List.copyOf(frontier)); }
-            catch (DataAccessException ex) { batchProblems.add(Reason.SOURCE_READ_FAILED); break; }
+            catch (DataAccessException ex) {
+                for (long parent : frontier) problem(problems, parent, Reason.SOURCE_READ_FAILED);
+                break;
+            }
             if (rows == null) { batchProblems.add(Reason.INVALID_ROW); break; }
             // Validate the entire returned scope before interpreting any malformed local row.
             for (var row : rows)
