@@ -44,7 +44,8 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     @EventListener(ContextClosedEvent.class)
     public void contextClosed() { closing=true; }
     private record Decoded(String json,SupportAnalyticsFactSnapshot snapshot) { }
-    private record Sampled(SupportAnalyticsFactSnapshot legacy,SupportPerformanceSampler.Capture performance) { }
+    private record Sampled(SupportAnalyticsFactSnapshot legacy,
+                           ffdd.opsconsole.content.domain.SupportPerformance.Snapshot performance) { }
     public SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
             SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,
             SupportAnalyticsRedisStore store,ObjectProvider<SupportAnalyticsService> compiler) {
@@ -102,7 +103,8 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
                 };
                 var contributions=cashScope==null?funds.readNetContributions(ids,onBatch):funds.readNetContributions(ids,onBatch,cashScope);
                 var raw=new SupportAnalyticsFactSnapshot(asOf,ids,payment,contributions,mapper.attributions(),mapper.attributionProofs());
-                return new Sampled(compiler.getObject().compileForCache(raw),performanceCapture);
+                var nextPerformance = performanceCapture == null ? null : performance.freeze(performanceCapture, raw);
+                return new Sampled(compiler.getObject().compileForCache(raw),nextPerformance);
             }));
             var next=sampled.legacy();
             lease.renew();
@@ -111,7 +113,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
             store.renew(token);
             boolean published=store.publish(token,json);
             LOG.info("Support analytics minute generation published={} subjects={} durationMs={} asOf={}",published,next.subjects().size(),(System.nanoTime()-startedAt)/1_000_000,next.asOf());
-            if(published && sampled.performance()!=null)performance.publish(sampled.performance(),next);
+            if(published && sampled.performance()!=null)performance.publish(sampled.performance());
         } catch(SamplingStopped stopped) {
             // The read transaction rolled back and the lease heartbeat closed; there is no partial generation.
         } finally {store.release(token);}

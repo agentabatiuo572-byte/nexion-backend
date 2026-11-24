@@ -1,7 +1,5 @@
 package ffdd.opsconsole.content.domain;
 
-import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedDepositCorrection;
-import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedWithdrawal;
 import ffdd.opsconsole.finance.facade.SupportDirectPurchaseFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.shared.config.BusinessCalendar;
@@ -36,6 +34,18 @@ public final class SupportPerformance {
 
     public record EventAttribution(AttributionState state,Long agentId,Long groupId) { }
 
+    public enum Kind { INFLOW, WITHDRAWAL, CORRECTION }
+
+    public record BindingPeriod(Instant from, Instant to) { }
+
+    /** Internal money event. Customer and business identifiers are disclosed only by authorized projections. */
+    public record Event(String id, long customerId, EventAttribution attribution, BindingPeriod bindingPeriod,
+                        Kind kind, String channel, String network, boolean devicePurchase, String businessNo,
+                        String originalBusinessNo, String originalEventId, Instant occurredAt, Instant effectiveAt, String sourceStatus,
+                        BigDecimal amountUsdt, BigDecimal deltaUsdt, BigDecimal roundingUsdt, BigDecimal totalPaidUsdt,
+                        BigDecimal feeUsdt, BigDecimal channelFeeUsdt, BigDecimal networkFeeUsdt,
+                        BigDecimal receivedUsdt, BigDecimal vnd) { }
+
     /** Amounts established by the captured evidence. A missing channel has no verified subtotal. */
     public record MonthlySubtotal(String month, EventAttribution attribution,
                                   Map<String, BigDecimal> inflows, Map<String, BigDecimal> corrections,
@@ -68,10 +78,7 @@ public final class SupportPerformance {
      */
     public record Snapshot(String definitionVersion, String sourceVersion, Instant historyStart,
                            Instant asOf, Generation generation, List<Month> months,
-                           List<ConfirmedWithdrawal> observedWithdrawals, List<ObservedDeposit> observedDeposits,
-                           List<ConfirmedDepositCorrection> observedDepositCorrections,
-                           Map<String,EventAttribution> depositEventAttributions,
-                           List<SupportDirectPurchaseFactsFacade.Fact> observedDirectPurchases,
+                           List<Event> events,
                            List<SupportDirectPurchaseFactsFacade.Issue> directPurchaseIssues,
                            List<MonthlySubtotal> monthlySubtotals) {
         public Snapshot {
@@ -79,11 +86,7 @@ public final class SupportPerformance {
                     || sourceVersion.isBlank() || historyStart == null || !HISTORY_START.equals(historyStart)
                     || asOf == null || asOf.isBefore(HISTORY_START) || generation == null || months == null) throw invalid();
             months = List.copyOf(months);
-            observedWithdrawals = observedWithdrawals == null ? List.of() : List.copyOf(observedWithdrawals);
-            observedDeposits = observedDeposits == null ? List.of() : List.copyOf(observedDeposits);
-            observedDepositCorrections = observedDepositCorrections == null ? List.of() : List.copyOf(observedDepositCorrections);
-            depositEventAttributions = depositEventAttributions == null ? Map.of() : Map.copyOf(depositEventAttributions);
-            observedDirectPurchases = observedDirectPurchases == null ? List.of() : List.copyOf(observedDirectPurchases);
+            events = List.copyOf(events);
             directPurchaseIssues = directPurchaseIssues == null ? List.of() : List.copyOf(directPurchaseIssues);
             monthlySubtotals = monthlySubtotals == null ? List.of() : List.copyOf(monthlySubtotals);
             if (!months.isEmpty()) {
@@ -114,10 +117,10 @@ public final class SupportPerformance {
                     expected = actual.plusMonths(1);
                 }
             }
-            if (observedWithdrawals.stream().anyMatch(fact -> !contains(historyStart, asOf, fact.completedAt()))
-                    || observedDeposits.stream().anyMatch(fact -> !contains(historyStart, asOf, fact.creditedAt()))
-                    || observedDepositCorrections.stream().anyMatch(fact -> !contains(historyStart, asOf, fact.effectiveAt()))
-                    || observedDirectPurchases.stream().anyMatch(fact -> !contains(historyStart, asOf, fact.paidAt()))) throw invalid();
+            var ids = new HashSet<String>();
+            for (var event : events) {
+                if (!contains(historyStart, asOf, event.effectiveAt()) || !ids.add(event.id())) throw invalid();
+            }
         }
     }
 
@@ -138,11 +141,17 @@ public final class SupportPerformance {
                     List.of(Reason.GENERATION_UPGRADING)));
         }
         return new Snapshot(DEFINITION_VERSION, sourceVersion, HISTORY_START, asOf, Generation.UPGRADING, months,
-                List.of(), List.of(), List.of(), Map.of(), List.of(), List.of(), List.of());
+                List.of(), List.of(), List.of());
     }
 
     public static boolean contains(Instant from, Instant to, Instant at) {
         return at != null && !at.isBefore(from) && at.isBefore(to);
+    }
+
+    public static String maskNickname(String nickname) {
+        if (nickname == null || nickname.isBlank()) return null;
+        return nickname.codePointCount(0, nickname.length()) < 2 ? "***"
+                : nickname.substring(0, nickname.offsetByCodePoints(0, 1)) + "***";
     }
 
     /** Stable source identity for one analytics cutoff and subject set; it is not an HTTP version. */

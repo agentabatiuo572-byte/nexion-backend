@@ -22,7 +22,7 @@ public interface SupportFundsReadFacade extends DomainFacade {
             Consumer<ConfirmedDepositCorrection> depositCorrections,Runnable readFailed) {
         public boolean contains(Instant at) {return !at.isBefore(from) && at.isBefore(to);}
     }
-    record ConfirmedWithdrawal(String withdrawalNo,long customerId,String rail,Instant completedAt,
+    record ConfirmedWithdrawal(String withdrawalNo,long customerId,String rail,Instant requestedAt,Instant completedAt,
             BigDecimal walletDebitUsdt,BigDecimal feeUsdt,BigDecimal networkFeeUsdt,BigDecimal receivedUsdt,
             BigDecimal receivedVnd,String evidenceKey,String settlementEventId) { }
     record ConfirmedDepositCorrection(String operationNo,long customerId,String originalFactId,

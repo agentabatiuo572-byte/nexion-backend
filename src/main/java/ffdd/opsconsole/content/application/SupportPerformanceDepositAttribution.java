@@ -40,16 +40,20 @@ final class SupportPerformanceDepositAttribution {
         var proofs = source.proofs().stream().filter(proof -> originalIds.contains(proof.factId()))
                 .collect(Collectors.groupingBy(AttributionProof::factId));
         var verified = new HashMap<String,OriginalAttribution>();
+        var verifiedOwners = new HashMap<String, Long>();
         for (String id : originalIds) {
             var candidates = originals.getOrDefault(id, List.of());
             var candidateRows = rows.getOrDefault(id, List.of());
             var candidateProofs = proofs.getOrDefault(id, List.of());
-            if (candidates.size() != 1 || candidateRows.size() != 1 || candidateProofs.size() != 1) continue;
+            if (candidates.size() != 1) continue;
             var fact = candidates.get(0);
+            if (fact.historicalEnvironmentStatus() != ffdd.opsconsole.finance.facade.SupportPaymentFacts.Status.READY
+                    || SupportAnalyticsService.proofRejected(payments, fact)) continue;
+            verifiedOwners.put(id, fact.customerId());
+            if (candidateRows.size() != 1 || candidateProofs.size() != 1) continue;
             var row = candidateRows.get(0);
             if (!"NEW_SUCCESS".equals(row.captureMode()) || !SupportAnalyticsService.validLayers(row)
                     || !SupportAnalyticsService.aligned(row, fact, payments.businessZone())
-                    || SupportAnalyticsService.proofRejected(payments, fact)
                     || !SupportAnalyticsService.netProof(candidateProofs.get(0), row, fact)) continue;
             verified.put(id, new OriginalAttribution(fact.customerId(), project(row)));
         }
@@ -59,8 +63,6 @@ final class SupportPerformanceDepositAttribution {
                 forCustomer(verified.get(fact.factId()), fact.customerId())));
         corrections.forEach(fact -> events.put(fact.operationNo(),
                 forCustomer(verified.get(fact.originalFactId()), fact.customerId())));
-        var verifiedOwners = new HashMap<String, Long>();
-        verified.forEach((id, original) -> verifiedOwners.put(id, original.customerId()));
         return new Result(Map.copyOf(events), Map.copyOf(verifiedOwners));
     }
 

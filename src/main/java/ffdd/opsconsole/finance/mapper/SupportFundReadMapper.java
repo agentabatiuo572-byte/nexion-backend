@@ -93,6 +93,24 @@ public interface SupportFundReadMapper {
         +IDS+" ORDER BY p.user_id,p.withdrawal_no</script>") @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> bankReservations(@Param("ids") List<Long> ids);
     @Select("""
+        SELECT l.event_no FROM nx_withdrawal_payout_ledger l
+        JOIN nx_audit_log a ON a.action='D5_WITHDRAWAL_PAYOUT_CHAIN_PROOF' AND a.resource_type='WITHDRAWAL'
+             AND a.resource_id=l.withdrawal_no AND a.biz_no=l.withdrawal_no AND a.user_id=#{customerId}
+             AND a.actor_type='SYSTEM' AND a.result='SUCCESS' AND a.is_deleted=0
+             AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.txid'))=l.txid
+             AND JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.providerCid'))=CAST(l.provider_cid AS CHAR)
+             AND CAST(JSON_UNQUOTE(JSON_EXTRACT(a.detail_json,'$.amount')) AS DECIMAL(18,6))=l.amount_usdt
+             AND JSON_EXTRACT(a.detail_json,'$.requiredConfirmations') >= 15
+             AND JSON_EXTRACT(a.detail_json,'$.confirmations') >= JSON_EXTRACT(a.detail_json,'$.requiredConfirmations')
+        WHERE l.withdrawal_no=#{withdrawalNo} AND l.provider_cid=#{providerCid} AND l.source='provider'
+          AND l.event_type='CALLBACK' AND l.status='CONFIRMED' AND l.txid=#{txid}
+          AND l.amount_usdt=#{net} AND l.created_at=#{completedAt}
+        LIMIT 2
+        """)
+    List<String> chainSettlementEvents(@Param("withdrawalNo") String withdrawalNo, @Param("customerId") long customerId,
+            @Param("providerCid") long providerCid, @Param("txid") String txid, @Param("net") BigDecimal net,
+            @Param("completedAt") LocalDateTime completedAt);
+    @Select("""
         <script>
         SELECT w.withdrawal_no withdrawalNo, e.event_id eventId, p.provider_order_id providerOrderId,
                q.amount_vnd quotedVnd, e.payload

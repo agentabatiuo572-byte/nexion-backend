@@ -51,6 +51,7 @@ public class SupportPerformanceExportService {
     static final int SUMMARY_LIMIT = 5000;
     static final int CUSTOMER_DETAIL_LIMIT = 5000;
     static final int TRANSACTION_DETAIL_LIMIT = 100000;
+    private static final int MAX_FROZEN_BYTES = 16_777_215;
     static final int MIN_REASON_CHARS = 8;
     static final int MAX_REASON_CHARS = 200;
     private static final int TOKEN_HOURS = 24;
@@ -74,8 +75,8 @@ public class SupportPerformanceExportService {
         }
         List<Map<String, Object>> scopes = scopes(actor);
         List<Map<String, Object>> months = new ArrayList<>();
-        for (String month : facts.months()) {
-            months.add(row("month", month, "availability", "UNKNOWN", "reasonCodes", List.of("HISTORY_INCOMPLETE")));
+        for (var month : facts.months()) {
+            months.add(row("month", month.month(), "availability", month.availability(), "reasonCodes", month.reasonCodes()));
         }
         return row("months", months, "scopes", scopes,
                 "limits", Map.of("SUMMARY", SUMMARY_LIMIT, "CUSTOMER_DETAIL", CUSTOMER_DETAIL_LIMIT,
@@ -85,7 +86,7 @@ public class SupportPerformanceExportService {
 
     public Map<String, Object> preview(Map<String, Object> request) {
         Long actor = actorId();
-        var plan = plan(actor, request, true);
+        var plan = plan(actor, request);
         return row("previewVersion", plan.previewVersion(), "window", plan.window() == null ? null : windowView(plan.window()),
                 "scope", Map.of("kind", plan.scope().kind(), "groupIds", plan.scope().groupIds(), "names", plan.scope().names()),
                 "items", plan.items());
@@ -107,7 +108,7 @@ public class SupportPerformanceExportService {
 
     private Map<String, Object> createTasks(Long actor, String idempotencyKey, Map<String, Object> request,
                                             String reason, String requestedVersion) {
-        var plan = plan(actor, request, false);
+        var plan = plan(actor, request);
         if (requestedVersion == null || !requestedVersion.equals(plan.previewVersion())) {
             throw new BizException(409, "EXPORT_PREVIEW_CHANGED");
         }
@@ -121,7 +122,11 @@ public class SupportPerformanceExportService {
             if ("UNAVAILABLE".equals(status) && denied) {
                 throw new BizException(403, "PERMISSION_DENIED");
             }
-            if (!"AVAILABLE".equals(status)) throw new BizException(503, "EXPORT_SOURCE_UNAVAILABLE");
+            if (!"AVAILABLE".equals(status)) {
+                if (reasons instanceof List<?> codes && codes.contains("EXPORT_DATA_STALE")) throw new BizException(503, "EXPORT_DATA_STALE");
+                if (reasons instanceof List<?> codes && codes.contains("EXPORT_REFRESH_FAILED")) throw new BizException(503, "EXPORT_REFRESH_FAILED");
+                throw new BizException(503, "EXPORT_SOURCE_UNAVAILABLE");
+            }
         }
         mapper.insertRequest(idempotencyKey, actor);
         String requestId = String.valueOf(mapper.lastInsertId());
@@ -176,7 +181,8 @@ public class SupportPerformanceExportService {
             total = mapper.countMine(actor, types, requestIds);
         }
         return row("records", rows.stream()
-                        .map(task -> scopeStillAllowed(actor, task) ? taskView(task, actor) : minimalView(task, actor))
+                        .map(task -> ("APPROVALS".equals(normalized) ? reviewerScopeOk(actor, task) : scopeStillAllowed(actor, task))
+                                ? taskView(task, actor) : minimalView(task, actor))
                         .toList(),
                 "total", total, "pageNum", page, "pageSize", size);
     }
@@ -207,8 +213,8 @@ public class SupportPerformanceExportService {
         }
         TaskRow task = required(taskId);
         if (task.requesterId().equals(actor)) throw new BizException(403, "EXPORT_SELF_APPROVAL_FORBIDDEN");
+        if (!reviewerScopeOk(actor, task)) throw new BizException(404, "EXPORT_TASK_NOT_FOUND");
         if (!"PENDING_APPROVAL".equals(task.status())) throw new BizException(409, "EXPORT_INVALID_STATE");
-        if (!reviewerScopeOk(actor, task)) throw new BizException(409, "EXPORT_SCOPE_CHANGED");
         if ("APPROVE".equals(decision)) {
             if (!applicantStillEligible(task)) throw new BizException(409, "EXPORT_APPLICANT_INELIGIBLE");
             if (!applicantScopeOk(task)) throw new BizException(409, "EXPORT_SCOPE_CHANGED");
@@ -246,13 +252,15 @@ public class SupportPerformanceExportService {
         return row("taskId", String.valueOf(task.id()));
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> downloadToken(Long taskId) {
         Long actor = actorId();
         TaskRow task = required(taskId);
-        if (!task.requesterId().equals(actor) || !readCode() || !ownsType(task.taskType(), actor)
-                || !employmentAllows(actor, task) || !scopeStillAllowed(actor, task)
-                || !disclosedCustomersAllowed(task)) {
+        if (!task.requesterId().equals(actor) || !readCode() || !ownsType(task.taskType(), actor)) {
             throw new BizException(403, "PERMISSION_DENIED");
+        }
+        if (!employmentAllows(actor, task) || !scopeStillAllowed(actor, task) || !disclosedCustomersAllowed(task)) {
+            throw new BizException(409, "EXPORT_SCOPE_CHANGED");
         }
         if (!"READY".equals(task.status())) throw new BizException(409, "EXPORT_NOT_READY");
         LocalDateTime created = mapper.fileCreatedAt(taskId);
@@ -267,6 +275,7 @@ public class SupportPerformanceExportService {
         return row("token", token, "expiresAt", instant(expiresAt));
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public FilePayload file(Long taskId, String token) {
         Long actor = actorId();
         TaskRow task = required(taskId);
@@ -325,7 +334,7 @@ public class SupportPerformanceExportService {
     private record Plan(Window window, Scope scope, String previewVersion, List<Map<String, Object>> items,
                         List<TableItem> tables) { }
 
-    private Plan plan(Long actor, Map<String, Object> request, boolean previewOnly) {
+    private Plan plan(Long actor, Map<String, Object> request) {
         if (!readCode() || !(owns(SUMMARY_PERMISSION) || owns(DETAIL_PERMISSION)) || !outCapable(actor)) {
             throw new BizException(403, "PERMISSION_DENIED");
         }
@@ -335,17 +344,25 @@ public class SupportPerformanceExportService {
         List<Type> permitted = allowedTypes(actor);
         if (types.stream().noneMatch(permitted::contains)) throw new BizException(403, "PERMISSION_DENIED");
         Window window = month == null ? null : facts.window(month, scope);
+        String blocker = facts.newRequestBlocker(window);
         List<Map<String, Object>> items = new ArrayList<>();
         List<TableItem> tables = new ArrayList<>();
-        StringBuilder seed = new StringBuilder(month + "|" + scope.kind() + "|" + String.join(",", scope.groupIds()));
+        StringBuilder seed = new StringBuilder(actor + "|" + month + "|" + scope.kind() + "|" + String.join(",", scope.groupIds()));
         if (window != null) seed.append("|").append(window.sourceVersion()).append("|").append(window.asOf());
         for (Type type : types) {
             boolean allowed = permitted.contains(type);
             Table table = !allowed || window == null ? null : facts.read(type, window, scope);
             Map<String, Object> item = item(type, table, allowed, window);
+            if (allowed && blocker != null) {
+                item.put("status", "UNAVAILABLE");
+                item.put("reasonCodes", List.of(blocker));
+            }
             items.add(item);
-            seed.append("|").append(type).append(":").append(item.get("status")).append(":").append(item.get("availableRows"));
-            if (table != null) tables.add(new TableItem(type, table));
+            seed.append("|").append(type).append(":").append(item.get("status")).append(":").append(item.get("reasonCodes"));
+            if (table != null) {
+                seed.append(":").append(sha256(write(table)));
+                tables.add(new TableItem(type, table));
+            }
         }
         return new Plan(window, scope, sha256(seed.toString()), items, tables);
     }
@@ -385,7 +402,9 @@ public class SupportPerformanceExportService {
         } else if (table.rows().isEmpty()) {
             status = "EMPTY";
             reasons = List.of("EXPORT_EMPTY");
-        } else if (table.rows().size() > limit(type)) {
+        } else if (table.rows().size() > limit(type)
+                || write(table.rows()).getBytes(StandardCharsets.UTF_8).length > MAX_FROZEN_BYTES
+                || csv(table).getBytes(StandardCharsets.UTF_8).length > MAX_FROZEN_BYTES) {
             status = "LIMIT_EXCEEDED";
             reasons = append(reasons, "EXPORT_ROW_LIMIT");
         } else {
@@ -684,13 +703,13 @@ public class SupportPerformanceExportService {
         if ("SUMMARY".equals(type) || !("CUSTOMER_DETAIL".equals(type) || "TRANSACTION_DETAIL".equals(type))) return false;
         Map<String, Object> scope = readMap(task.scopeJson());
         String kind = text(scope.get("kind"));
-        if ("ALL".equals(kind)) return superAdmin();
+        if (kind == null) return false;
+        if (superAdmin()) return Set.of("ALL", "SELF", "MANAGED_GROUPS").contains(kind);
         if ("MANAGED_GROUPS".equals(kind)) {
             Set<String> owned = groupsOf(actor).stream().map(String::valueOf).collect(java.util.stream.Collectors.toSet());
             return owned.containsAll(strings(scope.get("groupIds")));
         }
-        // A SELF batch is reviewable only at platform level.
-        return superAdmin();
+        return false;
     }
 
     /** Approval rechecks the applicant's own codes, qualification and frozen event scope. */
@@ -739,25 +758,19 @@ public class SupportPerformanceExportService {
     /** The approval and the generation both recheck the original applicant's object rights. */
     private boolean applicantCustomersReadable(TaskRow task) {
         if ("SUMMARY".equals(task.taskType())) return true;
-        for (Long id : readCustomerIds(task.disclosedCustomersJson())) {
-            try {
-                if (!ownership.canRead(task.requesterId(), id)) return false;
-            } catch (RuntimeException ex) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private boolean disclosedCustomersAllowed(TaskRow task) {
-        if ("SUMMARY".equals(task.taskType())) return true;
         List<Long> ids = readCustomerIds(task.disclosedCustomersJson());
         if (ids.isEmpty()) return true;
         try {
-            return ownership.readableCustomerIds(ids).containsAll(ids);
+            Map<String, Object> scope = readMap(task.scopeJson());
+            var original = new Scope(text(scope.get("kind")), strings(scope.get("groupIds")), List.of());
+            return ownership.canReadCustomers(original.currentCustomerScopes(task.requesterId()), ids);
         } catch (RuntimeException ex) {
             return false;
         }
+    }
+
+    private boolean disclosedCustomersAllowed(TaskRow task) {
+        return task.requesterId().equals(ownership.actorId()) && applicantCustomersReadable(task);
     }
 
     // ---------- views and helpers ----------

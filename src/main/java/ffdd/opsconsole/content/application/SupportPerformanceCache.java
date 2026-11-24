@@ -22,12 +22,14 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class SupportPerformanceCache {
-    static final String SNAPSHOT_KEY = "uvel:support:performance:v3:snapshot";
-    static final String LOCK_KEY = "uvel:support:performance:v3:lock";
+    static final String SNAPSHOT_KEY = "uvel:support:performance:v4:snapshot";
+    static final String LOCK_KEY = "uvel:support:performance:v4:lock";
+    static final String FAILED_KEY = "uvel:support:performance:v4:refresh-failed";
     static final Duration LOCK_LEASE = Duration.ofMinutes(2);
     private static final DefaultRedisScript<Long> PUBLISH = new DefaultRedisScript<>("""
         if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
         redis.call('SET', KEYS[2], ARGV[2])
+        redis.call('DEL', KEYS[3])
         redis.call('DEL', KEYS[1])
         return 1
         """, Long.class);
@@ -71,7 +73,7 @@ public class SupportPerformanceCache {
         try {
             String payload = json.writeValueAsString(snapshot);
             boolean published = Long.valueOf(1).equals(redis.execute(PUBLISH,
-                    List.of(LOCK_KEY, SNAPSHOT_KEY), token, payload));
+                    List.of(LOCK_KEY, SNAPSHOT_KEY, FAILED_KEY), token, payload));
             if (published) decoded.set(new Decoded(payload, snapshot));
             return published;
         } catch (java.io.IOException failure) {
@@ -82,6 +84,20 @@ public class SupportPerformanceCache {
             try { redis.execute(RELEASE, List.of(LOCK_KEY), token); }
             catch (DataAccessException ignored) { /* lease will expire */ }
         }
+    }
+
+    public boolean refreshFailed() {
+        try { return Boolean.TRUE.equals(redis.hasKey(FAILED_KEY)); }
+        catch (DataAccessException failure) { throw unavailable(); }
+    }
+
+    public boolean stale(SupportPerformance.Snapshot snapshot) {
+        return !Instant.now().isBefore(snapshot.asOf().plus(Duration.ofMinutes(2)));
+    }
+
+    void markRefreshFailed() {
+        try { redis.opsForValue().set(FAILED_KEY, "1"); }
+        catch (DataAccessException unavailable) { /* A reader cannot establish freshness while Redis is unavailable. */ }
     }
 
     private static BizException unavailable() {

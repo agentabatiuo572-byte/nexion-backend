@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.domain.SupportPerformance;
 import ffdd.opsconsole.content.domain.SupportPerformance.ObservedDeposit;
+import ffdd.opsconsole.content.mapper.SupportPerformanceHistoryMapper;
 import ffdd.opsconsole.finance.facade.SupportDirectPurchaseFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedDepositCorrection;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedWithdrawal;
@@ -12,6 +13,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.EnumSet;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,10 +28,13 @@ public class SupportPerformanceSampler {
     private boolean enabled;
     private final SupportPerformanceCache cache;
     private final SupportDirectPurchaseFactsFacade directPurchases;
+    private final SupportPerformanceHistoryMapper history;
 
-    public SupportPerformanceSampler(SupportPerformanceCache cache, SupportDirectPurchaseFactsFacade directPurchases) {
+    public SupportPerformanceSampler(SupportPerformanceCache cache, SupportDirectPurchaseFactsFacade directPurchases,
+            SupportPerformanceHistoryMapper history) {
         this.cache = cache;
         this.directPurchases = directPurchases;
+        this.history = history;
     }
 
     Capture prepare(Instant asOf, Collection<Long> subjects, SupportPaymentFacts.Snapshot payments) {
@@ -49,28 +54,54 @@ public class SupportPerformanceSampler {
             var purchases = directPurchases.readDirectPurchases(subjects, directory.historyStart(), asOf);
             return new Capture(directory, deposits, purchases);
         } catch (RuntimeException failure) {
+            cache.markRefreshFailed();
             log.warn("Support performance v2 observation unavailable type={}", failure.getClass().getSimpleName());
             return null;
         }
     }
 
-    void publish(Capture capture, SupportAnalyticsFactSnapshot source) {
+    SupportPerformance.Snapshot freeze(Capture capture, SupportAnalyticsFactSnapshot source) {
         if (capture.withdrawalReadFailed) {
+            cache.markRefreshFailed();
             log.warn("Support performance v2 funds source read failed, previous generation retained");
-            return;
+            return null;
         }
         try {
             var directory = capture.directory;
             var attributions = SupportPerformanceDepositAttribution.resolve(source, capture.deposits, capture.depositCorrections);
-            var subtotals = SupportPerformanceAggregation.summarize(directory.months(), source.payments(),
-                    capture.deposits, capture.depositCorrections, capture.withdrawals, capture.purchases.facts(), attributions);
-            cache.publish(new SupportPerformance.Snapshot(directory.definitionVersion(), directory.sourceVersion(),
-                    directory.historyStart(), directory.asOf(), directory.generation(), directory.months(),
-                    capture.withdrawals, capture.deposits, capture.depositCorrections, attributions.events(),
-                    capture.purchases.facts(), capture.purchases.issues(), subtotals));
+            var events = SupportPerformanceAggregation.events(source.payments(), capture.deposits,
+                    capture.depositCorrections, capture.withdrawals, capture.purchases.facts(), attributions, history);
+            var months = directory.months().stream().map(month -> {
+                var reasons = EnumSet.of(SupportPerformance.Reason.SOURCE_INCOMPLETE, SupportPerformance.Reason.EXTERNAL_REFUND_UNVERIFIED);
+                var monthEvents = events.stream().filter(event -> month.contains(event.effectiveAt())).toList();
+                if (monthEvents.stream().anyMatch(event -> event.attribution().state() == SupportPerformance.AttributionState.UNKNOWN)) {
+                    reasons.add(SupportPerformance.Reason.ATTRIBUTION_UNKNOWN);
+                }
+                if (capture.purchases.issues().stream().anyMatch(issue -> "MISSING_PAYMENT_TIME".equals(issue.reason()))) {
+                    reasons.add(SupportPerformance.Reason.PAYMENT_TIME_UNVERIFIED);
+                }
+                var coverage = monthEvents.isEmpty() ? SupportPerformance.Coverage.UNKNOWN : SupportPerformance.Coverage.PARTIAL;
+                return new SupportPerformance.Month(month.month(), month.from(), month.to(), month.businessZone(),
+                        coverage, List.copyOf(reasons));
+            }).toList();
+            return new SupportPerformance.Snapshot(directory.definitionVersion(), directory.sourceVersion(),
+                    directory.historyStart(), directory.asOf(), SupportPerformance.Generation.READY, months, events,
+                    capture.purchases.issues(), SupportPerformanceAggregation.byMonth(months, events));
+        } catch (RuntimeException failure) {
+            cache.markRefreshFailed();
+            log.warn("Support performance v2 generation failed type={}", failure.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    void publish(SupportPerformance.Snapshot snapshot) {
+        try {
+            cache.publish(snapshot);
         } catch (BizException failure) {
+            cache.markRefreshFailed();
             log.warn("Support performance v2 publication unavailable reason={}", failure.getMessage());
         } catch (RuntimeException failure) {
+            cache.markRefreshFailed();
             log.warn("Support performance v2 publication failed type={}", failure.getClass().getSimpleName());
         }
     }

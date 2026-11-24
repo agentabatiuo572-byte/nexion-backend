@@ -128,7 +128,7 @@ public interface SupportPerformanceExportMapper {
     @Update("""
             UPDATE nx_support_performance_export_task
                SET status='FAILED', generation_error=#{reason}, version=version+1, updated_at=NOW()
-             WHERE id=#{id} AND is_deleted=0
+             WHERE id=#{id} AND status='APPROVED' AND is_deleted=0
             """)
     int markFailed(@Param("id") Long id, @Param("reason") String reason);
 

@@ -145,6 +145,18 @@ public class SupportOwnershipService {
         return readable;
     }
 
+    /** Recheck frozen IDs only within the scope that authorized their disclosure. */
+    @Transactional(readOnly = true)
+    public boolean canReadCustomers(List<ReadScope> scopes, Collection<Long> ids) {
+        if (ids.isEmpty()) return true;
+        Set<Long> remaining = new HashSet<>(ids);
+        for (ReadScope scope : scopes) {
+            remaining.removeAll(mapper.readableCustomers(scope, remaining));
+            if (remaining.isEmpty()) return true;
+        }
+        return false;
+    }
+
     private boolean canReadCurrent(Long actor, Long customer) {
         return currentCustomerScope(actor,customer)!=null;
     }

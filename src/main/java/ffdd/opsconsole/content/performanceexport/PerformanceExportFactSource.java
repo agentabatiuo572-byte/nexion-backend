@@ -1,13 +1,11 @@
 package ffdd.opsconsole.content.performanceexport;
 
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import java.util.List;
 import java.util.Map;
 
-/**
- * B80-BE-06 isolation seam. The net-inflow fact and aggregate sources are delivered by
- * B80-BE-01/BE-02/BE-04/BE-05; until those land this source reports UNKNOWN with an explicit
- * reason, so the export tasks never present legacy net contribution or fabricated amounts.
- */
+/** The versioned net-inflow publication used by export preparation. */
 public interface PerformanceExportFactSource {
     enum Type { SUMMARY, CUSTOMER_DETAIL, TRANSACTION_DETAIL }
 
@@ -16,20 +14,34 @@ public interface PerformanceExportFactSource {
     record Window(String definitionVersion, String sourceVersion, String month, String basis,
                   String from, String to, String asOf, String businessZone) { }
 
-    record Scope(String kind, List<String> groupIds, List<String> names) { }
+    record Scope(String kind, List<String> groupIds, List<String> names) {
+        List<ReadScope> currentCustomerScopes(Long actor) {
+            return switch (kind) {
+                case "SELF" -> List.of(new ReadScope(actor, ReadMode.PERSONAL, null, null));
+                case "MANAGED_GROUPS" -> groupIds.stream()
+                        .map(id -> new ReadScope(actor, ReadMode.MANAGED, Long.valueOf(id), null)).toList();
+                case "ALL" -> List.of(new ReadScope(actor, ReadMode.ALL, null, null));
+                default -> List.of();
+            };
+        }
+    }
 
     record Coverage(Status status, List<String> reasons) { }
+
+    record MonthOption(String month, String availability, List<String> reasonCodes) { }
 
     record Table(Type type, List<String> columns, List<Map<String, String>> rows, Coverage coverage,
                  Integer restrictedHistoryRows, List<Long> disclosedCustomerIds) { }
 
     /** Real supported months from the formal first month; empty means no published catalog yet. */
-    List<String> months();
+    List<MonthOption> months();
 
     /** The window for one month under the given scope; null when the month is not supported. */
     Window window(String month, Scope scope);
 
     Table read(Type type, Window window, Scope scope);
+
+    String newRequestBlocker(Window window);
 
     final class Columns {
         private Columns() { }

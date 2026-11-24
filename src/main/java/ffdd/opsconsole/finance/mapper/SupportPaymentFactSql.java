@@ -13,11 +13,11 @@ final class SupportPaymentFactSql {
           JOIN nx_user u ON u.id=i.user_id AND u.sandbox=0
           LEFT JOIN nx_payment_record p ON p.payment_no=i.intent_no AND p.user_id=i.user_id
                 AND p.provider=i.payment_method AND p.provider_payment_id=i.provider_reference
-                AND p.signature_status='VERIFIED' AND p.currency='USDT'
+                AND p.payment_status='PAID' AND p.signature_status='VERIFIED' AND p.currency='USDT'
                 AND p.wallet_ledger_id IS NULL AND p.is_deleted=0
           LEFT JOIN nx_order o ON o.order_no=p.order_no AND o.user_id=i.user_id AND o.payment_no=i.intent_no
                 AND o.order_no=JSON_UNQUOTE(JSON_EXTRACT(i.receipt_json,'$.orderNo'))
-         WHERE (i.status='DELIVERED' OR i.receipt_json IS NOT NULL)
+         WHERE i.status='DELIVERED' AND i.confirmed_at IS NOT NULL
            AND i.user_id IN
         """ + USERS + """
            <if test="from != null">

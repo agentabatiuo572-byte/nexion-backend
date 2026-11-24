@@ -10,6 +10,7 @@ import ffdd.opsconsole.finance.facade.SupportDirectPurchaseFactsFacade;
 import ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper;
 import ffdd.opsconsole.shared.config.StorageTime;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -79,7 +80,19 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
             }
             BigDecimal businessAmount = evidence.businessAmountUsdt();
             BigDecimal quotedAmount = amount(quote, "businessAmountUsdt");
-            if (businessAmount.signum() <= 0 || quotedAmount == null || businessAmount.compareTo(quotedAmount) != 0) {
+            BigDecimal subtotal = amount(quote, "subtotalUsdt"), rounding = amount(quote, "roundingAdjustmentUsdt");
+            BigDecimal channelFee = amount(quote, "channelFeeUsdt"), networkFee = amount(quote, "networkConfirmFeeUsdt");
+            BigDecimal total = amount(quote, "totalUsdt");
+            boolean bank = BANK_PAYMENT.equals(evidence.paymentMethod());
+            BigDecimal vnd = bank ? amount(quote, "amountVnd") : null;
+            BigDecimal fxRate = bank ? amount(quote, "fxRateVndPerUsdt") : null;
+            if (businessAmount == null || businessAmount.signum() <= 0 || quotedAmount == null
+                    || businessAmount.compareTo(quotedAmount) != 0 || subtotal == null || rounding == null
+                    || businessAmount.add(rounding).compareTo(subtotal) != 0 || channelFee == null || channelFee.signum() < 0
+                    || networkFee == null || networkFee.signum() < 0 || total == null
+                    || subtotal.add(channelFee).add(networkFee).setScale(2, RoundingMode.HALF_UP).compareTo(total) != 0
+                    || (bank && (vnd == null || vnd.signum() <= 0 || fxRate == null || fxRate.signum() <= 0
+                    || total.multiply(fxRate).setScale(0, RoundingMode.HALF_UP).compareTo(vnd) != 0))) {
                 issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "INVALID_DIRECT_PAYMENT_AMOUNT"));
                 continue;
             }
@@ -87,9 +100,7 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
             facts.add(new Fact(evidence.intentNo(), evidence.customerId(), evidence.orderNo(),
                     evidence.purchaseKind(), evidence.paymentMethod(), evidence.providerReference(),
                     evidence.providerPaidAt().atZone(StorageTime.ZONE).toInstant(), businessAmount,
-                    amount(quote, "subtotalUsdt"), amount(quote, "roundingAdjustmentUsdt"), amount(quote, "channelFeeUsdt"),
-                    amount(quote, "networkConfirmFeeUsdt"), amount(quote, "totalUsdt"),
-                    BANK_PAYMENT.equals(evidence.paymentMethod()) ? amount(quote, "amountVnd") : null));
+                    subtotal, rounding, channelFee, networkFee, total, vnd));
         }
         return new Snapshot(facts, issues);
     }

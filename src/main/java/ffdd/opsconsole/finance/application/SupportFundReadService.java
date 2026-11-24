@@ -816,20 +816,23 @@ public class SupportFundReadService {
         if(capture!=null && order.get("chain") instanceof String chain) {
             var completedAt=at.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant();
             if(capture.contains(completedAt)) {
+                var requestedAt=time(order.get("createdAt")).atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant();
                 var gross=decimal(order.get("amount"));
                 var fee=decimal(order.get("actualFee"));
                 var net=decimal(order.get("netReceive"));
                 var evidence=text(op,"operationKey");
                 if(CHAIN_WITHDRAWAL_NETWORKS.contains(chain) && "provider".equals(recorded.path("payoutSource").asText())
                         && !recorded.path("chainTxHash").asText("").isBlank()) {
+                    var settlements=mapper.chainSettlementEvents(no,customer,recorded.path("providerCid").asLong(),
+                            recorded.path("chainTxHash").asText(),net,at);
                     var networkFee=reserveLedgers.stream().filter(row->"WITHDRAW_NETWORK_FEE".equals(row.get("bizType")))
                             .map(row->decimal(row.get("amount"))).reduce(BigDecimal.ZERO,BigDecimal::add);
-                    capture.withdrawals().accept(new ConfirmedWithdrawal(no,customer,chain,completedAt,
-                            gross,fee,networkFee,net,null,evidence,null));
+                    if(settlements.size()==1)capture.withdrawals().accept(new ConfirmedWithdrawal(no,customer,chain,requestedAt,completedAt,
+                            gross,fee,networkFee,net,null,evidence,settlements.get(0)));
                 }else if("BANK-VND".equals(chain) && "hdpay".equals(recorded.path("payoutSource").asText())) {
                     var settlement=verifiedBankSettlement(no,customer,at,gross,recorded.path("providerCid").asText(),
                             bankEvents.getOrDefault(no,List.of()));
-                    if(settlement!=null)capture.withdrawals().accept(new ConfirmedWithdrawal(no,customer,chain,completedAt,
+                    if(settlement!=null)capture.withdrawals().accept(new ConfirmedWithdrawal(no,customer,chain,requestedAt,completedAt,
                             gross,fee,null,net,settlement.receivedVnd(),evidence,settlement.eventId()));
                 }
             }
