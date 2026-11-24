@@ -35,27 +35,36 @@ public class CregisDepositReviewService {
     }
 
     public Map<String, Object> preview(long cid) {
+        return preview(CregisNetwork.BEP20,cid);
+    }
+
+    public Map<String, Object> preview(CregisNetwork network,long cid) {
         if (cid <= 0 || config.getMode() != CregisProperties.Mode.PROVIDER)
             throw new BizException(400, "CREGIS_REVIEW_REQUEST_INVALID");
-        Long eventId = db.eventId(config.getProjectId(), cid);
+        Long eventId = db.eventId(network,config.getProjectId(),cid);
         if (eventId == null) throw new BizException(404, "CREGIS_REVIEW_EVENT_MISSING");
         return preflight(eventId).summary();
     }
 
     @Transactional(propagation=Propagation.NOT_SUPPORTED)
     public Map<String, Object> propose(long adminId, long cid, String reason, String evidenceHash) {
+        return propose(adminId,CregisNetwork.BEP20,cid,reason,evidenceHash);
+    }
+
+    @Transactional(propagation=Propagation.NOT_SUPPORTED)
+    public Map<String, Object> propose(long adminId,CregisNetwork network,long cid,String reason,String evidenceHash) {
         requireAdmin(adminId);
         requireReason(reason);
         if (cid <= 0 || evidenceHash == null || !evidenceHash.matches("(?i)[0-9a-f]{64}"))
             throw new BizException(400, "CREGIS_REVIEW_EVIDENCE_INVALID");
         if (config.getMode() != CregisProperties.Mode.PROVIDER)
             throw new BizException(503, "CREGIS_PROVIDER_DISABLED");
-        Long preflightEventId = db.eventId(config.getProjectId(), cid);
+        Long preflightEventId = db.eventId(network,config.getProjectId(),cid);
         if (preflightEventId == null || !evidenceHash.equalsIgnoreCase(
                 preflight(preflightEventId).evidenceHash()))
             throw new BizException(409, "CREGIS_REVIEW_EVIDENCE_CHANGED");
         return new TransactionTemplate(txManager).execute(ignored -> {
-                List<Map<String, Object>> events = db.lockEvent(config.getProjectId(), cid);
+                List<Map<String, Object>> events = db.lockEvent(network,config.getProjectId(),cid);
                 if (events.size() != 1 || !"REVIEW_HOLD".equals(events.get(0).get("status")))
                     throw new BizException(409, "CREGIS_REVIEW_EVENT_CHANGED");
                 long eventId = ((Number) events.get(0).get("id")).longValue();

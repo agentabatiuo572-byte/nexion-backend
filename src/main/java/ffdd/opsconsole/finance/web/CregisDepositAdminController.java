@@ -4,6 +4,7 @@ import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.finance.cregis.CregisDepositService;
 import ffdd.opsconsole.finance.cregis.CregisDepositReconciliation;
 import ffdd.opsconsole.finance.cregis.CregisDepositReviewService;
+import ffdd.opsconsole.finance.cregis.CregisNetwork;
 import ffdd.opsconsole.finance.cregis.CregisDepositSwitchService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -183,8 +184,9 @@ public class CregisDepositAdminController {
 
     @GetMapping("/review-evidence/{cid}")
     @PreAuthorize("hasAuthority('finance_d1_read')")
-    public ApiResult<Map<String, Object>> reviewEvidence(@PathVariable long cid) {
-        return ApiResult.ok(reviews.preview(cid));
+    public ApiResult<Map<String, Object>> reviewEvidence(@PathVariable long cid,
+            @RequestParam(required=false) String network) {
+        return ApiResult.ok(reviews.preview(reviewNetwork(network),cid));
     }
 
     @GetMapping("/switch-cases")
@@ -251,11 +253,14 @@ public class CregisDepositAdminController {
     @PostMapping("/review-cases")
     @PreAuthorize("hasAuthority('finance_d1_channel_manage')")
     public ApiResult<Map<String, Object>> propose(@RequestBody ReviewProposal request,
+            @RequestParam(required=false) String network,
             @RequestHeader(value="Idempotency-Key",required=false) String key, Authentication auth) {
         long id = admin(auth);
         try {
-            return retainedIndependent("CREGIS_REVIEW:PROPOSE:"+id,key,hash(request),
-                    ()->reviews.propose(id, request.cid(), request.reason(), request.evidenceHash()));
+            CregisNetwork selected=reviewNetwork(network);
+            String requestHash=selected==CregisNetwork.BEP20?hash(request):hash(values("network",selected.network(),"body",request));
+            return retainedIndependent("CREGIS_REVIEW:PROPOSE:"+id,key,requestHash,
+                    ()->reviews.propose(id,selected,request.cid(),request.reason(),request.evidenceHash()));
         } catch (RuntimeException rejected) {
             reviews.auditRejected(id, "PROPOSE", rejected instanceof BizException
                     ? rejected.getMessage() : "CREGIS_REVIEW_FAILED");
@@ -306,6 +311,15 @@ public class CregisDepositAdminController {
             if (id > 0) return id;
         } catch (NumberFormatException invalid) { /* reject below */ }
         throw new BizException(401, "ADMIN_AUTH_REQUIRED");
+    }
+
+    private static CregisNetwork reviewNetwork(String network) {
+        if (network==null) return CregisNetwork.BEP20;
+        try {
+            return CregisNetwork.fromNetwork(network);
+        } catch (IllegalArgumentException invalid) {
+            throw new BizException(422,"CREGIS_NETWORK_UNSUPPORTED");
+        }
     }
 
     public record ReviewProposal(long cid, String reason, String evidenceHash) { }
