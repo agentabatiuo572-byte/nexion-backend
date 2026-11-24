@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.mapper;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -89,6 +90,19 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
              WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1
             """)
     TrialRow trial(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialClaimNo')) claimNo,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.pricingAsOf')) pricingAsOf,
+                   payment_method paymentMethod, expires_at deadline, reason
+              FROM nx_purchase_payment_intent
+             WHERE user_id=#{userId} AND kind='TRIAL_CONVERT'
+               AND receipt_json IS NULL AND refund_receipt_json IS NULL
+               AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED','MANUAL_REVIEW')
+            """)
+    List<TrialExternalPayment> openTrialExternalPayments(@Param("userId") Long userId);
+
+    record TrialExternalPayment(String claimNo, String pricingAsOf, String paymentMethod, Instant deadline, String reason) { }
 
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
@@ -208,7 +222,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             """)
     int consumeTrialQuota(@Param("quotaDate") LocalDate quotaDate);
 
-    @Select("""
+    String DUE_TRIALS = """
             SELECT user_id userId,
                    claim_no claimNo,
                    CASE
@@ -219,10 +233,18 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
              WHERE is_deleted=0
                AND UPPER(status) IN ('CLAIMED','ACTIVE','GRACE','EXTENDED')
             HAVING dueAt <= NOW()
-             ORDER BY expires_at, id
+            """;
+
+    @Select(DUE_TRIALS + " ORDER BY dueAt, claimNo LIMIT #{limit}")
+    List<DueTrialRow> dueTrials(@Param("limit") int limit);
+
+    @Select(DUE_TRIALS + """
+             ORDER BY (dueAt, claimNo) <= (#{afterDueAt}, #{afterClaimNo}), dueAt, claimNo
              LIMIT #{limit}
             """)
-    List<DueTrialRow> dueTrials(@Param("limit") int limit);
+    List<DueTrialRow> dueTrialsAfter(@Param("limit") int limit,
+                                   @Param("afterDueAt") LocalDateTime afterDueAt,
+                                   @Param("afterClaimNo") String afterClaimNo);
 
     @Select("""
             SELECT COUNT(*) FROM nx_risk_signal

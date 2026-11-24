@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.application;
 import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
+import ffdd.opsconsole.finance.purchase.PurchasePaymentService;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
 import ffdd.opsconsole.finance.purchase.PurchaseQuotaReservation;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
@@ -51,6 +52,7 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -87,6 +89,7 @@ public class AppTrialLifecycleService {
     private static final String TRIAL_CONVERSION_SOURCE = "nx_trial_claim + nx_order + nx_order_item";
     private static final BigDecimal MAX_EXPECTED_AMOUNT = new BigDecimal("1000000.00");
     private static final Duration MAX_AUTO_SETTLEMENT_DELAY = Duration.ofHours(24);
+    private static final String EXTERNAL_PAYMENT_IN_PROGRESS = "TRIAL_EXTERNAL_PAYMENT_IN_PROGRESS";
     private static final List<String> ACTIVE_STATES = List.of("CLAIMED", "ACTIVE", "GRACE", "EXTENDED");
     private static final List<String> RESTARTABLE_STATES = List.of("CANCELLED", "FAILED");
     private static final List<String> PERSISTED_STATES = List.of(
@@ -250,18 +253,39 @@ public class AppTrialLifecycleService {
         return ApiResult.ok(project(userId, mapper.trial(userId), remainingPolicy, now, true));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> cancel(Long userId, String reason, String idempotencyKey) {
         requireUser(userId);
         String normalized = reason == null ? "" : reason.trim().toLowerCase(Locale.ROOT);
         if (!List.of("unbind", "explicit").contains(normalized)) return ApiResult.fail(422, "TRIAL_CANCEL_REASON_INVALID");
         return once("TRIAL_CANCEL", userId, idempotencyKey, normalized,
-                () -> cancelOnce(userId, normalized));
+                () -> cancelOnce(userId, normalized, false));
     }
 
-    private ApiResult<Map<String, Object>> cancelOnce(Long userId, String reason) {
+    @Transactional(rollbackFor = Exception.class)
+    ApiResult<Map<String, Object>> cancelFromOps(Long userId, String idempotencyKey) {
+        requireUser(userId);
+        return once("TRIAL_CANCEL", userId, idempotencyKey, "explicit",
+                () -> cancelOnce(userId, "explicit", true));
+    }
+
+    private ApiResult<Map<String, Object>> cancelOnce(Long userId, String reason, boolean opsOverride) {
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CANCELLABLE");
+        if (!opsOverride && externalPaymentHoldsClaim(row)) throw new BizException(409, EXTERNAL_PAYMENT_IN_PROGRESS);
+        return cancelClaim(userId, row, reason);
+    }
+
+    private boolean externalPaymentHoldsClaim(TrialRow row) {
+        var claim = new ExternalPaymentClaim(row.claimNo(), row.claimedAt().atZone(BUSINESS_ZONE).toInstant());
+        Instant now = clock.instant();
+        // The caller owns the buyer and claim locks. A non-locking read preserves purchase delivery's intent -> buyer order.
+        return mapper.openTrialExternalPayments(row.userId()).stream().anyMatch(payment ->
+                claim.matches(payment.claimNo(), payment.pricingAsOf())
+                        && PurchasePaymentService.openPaymentHoldsTrial(payment.paymentMethod(), payment.deadline(), payment.reason(), now));
+    }
+
+    private ApiResult<Map<String, Object>> cancelClaim(Long userId, TrialRow row, String reason) {
         LocalDateTime now = businessNow();
         int cooldownDays = positiveInt(policyMap(), "cooldownDays", 30);
         if (mapper.cancelTrial(row.id(), row.version(), reason, now, now.plusDays(cooldownDays)) != 1) {
@@ -275,7 +299,7 @@ public class AppTrialLifecycleService {
         return ApiResult.ok(project(userId, mapper.trial(userId), policyMap(), now, true));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> extend(Long userId, String idempotencyKey) {
         requireUser(userId);
         return once("TRIAL_EXTEND", userId, idempotencyKey, "accept",
@@ -286,6 +310,7 @@ public class AppTrialLifecycleService {
         Map<String, String> policy = policyMap();
         TrialRow row = mapper.lockTrial(userId);
         if (row == null) return ApiResult.fail(409, "TRIAL_NOT_EXTENDABLE");
+        if (active(row.status()) && externalPaymentHoldsClaim(row)) throw new BizException(409, EXTERNAL_PAYMENT_IN_PROGRESS);
         LocalDateTime now = businessNow();
         if ("ACTIVE".equals(normalize(row.status())) && !row.expiresAt().isAfter(now)) {
             if (mapper.enterGrace(row.id(), row.version(), now) != 1) throw new BizException(409, "TRIAL_GRACE_CONFLICT");
@@ -343,20 +368,27 @@ public class AppTrialLifecycleService {
                 () -> {
                     testCloudAdmission.lock();
                     requireUser(userId);
+                    // The PIN command already replayed retained success. Its transaction reads the current intent state.
+                    TrialRow row = mapper.lockTrial(userId);
+                    if (row != null && active(row.status()) && withinConversionDeadline(conversionDeadline(row), businessNow())
+                            && externalPaymentHoldsClaim(row)) {
+                        return ApiResult.fail(409, EXTERNAL_PAYMENT_IN_PROGRESS);
+                    }
                     return once("TRIAL_CONVERT:PRODUCTION",userId,idempotencyKey,request,
-                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote,false,null));
+                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote,false,null,null));
                 });
     }
 
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version) {
-        return settleVerifiedExternal(owner,product,expected,version,false,null);
+        return settleVerifiedExternal(owner,product,expected,version,false,null,null);
     }
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
-    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version,boolean legacyQuote, PurchaseQuotaReservation reservation) {
+    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version,boolean legacyQuote,
+                                                               PurchaseQuotaReservation reservation,String claimNo) {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
         testCloudAdmission.lock();
-        requireUser(owner); return convertOnce(owner,product,expected,StringUtils.hasText(version)?version:null,legacyQuote,reservation);
+        requireUser(owner); return convertOnce(owner,product,expected,StringUtils.hasText(version)?version:null,legacyQuote,reservation,claimNo);
     }
     @Transactional(readOnly=true)
     public ApiResult<Map<String,Object>> externalPaymentPricing(Long owner,Instant pricingInstant) {
@@ -381,7 +413,13 @@ public class AppTrialLifecycleService {
         return row == null ? null : new ExternalPaymentClaim(row.claimNo(), row.claimedAt().atZone(BUSINESS_ZONE).toInstant());
     }
 
-    public record ExternalPaymentClaim(String claimNo, Instant claimedAt) { }
+    public record ExternalPaymentClaim(String claimNo, Instant claimedAt) {
+        public boolean matches(String snapshotClaimNo, String pricingAsOf) {
+            if (snapshotClaimNo != null) return claimNo.equals(snapshotClaimNo);
+            // Older intents carry the quote instant. A restarted claim starts after the old quote.
+            return StringUtils.hasText(pricingAsOf) && !Instant.parse(pricingAsOf).isBefore(claimedAt);
+        }
+    }
 
     public Instant requireExternalPaymentConversion(Long owner) {
         if (!trialGateEnabled()) throw new BizException(409, "TRIAL_KILL_SWITCH_DISABLED");
@@ -423,7 +461,7 @@ public class AppTrialLifecycleService {
 
     private ApiResult<Map<String, Object>> convertOnce(
             Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote,
-            PurchaseQuotaReservation reservation) {
+            PurchaseQuotaReservation reservation, String paymentClaimNo) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
         if (!validExpectedAmount(expectedAmountUsdt)) {
@@ -434,13 +472,16 @@ public class AppTrialLifecycleService {
         var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.TRIAL_CONVERT, "USER:" + userId);
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
+        if (paymentClaimNo != null && !paymentClaimNo.equals(row.claimNo())) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         String configured = trialProductCode(policy, row);
         String canonicalRequested = canonicalTrialProductId(productNo);
         if (configured == null || !canonicalRequested.equals(configured)) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         }
         LocalDateTime now = businessNow();
-        if (!withinConversionDeadline(conversionDeadline(row), now)) {
+        LocalDateTime paidAt = VerifiedPurchasePayment.active()
+                ? LocalDateTime.ofInstant(VerifiedPurchasePayment.paidInstant(), BUSINESS_ZONE) : now;
+        if (!withinConversionDeadline(conversionDeadline(row), paidAt)) {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
@@ -586,17 +627,21 @@ public class AppTrialLifecycleService {
                 () -> redeemOnce(userId, false, "auto"));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> settleDue(
             Long userId, String expectedClaimNo, String idempotencyKey) {
         requireUser(userId);
+        TrialRow row = mapper.lockTrial(userId);
+        // The scheduler reuses one key per due claim. Leave a transient payment hold outside the stored result.
+        if (row != null && active(row.status()) && row.claimNo().equals(expectedClaimNo) && externalPaymentHoldsClaim(row)) {
+            return ApiResult.fail(409, EXTERNAL_PAYMENT_IN_PROGRESS);
+        }
         return once("TRIAL_SETTLE_DUE", userId, idempotencyKey, expectedClaimNo,
-                () -> settleDueOnce(userId, expectedClaimNo));
+                () -> settleDueOnce(userId, expectedClaimNo, row));
     }
 
-    private ApiResult<Map<String, Object>> settleDueOnce(Long userId, String expectedClaimNo) {
+    private ApiResult<Map<String, Object>> settleDueOnce(Long userId, String expectedClaimNo, TrialRow row) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
-        TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status()) || !row.claimNo().equals(expectedClaimNo)) {
             return ApiResult.fail(409, "TRIAL_DUE_STATE_CONFLICT");
         }
@@ -609,7 +654,7 @@ public class AppTrialLifecycleService {
                 : row.expiresAt().plusDays(row.graceDaysSnapshot());
         if (dueAt.isAfter(now)) return ApiResult.fail(409, "TRIAL_NOT_DUE");
         // FEAT-TRIAL02: expiry may close a trial, never authorize a purchase.
-        return cancelOnce(userId, flag(policy, "autoChargeAtEnd", false) && now.isAfter(dueAt.plus(MAX_AUTO_SETTLEMENT_DELAY))
+        return cancelClaim(userId, row, flag(policy, "autoChargeAtEnd", false) && now.isAfter(dueAt.plus(MAX_AUTO_SETTLEMENT_DELAY))
                 ? "auto_settlement_window_expired" : "auto_end");
     }
 

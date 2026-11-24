@@ -225,18 +225,21 @@ public class DirectReferralService {
             long revision=policies.lockSevenLayerRevision();
             int network=mapper.historicalNetwork(ref),direct=mapper.historicalDirect(ref);
             String mode=network>0&&direct>0?"CONFLICT":network>0?"LEGACY_7":direct>0?"DIRECT_ONLY_V1":"SEVEN_V2";
-            if("SEVEN_V2".equals(mode)&&policies.sevenLayerPausedForUpdate())throw new BizException(409,DirectReferralPolicyService.PAUSED_ERROR);
+            boolean sevenV2="SEVEN_V2".equals(mode);
+            if(sevenV2&&policies.sevenLayerPausedForUpdate())throw new BizException(409,DirectReferralPolicyService.PAUSED_ERROR);
             var policy=policies.atForUpdate(source.sourceOccurredAt());
-            var plan="SEVEN_V2".equals(mode)?requireUnilevel().prepareBudget(source.userId(),source.sponsorUserId(),
-                    zero(mapper.purchaseSubtotal(ref)), policies.rankPurchaseForUpdate(source.sourceOccurredAt())):Map.<String,Object>of();
-            if("SEVEN_V2".equals(mode))for(var item:(List<Map<String,Object>>)plan.get("layers")){
+            BigDecimal paidUsdt=source.amountUsdt();
+            var plan=sevenV2?requireUnilevel().prepareBudget(source.userId(),source.sponsorUserId(),
+                    paidUsdt, policies.rankPurchaseForUpdate(source.sourceOccurredAt())):Map.<String,Object>of();
+            if(sevenV2)for(var item:(List<Map<String,Object>>)plan.get("layers")){
                 Long id=(Long)item.get("beneficiaryUserId");if(id!=null&&mapper.sourceMember(id,scope.sandbox())==null)throw new BizException(409,"UNILEVEL_CHAIN_ENVIRONMENT_MISMATCH");
             }
             var value=new LinkedHashMap<String,Object>();value.put("sourceEnvironment",scope.sourceEnvironment());value.put("runId",scope.runId());value.put("orderNo",ref);
             value.put("sourceUserId",source.userId());value.put("sourceOccurredAt",source.sourceOccurredAt());value.put("preparedAt",now());value.put("settlementMode",mode);
             value.put("splitEnabled",policy.schemaVersion()==2&&policy.purchase().enabled());value.put("policyVersion",policy.policyVersion());value.put("sevenLayerRevision",revision);
             value.put("policySnapshot",encode(policy));value.put("chainAndRules",encode(plan));value.put("allocatedBudgetUsdt",plan.getOrDefault("allocatedBudgetUsdt",BigDecimal.ZERO));
-            value.put("status","CONFLICT".equals(mode)?"REQUIRES_REVIEW":"PREPARED");value.put("reason","CONFLICT".equals(mode)?"MIXED_HISTORICAL_MODES":"");
+            value.put("status","CONFLICT".equals(mode)?"REQUIRES_REVIEW":"PREPARED");
+            value.put("reason","CONFLICT".equals(mode)?"MIXED_HISTORICAL_MODES":sevenV2&&paidUsdt.signum()==0?"ZERO_PAID_SOURCE":"");
             if(mapper.insertOrder(value)!=1)throw conflict();order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),ref);
         }
         if(!"SEVEN_V2".equals(text(order,"settlement_mode")))return 0;

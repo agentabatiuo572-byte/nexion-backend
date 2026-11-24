@@ -95,7 +95,6 @@ public interface DirectReferralMapper extends BaseMapper<Object> {
         """) Source earning(String ref);
     record Source(Long userId,Long sponsorUserId,String sourceUserName,LocalDateTime sourceOccurredAt,
                   BigDecimal amountUsdt,BigDecimal amountNex,Long sourceDeviceId,Integer sandbox,Integer refunded,Integer valid) { }
-    @Select("SELECT subtotal_usdt FROM nx_order WHERE order_no=#{ref} AND is_deleted=0") BigDecimal purchaseSubtotal(String ref);
     @Select("""
       WITH RECURSIVE roots AS (
        SELECT id,order_no,0 depth FROM nx_commission_event WHERE id=#{id} AND is_deleted=0

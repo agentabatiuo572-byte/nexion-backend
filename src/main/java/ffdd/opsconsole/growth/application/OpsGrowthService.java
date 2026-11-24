@@ -717,7 +717,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         if (appTrialLifecycleService != null) {
             ApiResult<Map<String, Object>> lifecycle =
-                    appTrialLifecycleService.cancel(userId, "explicit", idempotencyKey);
+                    appTrialLifecycleService.cancelFromOps(userId, idempotencyKey);
             if (lifecycle.getCode() != 0) {
                 return lifecycle;
             }
