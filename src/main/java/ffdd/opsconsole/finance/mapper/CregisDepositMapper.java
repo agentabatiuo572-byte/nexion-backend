@@ -758,6 +758,13 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Select("SELECT id FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String} AND cid=#{cid}")
     Long eventId(@Param("network") CregisNetwork network,@Param("projectId") long projectId, @Param("cid") long cid);
 
+    // A project's CID is unique across networks. The CID-only review entry supports BEP20 and ERC20.
+    @Select("""
+            SELECT id FROM nx_cregis_deposit_event
+             WHERE project_id=#{projectId} AND cid=#{cid} AND chain_id IN ('2510','60')
+            """)
+    Long reviewEventIdByCid(@Param("projectId") long projectId,@Param("cid") long cid);
+
     @Select("""
             SELECT usdt_available AS usdtAvailable,cregis_risk_held AS cregisRiskHeld,version FROM nx_user_wallet
              WHERE user_id=#{userId} AND is_deleted=0 FOR UPDATE
@@ -1020,7 +1027,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     Map<String, Object> reviewEventSnapshot(@Param("id") long id);
     @Select("""
-            SELECT c.id,c.event_id AS eventId,CAST(e.cid AS CHAR) AS cid,e.user_id AS userId,
+            SELECT c.id,c.event_id AS eventId,CAST(e.cid AS CHAR) AS cid,e.chain_id AS chainId,e.user_id AS userId,
               e.gross_amount AS grossAmount,p.fee_usdt AS feeAmount,e.gross_amount - p.fee_usdt AS proposedNetAmount,
               e.address,e.txid,
               e.block_number AS blockNumber,e.block_hash AS blockHash,

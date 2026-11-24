@@ -257,9 +257,17 @@ public class CregisDepositAdminController {
             @RequestHeader(value="Idempotency-Key",required=false) String key, Authentication auth) {
         long id = admin(auth);
         try {
-            CregisNetwork selected=reviewNetwork(network);
-            String requestHash=selected==CregisNetwork.BEP20?hash(request):hash(values("network",selected.network(),"body",request));
-            return retainedIndependent("CREGIS_REVIEW:PROPOSE:"+id,key,requestHash,
+            String scope="CREGIS_REVIEW:PROPOSE:"+id;
+            CregisNetwork selected=reviews.proposalNetwork(reviewNetwork(network),request.cid());
+            if (network==null && selected==CregisNetwork.ERC20) {
+                // Replay a failure written before CID-only requests could resolve ERC20.
+                var legacy=commands.recoveryResult(scope,key,hash(request),ApiResult.class).response();
+                if (legacy!=null && legacy.getCode()!=0)
+                    throw new BizException(legacy.getCode(),legacy.getMessage());
+            }
+            String requestHash=selected==CregisNetwork.BEP20
+                    ? hash(request) : hash(values("network",selected.network(),"body",request));
+            return retainedIndependent(scope,key,requestHash,
                     ()->reviews.propose(id,selected,request.cid(),request.reason(),request.evidenceHash()));
         } catch (RuntimeException rejected) {
             reviews.auditRejected(id, "PROPOSE", rejected instanceof BizException
@@ -314,7 +322,7 @@ public class CregisDepositAdminController {
     }
 
     private static CregisNetwork reviewNetwork(String network) {
-        if (network==null) return CregisNetwork.BEP20;
+        if (network==null) return null;
         try {
             return CregisNetwork.fromNetwork(network);
         } catch (IllegalArgumentException invalid) {
