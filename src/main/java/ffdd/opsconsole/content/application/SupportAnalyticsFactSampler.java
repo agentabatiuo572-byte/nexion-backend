@@ -92,15 +92,15 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
                 var ids=List.copyOf(mapper.productionCustomers());
                 var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),asOf):payments.readHistory(ids);
                 lease.renew();
-                var performanceCapture=performance==null?null:performance.prepare(asOf,ids);
-                var withdrawalScope=performanceCapture==null?null:performanceCapture.withdrawalScope();
+                var performanceCapture=performance==null?null:performance.prepare(asOf,ids,payment);
+                var cashScope=performanceCapture==null?null:performanceCapture.cashScope();
                 Runnable onBatch=()->{
                     // The read-only generation has not been published. Keep the previous complete
                     // generation and stop at the reader's existing wallet-history batch checkpoints.
                     if(closing)throw new SamplingStopped();
                     lease.renew();
                 };
-                var contributions=withdrawalScope==null?funds.readNetContributions(ids,onBatch):funds.readNetContributions(ids,onBatch,withdrawalScope);
+                var contributions=cashScope==null?funds.readNetContributions(ids,onBatch):funds.readNetContributions(ids,onBatch,cashScope);
                 var raw=new SupportAnalyticsFactSnapshot(asOf,ids,payment,contributions,mapper.attributions(),mapper.attributionProofs());
                 return new Sampled(compiler.getObject().compileForCache(raw),performanceCapture);
             }));

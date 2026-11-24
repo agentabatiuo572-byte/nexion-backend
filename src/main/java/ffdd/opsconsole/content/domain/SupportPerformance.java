@@ -1,7 +1,10 @@
 package ffdd.opsconsole.content.domain;
 
+import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedDepositCorrection;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedWithdrawal;
+import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.shared.config.BusinessCalendar;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -25,6 +28,10 @@ public final class SupportPerformance {
         EXTERNAL_REFUND_UNVERIFIED, WITHDRAWAL_SETTLEMENT_UNVERIFIED
     }
 
+    public record ObservedDeposit(String factId,long customerId,long ledgerId,SupportPaymentFacts.Source source,
+            String sourceBusinessId,Instant creditedAt,BigDecimal creditedUsdt,
+            SupportPaymentFacts.Status historicalEnvironmentStatus) { }
+
     public record Month(String month, Instant from, Instant to, String businessZone,
                         Coverage coverage, List<Reason> reasons) {
         public Month {
@@ -37,6 +44,10 @@ public final class SupportPerformance {
             reasons = List.copyOf(reasons);
             if ((coverage == Coverage.COMPLETE) != reasons.isEmpty()) throw invalid();
         }
+
+        public boolean contains(Instant at) {
+            return at != null && !at.isBefore(from) && at.isBefore(to);
+        }
     }
 
     /**
@@ -45,13 +56,16 @@ public final class SupportPerformance {
      */
     public record Snapshot(String definitionVersion, String sourceVersion, Instant historyStart,
                            Instant asOf, Generation generation, List<Month> months,
-                           List<ConfirmedWithdrawal> observedWithdrawals) {
+                           List<ConfirmedWithdrawal> observedWithdrawals, List<ObservedDeposit> observedDeposits,
+                           List<ConfirmedDepositCorrection> observedDepositCorrections) {
         public Snapshot {
             if (!DEFINITION_VERSION.equals(definitionVersion) || sourceVersion == null
                     || sourceVersion.isBlank() || historyStart == null || !HISTORY_START.equals(historyStart)
                     || asOf == null || asOf.isBefore(HISTORY_START) || generation == null || months == null) throw invalid();
             months = List.copyOf(months);
             observedWithdrawals = observedWithdrawals == null ? List.of() : List.copyOf(observedWithdrawals);
+            observedDeposits = observedDeposits == null ? List.of() : List.copyOf(observedDeposits);
+            observedDepositCorrections = observedDepositCorrections == null ? List.of() : List.copyOf(observedDepositCorrections);
             if (!months.isEmpty()) {
                 Month first = months.get(0), last = months.get(months.size() - 1);
                 if (!first.from().equals(HISTORY_START) || !last.to().equals(asOf)) throw invalid();
@@ -80,11 +94,12 @@ public final class SupportPerformance {
                     expected = actual.plusMonths(1);
                 }
             }
-            if (!observedWithdrawals.isEmpty()) {
+            if (!observedWithdrawals.isEmpty() || !observedDeposits.isEmpty() || !observedDepositCorrections.isEmpty()) {
                 if (months.isEmpty()) throw invalid();
                 var last = months.get(months.size() - 1);
-                if (observedWithdrawals.stream().anyMatch(fact -> fact.completedAt() == null
-                        || fact.completedAt().isBefore(last.from()) || !fact.completedAt().isBefore(last.to()))) throw invalid();
+                if (observedWithdrawals.stream().anyMatch(fact -> !last.contains(fact.completedAt()))
+                        || observedDeposits.stream().anyMatch(fact -> !last.contains(fact.creditedAt()))
+                        || observedDepositCorrections.stream().anyMatch(fact -> !last.contains(fact.effectiveAt()))) throw invalid();
             }
         }
     }
@@ -105,7 +120,8 @@ public final class SupportPerformance {
             months.add(new Month(month.toString(), from, to, zone, Coverage.UNKNOWN,
                     List.of(Reason.GENERATION_UPGRADING)));
         }
-        return new Snapshot(DEFINITION_VERSION, sourceVersion, HISTORY_START, asOf, Generation.UPGRADING, months, List.of());
+        return new Snapshot(DEFINITION_VERSION, sourceVersion, HISTORY_START, asOf, Generation.UPGRADING, months,
+                List.of(), List.of(), List.of());
     }
 
     /** Stable source identity for one analytics cutoff and subject set; it is not an HTTP version. */

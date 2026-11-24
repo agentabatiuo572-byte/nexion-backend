@@ -114,7 +114,7 @@ public class SupportFundReadService {
         return read(requested,batchRead,null);
     }
 
-    NetSnapshot read(Collection<Long> requested,Runnable batchRead,WithdrawalCapture withdrawals) {
+    NetSnapshot read(Collection<Long> requested,Runnable batchRead,PerformanceCapture performance) {
         if(requested==null || requested.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
         var roots=List.copyOf(new TreeSet<>(requested));
         if(roots.isEmpty())return new NetSnapshot(List.of(),List.of(),List.of());
@@ -160,9 +160,9 @@ public class SupportFundReadService {
             var withdrawalRows=mapper.withdrawals(ids);var ledgers=mapper.ledgers(ids);
             Integer withdrawalPrecision=withdrawalRows.isEmpty()?Integer.valueOf(0):mapper.withdrawalSuccessPrecision();
             var audits=mapper.withdrawalAudits(ids);var banks=mapper.bankReservations(ids);var attempts=mapper.withdrawalAttempts(ids);
-            var bankEvents=withdrawals!=null && withdrawalRows.stream().anyMatch(row->
+            var bankEvents=performance!=null && withdrawalRows.stream().anyMatch(row->
                     "BANK-VND".equals(row.get("chain")) && "CONFIRMED".equals(row.get("status")))
-                    ?bankSettlementEvents(roots,withdrawals):Map.<String,List<BankSettlementEvent>>of();
+                    ?bankSettlementEvents(roots,performance):Map.<String,List<BankSettlementEvent>>of();
             var paymentLedgers=mapper.paymentLedgers(ids);var earnings=mapper.earningsSources(ids);
             var earningsRecoveries=mapper.earningsRecoveries(ids);
             var earningsInput=new SupportFundEarningsEvidence.Inputs(earnings,earningsRecoveries,mapper.earningsAppliedProofs(ids),
@@ -198,15 +198,17 @@ public class SupportFundReadService {
             require(snapshot()==connection,Gap.READ_FAILED);
             var result=new ArrayList<NetCustomer>();
             var publicOrigins=new ArrayList<ContributionOrigin>();var publicChanges=new ArrayList<ContributionChange>();
-            var confirmed=withdrawals==null?null:new ArrayList<ConfirmedWithdrawal>();
+            var confirmedWithdrawals=performance==null?null:new ArrayList<ConfirmedWithdrawal>();
+            var confirmedCorrections=performance==null?null:new ArrayList<ConfirmedDepositCorrection>();
             // Validate peers internally. Only the caller's roots and their original contributions leave this service.
             for(var component:components) {
                 var componentRoots=roots.stream().filter(component::contains).toList();if(componentRoots.isEmpty())continue;
                 var gaps=new ArrayList<Gap>();var tail=new HashMap<Long,Cash>();var verified=new ArrayList<Operation>();
                 var originFacts=new HashMap<String,String>();var holdings=new ArrayList<Holding>();
-                var componentWithdrawals=withdrawals==null?null:new ArrayList<ConfirmedWithdrawal>();
-                var capture=withdrawals==null?null:new WithdrawalCapture(withdrawals.from(),withdrawals.to(),
-                        componentWithdrawals::add,withdrawals.readFailed());
+                var componentWithdrawals=performance==null?null:new ArrayList<ConfirmedWithdrawal>();
+                var componentCorrections=performance==null?null:new ArrayList<ConfirmedDepositCorrection>();
+                var capture=performance==null?null:new PerformanceCapture(performance.from(),performance.to(),
+                        componentWithdrawals::add,componentCorrections::add,performance.readFailed());
                 try {
                     var componentOps=ops.stream().filter(row->parties(number(row,"id"),partyIndex).stream().anyMatch(component::contains)).toList();
                     var componentRaw=raw.stream().filter(row->component.contains(number(row,"newUserId"))
@@ -235,6 +237,7 @@ public class SupportFundReadService {
                             case "SUPPORT_CREGIS_REORG" -> {
                                 try {stamp=SupportFundCregisReorgEvidence.verify(codec,row,source,proof,events,mapper.cregisReorgOperations(parties));}
                                 catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
+                                if(capture!=null)observeDepositCorrection(capture,stamp,source);
                             }
                             case "SUPPORT_PAYMENT" -> stamp=payment(row,source,proof,events,paymentHistory,paymentLedgers,paymentSources,paymentAudits,trials,earnings,representedEarnings,originFacts,represented,trialRefunds);
                             case "SUPPORT_WITHDRAWAL" -> stamp=withdrawal(row,source,proof,events,withdrawalRows,ledgers,audits,banks,attempts,withdrawalPhases,withdrawalPrecision,componentOps,capture,bankEvents);
@@ -350,8 +353,10 @@ public class SupportFundReadService {
                 }catch(EvidenceFailure ex) {gaps.add(ex.gap);}
                 catch(IllegalArgumentException | IllegalStateException ex) {gaps.add(Gap.RECEIPT);}
                 var replay=new SupportFundReplay().replay(component,verified,tail,originFacts,gaps,holdings);
-                if(confirmed!=null && replay.state()==State.READY)
-                    componentWithdrawals.stream().filter(fact->componentRoots.contains(fact.customerId())).forEach(confirmed::add);
+                if(performance!=null && replay.state()==State.READY) {
+                    componentWithdrawals.stream().filter(fact->componentRoots.contains(fact.customerId())).forEach(confirmedWithdrawals::add);
+                    componentCorrections.stream().filter(fact->componentRoots.contains(fact.customerId())).forEach(confirmedCorrections::add);
+                }
                 for(long root:componentRoots) {
                     var total=replay.totals().get(root);boolean ready=replay.state()==State.READY;
                     result.add(new NetCustomer(root,ready?EvidenceState.READY:EvidenceState.UNKNOWN,
@@ -368,7 +373,10 @@ public class SupportFundReadService {
             }
             result.sort(Comparator.comparingLong(NetCustomer::customerId));
             var snapshot=new NetSnapshot(result,publicOrigins,publicChanges);
-            if(confirmed!=null)confirmed.forEach(withdrawals.accept());
+            if(performance!=null) {
+                confirmedWithdrawals.forEach(performance.withdrawals());
+                confirmedCorrections.forEach(performance.depositCorrections());
+            }
             return snapshot;
         }catch(EvidenceFailure ex) {return unknown(roots,List.of(ex.gap));}
         catch(org.springframework.dao.DataAccessException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
@@ -741,7 +749,7 @@ public class SupportFundReadService {
     private Stamp withdrawal(Map<String,Object> op,JsonNode source,JsonNode proof,List<Event> events,List<Map<String,Object>> orders,
             List<Map<String,Object>> allLedgers,List<Map<String,Object>> audits,List<Map<String,Object>> banks,
             List<Map<String,Object>> attempts,Set<String> represented,Integer precision,List<Map<String,Object>> operations,
-            WithdrawalCapture capture,Map<String,List<BankSettlementEvent>> bankEvents) {
+            PerformanceCapture capture,Map<String,List<BankSettlementEvent>> bankEvents) {
         require("SUPPORT_WITHDRAWAL_FUND_V1".equals(source.path("schemaVersion").asText()) &&"nx_withdrawal_order".equals(op.get("sourceTable")),Gap.SOURCE);
         String no=source.path("withdrawalNo").asText(),phase=text(op,"phase");
         keys(source,Set.of("schemaVersion","customerId","withdrawalNo","phase","order","reservationLedgers","gross","netReceive","actualFee","nexBurned","succeededAt","bankReservation","submissionAudits"));
@@ -812,12 +820,12 @@ public class SupportFundReadService {
                         && !recorded.path("chainTxHash").asText("").isBlank()) {
                     var networkFee=reserveLedgers.stream().filter(row->"WITHDRAW_NETWORK_FEE".equals(row.get("bizType")))
                             .map(row->decimal(row.get("amount"))).reduce(BigDecimal.ZERO,BigDecimal::add);
-                    capture.accept().accept(new ConfirmedWithdrawal(no,customer,chain,completedAt,
+                    capture.withdrawals().accept(new ConfirmedWithdrawal(no,customer,chain,completedAt,
                             gross,fee,networkFee,net,null,evidence,null));
                 }else if("BANK-VND".equals(chain) && "hdpay".equals(recorded.path("payoutSource").asText())) {
                     var settlement=verifiedBankSettlement(no,customer,at,gross,recorded.path("providerCid").asText(),
                             bankEvents.getOrDefault(no,List.of()));
-                    if(settlement!=null)capture.accept().accept(new ConfirmedWithdrawal(no,customer,chain,completedAt,
+                    if(settlement!=null)capture.withdrawals().accept(new ConfirmedWithdrawal(no,customer,chain,completedAt,
                             gross,fee,null,net,settlement.receivedVnd(),evidence,settlement.eventId()));
                 }
             }
@@ -825,7 +833,21 @@ public class SupportFundReadService {
         return new Stamp(no,at,DateTimeFormatConfig.BUSINESS_ZONE.getId(),precision);
     }
 
-    private Map<String,List<BankSettlementEvent>> bankSettlementEvents(List<Long> ids,WithdrawalCapture capture) {
+    private static void observeDepositCorrection(PerformanceCapture capture,Stamp stamp,JsonNode source) {
+        String phase=source.path("phase").asText();
+        if(!"REVERSE".equals(phase) && !"RESTORE".equals(phase))return;
+        var effectiveAt=stamp.succeededAt().atZone(ZoneId.of(stamp.businessZone())).toInstant();
+        if(!capture.contains(effectiveAt))return;
+        var original=source.path("row");
+        long ledgerId=original.path("ledgerId").longValue();
+        if(ledgerId<=0)return;
+        var net=original.path("netAmount").decimalValue();
+        capture.depositCorrections().accept(new ConfirmedDepositCorrection(stamp.sourceReference(),
+                original.path("userId").longValue(),"DEPOSIT:"+ledgerId,phase,effectiveAt,
+                "REVERSE".equals(phase)?net.negate():net));
+    }
+
+    private Map<String,List<BankSettlementEvent>> bankSettlementEvents(List<Long> ids,PerformanceCapture capture) {
         var zone=DateTimeFormatConfig.BUSINESS_ZONE;
         try {
             return mapper.bankSettlementEvents(ids,LocalDateTime.ofInstant(capture.from(),zone),LocalDateTime.ofInstant(capture.to(),zone))

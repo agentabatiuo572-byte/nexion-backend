@@ -38,7 +38,7 @@ public class SupportFundsReadService implements SupportFundsReadFacade {
     @Override public NetSnapshot readNetContributions(Collection<Long> ids,Runnable batchRead) {
         return readNetContributions(ids,batchRead,null);
     }
-    @Override public NetSnapshot readNetContributions(Collection<Long> ids,Runnable batchRead,WithdrawalCapture withdrawals) {
+    @Override public NetSnapshot readNetContributions(Collection<Long> ids,Runnable batchRead,PerformanceCapture performance) {
         if(net==null)throw invalid("SUPPORT_FUND_READER_NOT_CONFIGURED");
         if(ids==null || ids.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
         var roots=List.copyOf(new TreeSet<>(ids));
@@ -49,7 +49,7 @@ public class SupportFundsReadService implements SupportFundsReadFacade {
         var customers=new ArrayList<NetCustomer>();var origins=new ArrayList<ContributionOrigin>();var changes=new ArrayList<ContributionChange>();
         while(!pending.isEmpty()) {
             var batch=pending.removeFirst();
-            var read=withdrawals==null?net.read(batch,batchRead):net.read(batch,batchRead,withdrawals);
+            var read=performance==null?net.read(batch,batchRead):net.read(batch,batchRead,performance);
             // The transaction keeps the same snapshot, but raw rows from earlier batches can be released.
             if(sqlSession!=null)sqlSession.clearCache();
             batchRead.run();
