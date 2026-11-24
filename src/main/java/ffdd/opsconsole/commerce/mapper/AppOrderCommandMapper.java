@@ -151,6 +151,10 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
             """)
     OrderRow lockOrder(@Param("orderNo") String orderNo);
 
+    @Select("SELECT user_id FROM nx_order WHERE order_no=#{orderNo} AND is_deleted=0 LIMIT 1")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    Long findOrderOwner(@Param("orderNo") String orderNo);
+
     @Select("""
             SELECT COUNT(1)
               FROM nx_vietqr_intent i

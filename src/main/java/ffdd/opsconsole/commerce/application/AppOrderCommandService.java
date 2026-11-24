@@ -147,6 +147,7 @@ public class AppOrderCommandService {
         if (!sandboxGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
         }
+        requireOrderOwner(userId, normalized);
         if (promotions != null) promotions.lockOrderParticipants(normalized);
         CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
         if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -174,6 +175,7 @@ public class AppOrderCommandService {
             return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
         }
         String normalized = orderNo.trim();
+        requireOrderOwner(userId, normalized);
         // Same account lock order as cancel/payment; the idempotency action then locks the order.
         CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
         if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
@@ -194,6 +196,9 @@ public class AppOrderCommandService {
         if (userId==null || userId<1 || !StringUtils.hasText(orderNo)) return ApiResult.fail(422,"ORDER_PAYMENT_INPUT_INVALID");
         if (paymentAuthorization==null) return ApiResult.fail(503,"PAYMENT_PASSWORD_UNAVAILABLE");
         String normalized=orderNo.trim();
+        if (sandboxGuard.isStrictDevelopmentRuntime() || sandboxGuard.isStrictProductionRuntime()) {
+            requireOrderOwner(userId, normalized);
+        }
         return paymentAuthorization.execute(userId,"order-pay",idempotencyKey,userId+"|"+normalized,
                 authorization,() -> (sandboxGuard.isStrictDevelopmentRuntime() || sandboxGuard.isStrictProductionRuntime())
                         && mapper.countCompletedPaidOrder(userId,normalized)==1 ? payFromWallet(userId,normalized) : null,
@@ -887,6 +892,12 @@ public class AppOrderCommandService {
             quantity += item.quantity();
         }
         if (quantity != order.quantity()) throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
+    }
+
+    private void requireOrderOwner(Long userId, String orderNo) {
+        if (!userId.equals(mapper.findOrderOwner(orderNo))) {
+            throw new BizException(403, "ORDER_FORBIDDEN");
+        }
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
