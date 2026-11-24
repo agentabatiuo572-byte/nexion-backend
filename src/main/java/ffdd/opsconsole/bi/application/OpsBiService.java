@@ -1114,9 +1114,16 @@ public class OpsBiService implements AuditReplayable {
                         stringValue(row.get("denominator"))));
                 List<?> spark = (List<?>) row.get("spark");
                 List<?> suppressedPoints = row.get("sparkSuppressed") instanceof List<?> points ? points : List.of();
+                List<?> unavailableReasons = row.get("sparkUnavailableReasons") instanceof List<?> reasons
+                        ? reasons : List.of();
                 for (int index = 0; index < weeks.size(); index++) {
-                    values.add(index < suppressedPoints.size() && Boolean.TRUE.equals(suppressedPoints.get(index))
-                            ? "样本过小" : index < spark.size() ? stringValue(spark.get(index)) : "");
+                    if (index < suppressedPoints.size() && Boolean.TRUE.equals(suppressedPoints.get(index))) {
+                        values.add("样本过小");
+                    } else if (index < unavailableReasons.size() && "DAU_NOT_COLLECTED".equals(unavailableReasons.get(index))) {
+                        values.add("未采集");
+                    } else {
+                        values.add(index < spark.size() ? stringValue(spark.get(index)) : "");
+                    }
                 }
                 csv.append(csvRow(values));
             }
