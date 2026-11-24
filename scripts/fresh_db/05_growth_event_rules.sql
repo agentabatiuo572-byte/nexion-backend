@@ -39,8 +39,7 @@ INSERT IGNORE INTO nx_growth_event_rule(event_code,kind,rules_json) VALUES
  ('evt-spring-spin','wheel',JSON_OBJECT()),
  ('evt-reinvest-bonus','boost',JSON_OBJECT()),
  ('evt-onboarding-7d','onboarding',JSON_OBJECT()),
- ('evt-black-friday','seasonal',JSON_OBJECT()),
- ('evt-anniversary-spin','wheel',JSON_OBJECT());
+ ('evt-black-friday','seasonal',JSON_OBJECT());
 INSERT IGNORE INTO nx_event_quest(quest_code,quest_name,description,target_type,target_value,reward_type,reward_amount,reward_name,cta_href,status,sort_order) VALUES
  ('evt-pro-upgrade-7d','Pro Flash Upgrade','Upgrade offer and Genesis raffle tickets.','discount',0,'COMPOSITE',0,'Upgrade offer','/pages/store/store',0,10),
  ('evt-refer-5-get-pro','Refer 5 · Win a Pro','Invite direct friends within the activity window for a Pro device.','referral',5,'DEVICE',0,'Pro device','',0,20),
@@ -49,5 +48,4 @@ INSERT IGNORE INTO nx_event_quest(quest_code,quest_name,description,target_type,
  ('evt-spring-spin','Daily Lucky Spin','One free spin per UTC day.','wheel',0,'NEX',0,'Wheel prize pool','',0,50),
  ('evt-reinvest-bonus','Re-invest Bonus Week','Qualifying reinvestments receive additional Genesis raffle tickets.','boost',1,'GENESIS_TICKET',0,'Genesis raffle tickets','/pages/me/wallet-repurchase',0,60),
  ('evt-onboarding-7d','New Pilot · 7-Day Boost','Reach the configured rank in your first week for NEX and a streak saver.','onboarding',2,'COMPOSITE',0,'NEX and streak saver','',0,70),
- ('evt-black-friday','Black Friday','Seasonal offer with published purchase conditions.','seasonal',0,'COMPOSITE',0,'Seasonal offer','/pages/store/store',0,80),
- ('evt-anniversary-spin','Anniversary Mega Spin','View your recorded awards from this activity.','wheel',0,'NEX',0,'Recorded wheel awards','',0,100);
+ ('evt-black-friday','Black Friday','Seasonal offer with published purchase conditions.','seasonal',0,'COMPOSITE',0,'Seasonal offer','/pages/store/store',0,80);

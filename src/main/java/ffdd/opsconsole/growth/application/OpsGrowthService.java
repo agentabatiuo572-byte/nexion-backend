@@ -1154,8 +1154,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return validation("EVENT_TARGET_VALUE_INVALID");
             }
             boolean wheelEvent = "wheel".equals(kind);
-            if (wheelEvent && questEventsList().stream()
-                    .anyMatch(row -> "wheel".equalsIgnoreCase(String.valueOf(row.get("kind"))))) {
+            if (wheelEvent && questEventMapper.get().lockExistingWheelEvent() != null) {
                 return validation("EVENT_WHEEL_SINGLETON");
             }
             String state = h4EventRules == null ? normalizeEventState(request.state()) : "upcoming";

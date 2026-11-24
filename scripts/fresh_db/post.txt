@@ -42,6 +42,7 @@ migrations/20260927_h3_quest_claim_event_schema.sql
 fresh_db/05_growth_event_rules.sql
 # The July wheel seed can predate the rule table installed by the step above.
 migrations/20261118_bug456_legacy_spring_spin_status.sql
+migrations/20261124_bug663_retire_duplicate_wheel_seed.sql
 migrations/20261104_h4_holding_retire.sql
 # Repair legacy notification visibility after the reminder table exists and H4 triggers are retired.
 migrations/20261025_h4_reminder_visibility.sql

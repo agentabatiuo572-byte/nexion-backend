@@ -567,6 +567,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261123_device_slot_replacement.sql")
   (Join-Path $root "scripts\migrations\20261123_purchase_device_placement.sql")
   (Join-Path $root "scripts\migrations\20261124_purchase_payment_refund_closeout.sql")
+  (Join-Path $root "scripts\migrations\20261124_bug663_retire_duplicate_wheel_seed.sql")
   (Join-Path $root "scripts\migrations\20261124_b81_order_user_hide.sql")
   (Join-Path $root "scripts\migrations\20261124_ios_phone_binding_recovery.sql")
   (Join-Path $root "scripts\migrations\20261123_b79_earning_push_preference.sql")

@@ -192,6 +192,15 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> listEvents();
 
+    /** Called while holding H4_EVENT. A current read includes a concurrently committed draft. */
+    @Select("""
+            SELECT quest_code
+              FROM nx_event_quest
+             WHERE target_type = 'wheel' AND is_deleted = 0
+             LIMIT 1 FOR UPDATE
+            """)
+    String lockExistingWheelEvent();
+
     @Select("""
             SELECT id AS rowId, quest_code AS eventCode, target_type AS targetType, target_value AS targetValue,
                    CAST(status AS SIGNED) AS status, is_deleted AS deleted, starts_at AS startsAt, ends_at AS endsAt,
