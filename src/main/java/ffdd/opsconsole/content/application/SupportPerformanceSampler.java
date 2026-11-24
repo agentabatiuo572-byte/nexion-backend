@@ -50,16 +50,17 @@ public class SupportPerformanceSampler {
         }
     }
 
-    void publish(Capture capture) {
+    void publish(Capture capture, SupportAnalyticsFactSnapshot source) {
         if (capture.withdrawalReadFailed) {
             log.warn("Support performance v2 bank settlement read failed, previous generation retained");
             return;
         }
         try {
             var directory = capture.directory;
+            var attributions = SupportPerformanceDepositAttribution.resolve(source, capture.deposits, capture.depositCorrections);
             cache.publish(new SupportPerformance.Snapshot(directory.definitionVersion(), directory.sourceVersion(),
                     directory.historyStart(), directory.asOf(), directory.generation(), directory.months(),
-                    capture.withdrawals, capture.deposits, capture.depositCorrections));
+                    capture.withdrawals, capture.deposits, capture.depositCorrections, attributions));
         } catch (BizException failure) {
             log.warn("Support performance v2 publication unavailable reason={}", failure.getMessage());
         } catch (RuntimeException failure) {

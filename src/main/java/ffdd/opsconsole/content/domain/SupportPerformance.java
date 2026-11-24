@@ -21,6 +21,7 @@ public final class SupportPerformance {
 
     public enum Generation { UPGRADING, READY }
     public enum Coverage { COMPLETE, PARTIAL, UNKNOWN, FAILED }
+    public enum AttributionState { ASSIGNED, UNASSIGNED, AGENT_WITHOUT_GROUP, UNKNOWN }
 
     public enum Reason {
         GENERATION_UPGRADING, SOURCE_INCOMPLETE, SOURCE_READ_FAILED, HISTORY_INCOMPLETE,
@@ -31,6 +32,8 @@ public final class SupportPerformance {
     public record ObservedDeposit(String factId,long customerId,long ledgerId,SupportPaymentFacts.Source source,
             String sourceBusinessId,Instant creditedAt,BigDecimal creditedUsdt,
             SupportPaymentFacts.Status historicalEnvironmentStatus) { }
+
+    public record EventAttribution(AttributionState state,Long agentId,Long groupId) { }
 
     public record Month(String month, Instant from, Instant to, String businessZone,
                         Coverage coverage, List<Reason> reasons) {
@@ -57,7 +60,8 @@ public final class SupportPerformance {
     public record Snapshot(String definitionVersion, String sourceVersion, Instant historyStart,
                            Instant asOf, Generation generation, List<Month> months,
                            List<ConfirmedWithdrawal> observedWithdrawals, List<ObservedDeposit> observedDeposits,
-                           List<ConfirmedDepositCorrection> observedDepositCorrections) {
+                           List<ConfirmedDepositCorrection> observedDepositCorrections,
+                           Map<String,EventAttribution> depositEventAttributions) {
         public Snapshot {
             if (!DEFINITION_VERSION.equals(definitionVersion) || sourceVersion == null
                     || sourceVersion.isBlank() || historyStart == null || !HISTORY_START.equals(historyStart)
@@ -66,6 +70,7 @@ public final class SupportPerformance {
             observedWithdrawals = observedWithdrawals == null ? List.of() : List.copyOf(observedWithdrawals);
             observedDeposits = observedDeposits == null ? List.of() : List.copyOf(observedDeposits);
             observedDepositCorrections = observedDepositCorrections == null ? List.of() : List.copyOf(observedDepositCorrections);
+            depositEventAttributions = depositEventAttributions == null ? Map.of() : Map.copyOf(depositEventAttributions);
             if (!months.isEmpty()) {
                 Month first = months.get(0), last = months.get(months.size() - 1);
                 if (!first.from().equals(HISTORY_START) || !last.to().equals(asOf)) throw invalid();
@@ -121,7 +126,7 @@ public final class SupportPerformance {
                     List.of(Reason.GENERATION_UPGRADING)));
         }
         return new Snapshot(DEFINITION_VERSION, sourceVersion, HISTORY_START, asOf, Generation.UPGRADING, months,
-                List.of(), List.of(), List.of());
+                List.of(), List.of(), List.of(), Map.of());
     }
 
     /** Stable source identity for one analytics cutoff and subject set; it is not an HTTP version. */

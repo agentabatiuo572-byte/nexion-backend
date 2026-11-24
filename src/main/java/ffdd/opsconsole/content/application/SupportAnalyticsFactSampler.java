@@ -111,7 +111,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
             store.renew(token);
             boolean published=store.publish(token,json);
             LOG.info("Support analytics minute generation published={} subjects={} durationMs={} asOf={}",published,next.subjects().size(),(System.nanoTime()-startedAt)/1_000_000,next.asOf());
-            if(published && sampled.performance()!=null)performance.publish(sampled.performance());
+            if(published && sampled.performance()!=null)performance.publish(sampled.performance(),next);
         } catch(SamplingStopped stopped) {
             // The read transaction rolled back and the lease heartbeat closed; there is no partial generation.
         } finally {store.release(token);}
