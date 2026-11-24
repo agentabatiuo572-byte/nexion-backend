@@ -36,6 +36,9 @@ public class SupportFundsReadService implements SupportFundsReadFacade {
     public SupportFundsReadService(SupportFundsReadMapper mapper,SupportFundReadService net) {this(mapper,Objects.requireNonNull(net),null);}
     public SupportFundsReadService(SupportFundsReadMapper mapper) {this(mapper,null,null);}
     @Override public NetSnapshot readNetContributions(Collection<Long> ids,Runnable batchRead) {
+        return readNetContributions(ids,batchRead,null);
+    }
+    @Override public NetSnapshot readNetContributions(Collection<Long> ids,Runnable batchRead,WithdrawalCapture withdrawals) {
         if(net==null)throw invalid("SUPPORT_FUND_READER_NOT_CONFIGURED");
         if(ids==null || ids.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
         var roots=List.copyOf(new TreeSet<>(ids));
@@ -45,7 +48,8 @@ public class SupportFundsReadService implements SupportFundsReadFacade {
             pending.add(roots.subList(offset,Math.min(offset+NET_READ_BATCH_SIZE,roots.size())));
         var customers=new ArrayList<NetCustomer>();var origins=new ArrayList<ContributionOrigin>();var changes=new ArrayList<ContributionChange>();
         while(!pending.isEmpty()) {
-            var batch=pending.removeFirst();var read=net.read(batch,batchRead);
+            var batch=pending.removeFirst();
+            var read=withdrawals==null?net.read(batch,batchRead):net.read(batch,batchRead,withdrawals);
             // The transaction keeps the same snapshot, but raw rows from earlier batches can be released.
             if(sqlSession!=null)sqlSession.clearCache();
             batchRead.run();

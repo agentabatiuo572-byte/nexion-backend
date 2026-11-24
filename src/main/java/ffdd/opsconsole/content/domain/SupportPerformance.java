@@ -1,5 +1,6 @@
 package ffdd.opsconsole.content.domain;
 
+import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedChainWithdrawal;
 import ffdd.opsconsole.shared.config.BusinessCalendar;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -8,7 +9,7 @@ import java.time.*;
 import java.time.format.DateTimeParseException;
 import java.util.*;
 
-/** B80 performance definition and its independent month directory. No customer or event row is stored here. */
+/** B80 performance definition, month directory, and observations within the sampled interval. */
 public final class SupportPerformance {
     public static final String DEFINITION_VERSION = "NET_INFLOW_V1";
     public static final String CURRENCY = "USDT";
@@ -43,12 +44,14 @@ public final class SupportPerformance {
      * generation; {@code asOf} is the shared cutoff, never a per-month clock.
      */
     public record Snapshot(String definitionVersion, String sourceVersion, Instant historyStart,
-                           Instant asOf, Generation generation, List<Month> months) {
+                           Instant asOf, Generation generation, List<Month> months,
+                           List<ConfirmedChainWithdrawal> observedChainWithdrawals) {
         public Snapshot {
             if (!DEFINITION_VERSION.equals(definitionVersion) || sourceVersion == null
                     || sourceVersion.isBlank() || historyStart == null || !HISTORY_START.equals(historyStart)
                     || asOf == null || asOf.isBefore(HISTORY_START) || generation == null || months == null) throw invalid();
             months = List.copyOf(months);
+            observedChainWithdrawals = observedChainWithdrawals == null ? List.of() : List.copyOf(observedChainWithdrawals);
             if (!months.isEmpty()) {
                 Month first = months.get(0), last = months.get(months.size() - 1);
                 if (!first.from().equals(HISTORY_START) || !last.to().equals(asOf)) throw invalid();
@@ -77,6 +80,12 @@ public final class SupportPerformance {
                     expected = actual.plusMonths(1);
                 }
             }
+            if (!observedChainWithdrawals.isEmpty()) {
+                if (months.isEmpty()) throw invalid();
+                var last = months.get(months.size() - 1);
+                if (observedChainWithdrawals.stream().anyMatch(fact -> fact.completedAt() == null
+                        || fact.completedAt().isBefore(last.from()) || !fact.completedAt().isBefore(last.to()))) throw invalid();
+            }
         }
     }
 
@@ -96,7 +105,7 @@ public final class SupportPerformance {
             months.add(new Month(month.toString(), from, to, zone, Coverage.UNKNOWN,
                     List.of(Reason.GENERATION_UPGRADING)));
         }
-        return new Snapshot(DEFINITION_VERSION, sourceVersion, HISTORY_START, asOf, Generation.UPGRADING, months);
+        return new Snapshot(DEFINITION_VERSION, sourceVersion, HISTORY_START, asOf, Generation.UPGRADING, months, List.of());
     }
 
     /** Stable source identity for one analytics cutoff and subject set; it is not an HTTP version. */

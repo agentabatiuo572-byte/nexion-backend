@@ -34,6 +34,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     private final SupportAnalyticsRedisStore store;
     private final SupportBackgroundLeaseHeartbeat heartbeats;
     private final ObjectProvider<SupportAnalyticsService> compiler;
+    private final SupportPerformanceSampler performance;
     private final SupportAnalyticsCacheCodec codec=new SupportAnalyticsCacheCodec();
     private final AtomicReference<Decoded> decoded=new AtomicReference<>();
     private final java.util.concurrent.atomic.AtomicBoolean started=new java.util.concurrent.atomic.AtomicBoolean();
@@ -43,17 +44,19 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     @EventListener(ContextClosedEvent.class)
     public void contextClosed() { closing=true; }
     private record Decoded(String json,SupportAnalyticsFactSnapshot snapshot) { }
+    private record Sampled(SupportAnalyticsFactSnapshot legacy,SupportPerformanceSampler.Capture performance) { }
     public SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
             SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,
             SupportAnalyticsRedisStore store,ObjectProvider<SupportAnalyticsService> compiler) {
-        this(mapper,payments,funds,guard,transactions,store,compiler,null);
+        this(mapper,payments,funds,guard,transactions,store,compiler,null,null);
     }
     @org.springframework.beans.factory.annotation.Autowired
     public SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
             SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,
-            SupportAnalyticsRedisStore store,ObjectProvider<SupportAnalyticsService> compiler,SupportBackgroundLeaseHeartbeat heartbeats) {
+            SupportAnalyticsRedisStore store,ObjectProvider<SupportAnalyticsService> compiler,
+            SupportBackgroundLeaseHeartbeat heartbeats,SupportPerformanceSampler performance) {
         this.mapper=mapper;this.payments=payments;this.funds=funds;this.guard=guard;this.store=store;this.compiler=compiler;
-        this.heartbeats=heartbeats;
+        this.heartbeats=heartbeats;this.performance=performance;
         reads=new TransactionTemplate(transactions);reads.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         reads.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);reads.setReadOnly(true);
     }
@@ -84,26 +87,31 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
         String token=store.tryLock();if(token==null)return;
         long startedAt=System.nanoTime();
         try(var lease=heartbeats==null?SupportBackgroundLeaseHeartbeat.foreground(()->store.renew(token)):heartbeats.start(()->store.renew(token))) {
-            SupportAnalyticsFactSnapshot next=reads.execute(status->{
+            var sampled=Objects.requireNonNull(reads.execute(status->{
                 Instant asOf=Objects.requireNonNull(mapper.nowUtc()).toInstant(ZoneOffset.UTC);
                 var ids=List.copyOf(mapper.productionCustomers());
                 var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),asOf):payments.readHistory(ids);
                 lease.renew();
-                var contributions=funds.readNetContributions(ids,()->{
+                var performanceCapture=performance==null?null:performance.prepare(asOf,ids);
+                var withdrawalScope=performanceCapture==null?null:performanceCapture.withdrawalScope();
+                Runnable onBatch=()->{
                     // The read-only generation has not been published. Keep the previous complete
                     // generation and stop at the reader's existing wallet-history batch checkpoints.
                     if(closing)throw new SamplingStopped();
                     lease.renew();
-                });
+                };
+                var contributions=withdrawalScope==null?funds.readNetContributions(ids,onBatch):funds.readNetContributions(ids,onBatch,withdrawalScope);
                 var raw=new SupportAnalyticsFactSnapshot(asOf,ids,payment,contributions,mapper.attributions(),mapper.attributionProofs());
-                return compiler.getObject().compileForCache(raw);
-            });
+                return new Sampled(compiler.getObject().compileForCache(raw),performanceCapture);
+            }));
+            var next=sampled.legacy();
             lease.renew();
             String json=codec.encode(Objects.requireNonNull(next));
             lease.finish();
             store.renew(token);
             boolean published=store.publish(token,json);
             LOG.info("Support analytics minute generation published={} subjects={} durationMs={} asOf={}",published,next.subjects().size(),(System.nanoTime()-startedAt)/1_000_000,next.asOf());
+            if(published && sampled.performance()!=null)performance.publish(sampled.performance());
         } catch(SamplingStopped stopped) {
             // The read transaction rolled back and the lease heartbeat closed; there is no partial generation.
         } finally {store.release(token);}

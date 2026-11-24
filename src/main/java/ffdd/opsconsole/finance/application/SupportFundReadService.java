@@ -26,6 +26,7 @@ import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,6 +40,7 @@ public class SupportFundReadService {
     private static final int OPERATION_JSON_CACHE_PAGES=8;
     private static final long OPERATION_JSON_CACHE_BYTES=8L*1024*1024;
     private static final String RAW_SHA=sha("SUPPORT_WALLET_JOURNAL_V1");
+    private static final Set<String> CHAIN_WITHDRAWAL_NETWORKS=Set.of("USDT-BEP20","USDT-ERC20","USDT-TRC20");
     private final SupportFundReadMapper mapper;
     private final SupportFundBirthReadFacade auth;
     private final FinanceSupportPaymentFactsFacade payments;
@@ -108,6 +110,10 @@ public class SupportFundReadService {
         return read(requested,()->{});
     }
     public NetSnapshot read(Collection<Long> requested,Runnable batchRead) {
+        return read(requested,batchRead,null);
+    }
+
+    NetSnapshot read(Collection<Long> requested,Runnable batchRead,WithdrawalCapture withdrawals) {
         if(requested==null || requested.stream().anyMatch(id->id==null || id<=0))throw new IllegalArgumentException("Explicit positive customer scope required");
         var roots=List.copyOf(new TreeSet<>(requested));
         if(roots.isEmpty())return new NetSnapshot(List.of(),List.of(),List.of());
@@ -188,11 +194,14 @@ public class SupportFundReadService {
             require(snapshot()==connection,Gap.READ_FAILED);
             var result=new ArrayList<NetCustomer>();
             var publicOrigins=new ArrayList<ContributionOrigin>();var publicChanges=new ArrayList<ContributionChange>();
+            var confirmed=withdrawals==null?null:new ArrayList<ConfirmedChainWithdrawal>();
             // Validate peers internally. Only the caller's roots and their original contributions leave this service.
             for(var component:components) {
                 var componentRoots=roots.stream().filter(component::contains).toList();if(componentRoots.isEmpty())continue;
                 var gaps=new ArrayList<Gap>();var tail=new HashMap<Long,Cash>();var verified=new ArrayList<Operation>();
                 var originFacts=new HashMap<String,String>();var holdings=new ArrayList<Holding>();
+                var componentWithdrawals=withdrawals==null?null:new ArrayList<ConfirmedChainWithdrawal>();
+                var capture=withdrawals==null?null:new WithdrawalCapture(withdrawals.from(),withdrawals.to(),componentWithdrawals::add);
                 try {
                     var componentOps=ops.stream().filter(row->parties(number(row,"id"),partyIndex).stream().anyMatch(component::contains)).toList();
                     var componentRaw=raw.stream().filter(row->component.contains(number(row,"newUserId"))
@@ -223,7 +232,7 @@ public class SupportFundReadService {
                                 catch(IllegalArgumentException ex){throw bad(Gap.SOURCE);}
                             }
                             case "SUPPORT_PAYMENT" -> stamp=payment(row,source,proof,events,paymentHistory,paymentLedgers,paymentSources,paymentAudits,trials,earnings,representedEarnings,originFacts,represented,trialRefunds);
-                            case "SUPPORT_WITHDRAWAL" -> stamp=withdrawal(row,source,proof,events,withdrawalRows,ledgers,audits,banks,attempts,withdrawalPhases,withdrawalPrecision,componentOps);
+                            case "SUPPORT_WITHDRAWAL" -> stamp=withdrawal(row,source,proof,events,withdrawalRows,ledgers,audits,banks,attempts,withdrawalPhases,withdrawalPrecision,componentOps,capture);
                             case "SUPPORT_EARNINGS" -> {
                                 SupportFundEarningsEvidence.Verified earning;
                                 try {earning=earningsEvidence.verify(row,source,proof,events,componentEarnings,trialRefunds.recoveries().get(source.path("entry").path("entryNo").asText()));}
@@ -336,6 +345,8 @@ public class SupportFundReadService {
                 }catch(EvidenceFailure ex) {gaps.add(ex.gap);}
                 catch(IllegalArgumentException | IllegalStateException ex) {gaps.add(Gap.RECEIPT);}
                 var replay=new SupportFundReplay().replay(component,verified,tail,originFacts,gaps,holdings);
+                if(confirmed!=null && replay.state()==State.READY)
+                    componentWithdrawals.stream().filter(fact->componentRoots.contains(fact.customerId())).forEach(confirmed::add);
                 for(long root:componentRoots) {
                     var total=replay.totals().get(root);boolean ready=replay.state()==State.READY;
                     result.add(new NetCustomer(root,ready?EvidenceState.READY:EvidenceState.UNKNOWN,
@@ -351,7 +362,9 @@ public class SupportFundReadService {
                 }
             }
             result.sort(Comparator.comparingLong(NetCustomer::customerId));
-            return new NetSnapshot(result,publicOrigins,publicChanges);
+            var snapshot=new NetSnapshot(result,publicOrigins,publicChanges);
+            if(confirmed!=null)confirmed.forEach(withdrawals.accept());
+            return snapshot;
         }catch(EvidenceFailure ex) {return unknown(roots,List.of(ex.gap));}
         catch(org.springframework.dao.DataAccessException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
         catch(IllegalArgumentException | IllegalStateException | ArithmeticException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
@@ -722,7 +735,8 @@ public class SupportFundReadService {
     }
     private Stamp withdrawal(Map<String,Object> op,JsonNode source,JsonNode proof,List<Event> events,List<Map<String,Object>> orders,
             List<Map<String,Object>> allLedgers,List<Map<String,Object>> audits,List<Map<String,Object>> banks,
-            List<Map<String,Object>> attempts,Set<String> represented,Integer precision,List<Map<String,Object>> operations) {
+            List<Map<String,Object>> attempts,Set<String> represented,Integer precision,List<Map<String,Object>> operations,
+            WithdrawalCapture capture) {
         require("SUPPORT_WITHDRAWAL_FUND_V1".equals(source.path("schemaVersion").asText()) &&"nx_withdrawal_order".equals(op.get("sourceTable")),Gap.SOURCE);
         String no=source.path("withdrawalNo").asText(),phase=text(op,"phase");
         keys(source,Set.of("schemaVersion","customerId","withdrawalNo","phase","order","reservationLedgers","gross","netReceive","actualFee","nexBurned","succeededAt","bankReservation","submissionAudits"));
@@ -782,6 +796,18 @@ public class SupportFundReadService {
             return null;
         }else {require("RESERVE".equals(phase),Gap.UNSUPPORTED_SOURCE);return null;}
         require(precision!=null &&precision>=0 &&precision<=6,Gap.SOURCE);
+        if(capture!=null && order.get("chain") instanceof String chain && CHAIN_WITHDRAWAL_NETWORKS.contains(chain)
+                && "provider".equals(recorded.path("payoutSource").asText())
+                && !recorded.path("chainTxHash").asText("").isBlank()) {
+            var completedAt=at.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant();
+            if(capture.contains(completedAt)) {
+                var networkFee=reserveLedgers.stream().filter(row->"WITHDRAW_NETWORK_FEE".equals(row.get("bizType")))
+                    .map(row->decimal(row.get("amount"))).reduce(BigDecimal.ZERO,BigDecimal::add);
+                capture.accept().accept(new ConfirmedChainWithdrawal(no,customer,chain.substring("USDT-".length()),completedAt,
+                    decimal(order.get("amount")),decimal(order.get("actualFee")),networkFee,decimal(order.get("netReceive")),
+                    text(op,"operationKey")));
+            }
+        }
         return new Stamp(no,at,DateTimeFormatConfig.BUSINESS_ZONE.getId(),precision);
     }
     private List<Point> points(List<Map<String,Object>> legs,JsonNode proof,List<Map<String,Object>> raw,List<Event> events) {

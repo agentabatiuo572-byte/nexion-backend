@@ -2,9 +2,11 @@ package ffdd.opsconsole.finance.facade;
 
 import ffdd.opsconsole.common.boundary.DomainFacade;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.function.Consumer;
 
 /** Internal evidence only. The caller authorizes all IDs and owns the repeatable-read snapshot. */
 public interface SupportFundsReadFacade extends DomainFacade {
@@ -13,6 +15,15 @@ public interface SupportFundsReadFacade extends DomainFacade {
         return readNetContributions(customerIds, () -> {});
     }
     NetSnapshot readNetContributions(Collection<Long> customerIds, Runnable batchRead);
+    NetSnapshot readNetContributions(Collection<Long> customerIds, Runnable batchRead, WithdrawalCapture withdrawals);
+
+    /** Optional observation of a single interval from the same verified read. */
+    record WithdrawalCapture(Instant from,Instant to,Consumer<ConfirmedChainWithdrawal> accept) {
+        public boolean contains(Instant at) {return !at.isBefore(from) && at.isBefore(to);}
+    }
+    record ConfirmedChainWithdrawal(String withdrawalNo,long customerId,String network,Instant completedAt,
+            BigDecimal walletDebitUsdt,BigDecimal feeUsdt,BigDecimal networkFeeUsdt,BigDecimal receivedUsdt,
+            String evidenceKey) { }
 
     record NetSnapshot(List<NetCustomer> customers,List<ContributionOrigin> origins,List<ContributionChange> changes) {
         public NetSnapshot {customers=List.copyOf(customers);origins=List.copyOf(origins);changes=List.copyOf(changes);}
