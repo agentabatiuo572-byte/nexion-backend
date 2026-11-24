@@ -2076,6 +2076,9 @@ public class OpsTeamService implements AuditReplayable {
         if (oldEvent == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "COMMISSION_EVENT_NOT_FOUND");
         }
+        if ("REJECTED".equals(toCanonical) && VRankSalaryService.KIND.equals(oldEvent.get("kind"))) {
+            return ApiResult.fail(409, "VRANK_SALARY_REVERSE_REQUIRES_EVIDENCE");
+        }
         // A1 批1a 修复1:F5 佣金事件状态机校验(原接受任意 status,REJECTED→UNLOCKED 静默复活=资金漏洞)。
         String fromCanonical = canonicalCommissionState(String.valueOf(oldEvent.get("status")));
         if (request.expectedVersion() == null || request.expectedVersion() < 0) {

@@ -395,6 +395,15 @@ public interface F5CommissionMapper {
             """)
     int reverseEventCas(@Param("eventId") Long eventId);
 
+    @Select("""
+            SELECT COALESCE(MAX(amount), 0)
+              FROM nx_wallet_ledger
+             WHERE biz_no=CONCAT('F5-COMMISSION-', #{eventId}, '-REVERSE')
+               AND user_id=#{userId} AND asset='USDT' AND direction='OUT'
+               AND biz_type='TEAM_COMMISSION' AND status='SUCCESS' AND is_deleted=0
+            """)
+    BigDecimal recoveredSalaryAmount(@Param("eventId") Long eventId, @Param("userId") Long userId);
+
     @Insert("""
             INSERT INTO nx_commission_event
               (user_id, commission_type, source_user_id, source_user_name,

@@ -890,6 +890,13 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     CommissionFundsRow lockCommissionFundsEvent(@Param("eventId") Long eventId);
 
+    @org.apache.ibatis.annotations.Update("""
+            UPDATE nx_commission_event SET status='RECOVERY_PENDING', updated_at=NOW()
+             WHERE id=#{eventId} AND is_deleted=0 AND status='REVERSED'
+               AND commission_type='vrank_salary' AND currency='USDT'
+            """)
+    int markSalaryRecoveryPending(@Param("eventId") Long eventId);
+
     @Select("""
             SELECT CASE #{asset} WHEN 'USDT' THEN usdt_available WHEN 'UVT' THEN nex_available END
               FROM nx_user_wallet

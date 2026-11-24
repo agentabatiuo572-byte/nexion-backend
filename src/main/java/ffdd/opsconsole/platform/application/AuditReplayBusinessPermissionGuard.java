@@ -481,13 +481,17 @@ public class AuditReplayBusinessPermissionGuard {
                 ApiResult<Void> clawback = validateF1RewardClawbackProposal(command.params());
                 if (clawback.getCode() != 0) return clawback;
             }
-            if ("f_commission_status".equals(operation)
-                    && "COOLING".equals(OpsTeamService.canonicalCommissionState(value(command.params(), "value")))) {
+            if ("f_commission_status".equals(operation)) {
+                String requestedStatus = OpsTeamService.canonicalCommissionState(value(command.params(), "value"));
                 String key = value(command.params(), "key");
-                if (key.matches("F\\.commission\\.CM-[1-9]\\d*\\.status")) {
+                if (Set.of("COOLING", "REJECTED").contains(requestedStatus)
+                        && key.matches("F\\.commission\\.CM-[1-9]\\d*\\.status")) {
                     Long eventId = strictLong(key.substring("F.commission.CM-".length(), key.length() - ".status".length()), 1, Long.MAX_VALUE);
                     Map<String, Object> event = eventId == null ? null : teamCommissionRepository.commissionEventById(eventId);
-                    if (event != null && (event.get("settlementSourceType") == null
+                    if (event != null && "REJECTED".equals(requestedStatus) && "vrank_salary".equals(event.get("kind"))) {
+                        return ApiResult.fail(409, "VRANK_SALARY_REVERSE_REQUIRES_EVIDENCE");
+                    }
+                    if (event != null && "COOLING".equals(requestedStatus) && (event.get("settlementSourceType") == null
                             || "network".equals(event.get("settlementSourceType")))) {
                         String unfreezeBlocked = OpsTeamService.commissionUnfreezeBlockedReason(
                                 OpsTeamService.canonicalCommissionState(String.valueOf(event.get("status"))), "COOLING", event.get("unlockAt"));

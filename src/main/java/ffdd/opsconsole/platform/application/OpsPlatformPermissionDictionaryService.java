@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 
@@ -17,6 +18,7 @@ import org.springframework.util.StringUtils;
 public class OpsPlatformPermissionDictionaryService {
     private static final int DEFAULT_PAGE_SIZE = 20;
     private static final int MAX_PAGE_SIZE = 100;
+    private static final Pattern LAYER_RANGE = Pattern.compile("(?i)^L[0-9]{1,2}\\s*[-–—]\\s*L?[0-9]{1,2}(?=[^A-Z0-9_]|$)");
 
     private final AdminPermissionMapper permissionMapper;
 
@@ -75,10 +77,11 @@ public class OpsPlatformPermissionDictionaryService {
     private String permissionDisplayName(PermissionDictionaryView view) {
         String raw = StringUtils.hasText(view.permissionName()) ? view.permissionName().trim() : view.permissionCode();
         if (raw == null) return null;
-        String name = raw.replaceFirst("(?i)^[A-Z][0-9]{1,2}(?=[^A-Z0-9_])[ :：·_-]*", "");
+        boolean layerRange = LAYER_RANGE.matcher(raw).find();
+        String name = layerRange ? raw : raw.replaceFirst("(?i)^[A-Z][0-9]{1,2}(?=[^A-Z0-9_])[ :：·_-]*", "");
         name = name.replaceFirst("[（(](?:高敏[·、/][^）)]*|[0-9]+项关键指标[^）)]*)[）)]$", "").trim();
         if (!StringUtils.hasText(name)) return raw;
-        if (!name.equals(raw) && StringUtils.hasText(view.menuCodePath()) && !"未归类".equals(view.menuCodePath())) {
+        if ((layerRange || !name.equals(raw)) && StringUtils.hasText(view.menuCodePath()) && !"未归类".equals(view.menuCodePath())) {
             String path = view.menuCodePath();
             String page = ffdd.opsconsole.platform.domain.AdminMenuDisplayNames.resolveUniqueStockLabel(
                     path.substring(path.lastIndexOf('/') + 1).trim());

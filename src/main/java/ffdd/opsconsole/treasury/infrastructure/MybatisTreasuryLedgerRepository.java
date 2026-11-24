@@ -730,7 +730,16 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
         }
         BigDecimal before = mapper.lockCommissionWallet(event.userId(), event.asset());
         if (before == null) throw new IllegalStateException("COMMISSION_WALLET_UNAVAILABLE");
-        BigDecimal delta = reverse ? event.amount().negate() : event.amount();
+        BigDecimal amount = event.amount();
+        if (reverse && "REVERSED".equals(event.status()) && "USDT".equals(event.asset())
+                && before.compareTo(amount) < 0 && mapper.markSalaryRecoveryPending(eventId) == 1) {
+            amount = before.max(BigDecimal.ZERO);
+            if (amount.signum() == 0) {
+                mapper.closeCommissionAccrual(eventId, event.userId(), event.asset());
+                return false;
+            }
+        }
+        BigDecimal delta = reverse ? amount.negate() : amount;
         BigDecimal after = before.add(delta);
         // A USDT commission release is a credit and may only partially repay a
         // negative wallet balance. Debits and UVT keep the non-negative guard.
@@ -741,7 +750,7 @@ public class MybatisTreasuryLedgerRepository implements TreasuryLedgerRepository
             throw new IllegalStateException("COMMISSION_WALLET_WRITE_CONFLICT");
         }
         insertImmutableLedgerEntry(bizNo, event.userId(), "TEAM_COMMISSION", event.asset(), direction,
-                event.amount(), after, "SUCCESS", remark);
+                amount, after, "SUCCESS", remark);
         mapper.closeCommissionAccrual(eventId, event.userId(), event.asset());
         commissionCapture.recorded(fundBefore);
         return true;

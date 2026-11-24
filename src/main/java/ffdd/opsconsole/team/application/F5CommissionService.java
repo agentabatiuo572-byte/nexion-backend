@@ -179,7 +179,13 @@ public class F5CommissionService {
         if (rows == null || rows.isEmpty()) {
             return ApiResult.fail(404, "COMMISSION_EVENT_NOT_FOUND");
         }
-        return ApiResult.ok(eventView(rows.get(0)));
+        Map<String, Object> event = eventView(rows.get(0));
+        if (VRankSalaryService.KIND.equals(event.get("kind")) && "recovery_pending".equals(event.get("status"))) {
+            BigDecimal recovered = mapper.recoveredSalaryAmount(eventId, longValue(event.get("userId")));
+            event.put("recoveredAmount", recovered);
+            event.put("pendingRecoveryAmount", decimal(event.get("amount")).subtract(recovered));
+        }
+        return ApiResult.ok(event);
     }
 
     /**
@@ -507,6 +513,9 @@ public class F5CommissionService {
         Long userId = longValue(event.get("userId"));
         String currency = text(event.get("currency")).toUpperCase(Locale.ROOT);
         boolean reversedFunds = ledgerPostingFacade.reverseCommissionFunds(eventId);
+        boolean salary = VRankSalaryService.KIND.equals(event.get("kind"));
+        BigDecimal recovered = salary && reversedFunds ? mapper.recoveredSalaryAmount(eventId, userId) : BigDecimal.ZERO;
+        BigDecimal pending = salary ? amount.subtract(recovered) : BigDecimal.ZERO;
         String operationNo = operationNo("REV");
         mapper.insertOperation(
                 operationNo, "REVERSE", eventId, null, userId, text(event.get("kind")), amount,
@@ -520,13 +529,24 @@ public class F5CommissionService {
                 "refundRef", refundRef,
                 "operator", operator,
                 "reason", reason);
-        audit("ADMIN_COMMISSION_REVERSED", commissionId, userId, operator, detail);
+        Map<String, Object> auditDetail = detail;
+        if (salary) {
+            auditDetail = new LinkedHashMap<>(detail);
+            auditDetail.put("recoveredAmount", recovered);
+            auditDetail.put("pendingRecoveryAmount", pending);
+        }
+        audit("ADMIN_COMMISSION_REVERSED", commissionId, userId, operator, auditDetail);
         eventOutboxService.publish("ADMIN_COMMISSION", commissionId, "admin.commission_reversed", detail);
-        return ApiResult.ok(linked(
+        Map<String, Object> result = linked(
                 "operationNo", operationNo,
                 "commissionId", commissionId,
-                "status", "reversed",
-                "ledgerBizNo", reversedFunds ? "F5-COMMISSION-" + eventId + "-REVERSE" : ""));
+                "status", pending.signum() > 0 ? "recovery_pending" : "reversed",
+                "ledgerBizNo", reversedFunds ? "F5-COMMISSION-" + eventId + "-REVERSE" : "");
+        if (salary) {
+            result.put("recoveredAmount", recovered);
+            result.put("pendingRecoveryAmount", pending);
+        }
+        return ApiResult.ok(result);
     }
 
     private ApiResult<Map<String, Object>> reissueInternal(

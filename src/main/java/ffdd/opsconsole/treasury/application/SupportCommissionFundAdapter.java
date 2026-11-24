@@ -37,7 +37,12 @@ public class SupportCommissionFundAdapter implements SupportCommissionCaptureFac
         var event=one(actual.events(),"id",t.eventId);var ledger=one(actual.ledgers(),"bizNo",ledgerNo(t.eventId,t.phase));
         var release=t.phase.equals("REVERSE")?one(actual.ledgers(),"bizNo",ledgerNo(t.eventId,"RELEASE")):null;
         String asset=(String)event.get("asset");if(!Set.of("USDT","UVT").contains(asset))throw new IllegalStateException("Commission currency required");
-        var amount=amount(event.get(asset.equals("UVT")?"amountNex":"amountUsdt"));if(amount.signum()<=0)throw new IllegalStateException("Commission actual amount required");
+        var issued=amount(event.get(asset.equals("UVT")?"amountNex":"amountUsdt"));
+        var amount=amount(ledger.get("amount"));
+        boolean partialSalary=t.phase.equals("REVERSE")&&"USDT".equals(asset)
+                &&"vrank_salary".equals(event.get("commissionType"))&&"RECOVERY_PENDING".equals(event.get("status"));
+        if(amount.signum()<=0||(partialSalary?amount.compareTo(issued)>=0:amount.compareTo(issued)!=0))
+            throw new IllegalStateException("Commission actual amount required");
         var account=new Account(t.customer,asset,"available");String key=eventId(t.eventId,t.phase);
         var events=List.of(t.phase.equals("RELEASE")?new Event(key,Action.EARNINGS,null,account,null,amount,null):new Event(key,Action.CLAWBACK,account,null,eventId(t.eventId,"RELEASE"),amount,null));
         var source=new LinkedHashMap<String,Object>();source.put("schemaVersion","SUPPORT_COMMISSION_V1");source.put("event",event);source.put("ledger",ledger);source.put("releaseLedger",release);

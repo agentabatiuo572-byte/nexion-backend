@@ -1345,6 +1345,12 @@ public class OpsAuditCenterService {
                     String f1After = f1RewardPayoutAfterValue(replayResult.getData());
                     if (f1After != null) ticket.setAfterValue(f1After);
                 }
+                if ("F".equalsIgnoreCase(cmd.domain()) && "f5_commission_reverse".equalsIgnoreCase(cmd.op())
+                        && replayResult.getData() instanceof Map<?, ?> data && data.get("pendingRecoveryAmount") instanceof BigDecimal pending
+                        && pending.signum() > 0) {
+                    ticket.setAfterValue("已扣回 " + data.get("recoveredAmount") + " USDT · 待追回 "
+                            + pending.stripTrailingZeros().toPlainString() + " USDT");
+                }
             } finally {
                 A2ReplayContext.exitReplay();
             }

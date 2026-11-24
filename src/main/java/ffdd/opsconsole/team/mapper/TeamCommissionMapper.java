@@ -1045,7 +1045,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     List<Map<String, Object>> commissionEvents(@Param("limit") int limit);
 
     @Select("""
-            SELECT status, version, unlock_at AS unlockAt,
+            SELECT status, version, unlock_at AS unlockAt, LOWER(commission_type) AS kind,
                    CONCAT('U', LPAD(user_id, GREATEST(8, CHAR_LENGTH(CAST(user_id AS CHAR))), '0')) AS user,
                    CASE
                      WHEN UPPER(status) = 'FROZEN' THEN 'frozen'
