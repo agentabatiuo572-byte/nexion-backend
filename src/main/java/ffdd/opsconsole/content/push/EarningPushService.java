@@ -6,7 +6,6 @@ import ffdd.opsconsole.device.application.AppTaskAssignmentService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.config.StorageTime;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -29,7 +28,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class EarningPushService {
     private static final Logger log = LoggerFactory.getLogger(EarningPushService.class);
     private static final String THREAD = "earning-push";
-    private static final BigDecimal DAILY_DISPLAY_MINIMUM = new BigDecimal("0.01");
     private final EarningPushMapper mapper;
     private final PlatformConfigFacade config;
 
@@ -246,8 +244,9 @@ public class EarningPushService {
         String language = user.language();
         String title, body, cta;
         if ("DAILY".equals(kind)) {
-            title = dailyTitle(language);
-            body = amount(dailyDisplayAmount(usdt), dailyDisplayAmount(uvt), " ");
+            title = amount(usdt, uvt) + (dual(usdt, uvt) ? ""
+                    : suffix("今日收益", "Today's earnings", "Thu nhập hôm nay", language));
+            body = dailyBody(receipts.size(), devices.size(), language);
             cta = "/pages/me/notifications?section=notifications&filter=finance";
         } else if (single != null) {
             title = amount(usdt, uvt) + (dual(usdt, uvt) ? ""
@@ -324,19 +323,11 @@ public class EarningPushService {
 
 
     private static String amount(BigDecimal usdt, BigDecimal uvt) {
-        return amount(usdt, uvt, " · ");
-    }
-
-    private static String amount(BigDecimal usdt, BigDecimal uvt, String separator) {
         String usdtText = positive(usdt) ? "+" + decimal(usdt) + "\u00A0USDT" : null;
         String uvtText = positive(uvt) ? "+" + decimal(uvt) + "\u00A0UVT" : null;
-        if (usdtText != null && uvtText != null) return usdtText + separator + uvtText;
+        if (usdtText != null && uvtText != null) return usdtText + " · " + uvtText;
         if (usdtText != null) return usdtText;
         return uvtText == null ? "" : uvtText;
-    }
-
-    private static BigDecimal dailyDisplayAmount(BigDecimal value) {
-        return value.compareTo(DAILY_DISPLAY_MINIMUM) < 0 ? value : value.setScale(2, RoundingMode.HALF_UP);
     }
 
     private static boolean positive(BigDecimal value) { return value != null && value.signum() > 0; }
@@ -366,11 +357,11 @@ public class EarningPushService {
         return String.join(" · ", parts);
     }
 
-    private static String dailyTitle(String language) {
+    private static String dailyBody(int count, int devices, String language) {
         String first = language == null ? "" : language.trim().toLowerCase(Locale.ROOT);
-        if (first.startsWith("zh")) return "今日设备收益";
-        if (first.startsWith("vi")) return "Thu nhập thiết bị hôm nay";
-        return "Today's device earnings";
+        if (first.startsWith("zh")) return "今天已到账 " + count + " 笔 · 来自 " + devices + " 台设备";
+        if (first.startsWith("vi")) return "Hôm nay đã nhận " + count + " khoản · từ " + devices + " thiết bị";
+        return count + " earnings credited today · from " + devices + " devices";
     }
 
     private static String deviceBody(int devices, String language) {
