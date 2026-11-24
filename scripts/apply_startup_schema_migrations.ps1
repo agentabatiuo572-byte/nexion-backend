@@ -311,6 +311,7 @@ $migrations = @(
   # Complete the retry-compatible install before replaying the immutable historical file.
   (Join-Path $root "scripts\migrations\20261028_00_cregis_deposit_policy_retry_compat.sql")
   (Join-Path $root "scripts\migrations\20261028_cregis_deposit_policy.sql")
+  (Join-Path $root "scripts\migrations\20261124_b84_a_exposure_alert.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions.sql")
   # Grant H4 capabilities only after the promotion permission rows exist on a fresh database.
   (Join-Path $root "scripts\migrations\20261022_04_h4_superadmin_permissions.sql")

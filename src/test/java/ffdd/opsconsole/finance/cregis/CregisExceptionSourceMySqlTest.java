@@ -2,7 +2,6 @@ package ffdd.opsconsole.finance.cregis;
 
 import static org.assertj.core.api.Assertions.*;
 import ffdd.opsconsole.finance.mapper.CregisExceptionSourceMapper;
-import ffdd.opsconsole.finance.mapper.CregisDepositMapper;
 import static org.mockito.Mockito.*;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
@@ -40,8 +39,7 @@ class CregisExceptionSourceMySqlTest {
         configuration.addMapper(CregisExceptionSourceMapper.class);
         mapper=new SqlSessionTemplate(new SqlSessionFactoryBuilder().build(configuration)).getMapper(CregisExceptionSourceMapper.class);
         var manager=new DataSourceTransactionManager(ds);tx=new TransactionTemplate(manager);
-        var deposits=mock(CregisDepositMapper.class);when(deposits.unresolvedExposure(anyLong())).thenReturn(BigDecimal.ZERO);
-        var proxy=new ProxyFactory(new CregisExceptionSourceService(mapper,deposits));proxy.setProxyTargetClass(true);
+        var proxy=new ProxyFactory(new CregisExceptionSourceService(mapper));proxy.setProxyTargetClass(true);
         proxy.addAdvice(new TransactionInterceptor(manager,new AnnotationTransactionAttributeSource()));service=(CregisExceptionSourceService)proxy.getProxy();
         source=new CregisExceptionSourceService.Source(88,UUID.randomUUID().getMostSignificantBits() & Long.MAX_VALUE,"0x"+(UUID.randomUUID().toString()+UUID.randomUUID()).replace("-",""),2,"0x"+"a".repeat(40),BigDecimal.TEN);
     }

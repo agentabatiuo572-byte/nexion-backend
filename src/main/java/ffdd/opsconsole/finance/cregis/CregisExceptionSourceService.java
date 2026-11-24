@@ -1,7 +1,6 @@
 package ffdd.opsconsole.finance.cregis;
 
 import ffdd.opsconsole.finance.mapper.CregisExceptionSourceMapper;
-import ffdd.opsconsole.finance.mapper.CregisDepositMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.util.Map;
@@ -15,7 +14,6 @@ import org.springframework.transaction.annotation.Transactional;
 @Service @RequiredArgsConstructor
 public class CregisExceptionSourceService {
     private final CregisExceptionSourceMapper db;
-    private final CregisDepositMapper deposits;
     public record Source(long projectId,long cid,String txid,int logIndex,String address,BigDecimal grossAmount,CregisNetwork network) {
         public Source(long projectId,long cid,String txid,int logIndex,String address,BigDecimal grossAmount) { this(projectId,cid,txid,logIndex,address,grossAmount,CregisNetwork.BEP20); }
         public Source {
@@ -64,8 +62,6 @@ public class CregisExceptionSourceService {
         db.finishDeliveries(source,terminal);
         db.resolveOwnAlert(source);
         db.retireResolvedAddress(source);
-        if(deposits.unresolvedExposure(source.projectId()).compareTo(new BigDecimal("500"))<0)
-            deposits.resolveExposureAlert(source.projectId());
     }
 
     /** Re-mining changes a block-global index; both identities remain financially consumed. */

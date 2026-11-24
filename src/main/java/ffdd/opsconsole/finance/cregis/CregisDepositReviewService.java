@@ -95,7 +95,6 @@ public class CregisDepositReviewService {
         if (caseId <= 0 || expectedVersion < 0
                 || !("APPROVE".equals(decision) || "REJECT".equals(decision)))
             throw new BizException(400, "CREGIS_REVIEW_REQUEST_INVALID");
-        deposits.tripIfNeeded();
         CregisDepositService.ReviewProof proof = null;
         if ("APPROVE".equals(decision)) {
             Map<String, Object> snapshot = db.reviewCaseSnapshot(caseId);
