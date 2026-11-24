@@ -83,6 +83,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
 public class OpsGrowthService implements AuditReplayable, ApplicationEventPublisherAware {
+    private static final String COMPLIANCE_REVIEW_THRESHOLD_DIAL = GrowthRhythmSnapshot.COMPLIANCE_REVIEW_THRESHOLD_DIAL;
     private final H4EventRuleService h4EventRules;
     private final WeeklyQuestSnapshotService weeklySnapshots;
     private final WeeklyRegionPolicyService weeklyRegionPolicies;
@@ -482,19 +483,31 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (month < 1 || month > rhythmTotalMonths()) {
             return validation("MONTH_OUT_OF_RANGE");
         }
-        String normalizedKey = normalizePhaseDialKey(dialKey);
+        boolean complianceThreshold = COMPLIANCE_REVIEW_THRESHOLD_DIAL.equals(dialKey);
+        String normalizedKey = complianceThreshold ? dialKey : normalizePhaseDialKey(dialKey);
         if (RETIRED_KEYS.contains(normalizedKey)) {
             return retiredFeature();
         }
         String configKey = monthDialConfigKey(month, normalizedKey);
-        BigDecimal oldValue = configDecimal(configKey, defaultPhaseMonthDialValue(month, normalizedKey));
+        BigDecimal oldValue = complianceThreshold
+                ? GrowthRhythmSnapshot.parseComplianceReviewThreshold(configFacade.activeValueForUpdate(configKey).orElse(null))
+                : configDecimal(configKey, defaultPhaseMonthDialValue(month, normalizedKey));
+        if (complianceThreshold && oldValue == null) return ApiResult.fail(503, "H1_COMPLIANCE_THRESHOLD_UNAVAILABLE");
+        if (complianceThreshold && !A2ReplayContext.isReplaying()
+                && lockMapper.countActiveByTarget("H", "growth_phase_dial", month + ":" + normalizedKey) > 0) {
+            return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
+        }
+        if (complianceThreshold && GrowthRhythmSnapshot.parseComplianceReviewThreshold(request.value()) == null) {
+            return validation("H1_COMPLIANCE_THRESHOLD_INVALID");
+        }
         BigDecimal newValue = normalizePhaseDialValue(normalizedKey, request.value());
-        if (amplifiesPhasePayout(normalizedKey, oldValue, newValue) && coverageBelowRedline()) {
-            return coverageRedline();
+        if (amplifiesPhasePayout(normalizedKey, oldValue, newValue)) {
+            if (complianceThreshold && !A2ReplayContext.isReplaying()) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+            if (coverageBelowRedline()) return coverageRedline();
         }
         configFacade.upsertAdminValue(configKey, newValue.toPlainString(), "NUMBER", "growth", "H1 monthly phase dial");
         boolean currentMonth = month == currentMonth();
-        if (currentMonth) {
+        if (currentMonth && !complianceThreshold) {
             writeActivePhaseDial(normalizedKey, newValue);
         }
         audit("H1_MONTH_DIAL_CHANGED", "GROWTH_PHASE_MONTH_DIAL", configKey, request.operator(), Map.of(
@@ -506,6 +519,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 "reason", request.reason().trim(),
                 "idempotencyKey", idempotencyKey.trim()));
         return phases();
+    }
+
+    public BigDecimal complianceThresholdBeforeIncrease(int month, BigDecimal proposed) {
+        if (month < 1 || month > rhythmTotalMonths()) throw new BizException(422, "MONTH_OUT_OF_RANGE");
+        BigDecimal current = monthDialValue(month, COMPLIANCE_REVIEW_THRESHOLD_DIAL);
+        if (current == null) throw new BizException(503, "H1_COMPLIANCE_THRESHOLD_UNAVAILABLE");
+        if (proposed.compareTo(current) <= 0) throw new BizException(422, "H1_COMPLIANCE_THRESHOLD_INCREASE_REQUIRED");
+        if (coverageBelowRedline()) throw new BizException(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+                OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        return current;
     }
 
     public ApiResult<Map<String, Object>> updatePhaseControl(
@@ -5531,6 +5554,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             for (String key : PHASE_DIAL_KEYS) {
                 dials.put(key, displayPhaseDialValue(key, monthDialValue(month, key)));
             }
+            dials.put(COMPLIANCE_REVIEW_THRESHOLD_DIAL, monthDialValue(month, COMPLIANCE_REVIEW_THRESHOLD_DIAL));
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("month", month);
             row.put("phase", phaseForRhythmMonth(month, totalMonths));
@@ -6047,6 +6071,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private BigDecimal monthDialValue(int month, String key) {
+        if (COMPLIANCE_REVIEW_THRESHOLD_DIAL.equals(key)) {
+            return GrowthRhythmSnapshot.parseComplianceReviewThreshold(
+                    configFacade.activeValue(monthDialConfigKey(month, key)).orElse(null));
+        }
         BigDecimal fallback = defaultPhaseMonthDialValue(month, key);
         return configFacade.activeValue(monthDialConfigKey(month, key))
                 .map(value -> parseDecimal(value, fallback))
@@ -6057,6 +6085,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (nextMonth < 1 || currentMonth == nextMonth) {
             return false;
         }
+        BigDecimal currentThreshold = monthDialValue(Math.max(1, currentMonth), COMPLIANCE_REVIEW_THRESHOLD_DIAL);
+        BigDecimal nextThreshold = monthDialValue(nextMonth, COMPLIANCE_REVIEW_THRESHOLD_DIAL);
+        if (currentThreshold == null || nextThreshold == null) {
+            throw new IllegalArgumentException("H1_COMPLIANCE_THRESHOLD_UNAVAILABLE");
+        }
+        if (nextThreshold.compareTo(currentThreshold) > 0) return true;
         for (String key : PHASE_DIAL_KEYS) {
             BigDecimal oldValue = configFacade.activeValue(phaseDialConfigKey(key))
                     .filter(StringUtils::hasText)
@@ -6076,6 +6110,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private BigDecimal normalizePhaseDialValue(String key, String raw) {
+        if (COMPLIANCE_REVIEW_THRESHOLD_DIAL.equals(key)) {
+            return GrowthRhythmSnapshot.parseComplianceReviewThreshold(raw);
+        }
         if ("complianceHoldEnabled".equals(key)) {
             String value = requireText(raw, "Compliance dial value is required").trim().toLowerCase(Locale.ROOT);
             if (Set.of("1", "true", "on", "是").contains(value)) return BigDecimal.ONE;
@@ -6107,7 +6144,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private boolean amplifiesPhasePayout(String key, BigDecimal oldValue, BigDecimal newValue) {
         return switch (key) {
-            case "newUserBonusMultiplier", "inviteRewardMultiplier", "reinvestMultiplier", "binaryDailyCap", "questBonusMultiplier" ->
+            case "newUserBonusMultiplier", "inviteRewardMultiplier", "reinvestMultiplier", "binaryDailyCap", "questBonusMultiplier", COMPLIANCE_REVIEW_THRESHOLD_DIAL ->
                     newValue.compareTo(oldValue) > 0;
             case "withdrawCooldownDays", "withdrawPenaltyFeeRate", "complianceHoldEnabled" ->
                     newValue.compareTo(oldValue) < 0;

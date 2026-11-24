@@ -8,8 +8,7 @@ import java.util.Set;
 import org.springframework.util.StringUtils;
 
 /** H1 review and amount window shared by quoting, D2 review and first payout admission. */
-record WithdrawalCompliancePolicy(boolean enabled, int cooldownDays, int month, String phase) {
-    static final BigDecimal REVIEW_THRESHOLD_USDT = new BigDecimal("1000");
+record WithdrawalCompliancePolicy(boolean enabled, int cooldownDays, int month, String phase, BigDecimal thresholdUsdt) {
     static final String REVIEW_REQUIRED = "H1_COMPLIANCE_REVIEW_REQUIRED";
     static final String HOLD_OWNER = "H1_COMPLIANCE_HOLD";
 
@@ -25,7 +24,19 @@ record WithdrawalCompliancePolicy(boolean enabled, int cooldownDays, int month, 
             return null;
         }
         return new WithdrawalCompliancePolicy(rhythm.complianceHoldEnabled(), rhythm.withdrawCooldownDays(),
-                rhythm.currentMonth(), rhythm.currentPhase());
+                rhythm.currentMonth(), rhythm.currentPhase(), rhythm.complianceReviewThresholdUsdt());
+    }
+
+    BigDecimal requireThresholdUsdt() {
+        if (thresholdUsdt == null || thresholdUsdt.signum() <= 0) {
+            throw new BizException(503, "H1_COMPLIANCE_THRESHOLD_UNAVAILABLE");
+        }
+        return thresholdUsdt;
+    }
+
+    WithdrawalCompliancePolicy withOrderThreshold(BigDecimal orderThreshold) {
+        return new WithdrawalCompliancePolicy(enabled, cooldownDays, month, phase,
+                orderThreshold == null ? null : orderThreshold.stripTrailingZeros());
     }
 
     static boolean supports(String chain) {
@@ -43,7 +54,7 @@ record WithdrawalCompliancePolicy(boolean enabled, int cooldownDays, int month, 
     }
 
     boolean holdApplies(String chain, BigDecimal amount) {
-        return reviewRequired(chain) && amount.compareTo(REVIEW_THRESHOLD_USDT) > 0;
+        return reviewRequired(chain) && amount.compareTo(requireThresholdUsdt()) > 0;
     }
 
     int holdDays(String chain, BigDecimal amount) {
@@ -57,7 +68,7 @@ record WithdrawalCompliancePolicy(boolean enabled, int cooldownDays, int month, 
 
     String versionMaterial() {
         return "H1-COMPLIANCE-THREE-NETWORKS-20261108|" + month + "|" + phase + "|" + enabled + "|" + cooldownDays
-                + "|" + REVIEW_THRESHOLD_USDT;
+                + "|" + (thresholdUsdt == null ? "" : thresholdUsdt.toPlainString());
     }
 
     String approvalOwner() {

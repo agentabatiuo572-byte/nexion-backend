@@ -21,6 +21,7 @@ final class A5ParameterUsageCatalog {
             Map.entry("binaryDailyCap", new Usage("选中运营月的双轨日奖励上限，单位 USDT；周期上限按天数折算。", "GrowthRhythmSnapshot; BinarySettlementPolicyProvider; AppBinaryProjectionService")),
             Map.entry("withdrawCooldownDays", new Usage("选中运营月的提现冷却天数；提现评估和持有时限读取该值。", "GrowthRhythmSnapshot; AppWithdrawalService")),
             Map.entry("complianceHoldEnabled", new Usage("选中运营月的提现合规审查开关，供提现合规策略读取。", "GrowthRhythmSnapshot; WithdrawalCompliancePolicy")),
+            Map.entry("complianceReviewThresholdUsdt", new Usage("选中运营月的新链上提现合规等待金额线，严格超过才等。", "GrowthRhythmSnapshot; WithdrawalCompliancePolicy")),
             Map.entry("withdrawPenaltyFeeRate", new Usage("已退役：月份提现惩罚费率保留兼容读取和校验，当前提现不收取惩罚费。", "OpsPhaseOverviewService; AppWithdrawalService")));
 
     private static final Map<String, Usage> EXACT = """

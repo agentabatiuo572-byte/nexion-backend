@@ -72,6 +72,10 @@ public interface WithdrawalOrderRepository {
         return List.of();
     }
 
+    default BigDecimal findComplianceThreshold(String withdrawalNo) {
+        return null;
+    }
+
     default boolean releaseExpiredLifecycle(
             String withdrawalNo, String expectedStatus, String newStatus, String failureReason, LocalDateTime now) {
         return false;

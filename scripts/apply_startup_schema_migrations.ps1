@@ -572,7 +572,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261124_b79_earning_notifications.sql")
   (Join-Path $root "scripts\migrations\20261124_b79_earning_push.sql")
   (Join-Path $root "scripts\migrations\20261124_b79_earning_push_notification_index.sql")
-  (Join-Path $root "scripts\migrations\20261124_d5_min_withdrawal.sql")
+  (Join-Path $root "scripts\migrations\20261124_d5_min_withdrawal.sql"),
+  (Join-Path $root "scripts\migrations\20261124_h1_compliance_threshold.sql")
   # B80-BE-06: M performance export permissions and task/token tables.
   (Join-Path $root "scripts\migrations\20261124_b80_performance_exports.sql")
 )

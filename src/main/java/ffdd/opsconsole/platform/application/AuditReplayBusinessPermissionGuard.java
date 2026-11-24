@@ -8,6 +8,7 @@ import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H1GrowthApproval;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.growth.application.H7VoucherDisposition;
 import ffdd.opsconsole.device.application.OpsDeviceService;
@@ -1456,6 +1457,21 @@ public class AuditReplayBusinessPermissionGuard {
         if (command != null && Set.of("f_direct_referral_policy","f_seven_layer_activation").contains(command.op())
                 && (request.reason() == null || request.reason().trim().length() < 8 || request.reason().trim().length() > 200)) {
             return ApiResult.fail(422, "DIRECT_REFERRAL_POLICY_REQUEST_INVALID");
+        }
+        String thresholdDial = GrowthRhythmSnapshot.COMPLIANCE_REVIEW_THRESHOLD_DIAL;
+        if (H1GrowthApproval.supports(command) && thresholdDial.equals(value(command.params(), "dialKey"))) {
+            Integer month = strictInteger(command.params().get("month"), 1, 24);
+            var proposed = GrowthRhythmSnapshot.parseComplianceReviewThreshold(value(command.params(), "value"));
+            if (month == null || proposed == null) return ApiResult.fail(422, "H1_COMPLIANCE_THRESHOLD_INVALID");
+            String id = month + ":" + thresholdDial;
+            var target = new AuditLockTarget("H", "growth_phase_dial", id);
+            if (!"H1".equals(text(request.sourceDomain())) || !id.equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var before = growth.complianceThresholdBeforeIncrease(month, proposed);
+            return ApiResult.ok(new DelegatedProposalDescriptor("调整第 " + month + " 月合规大额线", id,
+                    before.toPlainString(), proposed.toPlainString(), "H1", "param", true, target));
         }
         DelegatedProposalDescriptor descriptor = delegatedDescriptor(command);
         if (descriptor == null) {

@@ -25,7 +25,8 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
 
     @Select("""
             SELECT status,d2_lifecycle_owner lifecycleOwner,created_at createdAt,d2_hold_until holdUntil,
-                   d5_payout_source payoutSource,d5_provider_cid providerCid
+                   d5_payout_source payoutSource,d5_provider_cid providerCid,
+                   h1_compliance_threshold_usdt complianceThresholdUsdt
               FROM nx_withdrawal_order
              WHERE withdrawal_no=#{withdrawalNo} AND is_deleted=0 FOR UPDATE
             """)
@@ -48,7 +49,7 @@ public interface WithdrawalPayoutMapper extends BaseMapper<Object> {
                                  @Param("holdUntil") LocalDateTime holdUntil, @Param("now") LocalDateTime now);
 
     record ComplianceDispatchState(String status, String lifecycleOwner, LocalDateTime createdAt,LocalDateTime holdUntil,
-                                   String payoutSource, Long providerCid) { }
+                                   String payoutSource, Long providerCid, BigDecimal complianceThresholdUsdt) { }
 
     @Select("""
             SELECT o.id,o.withdrawal_no withdrawalNo,o.user_id userId,o.asset,o.chain,o.amount,

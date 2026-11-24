@@ -151,7 +151,7 @@ public class AppWithdrawalService {
                 "policyVersion", policy.policyVersion(),
                 "cooldownDays", rhythm.withdrawCooldownDays(),
                 "complianceHoldEnabled", rhythm.complianceHoldEnabled(),
-                "complianceReviewThresholdUsdt", WithdrawalCompliancePolicy.REVIEW_THRESHOLD_USDT,
+                "complianceReviewThresholdUsdt", WithdrawalCompliancePolicy.require(rhythm).requireThresholdUsdt(),
                 "enabledNetworks", policy.enabledNetworks(), "providerPayout", providerCapability,
                 "networkCapabilities", networkCapabilities,
                 "currentPhase", rhythm.currentPhase(),
@@ -212,6 +212,7 @@ public class AppWithdrawalService {
         String normalizedAddress = normalizeAddress(address);
         PolicySnapshot policy = currentPolicy();
         WithdrawalCompliancePolicy compliance = WithdrawalCompliancePolicy.require(policy.rhythm());
+        compliance.requireThresholdUsdt();
         boolean complianceReviewRequired = compliance.reviewRequired(normalizedChain);
         boolean complianceHoldApplies = compliance.holdApplies(normalizedChain, requested);
         int complianceHoldDays = compliance.holdDays(normalizedChain, requested);
@@ -538,6 +539,7 @@ public class AppWithdrawalService {
 
         GrowthRhythmSnapshot rhythm = policy.rhythm();
         WithdrawalCompliancePolicy compliance = WithdrawalCompliancePolicy.require(rhythm);
+        BigDecimal complianceThreshold = bankQuote == null ? compliance.requireThresholdUsdt() : null;
         boolean complianceReviewRequired = bankQuote == null && compliance.reviewRequired(chain);
         boolean complianceHoldApplies = bankQuote == null && compliance.holdApplies(chain, amount);
         int complianceHoldDays = bankQuote == null ? compliance.holdDays(chain, amount) : 0;
@@ -636,6 +638,7 @@ public class AppWithdrawalService {
                 penaltyPct, grossFee,
                 nexBurned, nexOffsetRate, feeWaived, actualFee, netReceive,
                 acceptedPolicyVersion, useNexFeeOffset, idempotencyKey,
+                complianceThreshold,
                 frozen ? "K3_RULE_FREEZE"
                         : delayed ? "K3_RULE_DELAY" : fastTrack
                             ? (holdUntil.equals(businessNow) ? "H1_ZERO_DAY_AUTO_REVIEW" : "H1_PHASE_COOLDOWN")
@@ -681,6 +684,7 @@ public class AppWithdrawalService {
                 "actual_fee", actualFee, "net_receive", netReceive,
                 "cooldown_days", rhythm.withdrawCooldownDays(), "hold_until", holdUntil,
                 "compliance_review_required", complianceReviewRequired,
+                "compliance_review_threshold_usdt", complianceThreshold,
                 "compliance_hold_applies", complianceHoldApplies, "compliance_hold_days", complianceHoldDays,
                 "small_amount_auto_review", fastTrack,
                 "small_amount_threshold_usd", policy.smallAmountThresholdUsd(),

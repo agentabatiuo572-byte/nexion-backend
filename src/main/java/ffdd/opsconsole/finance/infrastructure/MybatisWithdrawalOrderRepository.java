@@ -113,6 +113,11 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
     }
 
     @Override
+    public BigDecimal findComplianceThreshold(String withdrawalNo) {
+        return mapper.findComplianceThreshold(withdrawalNo);
+    }
+
+    @Override
     public boolean releaseExpiredLifecycle(
             String withdrawalNo, String expectedStatus, String newStatus, String failureReason, LocalDateTime now) {
         return mapper.releaseExpiredLifecycle(withdrawalNo, expectedStatus, newStatus, failureReason, now) == 1;

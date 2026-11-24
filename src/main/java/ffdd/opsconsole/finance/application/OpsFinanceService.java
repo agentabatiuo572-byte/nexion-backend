@@ -1016,7 +1016,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         if ("APPROVE".equals(action)) {
             if (WithdrawalCompliancePolicy.supports(order.chain()))
-                compliance = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot());
+                compliance = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot())
+                        .withOrderThreshold(withdrawalRepository.findComplianceThreshold(order.withdrawalNo()));
             BigDecimal threshold = batchThreshold == null ? D2WithdrawalReviewThreshold.require(configFacade) : batchThreshold;
             strongReview = D2WithdrawalReviewThreshold.applies(threshold, order.amount());
             currentRisk = currentD2Risk(order, LocalDateTime.now(clock));
@@ -1202,7 +1203,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 && WithdrawalCompliancePolicy.h1Hold(order.lifecycleOwner(), order.previousStatus());
         var compliance = scopedH1Hold ? WithdrawalCompliancePolicy.read(growthRhythmFacade.snapshot()) : null;
         LocalDateTime effectiveHoldUntil = compliance == null ? order.holdUntil()
-                : compliance.holdUntil(order.chain(), order.amount(), order.createdAt());
+                : compliance.withOrderThreshold(withdrawalRepository.findComplianceThreshold(order.withdrawalNo()))
+                        .holdUntil(order.chain(), order.amount(), order.createdAt());
         if (effectiveHoldUntil.isAfter(effectiveNow)) return D2LifecycleReleaseResult.NOT_DUE;
         if (isWithdrawalLockedByA2(order.withdrawalNo())) {
             return D2LifecycleReleaseResult.LOCKED;
@@ -2201,6 +2203,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         LocalDateTime holdUntil = order.holdUntil();
         if (WithdrawalCompliancePolicy.supports(order.chain())) {
             LocalDateTime complianceUntil = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot())
+                    .withOrderThreshold(withdrawalRepository.findComplianceThreshold(order.withdrawalNo()))
                     .holdUntil(order.chain(), order.amount(), order.createdAt());
             boolean independentHold = StringUtils.hasText(order.lifecycleOwner())
                     && !WithdrawalCompliancePolicy.h1Hold(order.lifecycleOwner(), order.previousStatus())
@@ -2371,13 +2374,15 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("cooldownDays", rhythm.withdrawCooldownDays());
         response.put("penaltyFeeRate", rhythm.withdrawPenaltyFeeRate().movePointLeft(2));
         response.put("complianceHoldEnabled", rhythm.complianceHoldEnabled());
-        response.put("complianceReviewThresholdUsdt", WithdrawalCompliancePolicy.REVIEW_THRESHOLD_USDT);
+        if (rhythm.complianceReviewThresholdUsdt() != null) {
+            response.put("complianceReviewThresholdUsdt", rhythm.complianceReviewThresholdUsdt());
+        }
         response.put("currentPhase", rhythm.currentPhase());
         response.put("currentMonth", rhythm.currentMonth());
         response.put("coverageRatio", coverage.coverageRatio());
         response.put("redlinePct", coverage.redlinePct());
         response.put("coverageReliable", coverage.reliable());
-        response.put("sourceByField", Map.ofEntries(
+        Map<String, String> sourceByField = new LinkedHashMap<>(Map.ofEntries(
                 Map.entry("dailyLimitCount", "d5"),
                 Map.entry("minUsdt", "d5"),
                 Map.entry("balanceMaxRatio", "d5"),
@@ -2388,8 +2393,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 Map.entry("payoutSlaHours", "d5"),
                 Map.entry("cooldownDays", "phase-h1"),
                 Map.entry("penaltyFeeRate", "phase-h1"),
-                Map.entry("complianceHoldEnabled", "phase-h1"),
-                Map.entry("complianceReviewThresholdUsdt", "compliance-rule")));
+                Map.entry("complianceHoldEnabled", "phase-h1")));
+        if (rhythm.complianceReviewThresholdUsdt() != null) {
+            sourceByField.put("complianceReviewThresholdUsdt", "compliance-rule");
+        }
+        response.put("sourceByField", sourceByField);
         return response;
     }
 
