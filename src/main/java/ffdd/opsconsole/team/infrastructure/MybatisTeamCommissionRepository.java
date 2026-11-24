@@ -60,6 +60,12 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
             case "legRank" -> mapper.updateVRankLegRank(rank, value == null ? null : String.valueOf(value)) > 0;
             case "purchaseL1Rate" -> mapper.updatePurchaseL1Rate(rank, value) > 0;
             case "purchaseL2Rate" -> mapper.updatePurchaseL2Rate(rank, value) > 0;
+            case "monthlySalaryUsdt" -> {
+                if (mapper.updateMonthlySalary(rank, value) != 1 || mapper.insertMonthlySalaryRate(rank, value) != 1) {
+                    throw new IllegalStateException("VRANK_SALARY_RATE_WRITE_FAILED");
+                }
+                yield true;
+            }
             default -> false;
         };
     }
@@ -387,7 +393,8 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
                 snapshotJson,
                 triggerEventId,
                 auditNo,
-                isManual ? 1 : 0) > 0;
+                isManual ? 1 : 0,
+                mapper.lockMonthlySalaryForArrival(toCode)) > 0;
     }
 
     // ============================================================

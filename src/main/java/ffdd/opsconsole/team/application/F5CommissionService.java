@@ -47,7 +47,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class F5CommissionService {
     public static final Set<String> KINDS =
-            Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning");
+            Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning", VRankSalaryService.KIND);
+    public static final List<String> SUSPENDABLE_KINDS = KINDS.stream()
+            .filter(kind -> !VRankSalaryService.KIND.equals(kind)).sorted().toList();
     private static final Set<String> STATUSES =
             Set.of("cooling", "unlocked", "withdrawn", "reversed", "frozen", "rejected", "recovery_pending");
     private static final int DEFAULT_LIMIT = 20;
@@ -107,6 +109,7 @@ public class F5CommissionService {
         response.put("domain", "F5");
         response.put("summary", summary(kindAggregates, statusAggregates));
         response.put("commissionKinds", kindSummary(kindAggregates));
+        response.put("suspendableKinds", SUSPENDABLE_KINDS);
         response.put("commissionFilters", List.of(
                 Map.of("key", "all", "label", "全部状态"),
                 Map.of("key", "cooling", "label", "冷却计提"),
@@ -150,7 +153,7 @@ public class F5CommissionService {
                 "coolingAuthority", COOLING_DAYS_KEY,
                 "coolingKinds", List.of("network", "binary", "direct_purchase", "direct_device_earning"),
                 "directCoolingAuthority", "/api/config/commission/direct-referral",
-                "immediateKinds", List.of("peer", "cultivation", "leadership", "genesis")));
+                "immediateKinds", List.of("peer", "cultivation", "leadership", "genesis", VRankSalaryService.KIND)));
         response.put("guardrails", List.of(
                 "F5 writes require Idempotency-Key and an 8-200 character reason",
                 "reissue is fail-closed on an unavailable or below-redline B1 snapshot",
@@ -978,8 +981,9 @@ public class F5CommissionService {
                 "leadership", "团队激励池",
                 "genesis", "创世节点收益",
                 "direct_purchase", "好友购买奖励",
-                "direct_device_earning", "好友设备收益奖励");
-        return List.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning")
+                "direct_device_earning", "好友设备收益奖励",
+                VRankSalaryService.KIND, "等级月薪");
+        return List.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning", VRankSalaryService.KIND)
                 .stream()
                 .map(kind -> {
                     List<Map<String, Object>> aggregateRows = grouped.getOrDefault(kind, List.of());
@@ -1115,7 +1119,7 @@ public class F5CommissionService {
             throw new IllegalArgumentException("COMMISSION_KINDS_REQUIRED");
         }
         List<String> normalized = kinds.stream().map(this::normalizedOptional).distinct().toList();
-        if (normalized.stream().anyMatch(kind -> kind == null || !KINDS.contains(kind))) {
+        if (normalized.stream().anyMatch(kind -> !SUSPENDABLE_KINDS.contains(kind))) {
             throw new IllegalArgumentException("COMMISSION_KIND_INVALID");
         }
         return normalized;

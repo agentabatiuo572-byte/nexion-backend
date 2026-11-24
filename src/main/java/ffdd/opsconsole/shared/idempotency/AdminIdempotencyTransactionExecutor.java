@@ -66,9 +66,10 @@ public class AdminIdempotencyTransactionExecutor {
         AdminIdempotencyRecordEntity record = recordMapper.selectCurrent(scope, idempotencyKey);
         var status = recoveryStatus(record, requestHash);
         boolean failed = status == AdminIdempotencyService.RecoveryStatus.FAILED;
-        boolean hasEventFailure = failed && AdminIdempotencyService.eventFailureReceiptScope(scope)
+        boolean hasRecordedFailure = failed && (AdminIdempotencyService.eventFailureReceiptScope(scope)
+                || AdminIdempotencyService.salaryClaimReceiptScope(scope))
                 && StringUtils.hasText(record.getResponseJson());
-        if (status != AdminIdempotencyService.RecoveryStatus.SUCCEEDED && !hasEventFailure) {
+        if (status != AdminIdempotencyService.RecoveryStatus.SUCCEEDED && !hasRecordedFailure) {
             return new AdminIdempotencyService.RecoveryResult<>(status, null);
         }
         var missingResponseStatus = failed ? status : AdminIdempotencyService.RecoveryStatus.UNKNOWN;
@@ -104,6 +105,12 @@ public class AdminIdempotencyTransactionExecutor {
         if (record == null) return null;
         return new AdminIdempotencyService.ActiveRequest(record.getRequestHash(), record.getUpdatedAt(),
                 recoveryStatus(record, record.getRequestHash()) == AdminIdempotencyService.RecoveryStatus.SUCCEEDED);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public String retainedRequestHash(String scope, String idempotencyKey) {
+        var record = recordMapper.selectCurrent(scope, idempotencyKey);
+        return record == null || !Integer.valueOf(0).equals(record.getIsDeleted()) ? null : record.getRequestHash();
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
@@ -165,7 +172,7 @@ public class AdminIdempotencyTransactionExecutor {
             // deliberately attempted even when this JVM has a different zone.
             int transitioned = expiryTransitionExecutor.markCurrentExpiredProcessingUnknown(
                     current.getId(), scope, idempotencyKey);
-            if (transitioned == 1) {
+            if (transitioned == 1 && !AdminIdempotencyService.salaryClaimReceiptScope(scope)) {
                 throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
             }
             AdminIdempotencyRecordEntity refreshed = expiryTransitionExecutor.loadCurrentCommitted(
@@ -304,10 +311,11 @@ public class AdminIdempotencyTransactionExecutor {
                 return Claim.replayed(readJson(record.getResponseJson(), responseType));
             }
         }
-        if (conversationSendScope(record.getScope()) && STATUS_FAILED.equals(record.getStatus())
+        if ((conversationSendScope(record.getScope()) || AdminIdempotencyService.salaryClaimReceiptScope(record.getScope()))
+                && STATUS_FAILED.equals(record.getStatus())
                 && StringUtils.hasText(record.getResponseJson())) {
             if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
-            // A conversation send that was rejected before any message write must never execute again under the same key.
+            // Both operations retain the original rejection after the business transaction rolled back.
             return Claim.replayed(readJson(record.getResponseJson(), responseType));
         }
         if ("A2_COMMAND".equals(record.getScope()) && STATUS_FAILED.equals(record.getStatus())) {

@@ -248,12 +248,20 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
      * Do not recycle it: callers cannot know whether an external side effect
      * happened.  UNKNOWN is deliberately terminal and therefore fail-closed.
      */
+    // Salary completion commits the wallet and receipt together under this row lock.
+    String EXPIRED_PROCESSING_RESULT = """
+               SET status = IF(scope LIKE 'APP:VRANK_SALARY:USER:%', 'FAILED', 'UNKNOWN'),
+                   response_json = IF(scope LIKE 'APP:VRANK_SALARY:USER:%',
+                       JSON_OBJECT('status','REJECTED','month',request_hash,'rejectionCode','SALARY_CLAIM_EXPIRED','httpStatus',503),
+                       NULL),
+                   error_message = IF(scope LIKE 'APP:VRANK_SALARY:USER:%',
+                       'SALARY_CLAIM_EXPIRED','IDEMPOTENCY_RESULT_UNKNOWN_AFTER_EXPIRY'),
+                   updated_at = NOW()
+            """;
+
     @Update("""
             UPDATE nx_admin_idempotency_record
-               SET status = 'UNKNOWN',
-                   response_json = NULL,
-                   error_message = 'IDEMPOTENCY_RESULT_UNKNOWN_AFTER_EXPIRY',
-                   updated_at = NOW()
+            """ + EXPIRED_PROCESSING_RESULT + """
              WHERE id = #{id}
                AND scope = #{scope}
                AND idempotency_key = #{idempotencyKey}
@@ -286,10 +294,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
     @Update("""
             <script>
             UPDATE nx_admin_idempotency_record
-               SET status = 'UNKNOWN',
-                   response_json = NULL,
-                   error_message = 'IDEMPOTENCY_RESULT_UNKNOWN_AFTER_EXPIRY',
-                   updated_at = NOW()
+            """ + EXPIRED_PROCESSING_RESULT + """
              WHERE id IN
              <foreach collection='ids' item='id' open='(' separator=',' close=')'>
                #{id}

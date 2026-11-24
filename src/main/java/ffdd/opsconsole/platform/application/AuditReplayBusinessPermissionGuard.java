@@ -718,6 +718,12 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.ok(new AuditReplayCommand("F", "f_vrank_override", command.params()));
         }
         if (command != null && "F".equalsIgnoreCase(command.domain())
+                && "f5_commission_suspension".equalsIgnoreCase(command.op())
+                && command.params() != null && command.params().get("kinds") instanceof List<?> kinds
+                && kinds.stream().anyMatch(kind -> "vrank_salary".equalsIgnoreCase(text(kind).trim()))) {
+            return ApiResult.fail(422, "COMMISSION_KIND_INVALID");
+        }
+        if (command != null && "F".equalsIgnoreCase(command.domain())
                 && "f4_leaderboard_period_payout".equalsIgnoreCase(text(command.op()).trim())) {
             Map<String, Object> params = new LinkedHashMap<>(command.params() == null ? Map.of() : command.params());
             params.put("payoutRule", LeadershipPoolService.LEADERBOARD_PAYOUT_RULE);
@@ -2184,11 +2190,11 @@ public class AuditReplayBusinessPermissionGuard {
 
     private List<String> canonicalF5Kinds(Object raw) {
         if (!(raw instanceof List<?> values) || values.isEmpty()
-                || values.size() > F5CommissionService.KINDS.size()) return List.of();
+                || values.size() > F5CommissionService.SUSPENDABLE_KINDS.size()) return List.of();
         List<String> kinds = values.stream().map(this::text).map(value -> value.toLowerCase(Locale.ROOT)).toList();
         List<String> canonical = kinds.stream().sorted().distinct().toList();
-        Set<String> allowed = F5CommissionService.KINDS;
-        return kinds.equals(canonical) && canonical.stream().allMatch(allowed::contains) ? canonical : List.of();
+        return kinds.equals(canonical) && F5CommissionService.SUSPENDABLE_KINDS.containsAll(canonical)
+                ? canonical : List.of();
     }
 
     private TreeMap<String, Object> canonicalComputeBatchValues(Map<String, Object> params) {

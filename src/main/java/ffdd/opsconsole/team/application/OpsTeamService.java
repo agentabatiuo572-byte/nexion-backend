@@ -233,7 +233,8 @@ public class OpsTeamService implements AuditReplayable {
             "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8");
     private static final List<String> PURCHASE_RANK_FIELDS = List.of("purchaseL1Rate", "purchaseL2Rate");
     private static final Set<String> VRANK_THRESHOLD_FIELDS = Set.of(
-            "selfBuy", "directRefs", "teamGv", "legCount", "legRank", "purchaseL1Rate", "purchaseL2Rate");
+            "selfBuy", "directRefs", "teamGv", "legCount", "legRank", "purchaseL1Rate", "purchaseL2Rate",
+            VRankSalaryService.POLICY_FIELD);
     private static final Set<String> VRANK_ORDERED_FIELDS = Set.of("selfBuy", "teamGv", "legCount", "legRank");
     private static final long MAX_SAFE_COMPUTE_POINTS = 9_007_199_254_740_991L;
     private static final Set<String> VRANK_REWARD_TYPES = Set.of("usdt", "uvt", "voucher", "sku", "custom");
@@ -632,11 +633,15 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private ApiResult<Void> validateFundPolicyCoverage() {
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        OpsErrorCode error = fundPolicyCoverageError(coverageFacade.snapshot());
+        return error == null ? ApiResult.ok() : ApiResult.fail(error.httpStatus(), error.name());
+    }
+
+    static OpsErrorCode fundPolicyCoverageError(TreasuryCoverageSnapshot coverage) {
         if (coverage == null || !coverage.reliable() || coverage.redlinePct() == null
                 || coverage.ratioReserveUsd() == null || coverage.ratioLiabilitiesUsd() == null
                 || coverage.ratioLiabilitiesUsd().signum() < 0) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(), OpsErrorCode.COVERAGE_UNAVAILABLE.name());
+            return OpsErrorCode.COVERAGE_UNAVAILABLE;
         }
         BigDecimal reserve = coverage.ratioReserveUsd();
         BigDecimal liabilities = coverage.ratioLiabilitiesUsd();
@@ -644,9 +649,13 @@ public class OpsTeamService implements AuditReplayable {
         boolean belowRedline = liabilities.signum() == 0
                 ? (reserve.signum() > 0 ? BigDecimal.valueOf(100) : BigDecimal.ZERO).compareTo(redline) < 0
                 : reserve.movePointRight(2).compareTo(liabilities.multiply(redline)) < 0;
-        return belowRedline
-                ? ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(), OpsErrorCode.COVERAGE_BELOW_REDLINE.name())
-                : ApiResult.ok();
+        return belowRedline ? OpsErrorCode.COVERAGE_BELOW_REDLINE : null;
+    }
+
+    private ApiResult<Void> validateVRankPolicyCoverage(String field) {
+        if (!VRankSalaryService.POLICY_FIELD.equals(field)) return validateFundPolicyCoverage();
+        OpsErrorCode error = VRankSalaryService.coverageError(coverageFacade);
+        return error == null ? ApiResult.ok() : ApiResult.fail(error.httpStatus(), error.name());
     }
 
     /**
@@ -914,7 +923,7 @@ public class OpsTeamService implements AuditReplayable {
     public ApiResult<VRankPolicyReview> previewVRankPolicyApproval(VRankPolicyChangeRequest request) {
         VRankPolicyMutation change = requestedVRankPolicyMutation(request);
         if (!change.amplifies()) return ApiResult.fail(422, "VRANK_POLICY_APPROVAL_NOT_REQUIRED");
-        var gate = validateFundPolicyCoverage();
+        var gate = validateVRankPolicyCoverage(change.field());
         if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
         Map<String, Object> before = vRankPolicyChangedFields(change, change.before());
         Map<String, Object> after = vRankPolicyChangedFields(change, change.after());
@@ -941,7 +950,7 @@ public class OpsTeamService implements AuditReplayable {
         if (guard != null) return guard;
         VRankPolicyMutation change = requestedVRankPolicyMutation(request);
         if (change.amplifies()) {
-            var gate = validateFundPolicyCoverage();
+            var gate = validateVRankPolicyCoverage(change.field());
             if (gate.getCode() != 0) return ApiResult.fail(gate.getCode(), gate.getMessage());
         }
         String rewardId = String.valueOf(change.reward().getOrDefault("id", ""));
@@ -999,11 +1008,15 @@ public class OpsTeamService implements AuditReplayable {
         var orderedThresholds = lockOrderedVRankThresholds("threshold".equals(action) ? field : null);
         Map<String, Object> before = currentVRankPolicy(rank);
         if (!request.expectedRevision().equals(before.get("policyRevision"))) {
-            // Existing tickets already hold the rank lock and cannot change either new rate.
+            // Older tickets already hold the same rank lock. Match their original field set on replay.
             var legacy = new LinkedHashMap<>(before);
+            legacy.remove(VRankSalaryService.POLICY_FIELD);
+            boolean beforeSalary = request.expectedRevision().equals(vRankPolicyRevision(legacy));
             PURCHASE_RANK_FIELDS.forEach(legacy::remove);
-            if (!A2ReplayContext.isReplaying() || field != null && PURCHASE_RANK_FIELDS.contains(field)
-                    || !request.expectedRevision().equals(vRankPolicyRevision(legacy))) {
+            boolean beforePurchase = (field == null || !PURCHASE_RANK_FIELDS.contains(field))
+                    && request.expectedRevision().equals(vRankPolicyRevision(legacy));
+            if (!A2ReplayContext.isReplaying() || VRankSalaryService.POLICY_FIELD.equals(field)
+                    || !(beforeSalary || beforePurchase)) {
                 throw new BizException(409, "VRANK_POLICY_VERSION_CONFLICT");
             }
         }
@@ -1123,6 +1136,8 @@ public class OpsTeamService implements AuditReplayable {
         for (String field : PURCHASE_RANK_FIELDS) {
             fields.put(field, decimalValue(row.get(field), BigDecimal.ZERO).stripTrailingZeros());
         }
+        fields.put(VRankSalaryService.POLICY_FIELD,
+                decimalValue(row.get(VRankSalaryService.POLICY_FIELD), BigDecimal.ZERO).stripTrailingZeros());
         fields.put("policyRevision", vRankPolicyRevision(fields));
         return fields;
     }
@@ -1182,7 +1197,7 @@ public class OpsTeamService implements AuditReplayable {
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("等级", policy.get("rank"));
         for (String field : List.of("selfBuy", "teamGv", "directRefs", "legCount", "legRank",
-                "purchaseL1Rate", "purchaseL2Rate")) {
+                "purchaseL1Rate", "purchaseL2Rate", VRankSalaryService.POLICY_FIELD)) {
             if (!policy.containsKey(field)) continue;
             String label = switch (field) {
                 case "selfBuy" -> "自购算力点";
@@ -1191,6 +1206,7 @@ public class OpsTeamService implements AuditReplayable {
                 case "legCount" -> "达标分支数";
                 case "purchaseL1Rate" -> "好友购买一级比例";
                 case "purchaseL2Rate" -> "好友购买二级比例";
+                case VRankSalaryService.POLICY_FIELD -> "月薪(USDT)";
                 default -> "分支最低等级";
             };
             Object value = policy.get(field);
@@ -1229,7 +1245,7 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private boolean loosensVRankCondition(Map<String, Object> before, Map<String, Object> after, String field) {
-        if (PURCHASE_RANK_FIELDS.contains(field)) {
+        if (VRankSalaryService.POLICY_FIELD.equals(field) || PURCHASE_RANK_FIELDS.contains(field)) {
             return ((BigDecimal) after.get(field)).compareTo((BigDecimal) before.get(field)) > 0;
         }
         if (!"legCount".equals(field) && !"legRank".equals(field)) {
@@ -1317,7 +1333,7 @@ public class OpsTeamService implements AuditReplayable {
                 "oldValue", oldValue,
                 "newValue", value,
                 "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()));
+                "idempotencyKey", idempotencyKey.trim()), VRankSalaryService.POLICY_FIELD.equals(normalizedField));
         Map<String, Object> response = ranks().getData();
         response.put("updated", Map.of("key", rankCode + "." + normalizedField, "source", "nx_v_rank_config", "oldValue", oldValue, "newValue", value));
         return ApiResult.ok(response);
@@ -2511,6 +2527,8 @@ public class OpsTeamService implements AuditReplayable {
         for (String field : PURCHASE_RANK_FIELDS) {
             row.put(field, decimalValue(raw.get(field), BigDecimal.ZERO));
         }
+        row.put(VRankSalaryService.POLICY_FIELD,
+                decimalValue(raw.get(VRankSalaryService.POLICY_FIELD), BigDecimal.ZERO).stripTrailingZeros().toPlainString());
         row.put("policyRevision", vRankPolicyFields(row, rewards).get("policyRevision"));
         row.put("source", "nx_v_rank_config + nx_team_member");
         return row;
@@ -4097,6 +4115,12 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private String normalizeVRankThreshold(String rank, String field, String raw) {
+        if (VRankSalaryService.POLICY_FIELD.equals(field)) {
+            if ("V0".equals(rank) || "V1".equals(rank)) {
+                throw new BizException(422, "VRANK_SALARY_RANK_FIXED");
+            }
+            return VRankSalaryService.parseAmount(raw).toPlainString();
+        }
         String value = normalizeUiValue(raw);
         if (PURCHASE_RANK_FIELDS.contains(field)) {
             BigDecimal rate;
@@ -4133,7 +4157,7 @@ public class OpsTeamService implements AuditReplayable {
             case "selfBuy", "teamGv" -> parseDecimal(value).longValueExact();
             case "directRefs", "legCount" -> parseDecimal(value).intValueExact();
             case "legRank" -> "NONE".equals(value) ? null : value;
-            case "purchaseL1Rate", "purchaseL2Rate" -> new BigDecimal(value);
+            case "purchaseL1Rate", "purchaseL2Rate", VRankSalaryService.POLICY_FIELD -> new BigDecimal(value);
             default -> throw new IllegalArgumentException("Unsupported F1 V-Rank threshold field");
         };
     }

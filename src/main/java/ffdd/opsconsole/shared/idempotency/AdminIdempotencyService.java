@@ -114,6 +114,10 @@ public class AdminIdempotencyService {
 
     public record ActiveRequest(String requestHash, LocalDateTime updatedAt, boolean hasReceipt) {}
 
+    public String retainedRequestHash(String scope, String idempotencyKey) {
+        return transactionExecutor.retainedRequestHash(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey));
+    }
+
     /** Probes an active key without claiming it. Command validation handles malformed keys. */
     public ActiveRequest activeRequest(String scope, String idempotencyKey) {
         if (!StringUtils.hasText(idempotencyKey) || idempotencyKey.trim().length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
@@ -214,6 +218,10 @@ public class AdminIdempotencyService {
         return scope.startsWith("APP:EVENT_JOIN:USER:")
                 || scope.startsWith("APP:EVENT_CLAIM:USER:")
                 || scope.startsWith("H4_EVENT:");
+    }
+
+    static boolean salaryClaimReceiptScope(String scope) {
+        return scope.startsWith("APP:VRANK_SALARY:USER:");
     }
 
     private String errorSummary(RuntimeException ex) {

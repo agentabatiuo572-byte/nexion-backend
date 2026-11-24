@@ -75,3 +75,4 @@ migrations/20261124_d5_min_withdrawal.sql
 migrations/20261124_h1_compliance_threshold.sql
 migrations/20261124_d5_payout_address_protection.sql
 migrations/20261124_b83_purchase_rank.sql
+migrations/20261125_b87_vrank_salary.sql

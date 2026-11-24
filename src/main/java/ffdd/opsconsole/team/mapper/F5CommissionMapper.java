@@ -93,7 +93,7 @@ public interface F5CommissionMapper {
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
              <if test="kind != null and kind != ''">
                AND LOWER(e.commission_type) = LOWER(#{kind})
              </if>
@@ -176,7 +176,7 @@ public interface F5CommissionMapper {
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
              <if test="kind != null and kind != ''">
                AND LOWER(e.commission_type) = LOWER(#{kind})
              </if>
@@ -230,7 +230,7 @@ public interface F5CommissionMapper {
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
              <if test="kind != null and kind != ''">
                AND LOWER(e.commission_type) = LOWER(#{kind})
              </if>
@@ -278,10 +278,10 @@ public interface F5CommissionMapper {
               FROM nx_commission_event e
              WHERE e.is_deleted=0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
              GROUP BY LOWER(e.commission_type), UPPER(e.currency)
              ORDER BY FIELD(kind,
-                       'network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning'),
+                       'network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary'),
                       currency
             """)
     List<Map<String, Object>> aggregateCommissionKinds();
@@ -309,7 +309,7 @@ public interface F5CommissionMapper {
                       FROM nx_commission_event e
                      WHERE e.is_deleted=0
                        AND LOWER(e.commission_type) IN
-                           ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                           ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
               ) normalized
              GROUP BY normalized.status, normalized.currency
              ORDER BY FIELD(normalized.status, 'unlocked', 'cooling', 'withdrawn', 'reversed', 'frozen'),
@@ -322,7 +322,7 @@ public interface F5CommissionMapper {
               FROM nx_commission_event
              WHERE is_deleted=0
                AND (commission_type IS NULL OR LOWER(commission_type) NOT IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning',
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary',
                     'vrank_reward', 'leaderboard_prize'))
             """)
     // F1 self rewards and F4 leaderboard prizes are legitimate independent rewards outside F5's eight kinds.
@@ -371,6 +371,10 @@ public interface F5CommissionMapper {
                 SELECT p.payout_id
                   FROM nx_v_rank_reward_payout p
                  WHERE p.commission_event_id = #{eventId} AND p.is_deleted = 0
+                UNION ALL
+                SELECT s.claim_no
+                  FROM nx_v_rank_salary_claim s
+                 WHERE s.commission_event_id = #{eventId}
                 UNION ALL
                 SELECT t.ticket_no
                   FROM nx_support_ticket t

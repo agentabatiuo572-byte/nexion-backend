@@ -11,6 +11,7 @@ import ffdd.opsconsole.team.domain.VRankEvaluationSnapshot;
 import ffdd.opsconsole.team.domain.VRankPerformanceRepository;
 import ffdd.opsconsole.team.domain.VRankRewardRuleRow;
 import ffdd.opsconsole.team.application.TeamSandboxFactGenerator;
+import ffdd.opsconsole.team.application.VRankSalaryService;
 import ffdd.opsconsole.team.mapper.AppTeamInsightsMapper;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -20,10 +21,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Arrays;
 import java.util.stream.Collectors;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataAccessException;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 import java.util.regex.Pattern;
 
@@ -35,6 +42,7 @@ import java.util.regex.Pattern;
  * 在 remote 模式继续以本地 seed/localStorage 作为等级结论。
  */
 @RestController
+@Slf4j
 public class AppVRankController {
     private static final Pattern RUN_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{7,95}");
     private final TeamCommissionRepository commissionRepository;
@@ -43,6 +51,7 @@ public class AppVRankController {
     private final Environment environment;
     private final PlatformConfigFacade configFacade;
     private final ObjectMapper objectMapper;
+    private final VRankSalaryService salaries;
 
     @Autowired
     public AppVRankController(TeamCommissionRepository commissionRepository,
@@ -50,13 +59,24 @@ public class AppVRankController {
                               AppTeamInsightsMapper userMapper,
                               Environment environment,
                               PlatformConfigFacade configFacade,
-                              ObjectMapper objectMapper) {
+                              ObjectMapper objectMapper,
+                              VRankSalaryService salaries) {
         this.commissionRepository = commissionRepository;
         this.performanceRepository = performanceRepository;
         this.userMapper = userMapper;
         this.environment = environment;
         this.configFacade = configFacade;
         this.objectMapper = objectMapper;
+        this.salaries = salaries;
+    }
+
+    public AppVRankController(TeamCommissionRepository commissionRepository,
+                              VRankPerformanceRepository performanceRepository,
+                              AppTeamInsightsMapper userMapper,
+                              Environment environment,
+                              PlatformConfigFacade configFacade,
+                              ObjectMapper objectMapper) {
+        this(commissionRepository, performanceRepository, userMapper, environment, configFacade, objectMapper, null);
     }
 
     AppVRankController(TeamCommissionRepository commissionRepository,
@@ -99,8 +119,10 @@ public class AppVRankController {
         }
         Scope scope = userScope(userId);
         if ("SANDBOX".equals(scope.sourceEnvironment())) {
-            return ApiResult.ok(TeamSandboxFactGenerator.currentRank(scope.runId(), userId,
+            var response = new LinkedHashMap<>(TeamSandboxFactGenerator.currentRank(scope.runId(), userId,
                     commissionRepository.vRankConfigRows()));
+            addSalary(response, userId, true);
+            return ApiResult.ok(response);
         }
         VRankEvaluationSnapshot snapshot = performanceRepository.computeSnapshot(userId);
         Map<String, Object> progress = new LinkedHashMap<>();
@@ -115,7 +137,42 @@ public class AppVRankController {
         response.put("runId", scope.runId());
         response.put("rankCode", commissionRepository.currentMemberVRank(userId));
         response.put("progress", progress);
+        addSalary(response, userId, scope.sandbox() == 1);
         return ApiResult.ok(response);
+    }
+
+    private void addSalary(Map<String, Object> response, long user, boolean sandbox) {
+        if (salaries == null) return;
+        try {
+            response.put("salary", salaries.salary(user, sandbox));
+        } catch (DataAccessException ex) {
+            log.warn("Could not read monthly salary for user {}", user, ex);
+            response.put("salary", null);
+            response.put("salaryUnavailable", true);
+        }
+    }
+
+    @PostMapping("/api/team/rank/salary/claim")
+    public ApiResult<VRankSalaryService.Receipt> claimSalary(
+            @RequestHeader(value = "Idempotency-Key", required = false) String key,
+            @RequestBody VRankSalaryService.ClaimRequest request, Authentication authentication) {
+        long user = salaryUser(authentication);
+        if (userScope(user).sandbox() == 1) return ApiResult.fail(409, "SALARY_NOT_CLAIMABLE");
+        return salaries.claim(user, key, request);
+    }
+
+    @GetMapping("/api/team/rank/salary/claims/{key}")
+    public ApiResult<VRankSalaryService.Receipt> salaryReceipt(@PathVariable String key,
+                                                              Authentication authentication) {
+        long user = salaryUser(authentication);
+        userScope(user);
+        return ApiResult.ok(salaries.receipt(user, key));
+    }
+
+    private long salaryUser(Authentication authentication) {
+        Long user = userId(authentication);
+        if (user == null) throw new BizException(403, "USER_SUBJECT_REQUIRED");
+        return user;
     }
 
     private Scope userScope(Long userId) {
@@ -176,6 +233,8 @@ public class AppVRankController {
             row.put("teamComputePoints", source.get("teamComputePoints"));
             row.put("requiredDownlineRank", source.get("legRank"));
             row.put("requiredDownlineCount", source.get("legCount"));
+            row.put(VRankSalaryService.POLICY_FIELD,
+                    decimal(source.get(VRankSalaryService.POLICY_FIELD)).stripTrailingZeros().toPlainString());
             if (rankRates) {
                 row.put("purchaseL1Rate", decimal(source.get("purchaseL1Rate")));
                 row.put("purchaseL2Rate", decimal(source.get("purchaseL2Rate")));

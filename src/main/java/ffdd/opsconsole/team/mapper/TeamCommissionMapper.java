@@ -52,6 +52,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    c.required_downline_rank AS legRank,
                    c.purchase_l1_rate AS purchaseL1Rate,
                    c.purchase_l2_rate AS purchaseL2Rate,
+                   c.monthly_salary_usdt AS monthlySalaryUsdt,
                    c.unilevel_depth AS unilevelDepth,
                    c.peer_bonus_rate AS peerBonusRate,
                    c.leadership_votes AS votes,
@@ -83,7 +84,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              GROUP BY c.id, c.rank_code, c.title_cn, c.self_compute_points, c.direct_refs,
                       c.team_compute_points, c.required_downline_count, c.required_downline_rank,
                       c.unilevel_depth, c.peer_bonus_rate, c.leadership_votes, c.purchase_l1_rate, c.purchase_l2_rate,
-                      c.status, c.physical_reward, c.sort_order
+                      c.status, c.physical_reward, c.sort_order, c.monthly_salary_usdt
              ORDER BY c.sort_order ASC, c.id ASC
             """)
     List<Map<String, Object>> vRankRows();
@@ -95,7 +96,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    team_compute_points AS teamGv,
                    required_downline_count AS legCount,
                    required_downline_rank AS legRank,
-                   purchase_l1_rate AS purchaseL1Rate, purchase_l2_rate AS purchaseL2Rate
+                   purchase_l1_rate AS purchaseL1Rate, purchase_l2_rate AS purchaseL2Rate,
+                   monthly_salary_usdt AS monthlySalaryUsdt
               FROM nx_v_rank_config
              WHERE rank_code = #{rank} AND is_deleted = 0 AND status = 1
              FOR UPDATE
@@ -108,6 +110,19 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
 
     @Update("UPDATE nx_v_rank_config SET purchase_l2_rate=#{value} WHERE rank_code=#{rank} AND is_deleted=0")
     int updatePurchaseL2Rate(@Param("rank") String rank, @Param("value") Object value);
+
+    @Update("UPDATE nx_v_rank_config SET monthly_salary_usdt=#{value} WHERE rank_code=#{rank} AND is_deleted=0")
+    int updateMonthlySalary(@Param("rank") String rank, @Param("value") Object value);
+
+    @Insert("""
+            INSERT INTO nx_v_rank_salary_rate(rank_code,effective_at,amount_usdt)
+            VALUES(#{rank},NOW(6),#{value})
+            """)
+    int insertMonthlySalaryRate(@Param("rank") String rank, @Param("value") Object value);
+
+    @Select("SELECT monthly_salary_usdt FROM nx_v_rank_config WHERE rank_code=#{rank} AND is_deleted=0 FOR SHARE")
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    java.math.BigDecimal lockMonthlySalaryForArrival(@Param("rank") String rank);
 
     @Select("""
             SELECT rank_code AS rankCode, purchase_l1_rate AS purchaseL1Rate, purchase_l2_rate AS purchaseL2Rate
@@ -1357,10 +1372,10 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_user_level_log
               (user_id, level_type, from_code, to_code, reason,
-               operator, snapshot, trigger_event_id, audit_no, is_manual)
+               operator, snapshot, trigger_event_id, audit_no, is_manual, salary_usdt, created_at)
             VALUES
               (#{userId}, 'VRANK', #{fromCode}, #{toCode}, #{reason},
-               #{operator}, #{snapshotJson}, #{triggerEventId}, #{auditNo}, #{isManual})
+               #{operator}, #{snapshotJson}, #{triggerEventId}, #{auditNo}, #{isManual}, #{salary}, NOW(6))
             """)
     int insertUserLevelLog(@Param("userId") Long userId,
                            @Param("fromCode") String fromCode,
@@ -1370,7 +1385,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                            @Param("snapshotJson") String snapshotJson,
                            @Param("triggerEventId") String triggerEventId,
                            @Param("auditNo") String auditNo,
-                           @Param("isManual") int isManual);
+                           @Param("isManual") int isManual,
+                           @Param("salary") java.math.BigDecimal salary);
 
     // ============================================================
     // F1 V-Rank 奖励派发(Sprint 3)
