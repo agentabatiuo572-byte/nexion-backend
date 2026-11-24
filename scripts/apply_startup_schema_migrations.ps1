@@ -558,6 +558,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261120_lc_h9_active_jobs_display.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_storage_timezone.sql")
   (Join-Path $root "scripts\migrations\20261124_b85_phone_task_duration.sql")
+  (Join-Path $root "scripts\migrations\20261125_b86_phone_task_duration_tiers.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_fin.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_growth_team_rank_defaults.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_growth_team_support.sql")
