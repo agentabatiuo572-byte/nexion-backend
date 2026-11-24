@@ -1086,6 +1086,10 @@ public class OpsAuditCenterService {
                 && !("PROPOSE".equals(verb) && accessPolicy.canAccessOwnBusinessProposal(command, actorId))) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
         }
+        if ("APPROVE".equals(verb)) {
+            var role = replayBusinessPermissionGuard.validateApprovalRole(command);
+            if (role.getCode() != 0) return ApiResult.fail(role.getCode(), role.getMessage());
+        }
         var metadata = ticketMetadata(ticket, command);
         return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
                 metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate()),

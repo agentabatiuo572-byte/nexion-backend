@@ -791,6 +791,30 @@ public class AuditReplayBusinessPermissionGuard {
         return validateDecisionPermission(command, false);
     }
 
+    ApiResult<Void> validateApprovalRole(AuditReplayCommand command) {
+        if (requiresF2F4SuperAdmin(command)
+                && !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            return ApiResult.fail(403, "FUND_APPROVAL_CHECKER_FORBIDDEN");
+        }
+        return ApiResult.ok();
+    }
+
+    private boolean requiresF2F4SuperAdmin(AuditReplayCommand command) {
+        if (command == null || !"F".equalsIgnoreCase(text(command.domain()))) return false;
+        String operation = text(command.op()).trim().toLowerCase(Locale.ROOT);
+        return switch (operation) {
+            case "f_unilevel_bootstrap", "f_seven_layer_activation", "f_direct_referral_policy",
+                    "f4_pool_settle", "f4_leaderboard_period_payout" -> true;
+            case "f_config", "f_ui_config", "f_unilevel_rule" -> {
+                String source = fSourceDomain(operation, value(command.params(), "key"));
+                yield "F2".equals(source) || "F4".equals(source);
+            }
+            case "f_config_batch" -> fConfigBatchCommands(command.params()).stream()
+                    .anyMatch(this::requiresF2F4SuperAdmin);
+            default -> false;
+        };
+    }
+
     /** Actor, original command and authorization binding only; safe for the A2 read model. */
     ApiResult<Void> validateDecisionPermission(AuditReplayCommand command, boolean approving) {
         if (HardwareQuotaApproval.supports(command)) {
@@ -834,6 +858,8 @@ public class AuditReplayBusinessPermissionGuard {
         if (!approving && !H7VoucherDisposition.isOperation(command)) return ApiResult.ok();
         if (command == null || command.op() == null)
             return ApiResult.fail(403, "A2_BUSINESS_COMMAND_REQUIRED");
+        var approvalRole = validateApprovalRole(command);
+        if (approvalRole.getCode() != 0) return approvalRole;
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
         if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation))
             return "E".equals(command.domain()) && hasAuthority("device_e5_write") && hasAuthority("platform_a2_operation_approve")
