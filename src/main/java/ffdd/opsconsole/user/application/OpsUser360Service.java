@@ -662,7 +662,7 @@ public class OpsUser360Service {
                 "commissionRows", commissionRows,
                 "commissionUsdt", money(sumAsset(commissionRows, "USDT")),
                 "commissionNex", money(sumAsset(commissionRows, "UVT")),
-                "sources", List.of("nx_team_member", "nx_wallet_ledger"),
+                "sources", List.of("nx_user", "nx_order", "nx_team_member", "nx_wallet_ledger"),
                 "sourceStatus", teamSection.getOrDefault("sourceStatus", "ERROR"));
     }
 

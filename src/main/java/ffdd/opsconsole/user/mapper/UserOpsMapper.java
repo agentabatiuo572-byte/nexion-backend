@@ -832,6 +832,29 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             @Param("pageSize") int pageSize,
             @Param("idleDays") int idleDays);
 
+    // C1 uses the same sponsor relation as the invitation counts, bounded to the reward range.
+    String C1_TEAM_SCOPE = """
+            WITH RECURSIVE c1_team AS (
+                SELECT u.id, u.sandbox, u.is_deleted, 0 AS depth,
+                       CAST(CONCAT('/', u.id, '/') AS CHAR(192)) AS path
+                  FROM nx_user u
+                 WHERE u.id = #{userId} AND u.is_deleted = 0
+                UNION ALL
+                SELECT member.id, member.sandbox, member.is_deleted, team.depth + 1,
+                       CONCAT(team.path, member.id, '/')
+                  FROM c1_team team
+                  JOIN nx_user member ON member.sponsor_user_id = team.id AND member.sandbox = team.sandbox
+                 WHERE team.depth < 7 AND LOCATE(CONCAT('/', member.id, '/'), team.path) = 0
+            )
+            """;
+
+    String C1_VALID_PAID_ORDER = """
+            o.is_deleted = 0 AND o.amount_usdt > 0
+            AND o.payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')
+            AND o.order_status NOT IN ('PENDING_PAYMENT', 'PAYMENT_FAILED', 'FAILED', 'CANCELLED', 'CANCELED',
+                                       'CLOSED', 'EXPIRED', 'REFUNDED', 'CHARGEBACK', 'DISPUTED', 'REVERSED')
+            """;
+
     /**
      * C1 推荐团队成员。
      *
@@ -842,13 +865,16 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
      * 定位用户；非规范编号仍兼容 `member_user_id`。用户行缺失时用反规范化昵称兜底；已删除账户和
      * 相隔 8 次以上的成员在 LIMIT 前排除。</p>
      */
-    @Select("""
+    @Select(C1_TEAM_SCOPE + """
             SELECT COALESCE(u.id, tm.member_user_id) AS memberUserId,
                    tm.member_no AS memberNo,
                    COALESCE(u.nickname, tm.nickname) AS nickname,
                    tm.v_rank AS vRank,
                    tm.level,
-                   tm.volume,
+                   COALESCE((SELECT SUM(o.amount_usdt) FROM nx_order o
+                              WHERE o.user_id = contribution.id AND
+            """ + C1_VALID_PAID_ORDER + """
+                   ), 0) AS volume,
                    tm.created_at AS createdAt
               FROM nx_team_member tm
               LEFT JOIN nx_user u
@@ -857,9 +883,12 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                                   THEN CAST(SUBSTRING(tm.member_no, 2) AS UNSIGNED)
                               ELSE tm.member_user_id
                           END
+              LEFT JOIN c1_team contribution
+                ON contribution.id = u.id AND contribution.depth > 0 AND contribution.is_deleted = 0
              WHERE tm.user_id = #{userId}
                AND tm.is_deleted = 0
                AND tm.level BETWEEN 1 AND 7
+               AND COALESCE(u.id, tm.member_user_id) <> #{userId}
                AND (u.id IS NULL OR u.is_deleted = 0)
              ORDER BY tm.level ASC, tm.volume DESC, tm.id DESC
              LIMIT #{limit}
@@ -884,12 +913,13 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     long countDirectTeamMembers(@Param("userId") Long userId);
 
-    @Select("""
-            SELECT COALESCE(SUM(volume), 0)
-              FROM nx_team_member
-             WHERE user_id = #{userId}
-               AND is_deleted = 0
-            """)
+    @Select(C1_TEAM_SCOPE + """
+            SELECT COALESCE(SUM(o.amount_usdt), 0)
+              FROM c1_team team
+              JOIN nx_order o ON o.user_id = team.id
+             WHERE team.depth > 0 AND team.is_deleted = 0
+               AND
+            """ + C1_VALID_PAID_ORDER)
     BigDecimal sumTeamVolume(@Param("userId") Long userId);
 
     @Select("""
