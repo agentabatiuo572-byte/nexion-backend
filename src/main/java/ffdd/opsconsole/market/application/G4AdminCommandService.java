@@ -51,7 +51,7 @@ public class G4AdminCommandService {
     public ApiResult<Map<String,Object>> updateParam(String rawKey,String idem,NexMarketValueUpdateRequest request){
         String key=rawKey==null?"":rawKey.trim();
         requireCommand(idem,request);
-        if("supply".equals(key.trim())) marketService.requireGenesisSupplyPermission();
+        if("supply".equals(key) || "showcaseEnabled".equals(key)) marketService.requireGenesisWritePermission();
         if(List.of("dividend","divBase","airdropPct","emissionCurve").contains(key)) requireDecision(request.decisionRef());
         return once("PARAM:"+key,idem,request,()->{
             ApiResult<Map<String,Object>> result=marketService.updateGenesisParam(idem,key,request);

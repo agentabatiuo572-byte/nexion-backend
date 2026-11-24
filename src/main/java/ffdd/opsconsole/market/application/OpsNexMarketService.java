@@ -926,8 +926,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("domain", "G4");
         response.put("product", "genesis");
         response.put("asset", "GENESIS_NODE");
-        response.put("showcaseEnabled",
-                Boolean.parseBoolean(genesisValue(genesisParamDef("showcaseEnabled"), null).trim()));
+        Map<String, Object> showcase = genesisParamRow(genesisParamDef("showcaseEnabled"), null);
+        response.put("showcaseEnabled", Boolean.parseBoolean(((String) showcase.get("value")).trim()));
+        response.put("showcaseParam", showcase);
         response.put("currentNexPrice", currentPrice());
         response.put("stats", map(
                 "totalSlots", supply.setScale(0, RoundingMode.HALF_UP),
@@ -945,7 +946,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                         "owners", secondaryStats.ownerCount() == null ? 0L : secondaryStats.ownerCount(),
                         "royaltyPct", royaltyPct)));
         response.put("params", policy.map(value -> genesisParamDefs().stream()
-                .map(def -> genesisParamRow(def, value))
+                .map(def -> "showcaseEnabled".equals(def.key()) ? showcase : genesisParamRow(def, value))
                 .toList())
                 .orElse(List.of()));
         response.put("dividend", map(
@@ -1024,7 +1025,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         GenesisPolicyView policy = marketRepository.activeGenesisPolicy().orElse(null);
-        if (policy == null) {
+        boolean showcase = "showcaseEnabled".equals(def.key());
+        if (policy == null && !showcase) {
             return validation("G4_GENESIS_SERIES_NOT_FOUND");
         }
         String oldValue;
@@ -1041,7 +1043,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "tiersVersionBefore", change.versionBefore(),
                     "tiersVersionAfter", change.versionAfter());
         } else {
-            oldValue = genesisValue(def, policy);
+            oldValue = showcase
+                    ? configFacade.activeValueForUpdate(def.configKey()).filter(StringUtils::hasText).orElse(def.defaultValue())
+                    : genesisValue(def, policy);
             newValue = normalizeGenesisParamValue(def, request.value());
             if (!StringUtils.hasText(newValue)) {
                 return validation("G4_GENESIS_PARAM_VALUE_INVALID");
@@ -4051,13 +4055,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return null;
     }
 
-    void requireGenesisSupplyPermission() {
+    void requireGenesisWritePermission() {
         ApiResult<Map<String, Object>> permission = requirePermission("finprod_g4_write");
         if (permission != null) throw new BizException(permission.getCode(), permission.getMessage());
     }
 
     void requireGenesisTierSupplyChange(int newSupply) {
-        requireGenesisSupplyPermission();
+        requireGenesisWritePermission();
         if (newSupply > GENESIS_MAX_SUPPLY) throw new BizException(422, "GENESIS_TIER_INVALID");
         if (lockMapper.countActiveByTarget("G", "genesis_param", "supply") > 0) {
             throw new BizException(409, "OBJECT_LOCKED_BY_A2");
