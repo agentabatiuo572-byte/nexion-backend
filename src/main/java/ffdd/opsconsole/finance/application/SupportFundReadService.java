@@ -378,9 +378,13 @@ public class SupportFundReadService {
                 confirmedCorrections.forEach(performance.depositCorrections());
             }
             return snapshot;
-        }catch(EvidenceFailure ex) {return unknown(roots,List.of(ex.gap));}
-        catch(org.springframework.dao.DataAccessException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
-        catch(IllegalArgumentException | IllegalStateException | ArithmeticException ex) {return unknown(roots,List.of(Gap.READ_FAILED));}
+        }catch(EvidenceFailure ex) {
+            if (performance != null && ex.gap == Gap.READ_FAILED) performance.readFailed().run();
+            return unknown(roots,List.of(ex.gap));
+        } catch(org.springframework.dao.DataAccessException | IllegalArgumentException | IllegalStateException | ArithmeticException ex) {
+            if (performance != null) performance.readFailed().run();
+            return unknown(roots,List.of(Gap.READ_FAILED));
+        }
     }
     /** Keeps global directory order while grouping bounded JSON pages by component in the caller's physical snapshot. */
     private final class OperationRows {

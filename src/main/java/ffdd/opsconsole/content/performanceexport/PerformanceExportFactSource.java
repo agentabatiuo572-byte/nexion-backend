@@ -2,7 +2,6 @@ package ffdd.opsconsole.content.performanceexport;
 
 import java.util.List;
 import java.util.Map;
-import org.springframework.stereotype.Component;
 
 /**
  * B80-BE-06 isolation seam. The net-inflow fact and aggregate sources are delivered by
@@ -32,9 +31,8 @@ public interface PerformanceExportFactSource {
 
     Table read(Type type, Window window, Scope scope);
 
-    /** Until the performance facts are published, every export stays explicitly unavailable. */
-    @Component
-    class PendingFacts implements PerformanceExportFactSource {
+    final class Columns {
+        private Columns() { }
         static final List<String> SUMMARY_COLUMNS = List.of(
                 "agent", "group", "supervisorAtCutoff", "month", "performanceAmount", "inflowTotal",
                 "inflowByChannel.CHAIN_TOPUP", "inflowByChannel.VN_BANK_TOPUP",
@@ -71,20 +69,12 @@ public interface PerformanceExportFactSource {
                 "receivedUsdt", "vndAmount", "sourceStatus", "status", "originalBusinessNo",
                 "coverageReason");
 
-        private static final Coverage UNAVAILABLE =
-                new Coverage(Status.UNKNOWN, List.of("SOURCE_INCOMPLETE"));
-
-        @Override public List<String> months() { return List.of(); }
-
-        @Override public Window window(String month, Scope scope) { return null; }
-
-        @Override public Table read(Type type, Window window, Scope scope) {
-            List<String> columns = switch (type) {
+        static List<String> forType(Type type) {
+            return switch (type) {
                 case SUMMARY -> SUMMARY_COLUMNS;
                 case CUSTOMER_DETAIL -> CUSTOMER_COLUMNS;
                 case TRANSACTION_DETAIL -> TRANSACTION_COLUMNS;
             };
-            return new Table(type, columns, List.of(), UNAVAILABLE, null, List.of());
         }
     }
 }

@@ -638,6 +638,9 @@ public class SupportPerformanceExportService {
         kind = kind == null || kind.isBlank() ? "SELF" : kind.toUpperCase(Locale.ROOT);
         if (!Set.of("SELF", "MANAGED_GROUPS", "ALL").contains(kind)) throw new BizException(422, "EXPORT_REQUEST_INVALID");
         List<String> groupIds = strings(scope.get("groupIds"));
+        if (!"MANAGED_GROUPS".equals(kind) && !groupIds.isEmpty()) {
+            throw new BizException(422, "EXPORT_REQUEST_INVALID");
+        }
         if ("ALL".equals(kind) && !superAdmin()) throw new BizException(403, "PERMISSION_DENIED");
         if ("MANAGED_GROUPS".equals(kind)) {
             if (groupIds.isEmpty()) throw new BizException(422, "EXPORT_REQUEST_INVALID");

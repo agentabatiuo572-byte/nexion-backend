@@ -22,8 +22,8 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class SupportPerformanceCache {
-    static final String SNAPSHOT_KEY = "uvel:support:performance:v2:snapshot";
-    static final String LOCK_KEY = "uvel:support:performance:v2:lock";
+    static final String SNAPSHOT_KEY = "uvel:support:performance:v3:snapshot";
+    static final String LOCK_KEY = "uvel:support:performance:v3:lock";
     static final Duration LOCK_LEASE = Duration.ofMinutes(2);
     private static final DefaultRedisScript<Long> PUBLISH = new DefaultRedisScript<>("""
         if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end

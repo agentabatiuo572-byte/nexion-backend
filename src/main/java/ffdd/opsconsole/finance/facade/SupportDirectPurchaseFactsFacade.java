@@ -9,6 +9,7 @@ import java.util.List;
 /** Direct purchase evidence for the new performance definition. The caller authorizes the customer scope. */
 public interface SupportDirectPurchaseFactsFacade extends DomainFacade {
     Snapshot readDirectPurchases(Collection<Long> customerIds);
+    Snapshot readDirectPurchases(Collection<Long> customerIds, Instant from, Instant to);
 
     record Fact(
             String intentNo, long customerId, String orderNo, String purchaseKind, String paymentMethod,

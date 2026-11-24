@@ -21,12 +21,14 @@ final class SupportPerformanceDepositAttribution {
 
     private SupportPerformanceDepositAttribution() { }
 
-    static Map<String,EventAttribution> resolve(SupportAnalyticsFactSnapshot source, List<ObservedDeposit> deposits,
+    record Result(Map<String, EventAttribution> events, Map<String, Long> verifiedOriginals) { }
+
+    static Result resolve(SupportAnalyticsFactSnapshot source, List<ObservedDeposit> deposits,
             List<ConfirmedDepositCorrection> corrections) {
         var originalIds = new HashSet<String>();
         deposits.forEach(fact -> originalIds.add(fact.factId()));
         corrections.forEach(fact -> originalIds.add(fact.originalFactId()));
-        if (originalIds.isEmpty()) return Map.of();
+        if (originalIds.isEmpty()) return new Result(Map.of(), Map.of());
 
         var payments = source.payments();
         var originals = payments.facts().stream()
@@ -57,7 +59,9 @@ final class SupportPerformanceDepositAttribution {
                 forCustomer(verified.get(fact.factId()), fact.customerId())));
         corrections.forEach(fact -> events.put(fact.operationNo(),
                 forCustomer(verified.get(fact.originalFactId()), fact.customerId())));
-        return Map.copyOf(events);
+        var verifiedOwners = new HashMap<String, Long>();
+        verified.forEach((id, original) -> verifiedOwners.put(id, original.customerId()));
+        return new Result(Map.copyOf(events), Map.copyOf(verifiedOwners));
     }
 
     private static EventAttribution forCustomer(OriginalAttribution original, long customerId) {

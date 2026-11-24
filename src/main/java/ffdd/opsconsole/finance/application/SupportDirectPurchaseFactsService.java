@@ -10,6 +10,8 @@ import ffdd.opsconsole.finance.facade.SupportDirectPurchaseFactsFacade;
 import ffdd.opsconsole.finance.mapper.SupportPaymentFactMapper;
 import ffdd.opsconsole.shared.config.StorageTime;
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -18,6 +20,7 @@ import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @ApplicationService
+@Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, noRollbackFor = RuntimeException.class)
 public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseFactsFacade {
     private static final String BANK_PAYMENT = "HDPAY_BANK";
     private static final Set<String> DIRECT_PAYMENT_METHODS =
@@ -32,8 +35,12 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
     }
 
     @Override
-    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public Snapshot readDirectPurchases(Collection<Long> customerIds) {
+        return readDirectPurchases(customerIds, null, null);
+    }
+
+    @Override
+    public Snapshot readDirectPurchases(Collection<Long> customerIds, Instant from, Instant to) {
         if (customerIds == null || customerIds.stream().anyMatch(id -> id == null || id <= 0)) {
             throw new IllegalArgumentException("Explicit positive customer scope required");
         }
@@ -43,7 +50,9 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
 
         List<Fact> facts = new ArrayList<>();
         List<Issue> issues = new ArrayList<>();
-        for (var evidence : mapper.directPurchases(customerIds)) {
+        LocalDateTime fromInStorage = from == null ? null : LocalDateTime.ofInstant(from, StorageTime.ZONE);
+        LocalDateTime toInStorage = to == null ? null : LocalDateTime.ofInstant(to, StorageTime.ZONE);
+        for (var evidence : mapper.directPurchases(customerIds, fromInStorage, toInStorage)) {
             if (evidence.orderNo() == null) {
                 issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "MISSING_DIRECT_PAYMENT_PROOF"));
                 continue;
@@ -54,6 +63,10 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
             }
             if (evidence.providerPaidAt() == null) {
                 issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "MISSING_PAYMENT_TIME"));
+                continue;
+            }
+            if (from != null && "PAYMENT_REORG_REVIEW".equals(evidence.reviewReason())) {
+                issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "PAYMENT_REORG_REVIEW"));
                 continue;
             }
 

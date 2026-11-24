@@ -8,7 +8,7 @@ final class SupportPaymentFactSql {
         <script>
         SELECT i.intent_no intentNo, i.user_id customerId, i.kind purchaseKind, i.payment_method paymentMethod,
                i.provider_reference providerReference, i.paid_at providerPaidAt, i.quote_json quoteJson,
-               o.order_no orderNo, p.amount_usdt businessAmountUsdt
+               o.order_no orderNo, p.amount_usdt businessAmountUsdt, i.reason reviewReason
           FROM nx_purchase_payment_intent i
           JOIN nx_user u ON u.id=i.user_id AND u.sandbox=0
           LEFT JOIN nx_payment_record p ON p.payment_no=i.intent_no AND p.user_id=i.user_id
@@ -20,6 +20,10 @@ final class SupportPaymentFactSql {
          WHERE (i.status='DELIVERED' OR i.receipt_json IS NOT NULL)
            AND i.user_id IN
         """ + USERS + """
+           <if test="from != null">
+             AND ((i.paid_at &gt;= #{from} AND i.paid_at &lt; #{to})
+                  OR (i.paid_at IS NULL AND i.updated_at &gt;= #{from} AND i.updated_at &lt; #{to}))
+           </if>
          ORDER BY i.user_id, i.paid_at, i.intent_no
         </script>
         """;

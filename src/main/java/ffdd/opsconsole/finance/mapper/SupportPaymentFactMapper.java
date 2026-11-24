@@ -13,7 +13,8 @@ import org.apache.ibatis.annotations.Select;
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportPaymentFactMapper {
     @Select(SupportPaymentFactSql.DIRECT_PURCHASES)
-    List<DirectPurchaseEvidence> directPurchases(@Param("customerIds") Collection<Long> ids);
+    List<DirectPurchaseEvidence> directPurchases(@Param("customerIds") Collection<Long> ids,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
 
     @Select(SupportPaymentFactSql.DEPOSITS) List<Map<String,Object>> deposits(@Param("customerIds") Collection<Long> ids);
     @Select(SupportPaymentFactSql.CARDS) List<Map<String,Object>> cards(@Param("customerIds") Collection<Long> ids);
@@ -27,5 +28,6 @@ public interface SupportPaymentFactMapper {
 
     record DirectPurchaseEvidence(
             String intentNo, long customerId, String purchaseKind, String paymentMethod, String providerReference,
-            LocalDateTime providerPaidAt, String quoteJson, String orderNo, BigDecimal businessAmountUsdt) { }
+            LocalDateTime providerPaidAt, String quoteJson, String orderNo, BigDecimal businessAmountUsdt,
+            String reviewReason) { }
 }
