@@ -556,6 +556,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261121_lc2_storage_timezone.sql")
   (Join-Path $root "scripts\migrations\20261124_b85_phone_task_duration.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_fin.sql")
+  (Join-Path $root "scripts\migrations\20261121_lc2_growth_team_rank_defaults.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_growth_team_support.sql")
   (Join-Path $root "scripts\migrations\20261123_lc3_support_cap_unlimited.sql")
   (Join-Path $root "scripts\migrations\20261123_lc3_help_center_faq.sql")

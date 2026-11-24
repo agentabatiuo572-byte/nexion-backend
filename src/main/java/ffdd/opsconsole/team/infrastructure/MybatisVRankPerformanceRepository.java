@@ -27,8 +27,7 @@ public class MybatisVRankPerformanceRepository implements VRankPerformanceReposi
         }
         long selfPoints = mapper.selfComputePoints(userId);
         long teamPoints = mapper.teamComputePoints(userId);
-        Long v1Threshold = mapper.v1SelfComputePoints();
-        int directRefs = mapper.directRefsCount(userId, v1Threshold == null ? 0L : v1Threshold);
+        int directRefs = mapper.directRefsCount(userId);
         Map<Integer, Integer> legCounts = new LinkedHashMap<>();
         for (Map<String, Object> row : mapper.legCountsByLevel(userId)) {
             Integer level = integerOf(row.get("vLevel"));

@@ -1326,6 +1326,18 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     int syncMemberVRankProjections(@Param("userId") Long userId,
                                    @Param("newRank") String newRank);
 
+    @Select("""
+            SELECT EXISTS (
+                SELECT 1 FROM nx_user_level_log
+                 WHERE user_id = #{userId} AND level_type = 'VRANK' AND is_deleted = 0
+                   AND ((UPPER(TRIM(from_code)) REGEXP '^V([0-9]|1[0-2])$'
+                         AND CAST(SUBSTRING(TRIM(from_code), 2) AS UNSIGNED) >= #{rankLevel})
+                     OR (UPPER(TRIM(to_code)) REGEXP '^V([0-9]|1[0-2])$'
+                         AND CAST(SUBSTRING(TRIM(to_code), 2) AS UNSIGNED) >= #{rankLevel}))
+            )
+            """)
+    boolean hasPreviouslyReachedVRank(@Param("userId") Long userId, @Param("rankLevel") int rankLevel);
+
     /** INSERT nx_user_level_log 晋升流水(含 Sprint1 新增 operator/snapshot/trigger_event_id/audit_no/is_manual 列)。 */
     @Insert("""
             INSERT INTO nx_user_level_log
@@ -1367,24 +1379,22 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> selectVRankRewardRulesByRank(@Param("rankCode") String rankCode);
 
-    /**
-     * 查培育奖接收方 L1 上线 sponsor。
-     * 优先 nx_sponsorship.sponsor_user_id;表无记录时 fallback 到 nx_team_member L1 直推上级
-     * (user_id WHERE member_user_id=userId AND level=1),防 sponsor 数据缺失时误派本人。
-     */
+    /** Find the direct upline using the same active team edge as the performance queries. */
     @Select("""
             SELECT COALESCE(
+                (SELECT m.user_id
+                   FROM nx_team_member m
+                  WHERE m.member_user_id = #{userId}
+                    AND m.user_id <> #{userId}
+                    AND m.level = 1
+                    AND m.is_deleted = 0
+                  ORDER BY m.id
+                  LIMIT 1),
                 (SELECT s.sponsor_user_id
                    FROM nx_sponsorship s
                   WHERE s.user_id = #{userId}
                     AND s.is_deleted = 0
                     AND s.sponsor_user_id IS NOT NULL
-                  LIMIT 1),
-                (SELECT m.user_id
-                   FROM nx_team_member m
-                  WHERE m.member_user_id = #{userId}
-                    AND m.level = 1
-                    AND m.is_deleted = 0
                   LIMIT 1)
             )
             """)
@@ -1411,7 +1421,6 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE user_id = #{userId}
                AND rank_code = #{rankCode}
                AND reward_type = #{rewardType}
-               AND status IN ('GRANTED', 'PENDING_GRANT', 'REISSUED')
             """)
     int countVRankRewardPayout(@Param("userId") Long userId,
                                @Param("rankCode") String rankCode,
@@ -1770,7 +1779,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE is_deleted = 0 AND level_type = 'VRANK'
                AND created_at >= #{from} AND created_at < #{until}
                AND from_code REGEXP '^[Vv][0-9]+$' AND to_code REGEXP '^[Vv][0-9]+$'
-               AND CAST(SUBSTRING(to_code, 2) AS UNSIGNED) > CAST(SUBSTRING(from_code, 2) AS UNSIGNED)
+               AND CAST(SUBSTRING(TRIM(to_code), 2) AS UNSIGNED) > CAST(SUBSTRING(TRIM(from_code), 2) AS UNSIGNED)
             """)
     long countUpwardPromotions(@Param("from") LocalDateTime from, @Param("until") LocalDateTime until);
 

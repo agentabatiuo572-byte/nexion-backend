@@ -2628,6 +2628,20 @@ public class AuditReplayBusinessPermissionGuard {
                 : "network_f1_reward_reverse";
     }
 
+    String vRankUvtReissueSummary(AuditReplayCommand command) {
+        if (command == null || !"F".equalsIgnoreCase(command.domain())
+                || !"f_reward_payout_action".equalsIgnoreCase(command.op())
+                || !"reissue".equalsIgnoreCase(value(command.params(), "action"))) {
+            return null;
+        }
+        String payoutId = value(command.params(), "payoutId").trim();
+        Map<String, Object> payout = teamCommissionRepository.findRewardPayoutByPayoutId(payoutId);
+        if (payout == null || !"uvt".equalsIgnoreCase(String.valueOf(payout.get("rewardType")))) {
+            return null;
+        }
+        return "补发 " + payout.get("amount") + " UVT 给晋级用户 " + payout.get("userId") + " · 冷却后可用";
+    }
+
     /** F1-BE-09:提案阶段就校验「已用券扣不扣回」的参数,不让非法参数拖到批准回放才失败。 */
     private ApiResult<Void> validateF1RewardClawbackProposal(Map<String, Object> params) {
         Object raw = params == null ? null : params.get("usedVoucherClawback");

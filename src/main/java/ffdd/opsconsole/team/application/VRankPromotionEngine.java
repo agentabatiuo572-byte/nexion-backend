@@ -2,6 +2,7 @@ package ffdd.opsconsole.team.application;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -49,8 +50,8 @@ import org.springframework.util.StringUtils;
  *   <li>{@code team_compute_points>0}:snapshot.teamComputePoints &gt;= config。</li>
  *   <li>{@code required_downline_count>0}:parse({@code required_downline_rank}) → targetV level,
  *       cumulativeLegCount(legCounts, targetV) &gt;= count。采用累加语义:
- *       L1 成员中 v_rank &gt;= targetV 的全部计入(即"达到 V{n} 阶的腿数")。
- *       例:V3 需 2 条 V2 腿 → L1 中 v_rank&gt;=V2 至少 2 条。</li>
+ *       L1-L2 成员中 v_rank &gt;= targetV 的全部计入(即"达到 V{n} 阶的腿数")。
+ *       例:V3 需 2 条 V2 腿 → L1-L2 中 v_rank&gt;=V2 至少 2 条。</li>
  * </ul>
  *
  * <p><b>Sprint3 实现:</b> 奖励派发(达成 V 级 → {@link VRankRewardDispatcher#dispatch} 读 nx_v_rank_reward_rule
@@ -75,7 +76,7 @@ public class VRankPromotionEngine {
     private final PlatformConfigFacade configFacade;
     private final ObjectMapper objectMapper;
     private final VRankRewardDispatcher rewardDispatcher;
-    /** Sprint4: outbox 事件发布(晋升完成事件 → Consumer 级联 L1 上级)。 */
+    /** Sprint4: outbox 事件发布(晋升完成事件 → Consumer 级联 L1-L2 上级)。 */
     private final EventOutboxService eventOutboxService;
 
     /**
@@ -137,7 +138,6 @@ public class VRankPromotionEngine {
             newIndex = reachableIndex;
         }
 
-        String newRank = VRANK_CODES.get(newIndex);
         if (newIndex == currentIndex) {
             // 无阶变化:不写流水(避免噪声)。如后续需要"评估但未变"流水,可改此处。
             log.debug("V-Rank unchanged for user {}: {}", userId, currentRank);
@@ -146,14 +146,14 @@ public class VRankPromotionEngine {
 
         // 7. 写入:UPDATE nx_team_member.v_rank + INSERT nx_user_level_log
         String fromCode = currentRank;
-        String toCode = newRank;
+        String toCode = VRANK_CODES.get(newIndex);
         String snapshotJson = serializeSnapshot(snapshot);
         String auditNo = generateAuditNo(userId, fromCode, toCode);
-        boolean updated = commissionRepository.updateMemberVRank(userId, toCode);
-        if (!updated) {
-            // 自循环行不存在:V0→V1 时常见(用户从未进过 nx_team_member)。记录但不阻断 — 引擎只评估,自循环行由注册流程维护。
-            log.warn("V-Rank self-loop row missing for user {}, skipping UPDATE but still recording log", userId);
+        if (!commissionRepository.updateMemberVRank(userId, toCode)) {
+            throw new BizException(422, "VRANK_MEMBER_UPDATE_FAILED");
         }
+        boolean promoted = newIndex > currentIndex;
+        boolean firstReached = promoted && !commissionRepository.hasPreviouslyReachedVRank(userId, newIndex);
         boolean logInserted = commissionRepository.insertUserLevelLog(
                 userId,
                 fromCode,
@@ -164,24 +164,18 @@ public class VRankPromotionEngine {
                 ctx.findSourceEventId().orElse(null),
                 auditNo,
                 ctx.triggerType() == VRankPromotionContext.TriggerType.MANUAL_OPERATION);
-        if (logInserted) {
-            log.info("V-Rank promoted: user {} {} → {} (trigger={}, auditNo={})",
-                    userId, fromCode, toCode, ctx.triggerType(), auditNo);
-        } else {
-            log.error("V-Rank level log insert FAILED for user {} {} → {}", userId, fromCode, toCode);
+        if (!logInserted) {
+            throw new IllegalStateException("VRANK_LEVEL_LOG_INSERT_FAILED");
         }
+        log.info("V-Rank changed: user {} {} → {} (trigger={}, auditNo={})",
+                userId, fromCode, toCode, ctx.triggerType(), auditNo);
 
-        // Sprint3 实现:奖励派发 — 读 nx_v_rank_reward_rule + 联动 D4/B1/voucher/sku/custom。
-        // 同处 @Transactional:派奖失败(如 B1 红线)→ 整笔晋升回滚(v_rank UPDATE + level_log INSERT 全撤销)。
-        try {
-            rewardDispatcher.dispatch(userId, toCode, snapshot, ctx);
-        } catch (RuntimeException ex) {
-            log.error("V-Rank reward dispatch FAILED, rolling back promotion: user={} {} → {}: {}",
-                    userId, fromCode, toCode, ex.getMessage());
-            throw ex;
+        if (promoted) {
+            if (firstReached) {
+                rewardDispatcher.dispatch(userId, toCode, snapshot, ctx);
+            }
+            publishPromotionCompleted(userId, fromCode, toCode);
         }
-        // Sprint4: 晋升成功(已落库 + 派奖)→ 发 outbox 事件,异步触发 L1 上级级联评估
-        publishPromotionCompleted(userId, fromCode, toCode);
 
         return toCode;
     }
@@ -226,7 +220,7 @@ public class VRankPromotionEngine {
     /**
      * 累加 legCounts 中所有 vLevel >= targetV 的成员数。
      *
-     * <p>"达到 V{n} 阶的腿数"业务语义:V3 阶要求 2 条 V2 腿 — 即 L1 成员中 v_rank >= V2 的至少 2 条。
+     * <p>"达到 V{n} 阶的腿数"业务语义:V3 阶要求 2 条 V2 腿 — 即 L1-L2 成员中 v_rank >= V2 的至少 2 条。
      * 故按 >= targetV 累加。
      */
     private static int cumulativeLegCount(Map<Integer, Integer> legCounts, int targetV) {
@@ -295,16 +289,9 @@ public class VRankPromotionEngine {
         return isPermanentProtectionEnabled();
     }
 
-    /**
-     * Returns the V1 self compute-point threshold used to qualify a direct referral, or {@code null}
-     * when V1 is absent. Zero on an existing V1 means no positive minimum,
-     * matching VRankPerformanceMapper.v1SelfComputePoints and its COALESCE semantics.
-     */
+    /** Retained as a public rule fact for clients that require the key. */
     public Long qualifiedReferralSelfComputePoints() {
-        VRankConfigRow v1 = rankByIndex(commissionRepository.vRankConfigRows(), 1);
-        if (v1 == null) return null;
-        if (v1.selfComputePoints() < 0) throw new IllegalStateException("V_RANK_THRESHOLD_INVALID");
-        return v1.selfComputePoints();
+        return null;
     }
 
     private String serializeSnapshot(VRankEvaluationSnapshot snapshot) {
@@ -324,11 +311,11 @@ public class VRankPromotionEngine {
         }
     }
 
-    /** Sprint4: V-Rank 晋升完成事件类型(Consumer 级联 L1 上级 re-eval)。 */
+    /** Sprint4: V-Rank 晋升完成事件类型(Consumer 级联 L1-L2 上级 re-eval)。 */
     static final String PROMOTION_EVENT_TYPE = "VRANK_PROMOTION_COMPLETED";
 
     /**
-     * Sprint4: 发布晋升完成事件到 outbox → DispatchScheduler 异步分发 → Consumer 级联 L1 上级。
+     * Sprint4: 发布晋升完成事件到 outbox → DispatchScheduler 异步分发 → Consumer 级联 L1-L2 上级。
      * 失败不阻断晋升(v_rank + 派奖已 commit);事件丢失由 VRankPromotionScheduler 兜底补评估。
      */
     void publishPromotionCompleted(Long userId, String fromCode, String toCode) {

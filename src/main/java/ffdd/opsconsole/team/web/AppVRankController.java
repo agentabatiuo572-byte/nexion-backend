@@ -17,7 +17,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.Arrays;
 import java.util.stream.Collectors;
@@ -177,7 +176,7 @@ public class AppVRankController {
             row.put("unilevelDepth", parseDepth(source.get("unilevelDepth")));
             row.put("peerBonus", decimal(source.get("peerBonusRate")));
             row.put("leadershipVotes", integer(source.get("votes")));
-            row.put("cultivationBonus", cultivationBonus(rewardRules));
+            row.put("cultivationBonus", BigDecimal.ZERO);
             row.put("rewards", rewardProjection(rewardRules));
             row.put("visible", booleanValue(source.get("visible")));
             rows.add(row);
@@ -218,14 +217,6 @@ public class AppVRankController {
                 .map(row -> decimal(row.get("usdtPct")).movePointLeft(2))
                 .findFirst()
                 .orElse(BigDecimal.ZERO);
-    }
-
-    private BigDecimal cultivationBonus(List<VRankRewardRuleRow> rewardRules) {
-        return rewardRules.stream()
-                .filter(rule -> "uvt".equalsIgnoreCase(rule.rewardType()))
-                .map(VRankRewardRuleRow::amount)
-                .filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private List<Map<String, Object>> rewardProjection(List<VRankRewardRuleRow> rewardRules) {

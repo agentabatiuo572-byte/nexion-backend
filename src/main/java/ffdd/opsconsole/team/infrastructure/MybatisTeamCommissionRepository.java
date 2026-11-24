@@ -362,6 +362,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public boolean hasPreviouslyReachedVRank(Long userId, int rankLevel) {
+        return mapper.hasPreviouslyReachedVRank(userId, rankLevel);
+    }
+
+    @Override
     public boolean insertUserLevelLog(Long userId,
                                       String fromCode,
                                       String toCode,

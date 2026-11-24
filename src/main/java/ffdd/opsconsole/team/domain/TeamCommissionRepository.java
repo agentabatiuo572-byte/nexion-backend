@@ -152,6 +152,11 @@ public interface TeamCommissionRepository {
      */
     boolean updateMemberVRank(Long userId, String newRank);
 
+    /** Checks both sides of prior changes so a downgrade cannot reopen a reward. */
+    default boolean hasPreviouslyReachedVRank(Long userId, int rankLevel) {
+        return false;
+    }
+
     /**
      * INSERT nx_user_level_log 晋升流水(level_type='VRANK')。
      *
@@ -187,12 +192,12 @@ public interface TeamCommissionRepository {
 
     /**
      * 查 L1 上线 sponsor_user_id(来自 nx_sponsorship.user_id=userId)。
-     * 无绑定/已软删返回 null(培育类 UVT 派发时若 null → fallback 派本人)。
+     * 无有效上级时返回 null。
      */
     Long findSponsorUserId(Long userId);
 
     /**
-     * 幂等检查:同 user/rank/rewardType 是否已派发过(GRANTED/PENDING_GRANT/REISSUED 均算)。
+     * 幂等检查:同 user/rank/rewardType 是否已有派发记录（含撤销；补发须走原记录）。
      * 派发前调用,防止多次评估触发重复派发。
      */
     boolean existsVRankRewardPayout(Long userId, String rankCode, String rewardType);
@@ -200,7 +205,7 @@ public interface TeamCommissionRepository {
     /**
      * INSERT nx_commission_event — 资金类奖励(usdt/培育 nex)落 D4 台账事件。
      *
-     * @param userId          接收方 user_id(培育类=sponsor,本人奖励=被晋升人)
+     * @param userId          接收方 user_id
      * @param commissionType  {@code vrank_reward}(本人奖励) / {@code cultivation}(培育类给 sponsor)
      * @param sourceUserId    触发用户(被晋升人);cultivation 时为下线
      * @param currency        USDT / UVT

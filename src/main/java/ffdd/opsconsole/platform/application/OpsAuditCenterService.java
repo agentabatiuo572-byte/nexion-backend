@@ -613,6 +613,10 @@ public class OpsAuditCenterService {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_SERIALIZE_FAILED");
             }
         }
+        String reissueSummary = replayBusinessPermissionGuard.vRankUvtReissueSummary(command);
+        if (reissueSummary != null) {
+            ticket.setAfterValue(reissueSummary);
+        }
         String refundOrderNo = refundOrderNo(command);
         if (promotions != null && refundOrderNo != null) promotions.lockOrderParticipants(refundOrderNo);
         // 加目标对象锁(防 pending 期间重复发起)
@@ -1287,6 +1291,10 @@ public class OpsAuditCenterService {
         if (STATUS_APPROVED.equals(nextStatus)) {
             ApiResult<Void> preconditions = replayBusinessPermissionGuard.validateApprovalPreconditions(cmd);
             if (preconditions.getCode() != 0) return ApiResult.fail(preconditions.getCode(), preconditions.getMessage());
+            String reissueSummary = replayBusinessPermissionGuard.vRankUvtReissueSummary(cmd);
+            if (reissueSummary != null && !reissueSummary.equals(ticket.getAfterValue())) {
+                return ApiResult.fail(409, "F1_UVT_REISSUE_REVIEW_CHANGED");
+            }
             var pendingOperation = PendingApprovalProjection.operation(cmd);
             if (pendingOperation != null) {
                 String targetId = pendingActionId(cmd, pendingOperation);

@@ -1010,7 +1010,7 @@ public class OpsTeamService implements AuditReplayable {
             }
             value = normalizeVRankThreshold(rank, field, value);
             after.put(field, "legRank".equals(field) ? value : parseDecimal(value).stripTrailingZeros());
-            validateVRankThresholdOrder(orderedThresholds, rank, field, before, after);
+            validateVRankThresholdOrder(orderedThresholds, rank, field, after);
             amplifies = loosensVRankCondition(before, after, field);
         } else if ("reward_add".equals(action) || "reward_update".equals(action)) {
             if (request.reward() == null || StringUtils.hasText(field) || StringUtils.hasText(value)) {
@@ -1059,14 +1059,8 @@ public class OpsTeamService implements AuditReplayable {
     }
 
     private void validateVRankThresholdOrder(List<Map<String, Object>> rows, String rank, String field,
-                                             Map<String, Object> before, Map<String, Object> after) {
-        if (rows.isEmpty()) return;
+                                             Map<String, Object> after) {
         requireVRankThresholdOrder(rows, rank, field, vRankOrderValue(after, field));
-        if (("legCount".equals(field) || "legRank".equals(field))
-                && !hasVRankBranchThreshold(before) && hasVRankBranchThreshold(after)) {
-            String otherField = "legCount".equals(field) ? "legRank" : "legCount";
-            requireVRankThresholdOrder(rows, rank, otherField, vRankOrderValue(after, otherField));
-        }
     }
 
     private void requireVRankThresholdOrder(List<Map<String, Object>> rows, String rank, String field, long value) {
@@ -1090,9 +1084,11 @@ public class OpsTeamService implements AuditReplayable {
 
     private long vRankOrderValue(Map<String, Object> row, String field) {
         return switch (field) {
-            case "legCount" -> hasVRankBranchThreshold(row) ? intValue(row.get("legCount"), 0) : 0;
-            case "legRank" -> hasVRankBranchThreshold(row)
-                    ? VRANK_LEVELS.indexOf(textValue(row, "legRank", "").toUpperCase(Locale.ROOT)) + 1L : 0;
+            // Keep the full int count range below the next rank.
+            case "legCount", "legRank" -> hasVRankBranchThreshold(row)
+                    ? (VRANK_LEVELS.indexOf(textValue(row, "legRank", "").toUpperCase(Locale.ROOT)) + 1L)
+                            * (Integer.MAX_VALUE + 1L) + intValue(row.get("legCount"), 0)
+                    : 0;
             default -> decimalValue(row.get(field), BigDecimal.ZERO).longValueExact();
         };
     }
@@ -1209,9 +1205,7 @@ public class OpsTeamService implements AuditReplayable {
             if (reward.get("skuId") != null) fields.put("商品", reward.get("skuId"));
             if (reward.get("custom") != null) fields.put("自定义内容或原始备注", reward.get("custom"));
             fields.put("排序", reward.get("sortOrder"));
-            String marker = String.valueOf(reward.getOrDefault("custom", "")).toLowerCase(Locale.ROOT);
-            fields.put("受益人", "uvt".equals(type) && !marker.contains("self") && !marker.contains("direct")
-                    ? "直接邀请人；未绑定时为晋升用户本人" : "晋升用户本人");
+            fields.put("受益人", "晋升用户本人");
         }
         return fields;
     }
@@ -1288,7 +1282,7 @@ public class OpsTeamService implements AuditReplayable {
                 : decimalValue(before.get(normalizedField), BigDecimal.ZERO).toPlainString();
         Map<String, Object> after = new LinkedHashMap<>(before);
         after.put(normalizedField, "legRank".equals(normalizedField) ? value : parseDecimal(value).stripTrailingZeros());
-        validateVRankThresholdOrder(orderedThresholds, rankCode, normalizedField, before, after);
+        validateVRankThresholdOrder(orderedThresholds, rankCode, normalizedField, after);
         if (loosensVRankCondition(before, after, normalizedField)) {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
@@ -4475,11 +4469,12 @@ public class OpsTeamService implements AuditReplayable {
      * <ul>
      *   <li>{@code before} — 评估前的当前阶(commissionRepository.currentMemberVRank)</li>
      *   <li>{@code after} — 引擎返回的新阶(engine.evaluate)</li>
-     *   <li>{@code promoted} — before != after</li>
+     *   <li>{@code promoted} — after 的等级高于 before</li>
      *   <li>{@code rewards} — after 阶配置的奖励规则(nx_v_rank_reward_rule;实际派发流水查 payout 表)</li>
      * </ul>
      * 引擎内部已带 @Transactional + audit_no 幂等链,本方法无需 requireCommand。
      */
+    @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> evaluateVRank(Long userId) {
         if (userId == null) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
@@ -4495,7 +4490,7 @@ public class OpsTeamService implements AuditReplayable {
         response.put("userId", userId);
         response.put("before", before);
         response.put("after", after);
-        response.put("promoted", !before.equalsIgnoreCase(after));
+        response.put("promoted", vRankIndex(after) > vRankIndex(before));
         response.put("rewards", activeRewards(after));
         response.put("source", "VRankPromotionEngine.evaluate");
         return ApiResult.ok(response);
@@ -4547,11 +4542,12 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         String operator = resolveOperator("MANUAL", actor(request.operator()));
-        String manualReason = "[MANUAL] " + request.reason().trim();
         boolean updated = commissionRepository.updateMemberVRank(userId, targetV);
         if (!updated) {
-            log.warn("V-Rank override: member self-loop row missing for user {}, skipping UPDATE but still recording log", userId);
+            return ApiResult.fail(422, "VRANK_MEMBER_UPDATE_FAILED");
         }
+        boolean promoted = "promote".equals(direction);
+        boolean firstReached = promoted && !commissionRepository.hasPreviouslyReachedVRank(userId, targetIdx);
         boolean logInserted = commissionRepository.insertUserLevelLog(
                 userId,
                 currentV,
@@ -4563,23 +4559,14 @@ public class OpsTeamService implements AuditReplayable {
                 "VRANK-OVERRIDE-" + userId + "-" + currentV + "-" + targetV + "-" + UUID.randomUUID().toString().substring(0, 8),
                 true);
         if (!logInserted) {
-            log.error("V-Rank override level log insert FAILED for user {} {} → {}", userId, currentV, targetV);
+            throw new IllegalStateException("VRANK_LEVEL_LOG_INSERT_FAILED");
         }
-        // promote 方向调派发器(越级派奖,MANUAL ctx);rollback 不派奖不剥夺(保留已派发流水)
-        if ("promote".equals(direction)) {
-            try {
+        if (promoted) {
+            if (firstReached) {
                 VRankPromotionContext ctx = new VRankPromotionContext(
-                        userId,
-                        VRankPromotionContext.TriggerType.MANUAL_OPERATION,
-                        idempotencyKey.trim(),
-                        operator);
+                        userId, VRankPromotionContext.TriggerType.MANUAL_OPERATION, idempotencyKey.trim(), operator);
                 vRankRewardDispatcher.dispatch(userId, targetV, VRankEvaluationSnapshot.empty(), ctx);
-            } catch (RuntimeException ex) {
-                log.error("V-Rank override reward dispatch FAILED, dispatch rollback follows upstream @Transactional: user={} {} → {}: {}",
-                        userId, currentV, targetV, ex.getMessage());
-                throw ex;
             }
-            // Sprint4: 手动晋升也发事件 → Consumer 级联 L1 上级 re-eval
             vRankPromotionEngine.publishPromotionCompleted(userId, currentV, targetV);
         }
         audit("F_TEAM_VRANK_OVERRIDDEN", "nx_team_member:" + userId + ".v_rank", operator, Map.of(
@@ -4828,7 +4815,6 @@ public class OpsTeamService implements AuditReplayable {
         Long userId = parseLongFromMap(original.get("userId"));
         String rankCode = String.valueOf(original.getOrDefault("rankCode", ""));
         BigDecimal amount = decimalValue(original.get("amount"), BigDecimal.ZERO);
-        Long sponsorUserId = parseLongFromMap(original.get("sponsorUserId"));
         String operator = resolveOperator("MANUAL", request == null ? null : actor(request.operator()));
         String reason = request.reason().trim();
 
@@ -4837,28 +4823,18 @@ public class OpsTeamService implements AuditReplayable {
         if ("usdt".equals(rewardType) || "uvt".equals(rewardType)) {
             requirePayoutIncreaseCoverage(amount.signum() > 0);
             String currency = "usdt".equals(rewardType) ? "USDT" : "UVT";
-            Long recipientUserId = sponsorUserId != null ? sponsorUserId : userId;
-            Long sourceUserId = sponsorUserId != null ? userId : null;
-            String commissionType = sponsorUserId != null ? "cultivation" : "vrank_reward";
             BigDecimal amountUsdt = "USDT".equals(currency) ? amount : BigDecimal.ZERO;
             BigDecimal amountNex = "UVT".equals(currency) ? amount : BigDecimal.ZERO;
             String remark = "F1 V-Rank reward REISSUE | rank=" + rankCode + " type=" + rewardType + " operator=" + operator;
             Long newCommissionEventId = commissionRepository.insertCommissionEvent(
-                    recipientUserId, commissionType, sourceUserId, currency,
-                    amountUsdt, amountNex, sponsorUserId != null ? "UNLOCKED" : "COOLING",
-                    sponsorUserId != null ? 0 : resolveCommissionCoolingDays(), remark);
+                    userId, "vrank_reward", null, currency,
+                    amountUsdt, amountNex, "COOLING", resolveCommissionCoolingDays(), remark);
             if (newCommissionEventId == null) {
                 throw new IllegalStateException("COMMISSION_EVENT_INSERT_FAILED");
             }
-            String billId = sponsorUserId != null ? "F5-COMMISSION-" + newCommissionEventId + "-RELEASE"
-                    : "F1-VRANKREWARD-REISSUE-" + newCommissionEventId;
-            if (sponsorUserId != null) {
-                ledgerPostingFacade.releaseCommissionFunds(newCommissionEventId);
-            } else {
-                ledgerPostingFacade.postLedgerEntry(
-                        billId, recipientUserId, "TEAM_COMMISSION", currency,
-                        "IN", amount, "PENDING", remark);
-            }
+            String billId = "F1-VRANKREWARD-REISSUE-" + newCommissionEventId;
+            ledgerPostingFacade.postLedgerEntry(
+                    billId, userId, "TEAM_COMMISSION", currency, "IN", amount, "PENDING", remark);
             if (!commissionRepository.linkReissuedRewardCommission(payoutId.trim(), newCommissionEventId, billId)) {
                 throw new IllegalStateException("PAYOUT_COMMISSION_LINK_CONFLICT");
             }
@@ -4954,7 +4930,6 @@ public class OpsTeamService implements AuditReplayable {
         }
         String rewardType = String.valueOf(original.getOrDefault("rewardType", "")).toLowerCase(Locale.ROOT);
         Long userId = parseLongFromMap(original.get("userId"));
-        Long sponsorUserId = parseLongFromMap(original.get("sponsorUserId"));
         Long commissionEventId = parseLongFromMap(original.get("commissionEventId"));
         BigDecimal amount = decimalValue(original.get("amount"), BigDecimal.ZERO);
         String rankCode = String.valueOf(original.getOrDefault("rankCode", ""));
