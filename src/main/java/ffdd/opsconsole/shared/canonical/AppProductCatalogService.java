@@ -15,6 +15,7 @@ import ffdd.opsconsole.shared.i18n.ProductTaglines;
 import ffdd.opsconsole.platform.application.PlatformExperienceConfigService;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.text.Normalizer;
 import java.time.LocalDateTime;
@@ -253,6 +254,12 @@ public class AppProductCatalogService {
         item.put("dailyEstimateLowUsdt",ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyLow(target.monthlyTargetUsdt(),target.monthlyTargetBandPct()));
         item.put("dailyEstimateHighUsdt",ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyHigh(target.monthlyTargetUsdt(),target.monthlyTargetBandPct()));
         item.put("dailyEarnNEX", target.dailyNex());
+        BigDecimal uvtDelta = target.monthlyTargetBandPct() == null ? null
+                : target.dailyNex().multiply(target.monthlyTargetBandPct().movePointLeft(2));
+        item.put("dailyEstimateLowNex", uvtDelta == null ? null
+                : target.dailyNex().subtract(uvtDelta).setScale(6, RoundingMode.HALF_UP));
+        item.put("dailyEstimateHighNex", uvtDelta == null ? null
+                : target.dailyNex().add(uvtDelta).setScale(6, RoundingMode.HALF_UP));
         item.put("shareYieldMin", shareYieldAvailable ? shareYield.minPct() : null);
         item.put("shareYieldMax", shareYieldAvailable ? shareYield.maxPct() : null);
         item.put("price", target.priceUsdt());
