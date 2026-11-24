@@ -22,6 +22,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
               FROM nx_purchase_payment_intent p
               JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo'))
              WHERE p.kind='ORDER_PAY' AND o.order_no=#{orderNo} AND p.status NOT IN ('DELIVERED','EXPIRED')
+               AND p.refund_receipt_json IS NULL
             """;
 
     @Select("SELECT COUNT(*) " + ACTIVE_DIRECT_ORDER_PAYMENT)
@@ -40,7 +41,7 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
             SELECT COUNT(*) FROM nx_purchase_payment_intent p
               JOIN nx_order o ON o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.user_id=p.user_id
              WHERE o.order_no=#{orderNo} AND p.kind='ORDER_PAY'
-               AND p.status NOT IN ('DELIVERED','EXPIRED')
+               AND p.status NOT IN ('DELIVERED','EXPIRED') AND p.refund_receipt_json IS NULL
                AND NOT (p.status='MANUAL_REVIEW' AND p.reason='PAYMENT_LATE_REVIEW'
                         AND p.confirmed_at IS NOT NULL AND p.receipt_json IS NULL)
             """)
@@ -341,6 +342,17 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
                AND UPPER(order_status)='PENDING_PAYMENT' AND UPPER(payment_status)='PENDING'
             """)
     int expireOrder(@Param("orderNo") String orderNo, @Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_order SET payment_status='CANCELLED',order_status='CANCELLED',activation_status='WAITING_PAYMENT',
+                   close_reason_code='PAYMENT_REFUNDED',
+                   updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
+             WHERE order_no=#{orderNo} AND user_id=#{userId} AND is_deleted=0 AND paid_at IS NULL
+               AND ((order_status='PENDING_PAYMENT' AND payment_status='PENDING')
+                    OR (order_status IN ('CANCELLED','EXPIRED') AND payment_status=order_status)
+                    OR (order_status='PAYMENT_FAILED' AND payment_status='FAILED'))
+            """)
+    int closeRefundedDirectPaymentOrder(@Param("orderNo") String orderNo, @Param("userId") Long userId);
 
     @Select("""
             SELECT grant_id grantId

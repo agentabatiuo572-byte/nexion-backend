@@ -779,7 +779,7 @@ public class AppOrderCommandService {
         if (mapper.countNonCancellableHdPaySessions(orderNo) > 0) {
             return ApiResult.fail(409, "HDPAY_ORDER_NOT_CANCELLABLE");
         }
-        releasePendingReservation(order, userId, orderNo, false);
+        releasePendingReservation(order, userId, orderNo, "CANCELLED");
         audit.recordRequired(AuditLogWriteRequest.builder().action("APP_ORDER_CANCELLED").resourceType("ORDER")
                 .resourceId(orderNo).bizNo(orderNo).userId(userId).actorId(userId).actorType("USER")
                 .method("POST").path("/api/orders/" + orderNo + "/cancel").result("SUCCESS").riskLevel("LOW")
@@ -816,6 +816,24 @@ public class AppOrderCommandService {
         return expirePendingOrder(userId,orderNo,30,true);
     }
 
+    /** The payment caller holds the intent lock and has excluded a live successor under the buyer lock. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
+    public void closeRefundedDirectPaymentOrder(long userId, String orderNo) {
+        var order = mapper.lockOrder(orderNo);
+        if (order == null || !Long.valueOf(userId).equals(order.userId()))
+            throw new BizException(409, "PURCHASE_PAYMENT_REFUND_ORDER_CONFLICT");
+        if ("REFUNDED".equals(order.orderStatus()) || "PAID".equals(order.paymentStatus())) return;
+        if ("PENDING_PAYMENT".equals(order.orderStatus()) && "PENDING".equals(order.paymentStatus())) {
+            if (mapper.countNonCancellableHdPaySessions(orderNo) > 0)
+                throw new BizException(409, "PURCHASE_PAYMENT_REFUND_OTHER_PAYMENT_IN_PROGRESS");
+            releasePendingReservation(order, userId, orderNo, "PAYMENT_REFUNDED");
+        } else {
+            if (mapper.closeRefundedDirectPaymentOrder(orderNo, userId) != 1)
+                throw new BizException(409, "PURCHASE_PAYMENT_REFUND_ORDER_CONFLICT");
+            restorePendingOrderVoucher(userId,orderNo,mapper.lockUsedVouchersForOrder(userId,orderNo));
+        }
+    }
+
     private boolean expirePendingOrder(Long userId,String orderNo,int ttlMinutes,boolean direct) {
         if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) return false;
         String normalized = orderNo.trim();
@@ -832,7 +850,7 @@ public class AppOrderCommandService {
                 || mapper.countExpiredPayableOrder(normalized, userId, ttlMinutes) == 0) {
             return false;
         }
-        releasePendingReservation(order, userId, normalized, true);
+        releasePendingReservation(order, userId, normalized, "EXPIRED");
         String orderType = StringUtils.hasText(order.orderType()) ? order.orderType() : "SINGLE";
         audit.recordRequired(AuditLogWriteRequest.builder().action("APP_ORDER_EXPIRED").resourceType("ORDER")
                 .resourceId(normalized).bizNo(normalized).userId(userId).actorId(0L).actorType("SYSTEM")
@@ -842,7 +860,7 @@ public class AppOrderCommandService {
     }
 
     private void releasePendingReservation(
-            AppOrderCommandMapper.OrderRow order, Long userId, String orderNo, boolean expired) {
+            AppOrderCommandMapper.OrderRow order, Long userId, String orderNo, String terminal) {
         List<AppOrderCommandMapper.ItemRow> items = mapper.lockItems(orderNo);
         List<AppOrderCommandMapper.ItemRow> effective = items == null ? List.of() : items;
         String orderType = StringUtils.hasText(order.orderType()) ? order.orderType().trim().toUpperCase(Locale.ROOT) : "SINGLE";
@@ -879,16 +897,21 @@ public class AppOrderCommandService {
         }
         List<AppOrderCommandMapper.VoucherGrantRow> usedVouchers =
                 mapper.lockUsedVouchersForOrder(userId, orderNo);
-        if (usedVouchers != null && usedVouchers.size() > 1) {
-            throw new BizException(409, "ORDER_VOUCHER_SNAPSHOT_CONFLICT");
-        }
-        int terminalRows = expired
-                ? mapper.expireOrder(orderNo, userId)
-                : mapper.cancelOrder(orderNo, userId);
+        int terminalRows = switch (terminal) {
+            case "EXPIRED" -> mapper.expireOrder(orderNo, userId);
+            case "CANCELLED" -> mapper.cancelOrder(orderNo, userId);
+            case "PAYMENT_REFUNDED" -> mapper.closeRefundedDirectPaymentOrder(orderNo, userId);
+            default -> throw new IllegalArgumentException("Invalid pending order terminal state");
+        };
         if (terminalRows != 1) throw new BizException(409, "ORDER_STATE_CONFLICT");
-        if (promotions != null) promotions.releaseUnpaid(orderNo, expired ? "EXPIRED" : "CANCELLED");
-        if (usedVouchers != null && usedVouchers.size() == 1
-                && mapper.restoreVoucher(usedVouchers.get(0).grantId(), userId, orderNo) != 1) {
+        if (promotions != null) promotions.releaseUnpaid(orderNo, terminal);
+        restorePendingOrderVoucher(userId,orderNo,usedVouchers);
+    }
+
+    private void restorePendingOrderVoucher(long userId, String orderNo, List<AppOrderCommandMapper.VoucherGrantRow> vouchers) {
+        if (vouchers == null || vouchers.isEmpty()) return;
+        if (vouchers.size() != 1) throw new BizException(409, "ORDER_VOUCHER_SNAPSHOT_CONFLICT");
+        if (mapper.restoreVoucher(vouchers.get(0).grantId(), userId, orderNo) != 1) {
             throw new BizException(409, "ORDER_VOUCHER_RETURN_CONFLICT");
         }
     }

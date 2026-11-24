@@ -24,4 +24,8 @@ public class OpsPurchasePaymentController {
     public ApiResult<Map<String,Object>> revalidate(@PathVariable String intentNo,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> body){
         return ApiResult.ok(service.revalidate(intentNo,key,body));
     }
+    @PostMapping("/purchase-payment-records/{intentNo}/refund-closeout") @PreAuthorize("hasAuthority('finance_d1_bank_reconcile')")
+    public ApiResult<Map<String,Object>> closeRefunded(@PathVariable String intentNo,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> body){
+        return ApiResult.ok(service.closeRefunded(intentNo,key,body));
+    }
 }

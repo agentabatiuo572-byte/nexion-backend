@@ -23,10 +23,13 @@ public class ExternalPurchaseCommandQueryService implements ExternalPurchaseComm
             case "capacity-replace"->"CAPACITY_REPLACE"; case "capacity-keep"->"CAPACITY_KEEP"; default->null;
         };
         if(externalKind==null) return null;
-        Map<String,Object> row=repo.one("SELECT status,receipt_json,reason FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",userId,externalKind,key);
+        Map<String,Object> row=repo.one("SELECT status,receipt_json,refund_receipt_json,reason FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",userId,externalKind,key);
         if(row==null) return null;
         Map<String,Object> result=new LinkedHashMap<>();
         result.put("kind",kind);result.put("commandKey",key);result.put("canResumeSameKey",false);
+        if(row.get("refund_receipt_json")!=null) {
+            result.put("status","REJECTED");result.put("message","PURCHASE_PAYMENT_REFUNDED");return result;
+        }
         Object receipt=row.get("receipt_json");
         if(receipt!=null) {
             try {
