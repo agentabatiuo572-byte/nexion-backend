@@ -50,10 +50,14 @@ public class SupportAnalyticsPrivateQueryService {
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> query(Map<String,List<String>> raw) {
-        try {return execute(raw);}
+        try {return execute(raw, true);}
         catch(DataAccessException ex){throw unavailable();}
     }
-    private Map<String,Object> execute(Map<String,List<String>> raw) {
+    Map<String,Object> performanceBaseline(Map<String,List<String>> raw) {
+        try {return execute(raw, false);}
+        catch(DataAccessException ex){throw unavailable();}
+    }
+    private Map<String,Object> execute(Map<String,List<String>> raw, boolean verifyVersion) {
         var q=SupportAnalyticsQueryRequest.fromParameters(raw).normalize(CURRENCIES,SORTS);
         validateView(q);
         ReadScope scope=ownership.defaultQueryScope(q.groupId(),q.agentId());
@@ -76,7 +80,7 @@ public class SupportAnalyticsPrivateQueryService {
         // Reauthorization always precedes version comparison, including unverifiable/failed sources.
         reauthorize(q,scope,grants,groups);
         if(version.status()==SupportAnalyticsQueryVersion.Status.FAILED){throw unavailable();}
-        try {SupportAnalyticsQueryVersion.requireExpected(q,version);}
+        try {if(verifyVersion) SupportAnalyticsQueryVersion.requireExpected(q,version);}
         catch(SupportAnalyticsQueryVersion.VersionConflict ex){throw new BizException(409,ex.getMessage());}
         if(q.filter()!=ServiceFilter.ALL && q.filter()!=ServiceFilter.WINDOW_ACTIVE && sources.taskRead()!=SupportAnalyticsQueryVersion.ReadState.COMPLETE)throw unavailable();
         if((q.filter()==ServiceFilter.ACTIVE || q.filter()==ServiceFilter.DORMANT) && sources.rules().dormantDays()==null)throw unavailable();

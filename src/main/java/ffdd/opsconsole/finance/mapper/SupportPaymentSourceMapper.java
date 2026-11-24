@@ -13,6 +13,52 @@ import org.apache.ibatis.annotations.InsertProvider;
 // Exact source observations, not generic CRUD; every read bypasses both MyBatis caches.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportPaymentSourceMapper {
+    record BankTopupAmount(Long ledgerId, java.math.BigDecimal amountVnd) { }
+
+    @Select("""
+        <script>
+        SELECT l.id ledgerId,r.received_vnd amountVnd
+          FROM nx_wallet_ledger l JOIN nx_vietqr_reconciliation r
+            ON l.biz_no COLLATE utf8mb4_0900_ai_ci=CONCAT('D1-VIETQR-',r.reconciliation_no) COLLATE utf8mb4_0900_ai_ci
+           AND l.user_id=r.user_id AND l.amount=r.credited_usdt
+         WHERE l.id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+           AND r.status='CREDITED' AND r.is_deleted=0 AND r.received_at IS NOT NULL AND r.received_vnd&gt;0
+        UNION ALL
+        SELECT l.id ledgerId,i.received_vnd amountVnd
+          FROM nx_wallet_ledger l JOIN nx_vietqr_intent i
+            ON l.biz_no COLLATE utf8mb4_0900_ai_ci=i.intent_no COLLATE utf8mb4_0900_ai_ci AND l.user_id=i.user_id
+          JOIN nx_hdpay_payin_order h ON h.merchant_order_id COLLATE utf8mb4_0900_ai_ci=i.intent_no COLLATE utf8mb4_0900_ai_ci
+            AND h.wallet_ledger_biz_no COLLATE utf8mb4_0900_ai_ci=l.biz_no COLLATE utf8mb4_0900_ai_ci
+         WHERE l.id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+           AND i.is_deleted=0 AND i.payment_rail='HDPAY' AND i.settlement_target_type='WALLET_TOPUP'
+           AND h.settled_at IS NOT NULL AND h.settled_usdt=l.amount AND i.credited_usdt=l.amount
+           AND i.received_vnd=h.amount_vnd AND i.received_vnd&gt;0
+        </script>
+        """)
+    List<BankTopupAmount> bankTopupVnd(@Param("ids") List<Long> ids);
+
+    record WalletReferenceRow(long ledgerId, long customerId, String businessNo, String kind,
+                              java.math.BigDecimal amount, LocalDateTime at) { }
+
+    @Select("""
+        <script>
+        SELECT l.id ledgerId,l.user_id customerId,l.biz_no businessNo,
+               IF(l.biz_type IN ('MANUAL_CREDIT','ADMIN_MANUAL_CREDIT'),'MANUAL_CREDIT','REWARD') kind,
+               l.amount,l.created_at at
+          FROM nx_visible_wallet_ledger l JOIN nx_user u ON u.id=l.user_id AND u.sandbox=0
+         WHERE l.user_id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+           AND l.created_at &gt;= #{from} AND l.created_at &lt; #{to}
+           AND l.asset='USDT' AND l.direction='IN' AND l.status='SUCCESS' AND l.amount&gt;0 AND l.is_deleted=0
+           AND l.biz_type IN ('MANUAL_CREDIT','ADMIN_MANUAL_CREDIT','COMPUTE_TASK_REWARD','TRIAL_BONUS',
+                              'DAILY_CHECK_IN','TEAM_COMMISSION','REFERRAL_REWARD','MILESTONE_REWARD')
+           AND NOT EXISTS (SELECT 1 FROM nx_simulated_task t WHERE t.user_id=l.user_id
+                 AND t.task_no COLLATE utf8mb4_0900_ai_ci=l.biz_no COLLATE utf8mb4_0900_ai_ci)
+         ORDER BY l.id
+        </script>
+        """)
+    List<WalletReferenceRow> walletReferences(@Param("ids") List<Long> ids,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
     @Select("SELECT UTC_TIMESTAMP(6)")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     LocalDateTime historyNowUtc();

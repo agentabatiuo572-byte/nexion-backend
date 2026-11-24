@@ -19,9 +19,16 @@ public interface SupportFundsReadFacade extends DomainFacade {
 
     /** Optional observation of a single interval from the same verified read. */
     record PerformanceCapture(Instant from,Instant to,Consumer<ConfirmedWithdrawal> withdrawals,
-            Consumer<ConfirmedDepositCorrection> depositCorrections,Runnable readFailed) {
+            Consumer<ConfirmedDepositCorrection> depositCorrections,Consumer<WithdrawalReference> withdrawalReferences,
+            Runnable readFailed) {
+        public PerformanceCapture(Instant from,Instant to,Consumer<ConfirmedWithdrawal> withdrawals,
+                Consumer<ConfirmedDepositCorrection> depositCorrections,Runnable readFailed) {
+            this(from,to,withdrawals,depositCorrections,ignored -> {},readFailed);
+        }
         public boolean contains(Instant at) {return !at.isBefore(from) && at.isBefore(to);}
     }
+    record WithdrawalReference(String withdrawalNo,long customerId,String rail,String state,Instant requestedAt,
+                               Instant effectiveAt,BigDecimal requestedUsdt) { }
     record ConfirmedWithdrawal(String withdrawalNo,long customerId,String rail,Instant requestedAt,Instant completedAt,
             BigDecimal walletDebitUsdt,BigDecimal feeUsdt,BigDecimal networkFeeUsdt,BigDecimal receivedUsdt,
             BigDecimal receivedVnd,String evidenceKey,String settlementEventId) { }

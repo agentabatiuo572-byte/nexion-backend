@@ -15,6 +15,9 @@ import java.util.*;
 public final class SupportPerformance {
     public static final String DEFINITION_VERSION = "NET_INFLOW_V1";
     public static final String CURRENCY = "USDT";
+    public static final List<String> INFLOW_CHANNELS =
+            List.of("CHAIN_TOPUP", "VN_BANK_TOPUP", "CHAIN_DIRECT_PURCHASE", "VN_BANK_DIRECT_PURCHASE");
+    public static final List<String> WITHDRAWAL_CHANNELS = List.of("TRC20", "BEP20", "ERC20", "VN_BANK");
     /** First instant of the new performance history, inclusive. */
     public static final Instant HISTORY_START = Instant.parse("2026-11-20T14:57:06.829277Z");
 
@@ -25,18 +28,31 @@ public final class SupportPerformance {
     public enum Reason {
         GENERATION_UPGRADING, SOURCE_INCOMPLETE, SOURCE_READ_FAILED, HISTORY_INCOMPLETE,
         ATTRIBUTION_UNKNOWN, PAYMENT_TIME_UNVERIFIED, CHANNEL_UNVERIFIED,
-        EXTERNAL_REFUND_UNVERIFIED, WITHDRAWAL_SETTLEMENT_UNVERIFIED
+        EXTERNAL_REFUND_UNVERIFIED, WITHDRAWAL_SETTLEMENT_UNVERIFIED, WITHDRAWAL_TIME_UNVERIFIED,
+        NOT_APPLICABLE
     }
 
     public record ObservedDeposit(String factId,long customerId,long ledgerId,SupportPaymentFacts.Source source,
             String sourceBusinessId,Instant creditedAt,BigDecimal creditedUsdt,
-            SupportPaymentFacts.Status historicalEnvironmentStatus) { }
+            SupportPaymentFacts.Status historicalEnvironmentStatus, BigDecimal receivedVnd) {
+        public ObservedDeposit(String factId,long customerId,long ledgerId,SupportPaymentFacts.Source source,
+                String sourceBusinessId,Instant creditedAt,BigDecimal creditedUsdt,
+                SupportPaymentFacts.Status historicalEnvironmentStatus) {
+            this(factId, customerId, ledgerId, source, sourceBusinessId, creditedAt, creditedUsdt, historicalEnvironmentStatus, null);
+        }
+    }
 
     public record EventAttribution(AttributionState state,Long agentId,Long groupId) { }
 
-    public enum Kind { INFLOW, WITHDRAWAL, CORRECTION }
+    public enum Kind { INFLOW, WITHDRAWAL, CORRECTION, WITHDRAWAL_REFERENCE, REFERENCE }
 
     public record BindingPeriod(Instant from, Instant to) { }
+
+    public record Binding(long customerId, EventAttribution attribution, Instant from, Instant to) { }
+
+    public record FirstPayment(long customerId, String factId, String orderNo, String kind, String channel,
+                               String currency, BigDecimal amount, Instant at, EventAttribution attribution,
+                               boolean confirmed) { }
 
     /** Internal money event. Customer and business identifiers are disclosed only by authorized projections. */
     public record Event(String id, long customerId, EventAttribution attribution, BindingPeriod bindingPeriod,
@@ -44,7 +60,16 @@ public final class SupportPerformance {
                         String originalBusinessNo, String originalEventId, Instant occurredAt, Instant effectiveAt, String sourceStatus,
                         BigDecimal amountUsdt, BigDecimal deltaUsdt, BigDecimal roundingUsdt, BigDecimal totalPaidUsdt,
                         BigDecimal feeUsdt, BigDecimal channelFeeUsdt, BigDecimal networkFeeUsdt,
-                        BigDecimal receivedUsdt, BigDecimal vnd) { }
+                        BigDecimal receivedUsdt, BigDecimal vnd) {
+        public String performanceStatus() {
+            if (kind == Kind.REFERENCE) return "EXCLUDED";
+            if (kind != Kind.WITHDRAWAL_REFERENCE) return "EFFECTIVE";
+            return switch (sourceStatus) {
+                case "REVIEW_REJECTED", "ADDRESS_INVALID", "TX_FAILED", "TX_ORPHANED", "REFUNDED" -> "EXCLUDED";
+                default -> "PENDING_REVIEW";
+            };
+        }
+    }
 
     /** Amounts established by the captured evidence. A missing channel has no verified subtotal. */
     public record MonthlySubtotal(String month, EventAttribution attribution,
@@ -54,8 +79,16 @@ public final class SupportPerformance {
     public record WithdrawalSubtotal(BigDecimal walletDebitedUsdt, BigDecimal feeUsdt,
                                      BigDecimal receivedUsdt, BigDecimal receivedVnd) { }
 
+    public record ChannelCoverage(Coverage status, List<Reason> reasons, BigDecimal observedUsdt,
+                                  long observedEvents, String evidenceDigest) { }
+
     public record Month(String month, Instant from, Instant to, String businessZone,
-                        Coverage coverage, List<Reason> reasons) {
+                        Coverage coverage, List<Reason> reasons, Map<String, ChannelCoverage> channels,
+                        boolean firstHistoryComplete) {
+        public Month(String month, Instant from, Instant to, String businessZone, Coverage coverage, List<Reason> reasons) {
+            this(month, from, to, businessZone, coverage, reasons, Map.of(), false);
+        }
+
         public Month {
             YearMonth parsed;
             try { parsed = YearMonth.parse(month); }
@@ -64,11 +97,16 @@ public final class SupportPerformance {
                     || businessZone == null || coverage == null || reasons == null) throw invalid();
             if (!ZoneId.getAvailableZoneIds().contains(businessZone)) throw invalid();
             reasons = List.copyOf(reasons);
+            channels = channels == null ? Map.of() : Map.copyOf(channels);
             if ((coverage == Coverage.COMPLETE) != reasons.isEmpty()) throw invalid();
         }
 
         public boolean contains(Instant at) {
             return at != null && !at.isBefore(from) && at.isBefore(to);
+        }
+
+        public Instant calendarEnd() {
+            return BusinessCalendar.legacy().startOf(YearMonth.parse(month).plusMonths(1).atDay(1));
         }
     }
 
@@ -80,7 +118,16 @@ public final class SupportPerformance {
                            Instant asOf, Generation generation, List<Month> months,
                            List<Event> events,
                            List<SupportDirectPurchaseFactsFacade.Issue> directPurchaseIssues,
-                           List<MonthlySubtotal> monthlySubtotals) {
+                           List<MonthlySubtotal> monthlySubtotals, List<Binding> bindings,
+                           List<FirstPayment> firstPayments) {
+        public Snapshot(String definitionVersion, String sourceVersion, Instant historyStart, Instant asOf,
+                        Generation generation, List<Month> months, List<Event> events,
+                        List<SupportDirectPurchaseFactsFacade.Issue> directPurchaseIssues,
+                        List<MonthlySubtotal> monthlySubtotals) {
+            this(definitionVersion, sourceVersion, historyStart, asOf, generation, months, events,
+                    directPurchaseIssues, monthlySubtotals, List.of(), List.of());
+        }
+
         public Snapshot {
             if (!DEFINITION_VERSION.equals(definitionVersion) || sourceVersion == null
                     || sourceVersion.isBlank() || historyStart == null || !HISTORY_START.equals(historyStart)
@@ -89,6 +136,8 @@ public final class SupportPerformance {
             events = List.copyOf(events);
             directPurchaseIssues = directPurchaseIssues == null ? List.of() : List.copyOf(directPurchaseIssues);
             monthlySubtotals = monthlySubtotals == null ? List.of() : List.copyOf(monthlySubtotals);
+            bindings = bindings == null ? List.of() : List.copyOf(bindings);
+            firstPayments = firstPayments == null ? List.of() : List.copyOf(firstPayments);
             if (!months.isEmpty()) {
                 Month first = months.get(0), last = months.get(months.size() - 1);
                 if (!first.from().equals(HISTORY_START) || !last.to().equals(asOf)) throw invalid();
@@ -160,9 +209,13 @@ public final class SupportPerformance {
         StringBuilder material = new StringBuilder("analytics-v1|").append(asOf.getEpochSecond())
                 .append(':').append(asOf.getNano()).append('|');
         subjects.stream().filter(Objects::nonNull).sorted().forEach(id -> material.append(id).append(','));
+        return digest(material.toString());
+    }
+
+    public static String digest(String material) {
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest(material.toString().getBytes(StandardCharsets.UTF_8)));
+                    .digest(material.getBytes(StandardCharsets.UTF_8)));
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException(impossible);
         }

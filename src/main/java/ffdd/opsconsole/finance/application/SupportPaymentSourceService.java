@@ -24,6 +24,7 @@ import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -43,6 +44,37 @@ import static ffdd.opsconsole.finance.application.SupportPaymentFactService.*;
 /** The before proof is private, tied to this service and the actual physical transaction resource. */
 @ApplicationService
 public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFacade {
+    @Override
+    public List<WalletReference> walletReferences(Collection<Long> customers, Instant from, Instant to) {
+        var ids = List.copyOf(customers);
+        var zone = ffdd.opsconsole.shared.config.StorageTime.ZONE;
+        var first = LocalDateTime.ofInstant(from, zone);
+        var last = LocalDateTime.ofInstant(to, zone);
+        var rows = new ArrayList<WalletReference>();
+        for (int offset = 0; offset < ids.size(); offset += 200) {
+            for (var row : mapper.walletReferences(ids.subList(offset, Math.min(offset + 200, ids.size())), first, last)) {
+                rows.add(new WalletReference(row.ledgerId(), row.customerId(), row.businessNo(), row.kind(), row.amount(),
+                        row.at().atZone(zone).toInstant()));
+            }
+        }
+        return List.copyOf(rows);
+    }
+
+    @Override
+    public Map<Long, BigDecimal> bankTopupOriginalAmounts(List<Fact> provedFacts) {
+        var ids = provedFacts.stream().filter(f -> f.kind() == Kind.DEPOSIT
+                && (f.source() == Source.HDPAY || f.source() == Source.VIETQR)).map(Fact::ledgerId).distinct().toList();
+        var amounts = new HashMap<Long, BigDecimal>();
+        var ambiguous = new HashSet<Long>();
+        for (int offset = 0; offset < ids.size(); offset += 200) {
+            for (var row : mapper.bankTopupVnd(ids.subList(offset, Math.min(offset + 200, ids.size())))) {
+                if (amounts.putIfAbsent(row.ledgerId(), row.amountVnd()) != null) ambiguous.add(row.ledgerId());
+            }
+        }
+        ambiguous.forEach(amounts::remove);
+        return Map.copyOf(amounts);
+    }
+
     private final SupportPaymentSourceMapper mapper;
     private final SupportPaymentFactService history;
     private final DataSource dataSource;

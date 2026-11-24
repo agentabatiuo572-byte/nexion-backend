@@ -29,5 +29,5 @@ public interface SupportPaymentFactMapper {
     record DirectPurchaseEvidence(
             String intentNo, long customerId, String purchaseKind, String paymentMethod, String providerReference,
             LocalDateTime providerPaidAt, String quoteJson, String orderNo, BigDecimal businessAmountUsdt,
-            String reviewReason) { }
+            String reviewReason, String refundReceiptJson, BigDecimal confirmedBankAmountVnd) { }
 }

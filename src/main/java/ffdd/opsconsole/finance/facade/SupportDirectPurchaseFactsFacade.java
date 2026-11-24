@@ -19,10 +19,17 @@ public interface SupportDirectPurchaseFactsFacade extends DomainFacade {
 
     record Issue(String intentNo, long customerId, String reason) { }
 
-    record Snapshot(List<Fact> facts, List<Issue> issues) {
+    record Refund(String intentNo, long customerId, String orderNo, Instant confirmedAt,
+                  BigDecimal businessAmountUsdt, BigDecimal originalCurrencyAmount, String currency) { }
+
+    record Snapshot(List<Fact> facts, List<Issue> issues, List<Refund> refunds) {
+        public Snapshot(List<Fact> facts, List<Issue> issues) {
+            this(facts, issues, List.of());
+        }
         public Snapshot {
             facts = List.copyOf(facts);
             issues = List.copyOf(issues);
+            refunds = List.copyOf(refunds);
         }
     }
 }

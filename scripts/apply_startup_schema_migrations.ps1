@@ -581,6 +581,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261124_d5_payout_address_protection.sql")
   # B80-BE-06: M performance export permissions and task/token tables.
   (Join-Path $root "scripts\migrations\20261124_b80_performance_exports.sql")
+  (Join-Path $root "scripts\migrations\20261124_b80_performance_coverage.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

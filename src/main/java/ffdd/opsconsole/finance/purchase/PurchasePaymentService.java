@@ -723,11 +723,24 @@ public class PurchasePaymentService {
                     confirm(no,observed.providerOrderId(),"PAYMENT_REFUNDED_REVIEW",null,observedAt);
             }
             else if(observed.orderStatus()==3){
-                if(locked.get("confirmed_at")!=null)return true;
+                boolean verifiedAmount = observed.paidAt() != null && observed.transAmt() != null
+                        && new BigDecimal(text(parse(locked.get("quote_json")).get("amountVnd"))).compareTo(observed.transAmt()) == 0;
+                if(locked.get("confirmed_at")!=null){
+                    if (verifiedAmount && observed.providerOrderId().equals(locked.get("provider_reference"))
+                            && locked.get("paid_at") != null && observed.paidAt().equals(instant(locked.get("paid_at")))) {
+                        db.write("UPDATE nx_purchase_payment_intent SET confirmed_bank_amount_vnd=? WHERE intent_no=? AND confirmed_bank_amount_vnd IS NULL",
+                                observed.transAmt(), no);
+                    }
+                    return true;
+                }
                 String reason=observed.paidAt()!=null&&observed.paidAt().isBefore(instant(locked.get("created_at")))?"PAYMENT_BEFORE_ALLOCATION":
                         observed.transAmt()==null||new BigDecimal(text(parse(locked.get("quote_json")).get("amountVnd"))).compareTo(observed.transAmt())!=0?"PAYMENT_AMOUNT_MISMATCH":arrivalReason(paymentDeadline(locked),graceEnd(locked.get("payment_method"),deadline(locked)),observed.paidAt(),observedAt);
                 confirm(no, observed.providerOrderId(), arrivalReasonAfterQuotaRelease(locked, reason),
                         observed.paidAt(), observedAt);
+                if (verifiedAmount) {
+                    db.write("UPDATE nx_purchase_payment_intent SET confirmed_bank_amount_vnd=? WHERE intent_no=? AND provider_reference=?",
+                            observed.transAmt(), no, observed.providerOrderId());
+                }
             }else if(observed.orderStatus()==5){
                 int changed = db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_FAILED',provider_reference=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NULL AND receipt_json IS NULL AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT')",observed.providerOrderId(),no);
                 if (changed == 1) {
@@ -933,8 +946,17 @@ public class PurchasePaymentService {
     public Map<String,Object> detail(String no){var row=db.one(SELECT,no);if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");return view(row,true);}
 
     /** Finance confirms an already completed external refund. The command commits no money movement. */
-    @SuppressWarnings("unchecked")
     public Map<String,Object> closeRefunded(String no, String key, Map<String,Object> request) {
+        return recordRefund(no, key, request, false);
+    }
+
+    /** Record proof for reporting while preserving an already fulfilled purchase and its receipt. */
+    public Map<String,Object> recordDeliveredRefund(String no, String key, Map<String,Object> request) {
+        return recordRefund(no, key, request, true);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> recordRefund(String no, String key, Map<String,Object> request, boolean delivered) {
         PurchasePaymentPolicyService.reason(request);
         String actorId=AdminActorResolver.subjectId();
         if(actorId==null)throw new BizException(401,"ADMIN_AUTH_REQUIRED");
@@ -942,24 +964,35 @@ public class PurchasePaymentService {
         if(!(version instanceof Integer || version instanceof Long)||number(version)<0)
             throw new BizException(422,"PURCHASE_PAYMENT_REFUND_VERSION_REQUIRED");
         String actor=AdminActorResolver.resolve("admin:"+actorId);
-        return commands.executeRetained("D1:PURCHASE_REFUND_CLOSEOUT:"+actorId,key,
+        String commandScope = delivered ? "D1:PURCHASE_REFUND_EVIDENCE:" : "D1:PURCHASE_REFUND_CLOSEOUT:";
+        return commands.executeRetained(commandScope+actorId,key,
                 hash(values("intentNo",no,"request",request)),Map.class,()->{
             var row=db.one(SELECT+" FOR UPDATE",no);
             if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");
             if(row.get("refund_receipt_json")!=null)throw new BizException(409,"PURCHASE_PAYMENT_REFUND_ALREADY_CLOSED");
             if(number(row.get("version"))!=number(version))throw new BizException(409,"PURCHASE_PAYMENT_REFUND_VERSION_CONFLICT");
-            if(row.get("receipt_json")!=null||row.get("confirmed_at")==null
-                    ||!Set.of("FUNDS_CONFIRMED","MANUAL_REVIEW").contains(text(row.get("status"))))
+            boolean eligible = delivered
+                    ? row.get("receipt_json") != null && row.get("paid_at") != null
+                    : row.get("receipt_json") == null
+                        && Set.of("FUNDS_CONFIRMED","MANUAL_REVIEW").contains(text(row.get("status")));
+            if(!eligible || row.get("confirmed_at")==null)
                 throw new BizException(409,"PURCHASE_PAYMENT_REFUND_NOT_ELIGIBLE");
-            var proof=refundProof(row,request);
+            var proof=refundProof(row,request,delivered);
             long owner=number(row.get("user_id"));
             String orderNo="ORDER_PAY".equals(row.get("kind"))?text(parse(row.get("payload_json")).get("orderNo")):null;
-            if(orderNo!=null)orders.lockDirectPaymentOrderParticipants(orderNo);
-            db.one("SELECT id FROM nx_user WHERE id=? FOR UPDATE",owner);
+            if(!delivered) {
+                if(orderNo!=null)orders.lockDirectPaymentOrderParticipants(orderNo);
+                db.one("SELECT id FROM nx_user WHERE id=? FOR UPDATE",owner);
+            }
             String refundKey=proof.containsKey("txid")?proof.get("chainId")+":"+proof.get("txid")+":"+proof.get("logIndex"):null;
             proof.putAll(values("closedAt",now().toString(),"reason",text(request.get("reason")).trim(),"adminId",actorId));
             try {
-                int changed=db.write("""
+                int changed=delivered ? db.write("""
+                        UPDATE nx_purchase_payment_intent SET refund_receipt_json=?,refund_transfer_key=?,
+                            version=version+1,updated_at=NOW(6)
+                        WHERE intent_no=? AND version=? AND confirmed_at IS NOT NULL
+                          AND receipt_json IS NOT NULL AND refund_receipt_json IS NULL
+                        """,json(proof),refundKey,no,number(version)) : db.write("""
                         UPDATE nx_purchase_payment_intent SET status='REFUNDED',reason='PAYMENT_REFUNDED',
                             reconciliation_status='REFUNDED',refund_receipt_json=?,refund_transfer_key=?,
                             version=version+1,updated_at=NOW(6)
@@ -970,10 +1003,13 @@ public class PurchasePaymentService {
             } catch(org.springframework.dao.DuplicateKeyException used) {
                 throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_ALREADY_USED");
             }
-            quotaHolds.finish(quotaHolds.read(row),PurchaseQuotaReservation.State.RELEASED,null,"PAYMENT_REFUNDED");
-            if(orderNo!=null && activeIntents(owner,row.get("kind"),text(row.get("payload_json")),no).isEmpty())
-                orders.closeRefundedDirectPaymentOrder(owner,orderNo);
-            audit.recordRequired(AuditLogWriteRequest.builder().action("PURCHASE_PAYMENT_REFUND_CLOSED")
+            if(!delivered) {
+                quotaHolds.finish(quotaHolds.read(row),PurchaseQuotaReservation.State.RELEASED,null,"PAYMENT_REFUNDED");
+                if(orderNo!=null && activeIntents(owner,row.get("kind"),text(row.get("payload_json")),no).isEmpty())
+                    orders.closeRefundedDirectPaymentOrder(owner,orderNo);
+            }
+            audit.recordRequired(AuditLogWriteRequest.builder().action(delivered
+                            ? "PURCHASE_PAYMENT_REFUND_EVIDENCE_RECORDED" : "PURCHASE_PAYMENT_REFUND_CLOSED")
                     .resourceType("PURCHASE_PAYMENT_INTENT").resourceId(no).bizNo(no).userId(owner)
                     .actorType("ADMIN").actorId(Long.parseLong(actorId)).actorUsername(actor)
                     .riskLevel("HIGH").result("SUCCESS").detail(proof).build());
@@ -981,8 +1017,9 @@ public class PurchasePaymentService {
         });
     }
 
-    private Map<String,Object> refundProof(Map<String,Object> row, Map<String,Object> request) {
+    private Map<String,Object> refundProof(Map<String,Object> row, Map<String,Object> request, boolean delivered) {
         if ("HDPAY_BANK".equals(row.get("payment_method"))) {
+            if (delivered) throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_UNAVAILABLE");
             HdPayGateway.PayOrder observed;
             try { observed=hdGateway.queryPayOrder(text(row.get("intent_no"))); }
             catch(HdPayGatewayException unavailable) { throw new BizException(503,"PURCHASE_PAYMENT_REFUND_PROOF_UNAVAILABLE"); }
@@ -1007,6 +1044,21 @@ public class PurchasePaymentService {
         String paymentAddress=text(row.get("address"));
         String payer=text(arrival.get("from_address"));
         var amount=new BigDecimal(text(arrival.get("amount")));
+        BigDecimal returned = amount;
+        if (delivered && request.get("refundAmountUsdt") != null) {
+            String rawAmount = text(request.get("refundAmountUsdt"));
+            if (!rawAmount.matches("[0-9]{1,12}(\\.[0-9]{1,6})?")) {
+                throw new BizException(422,"PURCHASE_PAYMENT_REFUND_AMOUNT_INVALID");
+            }
+            returned = new BigDecimal(rawAmount);
+            if (returned.signum() <= 0 || returned.compareTo(amount) > 0) {
+                throw new BizException(422,"PURCHASE_PAYMENT_REFUND_AMOUNT_INVALID");
+            }
+            BigDecimal principal = new BigDecimal(text(parse(row.get("quote_json")).get("businessAmountUsdt")));
+            if (returned.compareTo(amount) < 0 && returned.compareTo(principal) > 0) {
+                throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_MISMATCH");
+            }
+        }
         if(!network.chainId().equals(text(arrival.get("chain_id")))||number(arrival.get("provider_project"))!=cr.getProjectId()
                 ||!network.validAddress(payer)||!network.validAddress(paymentAddress)
                 ||db.one("""
@@ -1020,7 +1072,7 @@ public class PurchasePaymentService {
         try {
             incoming=chain.verifyExact(network,text(arrival.get("txid")),(int)number(arrival.get("log_index")),
                     paymentAddress,amount,number(arrival.get("block_number")));
-            refund=chain.verifyExact(network,txid,index,payer,amount,null);
+            refund=chain.verifyExact(network,txid,index,payer,returned,null);
         } catch(IllegalStateException invalid) {
             throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_MISMATCH");
         }
@@ -1028,7 +1080,7 @@ public class PurchasePaymentService {
                 ||!network.addressEquals(payer,incoming.fromAddress())||refund.blockNumber()<=incoming.blockNumber()
                 ||network.addressEquals(payer,paymentAddress)||!network.addressEquals(paymentAddress,refund.fromAddress()))
             throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_MISMATCH");
-        return values("channel","CREGIS","currency","USDT","amount",amount.toPlainString(),
+        return values("channel","CREGIS","currency","USDT","amount",returned.toPlainString(),
                 "chainId",network.chainId(),"txid",txid,"logIndex",index,"blockNumber",refund.blockNumber(),
                 "blockHash",refund.blockHash(),"fromAddress",refund.fromAddress(),"toAddress",payer,
                 "arrivalTxid",arrival.get("txid"),"arrivalLogIndex",arrival.get("log_index"));
@@ -1074,13 +1126,15 @@ public class PurchasePaymentService {
             result.put("receipt",receipt);
         }
         result.put("reconciliationStatus",row.get("reconciliation_status"));
-        if(row.get("refund_receipt_json")!=null) {
+        if(row.get("refund_receipt_json")!=null && row.get("receipt_json")==null) {
             result.put("refundStatus","REFUNDED");
             // Installed App and PC clients only accept their existing payment status enum.
             if(!admin||"REFUNDED".equals(row.get("status")))
                 result.putAll(values("status","MANUAL_REVIEW","reason","PAYMENT_REFUNDED_REVIEW","reconciliationStatus","REFUNDED"));
             if(admin)result.put("refundReceipt",parse(row.get("refund_receipt_json")));
         }
+        if(admin && row.get("receipt_json")!=null && row.get("refund_receipt_json")!=null)
+            result.put("refundReceipt",parse(row.get("refund_receipt_json")));
         if(admin)result.putAll(values("userId",text(row.get("user_id")),"request",parse(row.get("payload_json")),"providerReference",row.get("provider_reference"),
                 "providerActualFeeUsdt",row.get("provider_actual_fee_usdt")==null?null:new BigDecimal(text(row.get("provider_actual_fee_usdt"))).toPlainString(),
                 "createdAt",row.get("created_at")==null?null:instant(row.get("created_at")).toString(),"updatedAt",row.get("updated_at")==null?null:instant(row.get("updated_at")).toString()));

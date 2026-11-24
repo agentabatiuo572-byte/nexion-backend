@@ -27,7 +27,7 @@ public class ExternalPurchaseCommandQueryService implements ExternalPurchaseComm
         if(row==null) return null;
         Map<String,Object> result=new LinkedHashMap<>();
         result.put("kind",kind);result.put("commandKey",key);result.put("canResumeSameKey",false);
-        if(row.get("refund_receipt_json")!=null) {
+        if(row.get("refund_receipt_json")!=null && row.get("receipt_json")==null) {
             result.put("status","REJECTED");result.put("message","PURCHASE_PAYMENT_REFUNDED");return result;
         }
         Object receipt=row.get("receipt_json");

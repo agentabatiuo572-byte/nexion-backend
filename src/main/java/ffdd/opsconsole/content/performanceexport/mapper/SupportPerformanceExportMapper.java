@@ -77,6 +77,10 @@ public interface SupportPerformanceExportMapper {
     TaskRow findTask(@Param("id") Long id);
 
     @Select("SELECT " + TASK_COLUMNS + " FROM nx_support_performance_export_task"
+            + " WHERE status='APPROVED' AND is_deleted=0 ORDER BY approved_at,id LIMIT 10")
+    java.util.List<TaskRow> approvedForGeneration();
+
+    @Select("SELECT " + TASK_COLUMNS + " FROM nx_support_performance_export_task"
             + " WHERE request_id=#{requestId} AND task_type=#{taskType} AND is_deleted=0 LIMIT 1")
     TaskRow findTaskByRequestAndType(@Param("requestId") String requestId, @Param("taskType") String taskType);
 
@@ -134,13 +138,21 @@ public interface SupportPerformanceExportMapper {
 
     @Update("""
             UPDATE nx_support_performance_export_task
-               SET status='WITHDRAWN', version=version+1, updated_at=NOW()
+               SET status='WITHDRAWN', decision_reason=#{reason}, version=version+1, updated_at=NOW()
              WHERE id=#{id} AND requester_id=#{requesterId} AND version=#{expectedVersion}
                AND status='PENDING_APPROVAL' AND task_type IN ('CUSTOMER_DETAIL','TRANSACTION_DETAIL')
                AND is_deleted=0
             """)
     int withdraw(@Param("id") Long id, @Param("requesterId") Long requesterId,
-                 @Param("expectedVersion") int expectedVersion);
+                 @Param("expectedVersion") int expectedVersion, @Param("reason") String reason);
+
+    @Update("""
+            UPDATE nx_support_performance_export_task
+               SET status='EXPIRED', file_csv=NULL, content_json=NULL, version=version+1, updated_at=NOW()
+             WHERE status='READY' AND file_created_at <= #{cutoff} AND is_deleted=0
+             ORDER BY file_created_at, id LIMIT 200
+            """)
+    int expireFiles(@Param("cutoff") LocalDateTime cutoff);
 
     @Update("""
             UPDATE nx_support_performance_export_task
@@ -186,6 +198,6 @@ public interface SupportPerformanceExportMapper {
     @Select("SELECT COUNT(*) FROM nx_support_performance_export_token WHERE token_hash=#{tokenHash} AND expires_at<=#{now}")
     int tokenExpired(@Param("tokenHash") String tokenHash, @Param("now") LocalDateTime now);
 
-    @Update("UPDATE nx_support_performance_export_token SET used_at=#{now} WHERE token_hash=#{tokenHash} AND used_at IS NULL")
+    @Update("UPDATE nx_support_performance_export_token SET used_at=#{now} WHERE token_hash=#{tokenHash} AND used_at IS NULL AND expires_at > #{now}")
     int useToken(@Param("tokenHash") String tokenHash, @Param("now") LocalDateTime now);
 }

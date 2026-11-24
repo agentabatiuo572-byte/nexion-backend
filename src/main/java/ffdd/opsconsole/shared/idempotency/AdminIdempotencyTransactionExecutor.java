@@ -90,6 +90,15 @@ public class AdminIdempotencyTransactionExecutor {
     }
 
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public AdminIdempotencyService.ActiveReceipt retainedReceipt(String scope, String idempotencyKey) {
+        var record = recordMapper.selectCurrent(scope, idempotencyKey);
+        if (record == null || recoveryStatus(record, record.getRequestHash()) != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) {
+            return null;
+        }
+        return new AdminIdempotencyService.ActiveReceipt(record.getId(), record.getRequestHash());
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
     public AdminIdempotencyService.ActiveRequest activeRequest(String scope, String idempotencyKey) {
         var record = recordMapper.selectActive(scope, idempotencyKey);
         if (record == null) return null;

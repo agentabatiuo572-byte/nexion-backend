@@ -27,6 +27,7 @@ import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.time.Instant;
 import java.time.ZoneId;
 import java.util.*;
 import javax.sql.DataSource;
@@ -120,6 +121,15 @@ public class SupportFundReadService {
         if(roots.isEmpty())return new NetSnapshot(List.of(),List.of(),List.of());
         Connection connection=snapshot();
         try {
+            if (performance != null) {
+                for (int offset = 0; offset < roots.size(); offset += OPERATION_DIRECTORY_BATCH) {
+                    var rows = mapper.withdrawals(roots.subList(offset, Math.min(offset + OPERATION_DIRECTORY_BATCH, roots.size())));
+                    for (var row : rows) {
+                        String status = D2WithdrawalStateMachine.canonical(text(row, "status"));
+                        observeWithdrawalReference(performance, row, status);
+                    }
+                }
+            }
             if(!Boolean.TRUE.equals(mapper.schemaReady()))return unknown(roots,List.of(Gap.RAW_HISTORY));
             var scope=new TreeSet<Long>(roots);List<Long> opIds;Set<Long> opIdSet;List<Map<String,Object>> partyRows;
             do {
@@ -385,6 +395,25 @@ public class SupportFundReadService {
             if (performance != null) performance.readFailed().run();
             return unknown(roots,List.of(Gap.READ_FAILED));
         }
+    }
+
+    private static void observeWithdrawalReference(PerformanceCapture performance, Map<String, Object> row, String status) {
+        if (!"USDT".equals(row.get("asset")) || flag(row.get("isDeleted")) != 0
+                || !Set.of("CONFIRMED", "SUBMITTED", "REVIEW_PENDING", "EXTENDED_HOLD", "REVIEW_PASSED", "PROCESSING", "SENT",
+                        "FROZEN", "REVIEW_REJECTED", "ADDRESS_INVALID", "TX_FAILED", "TX_ORPHANED", "REFUNDED").contains(status)) return;
+        String rail = text(row, "chain");
+        if (!CHAIN_WITHDRAWAL_NETWORKS.contains(rail) && !"BANK-VND".equals(rail)) return;
+        Instant requestedAt = row.get("createdAt") == null ? null
+                : time(row.get("createdAt")).atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant();
+        Instant effectiveAt = requestedAt;
+        if ("CONFIRMED".equals(status)) {
+            effectiveAt = row.get("completedAt") == null ? null
+                    : time(row.get("completedAt")).atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant();
+        }
+        if (effectiveAt != null && !performance.contains(effectiveAt)) return;
+        BigDecimal requestedAmount = row.get("amount") == null ? null : decimal(row.get("amount"));
+        performance.withdrawalReferences().accept(new WithdrawalReference(text(row, "withdrawalNo"), number(row, "userId"),
+                rail, status, requestedAt, effectiveAt, requestedAmount != null && requestedAmount.signum() > 0 ? requestedAmount : null));
     }
     /** Keeps global directory order while grouping bounded JSON pages by component in the caller's physical snapshot. */
     private final class OperationRows {

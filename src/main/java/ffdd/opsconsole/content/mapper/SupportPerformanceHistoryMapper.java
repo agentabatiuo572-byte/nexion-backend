@@ -53,4 +53,55 @@ public interface SupportPerformanceHistoryMapper {
         </script>
         """)
     List<Evidence> atEvents(@Param("points") List<Point> points);
+
+    record BoundCustomer(long customerId, long agentId, Long groupId, LocalDateTime startsAt,
+                         LocalDateTime endsAt) { }
+
+    @Select("""
+        WITH segments AS (
+          SELECT a.id assignmentId,m.id memberId,q.id qualificationId,a.user_id customerId,a.agent_admin_id agentId,m.group_id groupId,
+                 GREATEST(a.starts_at,m.starts_at,q.starts_at) startsAt,
+                 LEAST(COALESCE(a.ends_at,'9999-12-31 00:00:00'),
+                       COALESCE(m.ends_at,'9999-12-31 00:00:00'),
+                       COALESCE(q.ends_at,'9999-12-31 00:00:00')) endsAt
+            FROM nx_support_agent_user_assignment a
+            JOIN nx_user u ON u.id=a.user_id AND u.sandbox=0
+            JOIN nx_support_group_member_history m ON m.agent_admin_id=a.agent_admin_id AND m.version>0
+            JOIN nx_support_account_qualification_history q ON q.admin_id=a.agent_admin_id
+                  AND q.qualification_kind='SERVICE' AND q.state='ENABLED' AND q.version>0
+           WHERE a.is_deleted=0 AND a.version>0
+             AND ((a.status='ACTIVE' AND a.ends_at IS NULL) OR (a.status='INACTIVE' AND a.ends_at IS NOT NULL))
+             AND a.starts_at < #{at}
+        )
+        SELECT s.customerId,s.agentId,s.groupId,s.startsAt,NULLIF(s.endsAt,'9999-12-31 00:00:00') endsAt
+          FROM segments s WHERE s.startsAt < s.endsAt AND s.startsAt < #{at}
+           AND NOT EXISTS (SELECT 1 FROM segments x WHERE x.customerId=s.customerId
+                 AND x.startsAt < x.endsAt AND x.startsAt < s.endsAt AND s.startsAt < x.endsAt
+                 AND (x.assignmentId<>s.assignmentId OR x.memberId<>s.memberId OR x.qualificationId<>s.qualificationId))
+           AND NOT EXISTS (SELECT 1 FROM nx_support_customer_route_history r WHERE r.customer_id=s.customerId
+                 AND r.version>0 AND r.starts_at < s.endsAt AND (r.ends_at IS NULL OR s.startsAt < r.ends_at)
+                 AND NOT (r.group_id <=> s.groupId))
+         ORDER BY s.customerId,s.startsAt,s.agentId,s.groupId
+        """)
+    List<BoundCustomer> bindingHistory(@Param("at") LocalDateTime at);
+
+    @Select("""
+        SELECT month_key month, channel, coverage_from fromUtc, coverage_to toUtc, evidence_digest evidenceDigest
+          FROM nx_support_performance_channel_review
+         WHERE coverage_to <= #{at} AND verified_by IS NOT NULL AND evidence_ref <> ''
+         ORDER BY month_key, channel, coverage_to
+        """)
+    List<ChannelReview> channelReviews(@Param("at") LocalDateTime at);
+
+    record ChannelReview(String month, String channel, LocalDateTime fromUtc, LocalDateTime toUtc, String evidenceDigest) { }
+
+    record Supervisor(long groupId, long adminId) { }
+
+    @Select("""
+        SELECT group_id groupId, MIN(supervisor_admin_id) adminId
+          FROM nx_support_group_owner_history
+         WHERE version>0 AND starts_at < #{at} AND (ends_at IS NULL OR ends_at >= #{at})
+         GROUP BY group_id HAVING COUNT(*)=1
+        """)
+    List<Supervisor> supervisorsAtCutoff(@Param("at") LocalDateTime at);
 }

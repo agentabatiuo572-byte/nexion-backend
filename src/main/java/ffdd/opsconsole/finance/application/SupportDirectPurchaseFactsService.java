@@ -13,6 +13,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -51,9 +52,16 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
 
         List<Fact> facts = new ArrayList<>();
         List<Issue> issues = new ArrayList<>();
+        List<Refund> refunds = new ArrayList<>();
         LocalDateTime fromInStorage = from == null ? null : LocalDateTime.ofInstant(from, StorageTime.ZONE);
         LocalDateTime toInStorage = to == null ? null : LocalDateTime.ofInstant(to, StorageTime.ZONE);
-        for (var evidence : mapper.directPurchases(customerIds, fromInStorage, toInStorage)) {
+        List<Long> scope = customerIds.stream().distinct().toList();
+        List<SupportPaymentFactMapper.DirectPurchaseEvidence> rows = new ArrayList<>();
+        for (int offset = 0; offset < scope.size(); offset += 200) {
+            rows.addAll(mapper.directPurchases(scope.subList(offset, Math.min(offset + 200, scope.size())),
+                    fromInStorage, toInStorage));
+        }
+        for (var evidence : rows) {
             if (evidence.orderNo() == null) {
                 issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "MISSING_DIRECT_PAYMENT_PROOF"));
                 continue;
@@ -66,7 +74,7 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
                 issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "MISSING_PAYMENT_TIME"));
                 continue;
             }
-            if (from != null && "PAYMENT_REORG_REVIEW".equals(evidence.reviewReason())) {
+            if ("PAYMENT_REORG_REVIEW".equals(evidence.reviewReason())) {
                 issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "PAYMENT_REORG_REVIEW"));
                 continue;
             }
@@ -100,9 +108,44 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
             facts.add(new Fact(evidence.intentNo(), evidence.customerId(), evidence.orderNo(),
                     evidence.purchaseKind(), evidence.paymentMethod(), evidence.providerReference(),
                     evidence.providerPaidAt().atZone(StorageTime.ZONE).toInstant(), businessAmount,
-                    subtotal, rounding, channelFee, networkFee, total, vnd));
+                    subtotal, rounding, channelFee, networkFee, total,
+                    bank && evidence.confirmedBankAmountVnd() != null && vnd.compareTo(evidence.confirmedBankAmountVnd()) == 0
+                            ? evidence.confirmedBankAmountVnd() : null));
+            if (evidence.refundReceiptJson() != null) {
+                var refund = readRefund(evidence, bank, total, vnd);
+                if (refund != null) refunds.add(refund);
+                else issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "EXTERNAL_REFUND_UNVERIFIED"));
+            } else if ("PAYMENT_REFUNDED_REVIEW".equals(evidence.reviewReason())) {
+                issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "EXTERNAL_REFUND_UNVERIFIED"));
+            }
         }
-        return new Snapshot(facts, issues);
+        return new Snapshot(facts, issues, refunds);
+    }
+
+    private Refund readRefund(SupportPaymentFactMapper.DirectPurchaseEvidence evidence, boolean bank,
+                              BigDecimal paidUsdt, BigDecimal paidVnd) {
+        try {
+            var receipt = quoteReader.readTree(evidence.refundReceiptJson());
+            String currency = bank ? "VND" : "USDT";
+            var refunded = amount(receipt, "amount");
+            if (!currency.equals(receipt.path("currency").asText()) || refunded == null || refunded.signum() <= 0
+                    || (bank ? refunded.compareTo(paidVnd) != 0
+                             : refunded.compareTo(paidUsdt) > 0 || refunded.compareTo(paidUsdt) < 0
+                                && refunded.compareTo(evidence.businessAmountUsdt()) > 0)
+                    || (bank && (!"HDPAY".equals(receipt.path("channel").asText())
+                        || receipt.path("providerStatus").asInt() != 4
+                        || !receipt.path("providerOrderId").asText().equals(evidence.providerReference())))
+                    || (!bank && (!"CREGIS".equals(receipt.path("channel").asText())
+                        || receipt.path("txid").asText().isBlank() || !receipt.path("logIndex").isIntegralNumber()))) return null;
+            Instant confirmed = Instant.parse(receipt.path("closedAt").asText());
+            if (confirmed.isBefore(evidence.providerPaidAt().atZone(StorageTime.ZONE).toInstant())) return null;
+            BigDecimal businessRefund = bank || refunded.compareTo(paidUsdt) == 0
+                    ? evidence.businessAmountUsdt() : refunded;
+            return new Refund(evidence.intentNo(), evidence.customerId(), evidence.orderNo(), confirmed,
+                    businessRefund, refunded, currency);
+        } catch (JsonProcessingException | DateTimeParseException invalid) {
+            return null;
+        }
     }
 
     private static BigDecimal amount(JsonNode quote, String field) {

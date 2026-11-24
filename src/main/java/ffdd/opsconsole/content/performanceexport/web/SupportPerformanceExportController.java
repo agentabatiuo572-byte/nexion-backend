@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.performanceexport.web;
 import ffdd.opsconsole.common.api.OpsAdminApi;
 import ffdd.opsconsole.content.performanceexport.SupportPerformanceExportService;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -74,7 +75,7 @@ public class SupportPerformanceExportController {
             @PathVariable String taskId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) Map<String, Object> request) {
-        return ApiResult.ok(service.decide(id(taskId), idempotencyKey, request));
+        return ApiResult.ok(audited(taskId, "DECISION", task -> service.decide(task, idempotencyKey, request)));
     }
 
     @PostMapping("/{taskId}/withdraw")
@@ -83,13 +84,21 @@ public class SupportPerformanceExportController {
             @PathVariable String taskId,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) Map<String, Object> request) {
-        return ApiResult.ok(service.withdraw(id(taskId), idempotencyKey, request));
+        return ApiResult.ok(audited(taskId, "WITHDRAW", task -> service.withdraw(task, idempotencyKey, request)));
     }
 
     @PostMapping("/{taskId}/download-token")
     @PreAuthorize(READ_CODES)
     public ApiResult<Map<String, Object>> downloadToken(@PathVariable String taskId) {
-        return ApiResult.ok(service.downloadToken(id(taskId)));
+        return ApiResult.ok(audited(taskId, "TOKEN", service::downloadToken));
+    }
+
+    @GetMapping("/{taskId}/command-receipt")
+    @PreAuthorize(VIEW_CODES)
+    public ApiResult<Map<String, Object>> commandReceipt(
+            @PathVariable String taskId, @RequestParam String command,
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey) {
+        return ApiResult.ok(service.commandReceipt(id(taskId), command, idempotencyKey));
     }
 
     @GetMapping("/{taskId}/file")
@@ -97,7 +106,7 @@ public class SupportPerformanceExportController {
     public ResponseEntity<byte[]> file(
             @PathVariable String taskId,
             @RequestHeader(value = "X-Download-Token", required = false) String token) {
-        var payload = service.file(id(taskId), token);
+        var payload = audited(taskId, "DOWNLOAD", task -> service.file(task, token));
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(new MediaType("text", "csv", StandardCharsets.UTF_8));
         headers.setContentDisposition(ContentDisposition.attachment().filename(payload.fileName(), StandardCharsets.UTF_8).build());
@@ -105,11 +114,21 @@ public class SupportPerformanceExportController {
         return new ResponseEntity<>(payload.content(), headers, org.springframework.http.HttpStatus.OK);
     }
 
+    private <T> T audited(String taskId, String action, java.util.function.Function<Long, T> command) {
+        Long task = id(taskId);
+        try {
+            return command.apply(task);
+        } catch (BizException denial) {
+            service.auditDenial(action, task, denial);
+            throw denial;
+        }
+    }
+
     private static Long id(String value) {
         try {
             return Long.valueOf(String.valueOf(value).trim());
         } catch (NumberFormatException ex) {
-            throw new ffdd.opsconsole.shared.exception.BizException(400, "EXPORT_TASK_ID_INVALID");
+            throw new BizException(400, "EXPORT_TASK_ID_INVALID");
         }
     }
 }

@@ -2,6 +2,8 @@ package ffdd.opsconsole.content.performanceexport;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.content.application.SupportOwnershipService;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
+import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
 import ffdd.opsconsole.content.performanceexport.PerformanceExportFactSource.Coverage;
 import ffdd.opsconsole.content.performanceexport.PerformanceExportFactSource.Scope;
 import ffdd.opsconsole.content.performanceexport.PerformanceExportFactSource.Status;
@@ -33,8 +35,11 @@ import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 /**
@@ -67,10 +72,12 @@ public class SupportPerformanceExportService {
     private final ffdd.opsconsole.shared.security.AdminPermissionCache permissionCache;
     private final ffdd.opsconsole.shared.security.SuperAdminAuthorization superAdmins;
     private final ffdd.opsconsole.auth.mapper.AdminMapper adminMapper;
+    private final PlatformTransactionManager transactions;
 
     public Map<String, Object> options() {
         Long actor = actorId();
-        if (!readCode() || !(owns(SUMMARY_PERMISSION) || owns(DETAIL_PERMISSION)) || !outCapable(actor)) {
+        if (!readCode() || !(owns(SUMMARY_PERMISSION) || owns(DETAIL_PERMISSION))
+                || employmentModes(actor).isEmpty()) {
             throw new BizException(403, "PERMISSION_DENIED");
         }
         List<Map<String, Object>> scopes = scopes(actor);
@@ -194,8 +201,10 @@ public class SupportPerformanceExportService {
     public Map<String, Object> decide(Long taskId, String idempotencyKey, Map<String, Object> request) {
         Long actor = actorId();
         requireKey(idempotencyKey);
-        String decision = (request == null ? "" : text(request.get("decision"))).toUpperCase(Locale.ROOT);
-        if (!Set.of("APPROVE", "REJECT").contains(decision)) throw new BizException(422, "EXPORT_REQUEST_INVALID");
+        String decision = request == null ? null : text(request.get("decision"));
+        if (!"APPROVE".equals(decision) && !"REJECT".equals(decision)) {
+            throw new BizException(422, "EXPORT_REQUEST_INVALID");
+        }
         String reason = reason(request == null ? null : request.get("reason"));
         int expectedVersion = integer(request == null ? null : request.get("expectedVersion"));
         String hash = sha256(taskId + "|" + decision + "|" + expectedVersion + "|" + reason);
@@ -226,7 +235,7 @@ public class SupportPerformanceExportService {
         TaskRow decided = mapper.findTask(taskId);
         audit("APPROVE".equals(decision) ? "M_PERFORMANCE_EXPORT_APPROVED" : "M_PERFORMANCE_EXPORT_REJECTED",
                 decided, actor, reason, row("requester", decided.requesterId()));
-        return row("taskId", String.valueOf(decided.id()));
+        return row("taskId", String.valueOf(decided.id()), "action", decision, "acceptedVersion", decided.version());
     }
 
     public Map<String, Object> withdraw(Long taskId, String idempotencyKey, Map<String, Object> request) {
@@ -242,14 +251,48 @@ public class SupportPerformanceExportService {
 
     private Map<String, Object> applyWithdraw(Long taskId, Long actor, String reason, int expectedVersion) {
         if (!readCode() || !owns(DETAIL_PERMISSION)) throw new BizException(403, "PERMISSION_DENIED");
-        if (mapper.withdraw(taskId, actor, expectedVersion) != 1) {
+        if (mapper.withdraw(taskId, actor, expectedVersion, reason) != 1) {
             TaskRow task = required(taskId);
             if (!task.requesterId().equals(actor)) throw new BizException(404, "EXPORT_TASK_NOT_FOUND");
             throw new BizException(409, "EXPORT_TASK_VERSION_CHANGED");
         }
         TaskRow task = mapper.findTask(taskId);
         audit("M_PERFORMANCE_EXPORT_WITHDRAWN", task, actor, reason, row());
-        return row("taskId", String.valueOf(task.id()));
+        return row("taskId", String.valueOf(task.id()), "action", "WITHDRAW", "acceptedVersion", task.version());
+    }
+
+    public Map<String, Object> commandReceipt(Long taskId, String command, String key) {
+        Long actor = actorId();
+        requireKey(key);
+        TaskRow task = required(taskId);
+        boolean withdraw = "WITHDRAW".equals(command);
+        if (!withdraw && !"DECISION".equals(command)) throw new BizException(422, "EXPORT_REQUEST_INVALID");
+        if (accessLevel(actor, task) == ACCESS_NONE || !readCode()
+                || (withdraw ? !owns(DETAIL_PERMISSION) || !actor.equals(task.requesterId())
+                         : !owns(APPROVE_PERMISSION) || !outCapable(actor) || !reviewerScopeOk(actor, task))) {
+            throw new BizException(404, "EXPORT_TASK_NOT_FOUND");
+        }
+        String scope = "M_PERFORMANCE_EXPORT_" + command + ":" + actor;
+        var receipt = idempotency.retainedReceipt(scope, key.trim());
+        if (receipt != null) {
+            var result = idempotency.recoveryResult(scope, key.trim(), receipt.requestHash(), Map.class);
+            Map<?, ?> response = result.response();
+            if (response != null && String.valueOf(taskId).equals(response.get("taskId"))) {
+                return row("status", "SUCCEEDED", "task", commandView(actor, task),
+                        "action", response.get("action"), "acceptedVersion", response.get("acceptedVersion"));
+            }
+        }
+        return row("status", "UNKNOWN", "task", null);
+    }
+
+    @Scheduled(fixedDelay = 60_000)
+    public void expireFiles() {
+        mapper.expireFiles(LocalDateTime.now().minusDays(FILE_RETENTION_DAYS));
+    }
+
+    @Scheduled(fixedDelay = 60_000)
+    public void recoverApprovedFiles() {
+        for (var task : mapper.approvedForGeneration()) generateApproved(task.id(), task.reviewerId());
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -262,11 +305,7 @@ public class SupportPerformanceExportService {
         if (!employmentAllows(actor, task) || !scopeStillAllowed(actor, task) || !disclosedCustomersAllowed(task)) {
             throw new BizException(409, "EXPORT_SCOPE_CHANGED");
         }
-        if (!"READY".equals(task.status())) throw new BizException(409, "EXPORT_NOT_READY");
-        LocalDateTime created = mapper.fileCreatedAt(taskId);
-        if (created != null && created.plusDays(FILE_RETENTION_DAYS).isBefore(LocalDateTime.now())) {
-            throw new BizException(410, "EXPORT_FILE_EXPIRED");
-        }
+        requireLiveFile(task);
         String token = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "");
         LocalDateTime expiresAt = LocalDateTime.now().plusHours(TOKEN_HOURS);
         mapper.insertToken(sha256(token), taskId, actor, expiresAt);
@@ -286,14 +325,10 @@ public class SupportPerformanceExportService {
         String hash = sha256(token.trim());
         if (mapper.tokenExists(hash, taskId, actor) == 0) throw new BizException(403, "EXPORT_TOKEN_INVALID");
         if (mapper.tokenExpired(hash, LocalDateTime.now()) > 0) throw new BizException(410, "EXPORT_TOKEN_EXPIRED");
-        if (!"READY".equals(task.status())) throw new BizException(409, "EXPORT_NOT_READY");
         if (!employmentAllows(actor, task) || !scopeStillAllowed(actor, task) || !disclosedCustomersAllowed(task)) {
             throw new BizException(409, "EXPORT_SCOPE_CHANGED");
         }
-        LocalDateTime created = mapper.fileCreatedAt(taskId);
-        if (created != null && created.plusDays(FILE_RETENTION_DAYS).isBefore(LocalDateTime.now())) {
-            throw new BizException(410, "EXPORT_FILE_EXPIRED");
-        }
+        requireLiveFile(task);
         String csv = mapper.fileCsv(taskId);
         if (csv == null) throw new BizException(409, "EXPORT_NOT_READY");
         if (mapper.useToken(hash, LocalDateTime.now()) != 1) throw new BizException(410, "EXPORT_TOKEN_EXPIRED");
@@ -313,7 +348,10 @@ public class SupportPerformanceExportService {
             } else if (!applicantScopeOk(task)) {
                 outward = "EXPORT_SCOPE_CHANGED";
             } else {
-                writeFrozenFile(task, frozenTable(task));
+                new TransactionTemplate(transactions).executeWithoutResult(status -> {
+                    TaskRow current = mapper.findTask(taskId);
+                    if (current != null && "APPROVED".equals(current.status())) writeFrozenFile(current, frozenTable(current), actor);
+                });
                 return;
             }
         } catch (RuntimeException ex) {
@@ -326,6 +364,18 @@ public class SupportPerformanceExportService {
     }
 
     public record FilePayload(String fileName, byte[] content) { }
+
+    private static String effectiveStatus(TaskRow task) {
+        return "READY".equals(task.status()) && task.fileCreatedAt() != null
+                && !task.fileCreatedAt().plusDays(FILE_RETENTION_DAYS).isAfter(LocalDateTime.now())
+                ? "EXPIRED" : task.status();
+    }
+
+    private static void requireLiveFile(TaskRow task) {
+        String status = effectiveStatus(task);
+        if ("EXPIRED".equals(status)) throw new BizException(410, "EXPORT_FILE_EXPIRED");
+        if (!"READY".equals(status)) throw new BizException(409, "EXPORT_NOT_READY");
+    }
 
     // ---------- planning ----------
 
@@ -430,6 +480,10 @@ public class SupportPerformanceExportService {
     }
 
     private void writeFrozenFile(TaskRow task, Table table) {
+        writeFrozenFile(task, table, task.requesterId());
+    }
+
+    private void writeFrozenFile(TaskRow task, Table table, Long actor) {
         if (table == null) throw new BizException(503, "EXPORT_SOURCE_UNAVAILABLE");
         String csv = csv(table);
         String fileName = "support-performance-" + task.taskType().toLowerCase(Locale.ROOT).replace('_', '-')
@@ -437,6 +491,8 @@ public class SupportPerformanceExportService {
         if (mapper.markReady(task.id(), task.status(), csv, fileName, LocalDateTime.now()) != 1) {
             throw new BizException(409, "EXPORT_INVALID_STATE");
         }
+        audit("M_PERFORMANCE_EXPORT_FILE_GENERATED", task, actor, "frozen snapshot",
+                row("sha256", sha256(csv), "rows", table.rows().size()));
     }
 
     static String csv(Table table) {
@@ -478,6 +534,12 @@ public class SupportPerformanceExportService {
     private static String label(String column) {
         String c = column.toLowerCase(Locale.ROOT);
         if (c.startsWith("counts.")) return switch (c.substring(7)) {
+            case "boundatcutoff" -> "截止在绑客户数";
+            case "newlybound" -> "期间新绑客户数";
+            case "withinflow" -> "期间入金客户数";
+            case "withwithdrawal" -> "期间成功提现客户数";
+            case "firstpayment" -> "期间首付客户数";
+            case "negativeperformance" -> "负业绩客户数";
             case "customers" -> "客户数";
             case "negativeperformancecustomers" -> "负业绩客户数";
             case "firstpaymentcustomers" -> "首充客户数";
@@ -569,10 +631,8 @@ public class SupportPerformanceExportService {
 
     private boolean outCapable(Long actor) {
         if (superAdmin()) return true;
-        if (!selfEmployed(actor)) return false;
-        if (!ownedGroups().isEmpty()) return true;
-        // A supervisor qualification without owned groups blocks exports entirely.
-        return !managerQualified();
+        if (managerQualified()) return !ownedGroups().isEmpty();
+        return selfEmployed(actor);
     }
 
     private boolean managerQualified() {
@@ -593,9 +653,12 @@ public class SupportPerformanceExportService {
                     "blockedReason", "NO_MANAGED_GROUP"));
             return scopes;
         }
-        scopes.add(row("kind", "SELF", "groups", List.of(), "allowedTypes", types, "blockedReason", null));
+        if (selfEmployed(actor)) {
+            scopes.add(row("kind", "SELF", "groups", List.of(), "allowedTypes", types, "blockedReason", null));
+        }
+        var groupNames = groupNames(actor, groups);
         scopes.add(row("kind", "MANAGED_GROUPS", "groups",
-                groups.stream().map(id -> Map.of("id", String.valueOf(id), "name", "")).toList(),
+                groups.stream().map(id -> row("id", String.valueOf(id), "name", groupNames.get(id))).toList(),
                 "allowedTypes", groups.isEmpty() ? List.of() : types,
                 "blockedReason", groups.isEmpty() ? "NO_MANAGED_GROUP" : null));
         if (superAdmin()) scopes.add(row("kind", "ALL", "groups", List.of(), "allowedTypes", types, "blockedReason", null));
@@ -619,7 +682,7 @@ public class SupportPerformanceExportService {
     }
 
     private boolean selfEmployed(Long actor) {
-        return !employmentModes(actor).isEmpty();
+        return employmentModes(actor).contains(ReadMode.PERSONAL);
     }
 
     /** §0.5: a supervisor with no owned group may not export; judged for the given actor, never the caller. */
@@ -631,17 +694,17 @@ public class SupportPerformanceExportService {
 
     /** Ordinary customer-service employment only buys the applicant's own summary. */
     private boolean employmentAllows(Long actor, TaskRow task) {
-        if (!selfEmployed(actor) || !exportCapable(actor)) return false;
+        if (!exportCapable(actor)) return false;
         boolean supervisor = supervisorCurrent(actor);
         String kind = text(readMap(task.scopeJson()).get("kind"));
-        if ("MANAGED_GROUPS".equals(kind) && !supervisor) return false;
-        if ("SELF".equals(kind) && !"SUMMARY".equals(task.taskType()) && !supervisor) return false;
-        return true;
+        if ("ALL".equals(kind)) return applicantSuperAdmin(actor);
+        if ("MANAGED_GROUPS".equals(kind)) return supervisor;
+        return "SELF".equals(kind) && selfEmployed(actor) && ("SUMMARY".equals(task.taskType()) || supervisor);
     }
 
     private List<Type> allowedTypes(Long actor) {
         List<Type> types = new ArrayList<>();
-        if (!selfEmployed(actor)) return types;
+        if (employmentModes(actor).isEmpty()) return types;
         if (owns(SUMMARY_PERMISSION)) types.add(Type.SUMMARY);
         if (supervisorCurrent(actor) && owns(DETAIL_PERMISSION)) {
             types.add(Type.CUSTOMER_DETAIL);
@@ -651,7 +714,6 @@ public class SupportPerformanceExportService {
     }
 
     private Scope resolveScope(Long actor, Object raw) {
-        if (!selfEmployed(actor)) throw new BizException(403, "PERMISSION_DENIED");
         Map<String, Object> scope = raw instanceof Map<?, ?> map ? toStringMap(map) : Map.of();
         String kind = text(scope.get("kind"));
         kind = kind == null || kind.isBlank() ? "SELF" : kind.toUpperCase(Locale.ROOT);
@@ -661,13 +723,24 @@ public class SupportPerformanceExportService {
             throw new BizException(422, "EXPORT_REQUEST_INVALID");
         }
         if ("ALL".equals(kind) && !superAdmin()) throw new BizException(403, "PERMISSION_DENIED");
+        if ("SELF".equals(kind) && !selfEmployed(actor)) throw new BizException(403, "PERMISSION_DENIED");
         if ("MANAGED_GROUPS".equals(kind)) {
             if (groupIds.isEmpty()) throw new BizException(422, "EXPORT_REQUEST_INVALID");
             if (!supervisorCurrent(actor)) throw new BizException(403, "PERMISSION_DENIED");
             Set<String> owned = ownedGroups().stream().map(String::valueOf).collect(java.util.stream.Collectors.toSet());
             if (!owned.containsAll(groupIds)) throw new BizException(403, "PERMISSION_DENIED");
+            List<Long> ids = groupIds.stream().map(Long::valueOf).toList();
+            var names = groupNames(actor, ids);
+            if (!names.keySet().containsAll(ids)) throw new BizException(409, "EXPORT_SCOPE_CHANGED");
+            return new Scope(kind, groupIds, ids.stream().map(names::get).toList());
         }
         return new Scope(kind, groupIds, List.of());
+    }
+
+    private Map<Long, String> groupNames(Long actor, List<Long> groups) {
+        if (groups.isEmpty()) return Map.of();
+        return analyticsMapper.groupStamps(new ReadScope(actor, ReadMode.MANAGED, null, null), groups).stream()
+                .collect(java.util.stream.Collectors.toMap(row -> row.id(), row -> row.name()));
     }
 
     private List<Long> ownedGroups() {
@@ -784,7 +857,7 @@ public class SupportPerformanceExportService {
         out.put("requesterId", String.valueOf(task.requesterId()));
         out.put("scope", task.scopeJson() == null ? null : readMap(task.scopeJson()));
         out.put("window", task.windowJson() == null ? null : readMap(task.windowJson()));
-        out.put("status", task.status());
+        out.put("status", effectiveStatus(task));
         out.put("reasonCodes", outwardReason(task.generationError()));
         out.put("requestedAt", instant(task.createdAt()));
         out.put("approvedAt", task.approvedAt() == null ? null : instant(task.approvedAt()));
@@ -792,11 +865,9 @@ public class SupportPerformanceExportService {
         out.put("rowCount", task.rowCount());
         out.put("restrictedHistoryRows", task.restrictedRows());
         boolean self = task.requesterId().equals(actor);
-        boolean fileLive = task.fileCreatedAt() == null
-                || !task.fileCreatedAt().plusDays(FILE_RETENTION_DAYS).isBefore(LocalDateTime.now());
-        out.put("canDownload", "READY".equals(task.status()) && self && readCode() && ownsType(task.taskType(), actor)
+        out.put("canDownload", "READY".equals(effectiveStatus(task)) && self && readCode() && ownsType(task.taskType(), actor)
                 && employmentAllows(actor, task) && scopeStillAllowed(actor, task)
-                && disclosedCustomersAllowed(task) && fileLive);
+                && disclosedCustomersAllowed(task));
         boolean pending = "PENDING_APPROVAL".equals(task.status());
         out.put("decisionCapabilities", Map.of(
                 "APPROVE", decisionCapability(pending, self, task),
@@ -821,13 +892,11 @@ public class SupportPerformanceExportService {
 
     /** One current-access decision shared by the detail shape and the command (ExportTask) shape. */
     private int accessLevel(Long actor, TaskRow task) {
-        boolean requester = task.requesterId().equals(actor);
-        if (!requester) {
-            boolean reviewer = readCode() && owns(APPROVE_PERMISSION) && reviewerScopeOk(actor, task);
-            return reviewer ? ACCESS_FULL : ACCESS_NONE;
+        if (!readCode()) return ACCESS_NONE;
+        if (task.requesterId().equals(actor) && ownsType(task.taskType(), actor)) {
+            return employmentAllows(actor, task) && scopeStillAllowed(actor, task) ? ACCESS_FULL : ACCESS_MINIMAL;
         }
-        if (!readCode() || !ownsType(task.taskType(), actor)) return ACCESS_NONE;
-        return scopeStillAllowed(actor, task) ? ACCESS_FULL : ACCESS_MINIMAL;
+        return owns(APPROVE_PERMISSION) && outCapable(actor) && reviewerScopeOk(actor, task) ? ACCESS_FULL : ACCESS_NONE;
     }
 
     private Map<String, Object> detailView(Long actor, TaskRow task) {
@@ -844,7 +913,7 @@ public class SupportPerformanceExportService {
         }
         Map<String, Object> out = new LinkedHashMap<>(taskView(task, actor));
         out.put("requestReason", task.requestReason());
-        out.put("columns", readList(task.columnsJson()));
+        out.put("columns", columnLabels(readList(task.columnsJson())));
         out.put("coverage", readMap(task.coverageJson()));
         out.put("scopeSummary", scopeSummary(task));
         out.put("decisionReason", task.decisionReason());
@@ -867,7 +936,7 @@ public class SupportPerformanceExportService {
         out.put("requesterId", String.valueOf(task.requesterId()));
         out.put("scope", null);
         out.put("window", null);
-        out.put("status", task.status());
+        out.put("status", effectiveStatus(task));
         out.put("reasonCodes", List.of());
         out.put("requestedAt", instant(task.createdAt()));
         out.put("approvedAt", task.approvedAt() == null ? null : instant(task.approvedAt()));
@@ -892,13 +961,11 @@ public class SupportPerformanceExportService {
     }
 
     private Map<String, Object> decisionCapability(boolean pending, boolean self, TaskRow task) {
-        Map<String, Object> out = new LinkedHashMap<>();
         if (!pending) return capability(false, "EXPORT_INVALID_STATE");
-        if (self) return capability(false, "EXPORT_SELF_APPROVAL_FORBIDDEN");
-        if (!readCode() || !owns(APPROVE_PERMISSION) || !outCapable(actorId())) {
+        if (!readCode() || !owns(APPROVE_PERMISSION) || !outCapable(actorId()) || !reviewerScopeOk(actorId(), task)) {
             return capability(false, "PERMISSION_DENIED");
         }
-        if (!reviewerScopeOk(actorId(), task)) return capability(false, "EXPORT_SCOPE_CHANGED");
+        if (self) return capability(false, "EXPORT_SELF_APPROVAL_FORBIDDEN");
         if (!applicantStillEligible(task)) return capability(false, "EXPORT_APPLICANT_INELIGIBLE");
         if (!applicantScopeOk(task)) return capability(false, "EXPORT_SCOPE_CHANGED");
         return capability(true, null);
@@ -906,9 +973,10 @@ public class SupportPerformanceExportService {
 
     private Map<String, Object> rejectCapability(boolean pending, boolean self, TaskRow task) {
         if (!pending) return capability(false, "EXPORT_INVALID_STATE");
+        if (!readCode() || !owns(APPROVE_PERMISSION) || !outCapable(actorId()) || !reviewerScopeOk(actorId(), task)) {
+            return capability(false, "PERMISSION_DENIED");
+        }
         if (self) return capability(false, "EXPORT_SELF_APPROVAL_FORBIDDEN");
-        if (!readCode() || !owns(APPROVE_PERMISSION)) return capability(false, "PERMISSION_DENIED");
-        if (!reviewerScopeOk(actorId(), task)) return capability(false, "EXPORT_SCOPE_CHANGED");
         return capability(true, null);
     }
 
@@ -937,7 +1005,7 @@ public class SupportPerformanceExportService {
 
     private Map<String, Object> windowView(Window window) {
         return row("definitionVersion", window.definitionVersion(), "sourceVersion", window.sourceVersion(),
-                "month", window.month(), "basis", window.basis(), "from", window.from(), "to", window.to(),
+                "sourceScopeVersion", window.sourceScopeVersion(), "month", window.month(), "basis", window.basis(), "from", window.from(), "to", window.to(),
                 "asOf", window.asOf(), "businessZone", window.businessZone());
     }
 
@@ -964,6 +1032,14 @@ public class SupportPerformanceExportService {
         TaskRow task = mapper.findTask(taskId);
         if (task == null) throw new BizException(404, "EXPORT_TASK_NOT_FOUND");
         return task;
+    }
+
+    public void auditDenial(String action, Long task, BizException failure) {
+        auditLog.record(AuditLogWriteRequest.builder()
+                .action("M_PERFORMANCE_EXPORT_" + action + "_DENIED")
+                .resourceType("SUPPORT_PERFORMANCE_EXPORT").resourceId(String.valueOf(task))
+                .actorType("ADMIN").actorId(actorId()).result("DENIED")
+                .detail(row("code", failure.getCode(), "reason", failure.getMessage())).build());
     }
 
     private Long actorId() {

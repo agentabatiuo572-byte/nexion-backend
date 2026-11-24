@@ -12,7 +12,7 @@ public interface PerformanceExportFactSource {
     enum Status { COMPLETE, PARTIAL, UNKNOWN, FAILED }
 
     record Window(String definitionVersion, String sourceVersion, String month, String basis,
-                  String from, String to, String asOf, String businessZone) { }
+                  String from, String to, String asOf, String businessZone, String sourceScopeVersion) { }
 
     record Scope(String kind, List<String> groupIds, List<String> names) {
         List<ReadScope> currentCustomerScopes(Long actor) {
@@ -60,9 +60,8 @@ public interface PerformanceExportFactSource {
                 "vndReference.bankTopupReceived", "vndReference.bankDirectReceived",
                 "vndReference.bankPayoutReceived", "vndReference.bankInflowCorrection",
                 "references.devicePurchases", "references.refunds", "references.manualCredits",
-                "references.rewardsCredited", "counts.customers", "counts.negativePerformanceCustomers",
-                "counts.firstPaymentCustomers", "counts.directInviteCustomers",
-                "counts.withinRewardRangeCustomers", "counts.beyondRewardRangeCustomers",
+                "references.rewardsCredited", "counts.boundAtCutoff", "counts.newlyBound",
+                "counts.withInflow", "counts.withWithdrawal", "counts.firstPayment", "counts.negativePerformance",
                 "asOf", "businessZone", "coverage", "missingSources");
         static final List<String> CUSTOMER_COLUMNS = List.of(
                 "customerNo", "maskedNickname", "eventAgent", "bindingPeriods", "month",

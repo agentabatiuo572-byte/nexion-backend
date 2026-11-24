@@ -10,6 +10,8 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -53,8 +55,10 @@ public class SupportPerformanceMonthsController {
                 case PARTIAL -> "PARTIAL";
                 case UNKNOWN, FAILED -> "UNKNOWN";
             };
-            entries.add(new MonthEntry(month.month(), month.from().toString(), month.to().toString(),
-                    month.businessZone(), availability, month.reasons()));
+            var channels = month.channels().entrySet().stream().collect(Collectors.toMap(Map.Entry::getKey,
+                    entry -> new ChannelStatus(entry.getValue().status().name(), entry.getValue().reasons())));
+            entries.add(new MonthEntry(month.month(), month.from().toString(), month.calendarEnd().toString(),
+                    month.businessZone(), availability, month.reasons(), channels));
         }
         return ApiResult.ok(new MonthDirectory(SupportPerformance.DEFINITION_VERSION, Generation.READY, List.copyOf(entries)));
     }
@@ -62,5 +66,22 @@ public class SupportPerformanceMonthsController {
     public record MonthDirectory(String metricVersion, Generation generation, List<MonthEntry> months) { }
 
     public record MonthEntry(String month, String from, String to, String businessZone,
-                             String availability, List<Reason> reasonCodes) { }
+                             String availability, List<Reason> reasonCodes, Map<String, ChannelStatus> channels) { }
+
+    public record ChannelStatus(String status, List<Reason> reasonCodes) { }
+
+    @GetMapping("/analytics/channel-coverage")
+    @PreAuthorize("@superAdminAuthorization.isSuperAdmin(authentication) and hasAuthority('service_m1_read')")
+    public ApiResult<List<CoverageEvidence>> channelCoverage() {
+        productionPathGuard.requireOpsWriteAllowed();
+        return ApiResult.ok(cache.current().filter(snapshot -> snapshot.generation() == Generation.READY)
+                .map(snapshot -> snapshot.months().stream().map(month -> new CoverageEvidence(month.month(),
+                        snapshot.sourceVersion(), month.from().toString(), month.to().toString(), month.channels(),
+                        SupportPerformance.digest(snapshot.firstPayments().stream()
+                                .filter(payment -> month.contains(payment.at())).toList().toString()),
+                        month.firstHistoryComplete())).toList()).orElseGet(List::of));
+    }
+
+    public record CoverageEvidence(String month, String sourceVersion, String from, String to,
+            Map<String, SupportPerformance.ChannelCoverage> channels, String firstPaymentDigest, boolean firstHistoryComplete) { }
 }

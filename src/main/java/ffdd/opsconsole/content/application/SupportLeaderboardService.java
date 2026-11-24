@@ -56,7 +56,6 @@ public class SupportLeaderboardService {
         try { requested = query.month() == null ? BusinessCalendar.legacy().month(now) : YearMonth.parse(query.month()); }
         catch (DateTimeException invalid) { throw new BizException(422, "SUPPORT_LEADERBOARD_QUERY_INVALID"); }
         var normalized = query.normalize(now, Set.of(requested), Set.of("USDT"), "USDT", access.scopes());
-        if (normalized.board() != Board.netContribution) throw new BizException(422, "SUPPORT_METRIC_BOARD_UNAVAILABLE");
         var groups = normalized.groupId() == null ? access.scopes().get(normalized.scope()) : Set.of(normalized.groupId());
         var body = performance.leaderboard(normalized, agentId, access.actor(), groups, scopeOptions(access));
         reauthorize(access);
@@ -66,6 +65,17 @@ public class SupportLeaderboardService {
     public SupportAttachmentService.Content avatar(Map<String,List<String>> raw,long agentId) {
         Authorization initial=authorize();
         try {
+            if (raw.containsKey("metricVersion")) {
+                if (!raw.containsKey("expectedVersion")) throw new BizException(422,"SUPPORT_LEADERBOARD_VERSION_REQUIRED");
+                var detail = performance(raw, agentId);
+                if (!(detail.get("row") instanceof Map<?,?> row) || row.get("avatarUrl") == null)
+                    throw new BizException(404,"AVATAR_NOT_FOUND");
+                var current = authorization.avatarReference(agentId);
+                reauthorize(initial);
+                if (current == null || current.assetId() == null || current.version() == null)
+                    throw new BizException(404,"AVATAR_NOT_FOUND");
+                return avatars.publicLeaderboardContent(new AvatarAuthorization(initial.actor(),agentId,current.version(),current.assetId()));
+            }
             Resolved resolved=resolve(raw,initial); Row row=SupportLeaderboard.publicSummary(resolved.publication().snapshot(),agentId,resolved.query().expectedVersion());
             reauthorize(initial);
             if(row.avatarUrl()==null) throw new BizException(404,"AVATAR_NOT_FOUND");
@@ -203,6 +213,9 @@ public class SupportLeaderboardService {
         if(q.rankMonth()!=null)params.put("month",q.rankMonth().toString());if(q.groupId()!=null)params.put("groupId",q.groupId().toString());
         return "/api/admin/content/support-workbench/leaderboard/"+agent+"/avatar?"+String.join("&",params.entrySet().stream()
             .map(e->e.getKey()+"="+URLEncoder.encode(e.getValue().toString(),StandardCharsets.UTF_8)).toList());
+    }
+    static String performanceAvatarUrl(long agent, Normalized query, String version) {
+        return avatarUrl(agent, query, version) + "&metricVersion=NET_INFLOW_V1";
     }
     private static Map<String,Object> map(Object... pairs){Map<String,Object> result=new LinkedHashMap<>();for(int i=0;i<pairs.length;i+=2)result.put((String)pairs[i],pairs[i+1]);return result;}
     private static BizException unavailable(){return new BizException(503,"SUPPORT_LEADERBOARD_SOURCE_FAILED");}

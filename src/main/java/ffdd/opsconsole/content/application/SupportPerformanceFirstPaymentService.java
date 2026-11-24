@@ -44,12 +44,16 @@ public class SupportPerformanceFirstPaymentService {
 
         SupportPaymentFacts.Snapshot legacy = payments.readHistory(customerIds);
         SupportDirectPurchaseFactsFacade.Snapshot direct = directPurchases.readDirectPurchases(customerIds);
+        return select(legacy, direct, asOf);
+    }
+
+    Snapshot select(SupportPaymentFacts.Snapshot legacy, SupportDirectPurchaseFactsFacade.Snapshot direct, Instant asOf) {
         ZoneId storageZone = ZoneId.of(legacy.businessZone());
         Map<Long, ObservedPayment> first = new HashMap<>();
         var directOrders = new HashSet<String>();
         for (var purchase : direct.facts()) {
             directOrders.add(purchase.orderNo());
-            if (!purchase.paidAt().isAfter(asOf)) {
+            if (purchase.paidAt().isBefore(asOf)) {
                 chooseFirst(first, new ObservedPayment("PURCHASE:" + purchase.orderNo(), purchase.customerId(),
                         Kind.DEVICE_PURCHASE, purchase.orderNo(), purchase.paidAt(), purchase.businessAmountUsdt(),
                         "USDT", purchase.paymentMethod(), purchase.intentNo()));
@@ -61,7 +65,7 @@ public class SupportPerformanceFirstPaymentService {
                 continue;
             }
             Instant paidAt = payment.succeededAt().atZone(storageZone).toInstant();
-            if (!paidAt.isAfter(asOf)) {
+            if (paidAt.isBefore(asOf)) {
                 chooseFirst(first, new ObservedPayment(payment.factId(), payment.customerId(), payment.kind(),
                         payment.orderNo(), paidAt, payment.amount(), payment.currency(), payment.source().name(),
                         payment.sourceBusinessId()));

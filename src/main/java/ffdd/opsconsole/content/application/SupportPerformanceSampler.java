@@ -4,13 +4,17 @@ import ffdd.opsconsole.content.domain.SupportPerformance;
 import ffdd.opsconsole.content.domain.SupportPerformance.ObservedDeposit;
 import ffdd.opsconsole.content.mapper.SupportPerformanceHistoryMapper;
 import ffdd.opsconsole.finance.facade.SupportDirectPurchaseFactsFacade;
+import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedDepositCorrection;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedWithdrawal;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.PerformanceCapture;
+import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.WithdrawalReference;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
@@ -29,12 +33,17 @@ public class SupportPerformanceSampler {
     private final SupportPerformanceCache cache;
     private final SupportDirectPurchaseFactsFacade directPurchases;
     private final SupportPerformanceHistoryMapper history;
+    private final SupportPerformanceFirstPaymentService firstPayments;
+    private final FinanceSupportPaymentFactsFacade paymentsEvidence;
 
     public SupportPerformanceSampler(SupportPerformanceCache cache, SupportDirectPurchaseFactsFacade directPurchases,
-            SupportPerformanceHistoryMapper history) {
+            SupportPerformanceHistoryMapper history, SupportPerformanceFirstPaymentService firstPayments,
+            FinanceSupportPaymentFactsFacade paymentsEvidence) {
         this.cache = cache;
         this.directPurchases = directPurchases;
         this.history = history;
+        this.firstPayments = firstPayments;
+        this.paymentsEvidence = paymentsEvidence;
     }
 
     Capture prepare(Instant asOf, Collection<Long> subjects, SupportPaymentFacts.Snapshot payments) {
@@ -42,17 +51,21 @@ public class SupportPerformanceSampler {
         try {
             var directory = SupportPerformance.fromAnalytics(asOf, SupportPerformance.sourceVersion(asOf, subjects));
             if (directory.months().isEmpty()) return new Capture(directory, List.of(),
-                    new SupportDirectPurchaseFactsFacade.Snapshot(List.of(), List.of()));
+                    new SupportDirectPurchaseFactsFacade.Snapshot(List.of(), List.of()), List.of());
             var storageZone = ZoneId.of(payments.businessZone());
-            var deposits = payments.facts().stream()
+            var depositFacts = payments.facts().stream()
                     .filter(fact -> fact.kind() == SupportPaymentFacts.Kind.DEPOSIT && SupportPerformance.CURRENCY.equals(fact.currency()))
+                    .filter(fact -> SupportPerformance.contains(directory.historyStart(), asOf, fact.succeededAt().atZone(storageZone).toInstant()))
+                    .toList();
+            var bankAmounts = paymentsEvidence.bankTopupOriginalAmounts(depositFacts);
+            var deposits = depositFacts.stream()
                     .map(fact -> new ObservedDeposit(fact.factId(), fact.customerId(), fact.ledgerId(), fact.source(),
                             fact.sourceBusinessId(), fact.succeededAt().atZone(storageZone).toInstant(),
-                            fact.amount(), fact.historicalEnvironmentStatus()))
-                    .filter(fact -> SupportPerformance.contains(directory.historyStart(), asOf, fact.creditedAt()))
+                            fact.amount(), fact.historicalEnvironmentStatus(), bankAmounts.get(fact.ledgerId())))
                     .toList();
-            var purchases = directPurchases.readDirectPurchases(subjects, directory.historyStart(), asOf);
-            return new Capture(directory, deposits, purchases);
+            var purchases = directPurchases.readDirectPurchases(subjects);
+            return new Capture(directory, deposits, purchases,
+                    paymentsEvidence.walletReferences(subjects, directory.historyStart(), asOf));
         } catch (RuntimeException failure) {
             cache.markRefreshFailed();
             log.warn("Support performance v2 observation unavailable type={}", failure.getClass().getSimpleName());
@@ -70,28 +83,99 @@ public class SupportPerformanceSampler {
             var directory = capture.directory;
             var attributions = SupportPerformanceDepositAttribution.resolve(source, capture.deposits, capture.depositCorrections);
             var events = SupportPerformanceAggregation.events(source.payments(), capture.deposits,
-                    capture.depositCorrections, capture.withdrawals, capture.purchases.facts(), attributions, history);
-            var months = directory.months().stream().map(month -> {
-                var reasons = EnumSet.of(SupportPerformance.Reason.SOURCE_INCOMPLETE, SupportPerformance.Reason.EXTERNAL_REFUND_UNVERIFIED);
-                var monthEvents = events.stream().filter(event -> month.contains(event.effectiveAt())).toList();
-                if (monthEvents.stream().anyMatch(event -> event.attribution().state() == SupportPerformance.AttributionState.UNKNOWN)) {
-                    reasons.add(SupportPerformance.Reason.ATTRIBUTION_UNKNOWN);
-                }
-                if (capture.purchases.issues().stream().anyMatch(issue -> "MISSING_PAYMENT_TIME".equals(issue.reason()))) {
-                    reasons.add(SupportPerformance.Reason.PAYMENT_TIME_UNVERIFIED);
-                }
-                var coverage = monthEvents.isEmpty() ? SupportPerformance.Coverage.UNKNOWN : SupportPerformance.Coverage.PARTIAL;
-                return new SupportPerformance.Month(month.month(), month.from(), month.to(), month.businessZone(),
-                        coverage, List.copyOf(reasons));
-            }).toList();
+                    capture.depositCorrections, capture.withdrawals, capture.withdrawalReferences, capture.purchases.facts(),
+                    capture.purchases.refunds(), capture.references, directory.historyStart(), directory.asOf(), attributions, history);
+            var first = SupportPerformanceAggregation.firstPayments(
+                    firstPayments.select(source.payments(), capture.purchases, directory.asOf()), history);
+            var bindings = history.bindingHistory(LocalDateTime.ofInstant(directory.asOf(), ZoneOffset.UTC)).stream()
+                    .map(row -> new SupportPerformance.Binding(row.customerId(), new SupportPerformance.EventAttribution(
+                            row.groupId() == null ? SupportPerformance.AttributionState.AGENT_WITHOUT_GROUP
+                                    : SupportPerformance.AttributionState.ASSIGNED, row.agentId(), row.groupId()),
+                            row.startsAt().toInstant(ZoneOffset.UTC),
+                            row.endsAt() == null ? null : row.endsAt().toInstant(ZoneOffset.UTC))).toList();
+            var reviews = history.channelReviews(LocalDateTime.ofInstant(directory.asOf(), ZoneOffset.UTC));
+            var eventsByMonth = events.stream().collect(java.util.stream.Collectors.groupingBy(event ->
+                    ffdd.opsconsole.shared.config.BusinessCalendar.legacy().month(event.effectiveAt()).toString()));
+            var months = new ArrayList<SupportPerformance.Month>();
+            var subtotals = new ArrayList<SupportPerformance.MonthlySubtotal>();
+            for (var month : directory.months()) {
+                var monthEvents = eventsByMonth.getOrDefault(month.month(), List.of());
+                months.add(coverage(month, monthEvents, first, reviews, capture));
+                subtotals.addAll(cache.monthlySubtotals(month, monthEvents));
+            }
             return new SupportPerformance.Snapshot(directory.definitionVersion(), directory.sourceVersion(),
                     directory.historyStart(), directory.asOf(), SupportPerformance.Generation.READY, months, events,
-                    capture.purchases.issues(), SupportPerformanceAggregation.byMonth(months, events));
+                    capture.purchases.issues(), subtotals, bindings, first);
         } catch (RuntimeException failure) {
             cache.markRefreshFailed();
             log.warn("Support performance v2 generation failed type={}", failure.getClass().getSimpleName());
             return null;
         }
+    }
+
+    private static SupportPerformance.Month coverage(SupportPerformance.Month month, List<SupportPerformance.Event> events,
+            List<SupportPerformance.FirstPayment> first,
+            List<SupportPerformanceHistoryMapper.ChannelReview> reviews, Capture capture) {
+        var channels = new java.util.LinkedHashMap<String, SupportPerformance.ChannelCoverage>();
+        var options = new ArrayList<>(SupportPerformance.INFLOW_CHANNELS);
+        options.addAll(SupportPerformance.WITHDRAWAL_CHANNELS);
+        var monthReasons = EnumSet.noneOf(SupportPerformance.Reason.class);
+        for (String channel : options) {
+            boolean withdrawal = SupportPerformance.WITHDRAWAL_CHANNELS.contains(channel);
+            var verified = events.stream().filter(event -> channel.equals(event.channel())
+                    && (withdrawal ? event.kind() == SupportPerformance.Kind.WITHDRAWAL
+                                   : event.kind() == SupportPerformance.Kind.INFLOW || event.kind() == SupportPerformance.Kind.CORRECTION))
+                    .sorted(java.util.Comparator.comparing(SupportPerformance.Event::id)).toList();
+            var details = new StringBuilder(month.month()).append('|').append(channel)
+                    .append('|').append(month.from()).append('|').append(month.to());
+            for (var event : verified) details.append('\n').append(event.id()).append('|').append(event.customerId())
+                    .append('|').append(event.effectiveAt()).append('|').append(event.deltaUsdt().stripTrailingZeros().toPlainString());
+            String digest = SupportPerformance.digest(details.toString());
+            var reasons = EnumSet.noneOf(SupportPerformance.Reason.class);
+            if (verified.stream().anyMatch(event -> event.attribution().state() == SupportPerformance.AttributionState.UNKNOWN)) {
+                reasons.add(SupportPerformance.Reason.ATTRIBUTION_UNKNOWN);
+            }
+            if (channel.endsWith("DIRECT_PURCHASE")) {
+                if (capture.purchases.issues().stream().anyMatch(issue -> "EXTERNAL_REFUND_UNVERIFIED".equals(issue.reason()))) {
+                    reasons.add(SupportPerformance.Reason.EXTERNAL_REFUND_UNVERIFIED);
+                }
+                if (capture.purchases.issues().stream().anyMatch(issue -> "MISSING_PAYMENT_TIME".equals(issue.reason()))) {
+                    reasons.add(SupportPerformance.Reason.PAYMENT_TIME_UNVERIFIED);
+                }
+            } else if (withdrawal && capture.withdrawalReferences.stream().anyMatch(reference -> reference.effectiveAt() == null)) {
+                reasons.add(SupportPerformance.Reason.WITHDRAWAL_TIME_UNVERIFIED);
+            }
+            if (withdrawal && events.stream().anyMatch(event -> channel.equals(event.channel())
+                    && event.kind() == SupportPerformance.Kind.WITHDRAWAL_REFERENCE
+                    && "CONFIRMED".equals(event.sourceStatus()))) {
+                reasons.add(SupportPerformance.Reason.WITHDRAWAL_SETTLEMENT_UNVERIFIED);
+            }
+            boolean attested = reviews.stream().anyMatch(review -> month.month().equals(review.month())
+                    && channel.equals(review.channel()) && digest.equals(review.evidenceDigest())
+                    && month.from().equals(review.fromUtc().toInstant(ZoneOffset.UTC))
+                    && month.to().equals(review.toUtc().toInstant(ZoneOffset.UTC)));
+            if (!attested) reasons.add(SupportPerformance.Reason.SOURCE_INCOMPLETE);
+            var status = reasons.isEmpty() ? SupportPerformance.Coverage.COMPLETE : verified.isEmpty()
+                    ? SupportPerformance.Coverage.UNKNOWN : SupportPerformance.Coverage.PARTIAL;
+            var amount = verified.stream().map(event -> withdrawal ? event.amountUsdt() : event.deltaUsdt())
+                    .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+            channels.put(channel, new SupportPerformance.ChannelCoverage(status, List.copyOf(reasons),
+                    verified.isEmpty() && !attested ? null : amount, verified.size(), digest));
+            monthReasons.addAll(reasons);
+        }
+        var status = monthReasons.isEmpty() ? SupportPerformance.Coverage.COMPLETE : channels.values().stream()
+                .anyMatch(channel -> channel.status() != SupportPerformance.Coverage.UNKNOWN)
+                ? SupportPerformance.Coverage.PARTIAL : SupportPerformance.Coverage.UNKNOWN;
+        var firstInMonth = first.stream().filter(payment -> month.contains(payment.at())).toList();
+        String firstDigest = SupportPerformance.digest(firstInMonth.toString());
+        boolean firstComplete = firstInMonth.stream().allMatch(payment -> payment.confirmed()
+                        && payment.attribution().state() != SupportPerformance.AttributionState.UNKNOWN)
+                && reviews.stream().anyMatch(review -> "FIRST_PAYMENT_HISTORY".equals(review.channel())
+                        && month.month().equals(review.month()) && firstDigest.equals(review.evidenceDigest())
+                        && month.from().equals(review.fromUtc().toInstant(ZoneOffset.UTC))
+                        && month.to().equals(review.toUtc().toInstant(ZoneOffset.UTC)));
+        return new SupportPerformance.Month(month.month(), month.from(), month.to(), month.businessZone(),
+                status, List.copyOf(monthReasons), channels, firstComplete);
     }
 
     void publish(SupportPerformance.Snapshot snapshot) {
@@ -109,23 +193,26 @@ public class SupportPerformanceSampler {
     static final class Capture {
         private final SupportPerformance.Snapshot directory;
         private final List<ConfirmedWithdrawal> withdrawals = new ArrayList<>();
+        private final List<WithdrawalReference> withdrawalReferences = new ArrayList<>();
         private final List<ObservedDeposit> deposits;
         private final SupportDirectPurchaseFactsFacade.Snapshot purchases;
+        private final List<FinanceSupportPaymentFactsFacade.WalletReference> references;
         private final List<ConfirmedDepositCorrection> depositCorrections = new ArrayList<>();
         private boolean withdrawalReadFailed;
 
         Capture(SupportPerformance.Snapshot directory, List<ObservedDeposit> deposits,
-                SupportDirectPurchaseFactsFacade.Snapshot purchases) {
+                SupportDirectPurchaseFactsFacade.Snapshot purchases, List<FinanceSupportPaymentFactsFacade.WalletReference> references) {
             this.directory = directory;
             this.deposits = deposits;
             this.purchases = purchases;
+            this.references = references;
         }
 
         PerformanceCapture cashScope() {
             var months = directory.months();
             if (months.isEmpty()) return null;
             return new PerformanceCapture(directory.historyStart(), directory.asOf(), withdrawals::add,
-                    depositCorrections::add, () -> withdrawalReadFailed = true);
+                    depositCorrections::add, withdrawalReferences::add, () -> withdrawalReadFailed = true);
         }
     }
 }

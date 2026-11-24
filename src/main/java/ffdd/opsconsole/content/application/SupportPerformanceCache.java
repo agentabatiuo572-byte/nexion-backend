@@ -2,12 +2,16 @@ package ffdd.opsconsole.content.application;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import ffdd.opsconsole.content.domain.SupportPerformance;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.time.Duration;
 import java.time.Instant;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -22,9 +26,9 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class SupportPerformanceCache {
-    static final String SNAPSHOT_KEY = "uvel:support:performance:v4:snapshot";
-    static final String LOCK_KEY = "uvel:support:performance:v4:lock";
-    static final String FAILED_KEY = "uvel:support:performance:v4:refresh-failed";
+    static final String SNAPSHOT_KEY = "uvel:support:performance:v5:snapshot";
+    static final String LOCK_KEY = "uvel:support:performance:v5:lock";
+    static final String FAILED_KEY = "uvel:support:performance:v5:refresh-failed";
     static final Duration LOCK_LEASE = Duration.ofMinutes(2);
     private static final DefaultRedisScript<Long> PUBLISH = new DefaultRedisScript<>("""
         if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
@@ -37,6 +41,12 @@ public class SupportPerformanceCache {
         if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
         return redis.call('DEL', KEYS[1])
         """, Long.class);
+    private static final DefaultRedisScript<Long> SAVE_RANKS = new DefaultRedisScript<>("""
+        local current = redis.call('GET', KEYS[1])
+        if current and tonumber(cjson.decode(current).sampleMicros) >= tonumber(ARGV[1]) then return 0 end
+        redis.call('SET', KEYS[1], ARGV[2], 'EX', 259200)
+        return 1
+        """, Long.class);
     private final StringRedisTemplate redis;
     private final ObjectMapper json = new ObjectMapper().registerModule(new JavaTimeModule())
             .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
@@ -45,6 +55,48 @@ public class SupportPerformanceCache {
     private record Decoded(String payload, SupportPerformance.Snapshot snapshot) { }
 
     public SupportPerformanceCache(StringRedisTemplate redis) { this.redis = redis; }
+
+    record DayRanks(long sampleMicros, String asOf, String version, Map<Long, Integer> ranks) { }
+
+    DayRanks compareAndSaveRanks(String scope, java.time.LocalDate day, Instant asOf, String version,
+                                 Map<Long, Integer> ranks) {
+        String prefix = "uvel:support:performance:v5:ranks:" + scope + ":";
+        long micros = asOf.getEpochSecond() * 1_000_000 + asOf.getNano() / 1_000;
+        try {
+            String prior = redis.opsForValue().get(prefix + day.minusDays(1));
+            redis.execute(SAVE_RANKS, List.of(prefix + day), Long.toString(micros),
+                    json.writeValueAsString(new DayRanks(micros, asOf.toString(), version, ranks)));
+            return prior == null ? null : json.readValue(prior, DayRanks.class);
+        } catch (java.io.IOException | DataAccessException unavailable) {
+            return null;
+        }
+    }
+
+    /** Each bounded, closed-month subtotal is independently recoverable after a restart. */
+    List<SupportPerformance.MonthlySubtotal> monthlySubtotals(SupportPerformance.Month month,
+            List<SupportPerformance.Event> events) {
+        if (!month.to().equals(month.calendarEnd())) {
+            return SupportPerformanceAggregation.byMonth(List.of(month), events);
+        }
+        try {
+            var hash = MessageDigest.getInstance("SHA-256");
+            for (var event : events) {
+                hash.update(json.writeValueAsBytes(event));
+                hash.update((byte) '\n');
+            }
+            String key = "uvel:support:performance:v5:month:" + month.month() + ":"
+                    + HexFormat.of().formatHex(hash.digest());
+            String stored = redis.opsForValue().get(key);
+            if (stored != null) return json.readValue(stored, new TypeReference<>() { });
+            var totals = SupportPerformanceAggregation.byMonth(List.of(month), events);
+            redis.opsForValue().set(key, json.writeValueAsString(totals), Duration.ofDays(30));
+            return totals;
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        } catch (java.io.IOException failure) {
+            throw new IllegalArgumentException("SUPPORT_PERFORMANCE_GENERATION_INVALID", failure);
+        }
+    }
 
     public Optional<SupportPerformance.Snapshot> current() {
         final String payload;

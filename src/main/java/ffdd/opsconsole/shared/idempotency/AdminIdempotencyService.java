@@ -100,6 +100,11 @@ public class AdminIdempotencyService {
 
     public record RecoveryResult<T>(RecoveryStatus status, T response) {}
 
+    /** Callers must bind both the scope to the actor and the retained response to the requested resource. */
+    public ActiveReceipt retainedReceipt(String scope, String key) {
+        return transactionExecutor.retainedReceipt(normalizeScope(scope), normalizeIdempotencyKey(key));
+    }
+
     public record ActiveReceipt(long recordId, String requestHash) {}
 
     /** Locates an unexpired successful receipt without returning its response. */
