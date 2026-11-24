@@ -413,11 +413,12 @@ public class AppOrderCommandService {
                 throw new BizException(409, "ORDER_WALLET_LEDGER_CONFLICT");
             }
         }
-        if (mapper.markDevelopmentOrderDelivered(orderNo, userId, paymentNo, activationStatus) != 1) {
+        var verifiedPaidAt = external ? java.time.LocalDateTime.ofInstant(
+                VerifiedPurchasePayment.paidInstant(), DateTimeFormatConfig.BUSINESS_ZONE) : null;
+        if (mapper.markDevelopmentOrderDelivered(orderNo, userId, paymentNo, activationStatus, verifiedPaidAt) != 1) {
             throw new BizException(409, "ORDER_STATE_CONFLICT");
         }
-        if (external && mapper.recordVerifiedPaidAt(orderNo, java.time.LocalDateTime.ofInstant(
-                VerifiedPurchasePayment.paidInstant(), DateTimeFormatConfig.BUSINESS_ZONE)) != 1) {
+        if (external && mapper.recordVerifiedPaidAt(orderNo, verifiedPaidAt) != 1) {
             throw new BizException(409,"ORDER_PAYMENT_TIME_CONFLICT");
         }
         if (!external && mapper.insertDevelopmentPayment(orderNo, userId, paymentNo, order.amountUsdt()) != 1) {

@@ -505,12 +505,14 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
                AND UPPER(o.order_status)='PENDING_PAYMENT'
                AND UPPER(o.activation_status)='WAITING_PAYMENT'
                AND NOT EXISTS (SELECT 1 FROM nx_promotion_order_receipt pr
-                                WHERE pr.order_no=o.order_no AND pr.pay_by<=NOW(6))
+                                WHERE pr.order_no=o.order_no
+                                  AND pr.pay_by<=COALESCE(#{verifiedPaidAt,jdbcType=TIMESTAMP},NOW(6)))
             """)
     int markDevelopmentOrderDelivered(@Param("orderNo") String orderNo,
                                       @Param("userId") Long userId,
                                       @Param("paymentNo") String paymentNo,
-                                      @Param("activationStatus") String activationStatus);
+                                      @Param("activationStatus") String activationStatus,
+                                      @Param("verifiedPaidAt") LocalDateTime verifiedPaidAt);
 
     @Insert("""
             INSERT IGNORE INTO nx_payment_record

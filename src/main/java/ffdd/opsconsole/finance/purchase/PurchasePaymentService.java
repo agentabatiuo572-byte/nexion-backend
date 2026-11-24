@@ -630,6 +630,10 @@ public class PurchasePaymentService {
                 // The user mutex makes this a current business-state check without reversing promotion -> order locks.
                 var order=db.one("SELECT order_no,created_at,payment_status,order_status FROM nx_order WHERE order_no=? AND user_id=?",orderNo,row.get("user_id"));
                 if(order==null)throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
+                if(lateReview && "EXPIRED".equals(order.get("payment_status")) && "EXPIRED".equals(order.get("order_status"))){
+                    releaseLateOrderQuota(row);
+                    return null;
+                }
                 if(!"PENDING".equals(order.get("payment_status"))||!"PENDING_PAYMENT".equals(order.get("order_status")))return null;
                 cutoff=orderDeadline(order);
             }
@@ -643,11 +647,17 @@ public class PurchasePaymentService {
                 if (changed != 1) return null;
                 quotaHolds.finish(quotaHolds.read(row), PurchaseQuotaReservation.State.RELEASED, null, "PAYMENT_TIMEOUT");
             }
+            if(lateReview)releaseLateOrderQuota(row);
             if(orderNo!=null&&!orders.expireDirectPaymentOrder(number(row.get("user_id")),orderNo))throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
             // A confirmed late payment keeps its evidence and review notification.
             if (!lateReview && (orderNo != null || !"EXPIRED".equals(row.get("status")))) outcome(row,"PAYMENT_TIMEOUT");
             return null;
         });
+    }
+    private void releaseLateOrderQuota(Map<String,Object> row){
+        var reservation=quotaHolds.read(row);
+        if(reservation!=null && reservation.state()==PurchaseQuotaReservation.State.HELD)
+            quotaHolds.finish(reservation,PurchaseQuotaReservation.State.RELEASED,null,"PAYMENT_LATE_REVIEW");
     }
     private boolean observeHd(Map<String,Object> row){
         if(!hd.ready())return false;String no=text(row.get("intent_no"));var observed=hdGateway.queryPayOrder(no);
