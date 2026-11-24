@@ -12,6 +12,7 @@ public class WithdrawalLimitsUpdateRequest {
     private final Set<String> presentFields = new LinkedHashSet<>();
     private Long expectedVersion;
     private Integer dailyLimitCount;
+    private BigDecimal minUsdt;
     private BigDecimal balanceMaxRatio;
     private BigDecimal networkFeeRatio;
     private BigDecimal networkFeeMin;
@@ -31,6 +32,8 @@ public class WithdrawalLimitsUpdateRequest {
     @JsonSetter public void setExpectedVersion(Long value) { expectedVersion = value; presentFields.add("expectedVersion"); }
     public Integer getDailyLimitCount() { return dailyLimitCount; }
     @JsonSetter public void setDailyLimitCount(Integer value) { dailyLimitCount = value; presentFields.add("dailyLimitCount"); }
+    public BigDecimal getMinUsdt() { return minUsdt; }
+    @JsonSetter public void setMinUsdt(BigDecimal value) { minUsdt = value; presentFields.add("minUsdt"); }
     public BigDecimal getBalanceMaxRatio() { return balanceMaxRatio; }
     @JsonSetter public void setBalanceMaxRatio(BigDecimal value) { balanceMaxRatio = value; presentFields.add("balanceMaxRatio"); }
     public BigDecimal getNetworkFeeRatio() { return networkFeeRatio; }
@@ -87,7 +90,7 @@ public class WithdrawalLimitsUpdateRequest {
     public Set<String> changedD5Fields() {
         Set<String> fields = new LinkedHashSet<>(presentFields);
         fields.retainAll(Set.of(
-                "dailyLimitCount", "balanceMaxRatio", "networkFeeRatio",
+                "dailyLimitCount", "balanceMaxRatio", "minUsdt", "networkFeeRatio",
                 "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate", "networkConfirmFeeUsd",
                 "networkEnabled",
                 "smallAmountThresholdUsd", "payoutSlaHours"));

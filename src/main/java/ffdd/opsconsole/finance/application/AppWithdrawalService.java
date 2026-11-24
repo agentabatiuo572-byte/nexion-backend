@@ -48,7 +48,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppWithdrawalService {
     private static final Set<String> CHAINS = Set.of("USDT-TRC20", "USDT-BEP20", "USDT-ERC20");
-    private static final BigDecimal MIN_WITHDRAWAL = new BigDecimal("20.000000");
     private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
 
@@ -127,7 +126,8 @@ public class AppWithdrawalService {
                     "withdrawal.nex_fee_offset_rate", "withdrawal.small_amount_threshold_usd",
                     "withdrawal.payout_sla_hours", "withdrawal.trc20.enabled",
                     "withdrawal.bep20.enabled", "withdrawal.erc20.enabled",
-                    "withdrawal.daily_count_limit", "withdrawal.max_balance_pct", "withdrawal.strong_review_threshold_usdt"));
+                    "withdrawal.daily_count_limit", "withdrawal.max_balance_pct", "withdrawal.strong_review_threshold_usdt",
+                    WithdrawalMinimumAmount.CONFIG_KEY));
         } catch (RuntimeException ex) {
             throw new BizException(503, "D5_POLICY_VERSION_UNAVAILABLE");
         }
@@ -137,8 +137,11 @@ public class AppWithdrawalService {
         GrowthRhythmSnapshot rhythm = policy.rhythm();
         boolean withdrawalEnabled = withdrawGateEnabled();
         BigDecimal strongReviewThreshold = D2WithdrawalReviewThreshold.require(policyValues.get("withdrawal.strong_review_threshold_usdt"));
+        BigDecimal minUsdt = policy.requireMinUsdt();
+        // Installed clients require a positive minimum. Zero has no business floor beyond valid amount precision.
+        BigDecimal clientMinAmount = minUsdt.signum() == 0 ? BigDecimal.ONE.movePointLeft(6) : minUsdt;
         return ApiResult.ok(linked(
-                "minAmount", MIN_WITHDRAWAL, "dailyLimitCount", dailyLimit,
+                "minAmount", clientMinAmount, "dailyLimitCount", dailyLimit,
                 "balanceMaxRatio", balanceMaxRatio,
                 "networkConfirmFeeUsd", policy.networkConfirmFeeUsd(),
                 "nexFeeOffsetRate", policy.nexFeeOffsetRate(),
@@ -174,13 +177,15 @@ public class AppWithdrawalService {
             throw new BizException(503, "D5_NETWORK_FEE_INVALID");
         int dailyLimit = validatedDailyLimit();
         BigDecimal ratio = validatedBalanceMaxRatio();
+        BigDecimal minUsdt = requireMinUsdt(WithdrawalMinimumAmount.fromConfig(
+                config.activeValue(WithdrawalMinimumAmount.CONFIG_KEY).orElse(null)));
         WithdrawalDayWindow day = WithdrawalDayWindow.at(clock);
         int dailyCount = mapper.countBusinessDay(userId, day.fromInclusive(), day.toExclusive());
         BigDecimal requested = amount == null ? null : money(amount);
         if (requested != null && requested.signum() <= 0) throw new BizException(422, "WITHDRAWAL_AMOUNT_INVALID");
         List<String> reasons = new java.util.ArrayList<>();
         if (requested != null) {
-            if (requested.compareTo(MIN_WITHDRAWAL) < 0) reasons.add("BELOW_MINIMUM");
+            if (requested.compareTo(minUsdt) < 0) reasons.add("BELOW_MINIMUM");
             if (requested.compareTo(wallet.usdtAvailable()) > 0) reasons.add("INSUFFICIENT_BALANCE");
             else if (requested.compareTo(wallet.usdtAvailable().multiply(ratio)) > 0) reasons.add("BALANCE_RATIO_LIMIT");
             if (dailyCount >= dailyLimit) reasons.add("DAILY_LIMIT_REACHED");
@@ -188,7 +193,7 @@ public class AppWithdrawalService {
         }
         return ApiResult.ok(linked("testPreview", true, "readOnly", true, "canSubmit", false,
                 "validationScope", "amount-fee-balance-limits-only", "network", "USDT-BEP20",
-                "walletUsdt", wallet.usdtAvailable(), "minAmount", MIN_WITHDRAWAL,
+                "walletUsdt", wallet.usdtAvailable(), "minAmount", minUsdt,
                 "networkFeeUsdt", fee, "dailyLimitCount", dailyLimit, "dailyCount", dailyCount,
                 "balanceMaxRatio", ratio, "amount", requested,
                 "netReceiveUsdt", requested == null ? null : requested.subtract(fee).max(BigDecimal.ZERO),
@@ -273,7 +278,7 @@ public class AppWithdrawalService {
             reasons.add("PAYOUT_ADDRESS_MISMATCH");
         }
         List<String> waived = fast ? List.of("first-withdrawal-review") : List.of();
-        boolean canSubmit = requested.compareTo(MIN_WITHDRAWAL) >= 0 && requested.compareTo(max) <= 0
+        boolean canSubmit = requested.signum() > 0 && requested.compareTo(policy.requireMinUsdt()) >= 0 && requested.compareTo(max) <= 0
                 && !dailyLimitReached && payoutAddressReady && withdrawGateEnabled();
         return ApiResult.ok(linked("canSubmit", canSubmit, "maxWithdrawableUsdt", max, "route", route,
                 "riskReasons", reasons, "fastLaneApplied", fast, "waivedGates", waived,
@@ -522,7 +527,7 @@ public class AppWithdrawalService {
         BigDecimal maxRatio = validatedBalanceMaxRatio();
         BigDecimal maxAmount = maximumWithdrawable(userId, wallet.usdtAvailable(), maxRatio, true);
         // Bank amounts have already passed the versioned D7 quote limits; the crypto floor is independent.
-        if (amount.signum() <= 0 || (bankQuote == null && amount.compareTo(MIN_WITHDRAWAL) < 0))
+        if (amount.signum() <= 0 || (bankQuote == null && amount.compareTo(policy.requireMinUsdt()) < 0))
             return ApiResult.fail(422, "WITHDRAWAL_MIN_AMOUNT_NOT_MET");
         if (amount.compareTo(maxAmount) > 0 || amount.compareTo(safe(wallet.usdtAvailable())) > 0) {
             return ApiResult.fail(409, "WITHDRAWAL_BALANCE_LIMIT_EXCEEDED");
@@ -873,7 +878,7 @@ public class AppWithdrawalService {
                     "withdrawal.network_confirm_fee_usd.bep20", "withdrawal.network_confirm_fee_usd.erc20",
                     "withdrawal.nex_fee_offset_rate", "withdrawal.small_amount_threshold_usd",
                     "withdrawal.payout_sla_hours", "withdrawal.trc20.enabled",
-                    "withdrawal.bep20.enabled", "withdrawal.erc20.enabled"));
+                    "withdrawal.bep20.enabled", "withdrawal.erc20.enabled", WithdrawalMinimumAmount.CONFIG_KEY));
         } catch (RuntimeException ex) {
             throw new BizException(503, "D5_POLICY_VERSION_UNAVAILABLE");
         }
@@ -913,12 +918,14 @@ public class AppWithdrawalService {
         List<String> enabled = enabledNetworks.get();
         GrowthRhythmSnapshot rhythm = growthRhythmFacade.snapshot();
         WithdrawalCompliancePolicy compliance = WithdrawalCompliancePolicy.require(rhythm);
+        BigDecimal minUsdt = WithdrawalMinimumAmount.fromConfig(policyValues.get(WithdrawalMinimumAmount.CONFIG_KEY));
 
         String versionMaterial = version + "|" + fees + "|" + nexOffsetRate.stripTrailingZeros().toPlainString()
                 + "|" + smallAmountThresholdUsd.stripTrailingZeros().toPlainString()
                 + "|" + payoutSlaHours + "|" + enabled;
         return new PolicySnapshot(version, Map.copyOf(fees), nexOffsetRate, smallAmountThresholdUsd,
-                payoutSlaHours, enabled, rhythm, hash(versionMaterial), hash(versionMaterial + "|" + compliance.versionMaterial()));
+                payoutSlaHours, minUsdt, enabled, rhythm, hash(versionMaterial),
+                hash(versionMaterial + "|" + compliance.versionMaterial() + "|" + minUsdt));
     }
 
     /** D7 keeps its existing D5-only quote contract; USDT compliance policy does not change bank routing. */
@@ -1055,14 +1062,24 @@ public class AppWithdrawalService {
         return map;
     }
 
+    private static BigDecimal requireMinUsdt(BigDecimal value) {
+        if (value == null) throw new BizException(503, "D5_CONFIG_UNAVAILABLE");
+        return value;
+    }
+
     private record PolicySnapshot(
             long version,
             Map<String, BigDecimal> networkConfirmFeeUsd,
             BigDecimal nexFeeOffsetRate,
             BigDecimal smallAmountThresholdUsd,
             int payoutSlaHours,
+            BigDecimal minUsdt,
             List<String> enabledNetworks,
             GrowthRhythmSnapshot rhythm,
             String bankPolicyVersion,
-            String policyVersion) { }
+            String policyVersion) {
+        BigDecimal requireMinUsdt() {
+            return AppWithdrawalService.requireMinUsdt(minUsdt);
+        }
+    }
 }

@@ -126,7 +126,7 @@ final class A5ParameterUsageCatalog {
             withdrawal.fee_rate|仅管理兼容：提现通用网络费用比例配置；链上提交实际按配置的网络固定确认费读取。|OpsFinanceService; AppWithdrawalService
             withdrawal.fee_min_usdt|仅管理兼容：提现通用最低网络费配置，单位 USDT；不冒充当前链上提交的固定确认费。|OpsFinanceService; AppWithdrawalService
             withdrawal.fee_max_usdt|仅管理兼容：提现通用最高网络费配置，单位 USDT；不冒充当前链上提交的固定确认费。|OpsFinanceService; AppWithdrawalService
-            withdrawal.min_usdt|仅管理读取：提现参数中的最小金额配置，单位 USDT；是否由各通道实际使用需独立核对。|OpsFinanceService
+            withdrawal.min_usdt|D5 管理的链上最低提现金额，适用于 TRC20、BEP20、ERC20 的报价与新单提交，单位 USDT。|OpsFinanceService; AppWithdrawalService
             E.task.queueSaturation|任务计价计算读取的队列饱和度系数；管理端在计算任务价格时应用该系数。|OpsDeviceService
             team.ui.F.vrank.permanent|团队等级的保持开关；晋升引擎读取是否不降级。|VRankPromotionEngine
             wallet.nex_market.control.active_day_index|已经生效的行情曲线日序号，用于读取当前帧，不是日期。|OpsNexMarketService

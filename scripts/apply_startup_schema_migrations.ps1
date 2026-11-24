@@ -572,6 +572,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261124_b79_earning_notifications.sql")
   (Join-Path $root "scripts\migrations\20261124_b79_earning_push.sql")
   (Join-Path $root "scripts\migrations\20261124_b79_earning_push_notification_index.sql")
+  (Join-Path $root "scripts\migrations\20261124_d5_min_withdrawal.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical

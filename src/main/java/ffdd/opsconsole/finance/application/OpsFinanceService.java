@@ -369,7 +369,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         Set<String> changedFields = request.changedD5Fields();
         String actor = AdminActorResolver.resolve(request.getOperator());
-        String requestHash = sha256(String.join("|",
+        String requestMaterial = String.join("|",
                 "D5_WITHDRAWAL_LIMITS_UPDATE",
                 String.valueOf(request.getExpectedVersion()),
                 changedFields.stream().sorted().toList().toString(),
@@ -383,7 +383,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 String.valueOf(request.getNetworkEnabled()),
                 String.valueOf(request.getSmallAmountThresholdUsd()),
                 String.valueOf(request.getPayoutSlaHours()),
-                request.getReason().trim(), trimToEmpty(actor)));
+                request.getReason().trim(), trimToEmpty(actor));
+        if (changedFields.contains("minUsdt")) {
+            requestMaterial += "|" + request.getMinUsdt().stripTrailingZeros().toPlainString();
+        }
+        String requestHash = sha256(requestMaterial);
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 "D5_WITHDRAWAL_LIMITS_UPDATE",
                 idempotencyKey.trim(),
@@ -2349,6 +2353,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("version", requiredConfigDecimal("withdrawal.d5.version").longValueExact());
         response.put("dailyLimitCount", owned.get("dailyLimitCount").intValueExact());
+        response.put("minUsdt", owned.get("minUsdt"));
         // Wire contract stays aligned with the existing PC flat request/response key.
         // The PC view model renames this to maxBalanceRatio after validation.
         response.put("balanceMaxRatio", owned.get("balanceMaxRatio"));
@@ -2374,6 +2379,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("coverageReliable", coverage.reliable());
         response.put("sourceByField", Map.ofEntries(
                 Map.entry("dailyLimitCount", "d5"),
+                Map.entry("minUsdt", "d5"),
                 Map.entry("balanceMaxRatio", "d5"),
                 Map.entry("networkConfirmFeeUsd", "d5"),
                 Map.entry("networkEnabled", "d5"),
@@ -2411,6 +2417,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         values.put("networkConfirmFeeUsd.bep20", requiredConfigDecimal("withdrawal.network_confirm_fee_usd.bep20"));
         values.put("networkConfirmFeeUsd.erc20", requiredConfigDecimal("withdrawal.network_confirm_fee_usd.erc20"));
         values.put("smallAmountThresholdUsd", requiredConfigDecimal("withdrawal.small_amount_threshold_usd"));
+        BigDecimal minimum = requiredConfigDecimal(WithdrawalMinimumAmount.CONFIG_KEY);
+        if (!WithdrawalMinimumAmount.valid(minimum)) throw new IllegalStateException("D5_MIN_USDT_INVALID");
+        values.put("minUsdt", minimum);
         values.put("payoutSlaHours", requiredConfigDecimal("withdrawal.payout_sla_hours"));
         return values;
     }
@@ -2506,6 +2515,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 && !inRange(request.getSmallAmountThresholdUsd(), BigDecimal.ZERO, new BigDecimal("500"))) {
             return ApiResult.fail(400, "SMALL_AMOUNT_THRESHOLD_INVALID");
         }
+        if (changedFields.contains("minUsdt") && !WithdrawalMinimumAmount.valid(request.getMinUsdt())) {
+            return ApiResult.fail(400, "D5_MIN_USDT_INVALID");
+        }
         if (changedFields.contains("payoutSlaHours")
                 && (request.getPayoutSlaHours() == null
                 || request.getPayoutSlaHours() < 1 || request.getPayoutSlaHours() > 168)) {
@@ -2527,6 +2539,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return switch (field) {
             case "dailyLimitCount" -> BigDecimal.valueOf(request.getDailyLimitCount());
             case "balanceMaxRatio" -> request.getBalanceMaxRatio();
+            case "minUsdt" -> request.getMinUsdt();
             case "networkFeeRatio" -> request.getNetworkFeeRatio();
             case "networkFeeMin" -> request.getNetworkFeeMin();
             case "networkFeeMax" -> request.getNetworkFeeMax();
@@ -2540,7 +2553,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private boolean loosensWithdrawalLimit(String field, BigDecimal before, BigDecimal after) {
         return switch (field) {
             case "dailyLimitCount", "balanceMaxRatio", "nexFeeOffsetRate", "smallAmountThresholdUsd" -> after.compareTo(before) > 0;
-            case "networkFeeRatio", "networkFeeMin", "networkFeeMax", "payoutSlaHours" -> after.compareTo(before) < 0;
+            case "minUsdt", "networkFeeRatio", "networkFeeMin", "networkFeeMax", "payoutSlaHours" -> after.compareTo(before) < 0;
             default -> false;
         };
     }
@@ -2549,6 +2562,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return switch (field) {
             case "dailyLimitCount" -> "withdrawal.daily_count_limit";
             case "balanceMaxRatio" -> "withdrawal.max_balance_pct";
+            case "minUsdt" -> WithdrawalMinimumAmount.CONFIG_KEY;
             case "networkFeeRatio" -> "withdrawal.fee_rate";
             case "networkFeeMin" -> "withdrawal.fee_min_usdt";
             case "networkFeeMax" -> "withdrawal.fee_max_usdt";
@@ -2563,6 +2577,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return switch (field) {
             case "dailyLimitCount" -> "wallet.withdrawal.daily_count_limit";
             case "balanceMaxRatio" -> "wallet.withdrawal.max_balance_pct";
+            case "minUsdt" -> "wallet." + WithdrawalMinimumAmount.CONFIG_KEY;
             case "networkFeeRatio" -> "wallet.withdrawal.fee_rate";
             case "networkFeeMin" -> "wallet.withdrawal.fee_min_usdt";
             case "networkFeeMax" -> "wallet.withdrawal.fee_max_usdt";
