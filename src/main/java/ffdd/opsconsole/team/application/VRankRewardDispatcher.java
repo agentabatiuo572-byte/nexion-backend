@@ -206,8 +206,10 @@ public class VRankRewardDispatcher {
             return;
         }
 
-        // ① B1 备付金红线预检(资金类放大平台资金流出,低于红线直接拒,整笔晋升回滚)
-        assertCoverageAboveRedline(userId, rankCode, rewardType, amount);
+        // V8 升阶只经 A2 人工批准，按 B88 跳过覆盖率预检。
+        if (!"V8".equals(rankCode)) {
+            assertCoverageAboveRedline(userId, rankCode, rewardType, amount);
+        }
 
         BigDecimal amountUsdt = CURRENCY_USDT.equals(currency) ? amount : BigDecimal.ZERO;
         BigDecimal amountNex = CURRENCY_NEX.equals(currency) ? amount : BigDecimal.ZERO;

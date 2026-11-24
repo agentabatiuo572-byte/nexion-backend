@@ -6,9 +6,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
+import ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -48,6 +51,7 @@ public class PendingApprovalProjection {
             Map.entry("k1_cluster_flag", new Operation("K", "cluster", "clusterId", "标记为可疑")));
 
     private final AuditObjectLockMapper lockMapper;
+    private final AuditOperationTicketMapper ticketMapper;
     private final ObjectMapper objectMapper;
 
     public Map<String, PendingApproval> read(String domain, String targetType, Collection<String> authorizedIds) {
@@ -55,6 +59,18 @@ public class PendingApprovalProjection {
         Map<String, PendingApproval> approvals = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         for (var lock : lockMapper.selectPendingLocks(domain, targetType, authorizedIds)) {
             approvals.put(lock.targetId(), describe(domain, targetType, lock));
+        }
+        return approvals;
+    }
+
+    /** Returns only creation times for exact, still-pending V8 promotions on authorized users. */
+    public Map<String, LocalDateTime> readV8Promotions(List<String> authorizedIds) {
+        Map<String, LocalDateTime> approvals = new HashMap<>();
+        for (int start = 0; start < authorizedIds.size(); start += 500) {
+            var batch = authorizedIds.subList(start, Math.min(start + 500, authorizedIds.size()));
+            for (var ticket : ticketMapper.findPendingV8Promotions(batch)) {
+                approvals.put(ticket.userId(), ticket.createdAt());
+            }
         }
         return approvals;
     }

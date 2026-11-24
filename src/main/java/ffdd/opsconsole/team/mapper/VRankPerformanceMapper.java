@@ -24,6 +24,26 @@ import org.apache.ibatis.annotations.Select;
  */
 public interface VRankPerformanceMapper extends BaseMapper<Object> {
 
+    @Select("""
+            SELECT u.id AS userId,
+                   CONCAT('U', LPAD(u.id, GREATEST(8, LENGTH(CAST(u.id AS CHAR))), '0')) AS userCode,
+                   u.nickname,
+                   CONCAT('U', LPAD(sponsor.id, GREATEST(8, LENGTH(CAST(sponsor.id AS CHAR))), '0')) AS inviterCode,
+                   CASE WHEN sponsor.is_deleted = 0 THEN sponsor.nickname END AS inviterNickname
+              FROM nx_team_member member
+              JOIN nx_user u ON u.id = member.user_id AND u.is_deleted = 0
+              LEFT JOIN nx_user sponsor ON sponsor.id = u.sponsor_user_id
+                 AND sponsor.id <> u.id AND sponsor.sandbox = u.sandbox
+             WHERE member.user_id = member.member_user_id AND member.is_deleted = 0
+               AND UPPER(TRIM(member.v_rank)) = 'V7'
+               AND member.id = (SELECT self.id FROM nx_team_member self
+                                 WHERE self.user_id = u.id AND self.member_user_id = u.id AND self.is_deleted = 0
+                                 ORDER BY self.id LIMIT 1)
+            """)
+    List<V8ReviewCandidate> v8ReviewCandidates();
+
+    record V8ReviewCandidate(long userId, String userCode, String nickname, String inviterCode, String inviterNickname) {}
+
     /** 用户自己已付订单 SUM(compute_points)。 */
     @Select("""
             SELECT COALESCE(SUM(o.compute_points), 0)

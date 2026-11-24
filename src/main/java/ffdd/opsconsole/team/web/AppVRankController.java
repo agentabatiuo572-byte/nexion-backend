@@ -164,6 +164,9 @@ public class AppVRankController {
             List<VRankRewardRuleRow> rewardRules = commissionRepository.selectVRankRewardRulesByRank(rankCode);
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("v", rank);
+            if (rank == 8) {
+                row.put("reviewRequired", true);
+            }
             String title = titleOverrides.getOrDefault(rank,
                     String.valueOf(source.getOrDefault("label", rankCode)));
             row.put("title", title);

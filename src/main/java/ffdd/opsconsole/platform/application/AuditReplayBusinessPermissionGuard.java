@@ -713,6 +713,10 @@ public class AuditReplayBusinessPermissionGuard {
         if (isF5StatusUiAlias(command)) {
             return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
         }
+        if (command != null && "F".equalsIgnoreCase(text(command.domain()))
+                && "f_vrank_override".equalsIgnoreCase(text(command.op()))) {
+            return ApiResult.ok(new AuditReplayCommand("F", "f_vrank_override", command.params()));
+        }
         if (command != null && "F".equalsIgnoreCase(command.domain())
                 && "f4_leaderboard_period_payout".equalsIgnoreCase(text(command.op()).trim())) {
             Map<String, Object> params = new LinkedHashMap<>(command.params() == null ? Map.of() : command.params());
@@ -1141,6 +1145,10 @@ public class AuditReplayBusinessPermissionGuard {
                         && ComputeConfigRegistry.isFlagParamKey(value(command.params(), "paramKey"))));
     }
 
+    static boolean isVRankOverride(AuditReplayCommand command) {
+        return command != null && "F".equals(command.domain()) && "f_vrank_override".equals(command.op());
+    }
+
     /**
      * A delegated proposer may choose a business command, but may not choose a
      * different display object, lock target, risk direction or approval copy.
@@ -1149,6 +1157,22 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<DelegatedProposalDescriptor> validateProposalContext(
             AuditOperationProposalRequest request, AuditReplayCommand boundCommand) {
+        if (isVRankOverride(boundCommand)) {
+            if (delegatedProposal()) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_UNMAPPED");
+            }
+            if (!hasAuthority("network_f1_read")) {
+                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:network_f1_read");
+            }
+            String suppliedId = value(boundCommand.params(), "userId");
+            String userId = positiveIdentifier(suppliedId);
+            if (userId.isEmpty() || !userId.equals(suppliedId)
+                    || !new AuditLockTarget("F", "vrank_override", userId).equals(request.target())
+                    || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(422, "A2_TARGET_MISMATCH");
+            }
+            return ApiResult.ok(null);
+        }
         if (HardwareQuotaApproval.supports(boundCommand)) {
             var target = HardwareQuotaApproval.target(boundCommand);
             if ((request.target() != null && !target.equals(request.target()))

@@ -201,8 +201,9 @@ public class OpsAuditCenterService {
         if (pageOnly && !pageRead) {
             return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         }
-        boolean a4PageRead = pageRead && A4RegistryApproval.supports(command);
-        if (!a4PageRead && !canReadOwnProposal(ticket, command, actorId)) {
+        boolean verifiedMakerPageRead = pageRead && (A4RegistryApproval.supports(command)
+                || AuditReplayBusinessPermissionGuard.isVRankOverride(command));
+        if (!verifiedMakerPageRead && !canReadOwnProposal(ticket, command, actorId)) {
             return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         }
         return ApiResult.ok(toTicket(ticket, true));

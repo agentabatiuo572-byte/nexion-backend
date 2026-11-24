@@ -147,6 +147,7 @@ public class A2AccessPolicy {
             if (roleResolver.isActiveAdministrator(id)) {
                 Set<String> grants = permissions.getPermissionCodes(id);
                 if (grants.contains("growth_h4_read") || grants.contains("platform_a4_read")
+                        || hasVRankOverrideMakerGrants(grants)
                         || grants.contains(HardwareQuotaApproval.AUTHORITY)) return id;
             }
         } catch (NumberFormatException ignored) { }
@@ -158,7 +159,12 @@ public class A2AccessPolicy {
         Set<String> grants = permissions.getPermissionCodes(actorId);
         return H4GrowthApproval.supports(command) && grants.contains("growth_h4_read")
                 || A4RegistryApproval.supports(command) && grants.contains("platform_a4_read")
+                || AuditReplayBusinessPermissionGuard.isVRankOverride(command) && hasVRankOverrideMakerGrants(grants)
                 || HardwareQuotaApproval.supports(command) && grants.contains(HardwareQuotaApproval.AUTHORITY);
+    }
+
+    private boolean hasVRankOverrideMakerGrants(Set<String> grants) {
+        return grants.containsAll(Set.of("network_f1_read", "network_f1_promote_user", "platform_a2_write"));
     }
 
     boolean canDecide(Long actorId) {

@@ -70,6 +70,7 @@ public class VRankPromotionEngine {
     /** 阶代码列表,索引对齐 sort_order(V0=0..V8=8)。 */
     private static final List<String> VRANK_CODES = List.of(
             "V0", "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8");
+    static final int V8_INDEX = 8;
 
     private final TeamCommissionRepository commissionRepository;
     private final VRankPerformanceRepository performanceRepository;
@@ -110,20 +111,7 @@ public class VRankPromotionEngine {
         VRankEvaluationSnapshot snapshot = performanceRepository.computeSnapshot(userId);
 
         // 5. 逐阶判定 reachable:从 V0 起逐阶向上(不越级,与当前阶无关)
-        int reachableIndex = 0;
-        while (reachableIndex < VRANK_CODES.size() - 1) {
-            int targetIndex = reachableIndex + 1;
-            VRankConfigRow targetRank = rankByIndex(ranks, targetIndex);
-            if (targetRank == null) {
-                log.debug("V-Rank index {} has no config row, stop escalation for user {}", targetIndex, userId);
-                break;
-            }
-            if (meetsAllConditions(snapshot, targetRank)) {
-                reachableIndex = targetIndex;
-            } else {
-                break;
-            }
-        }
+        int reachableIndex = reachableRankIndex(snapshot, ranks);
 
         // 6. 晋升每个事件只前进一步,避免一次事件 V0→Vn 跳过中间等级奖励/审计。
         //    降级仍按真实 reachable 回落;permanent=true 时保留当前阶。
@@ -138,7 +126,7 @@ public class VRankPromotionEngine {
             newIndex = reachableIndex;
         }
 
-        if (newIndex == currentIndex) {
+        if (newIndex == currentIndex || (newIndex == V8_INDEX && newIndex > currentIndex)) {
             // 无阶变化:不写流水(避免噪声)。如后续需要"评估但未变"流水,可改此处。
             log.debug("V-Rank unchanged for user {}: {}", userId, currentRank);
             return currentRank;
@@ -178,6 +166,14 @@ public class VRankPromotionEngine {
         }
 
         return toCode;
+    }
+
+    static int reachableRankIndex(VRankEvaluationSnapshot snapshot, List<VRankConfigRow> ranks) {
+        int reachable = 0;
+        while (reachable < VRANK_CODES.size() - 1 && meetsAllConditions(snapshot, rankByIndex(ranks, reachable + 1))) {
+            reachable++;
+        }
+        return reachable;
     }
 
     /**
@@ -223,7 +219,7 @@ public class VRankPromotionEngine {
      * <p>"达到 V{n} 阶的腿数"业务语义:V3 阶要求 2 条 V2 腿 — 即 L1-L2 成员中 v_rank >= V2 的至少 2 条。
      * 故按 >= targetV 累加。
      */
-    private static int cumulativeLegCount(Map<Integer, Integer> legCounts, int targetV) {
+    static int cumulativeLegCount(Map<Integer, Integer> legCounts, int targetV) {
         int sum = 0;
         for (Map.Entry<Integer, Integer> entry : legCounts.entrySet()) {
             if (entry.getKey() != null && entry.getKey() >= targetV) {
