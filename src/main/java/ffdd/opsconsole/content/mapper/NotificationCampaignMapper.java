@@ -6,6 +6,8 @@ import ffdd.opsconsole.content.domain.AppNotificationView;
 import ffdd.opsconsole.content.domain.NotificationActionReceipt;
 import ffdd.opsconsole.content.domain.NotificationEventFact;
 import ffdd.opsconsole.content.domain.NotificationCampaignRepository.CampaignDeliveryFacts;
+import ffdd.opsconsole.device.application.AppTaskAssignmentService;
+import ffdd.opsconsole.device.mapper.AppTaskAssignmentMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -391,12 +393,13 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                          WHERE e.receipt_no=SUBSTRING_INDEX(n.cta_href,'receiptNo=',-1) AND e.user_id=n.user_id
                            AND e.asset='UVT' AND e.status='POSTED' AND e.is_deleted=0 AND e.amount>0) END AS earningUvt,
                    CASE WHEN LOWER(n.type)='earning_credited' THEN (
-                        SELECT d.device_name FROM nx_earning_event e JOIN nx_user_device d ON d.id=e.user_device_id
+                        SELECT d.name FROM nx_earning_event e JOIN nx_user_device d ON d.id=e.user_device_id
                          WHERE e.receipt_no=SUBSTRING_INDEX(n.cta_href,'receiptNo=',-1) AND e.user_id=n.user_id
                            AND e.is_deleted=0 ORDER BY e.id LIMIT 1) END AS earningDeviceName,
                    CASE WHEN LOWER(n.type)='earning_credited' THEN (
-                        SELECT t.task_class FROM nx_simulated_task t
-                         WHERE t.receipt_no=SUBSTRING_INDEX(n.cta_href,'receiptNo=',-1) LIMIT 1) END AS earningTaskClass
+            """ + AppTaskAssignmentMapper.EARNING_TASK_CLASS_BY_RECEIPT + """
+                        AND r.user_id=n.user_id AND r.receipt_no=SUBSTRING_INDEX(n.cta_href,'receiptNo=',-1)
+                   ) END AS earningTaskClass
               FROM nx_notification n
               LEFT JOIN nx_user_preference pref
                 ON pref.user_id = n.user_id AND pref.is_deleted = 0
@@ -453,7 +456,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
             out.put("usdt",money(earningUsdt));
             out.put("uvt",money(earningUvt));
             out.put("deviceName",earningDeviceName);
-            out.put("taskClass",earningTaskClass);
+            out.put("taskClass",AppTaskAssignmentService.canonicalTaskClassOrNull(earningTaskClass));
             return out;
         }
         private static String money(BigDecimal value) {

@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.push;
 
 import ffdd.opsconsole.content.push.mapper.EarningPushMapper;
 import ffdd.opsconsole.content.push.mapper.EarningPushMapper.*;
+import ffdd.opsconsole.device.application.AppTaskAssignmentService;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.config.StorageTime;
 import java.math.BigDecimal;
@@ -240,19 +241,19 @@ public class EarningPushService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         Set<Long> devices = new HashSet<>();
         receipts.stream().map(Receipt::deviceId).filter(Objects::nonNull).forEach(devices::add);
-        mapper.freezeTask(id, receipts.size(), devices.size(), usdt, uvt);
+        Receipt single = half && receipts.size() == 1 ? receipts.get(0) : null;
+        mapper.freezeTask(id, single == null ? null : single.receiptNo(), receipts.size(), devices.size(), usdt, uvt);
         String language = user.language();
         String title, body, cta;
         if ("DAILY".equals(kind)) {
             title = dailyTitle(language);
             body = amount(dailyDisplayAmount(usdt), dailyDisplayAmount(uvt), " ");
             cta = "/pages/me/notifications?section=notifications&filter=finance";
-        } else if (receipts.size() == 1) {
-            Receipt one = receipts.get(0);
+        } else if (single != null) {
             title = amount(usdt, uvt) + (dual(usdt, uvt) ? ""
                     : suffix("收益到账", "Earnings credited", "Thu nhập đã ghi có", language));
-            body = singleBody(one.deviceName(), one.taskClass(), language);
-            cta = "/pages/me/receipts?receiptNo=" + one.receiptNo();
+            body = singleBody(single.deviceName(), single.taskClass(), language);
+            cta = "/pages/me/receipts?receiptNo=" + single.receiptNo();
         } else {
             title = amount(usdt, uvt) + countSuffix(receipts.size(), language);
             body = deviceBody(devices.size(), language);
@@ -355,7 +356,8 @@ public class EarningPushService {
     private static String singleBody(String device, String taskClass, String language) {
         List<String> parts = new ArrayList<>();
         if (device != null && !device.isBlank()) parts.add(device);
-        if (taskClass != null && !taskClass.isBlank()) parts.add(taskClass);
+        String canonical = AppTaskAssignmentService.canonicalTaskClassOrNull(taskClass);
+        if (canonical != null) parts.add(canonical);
         if (parts.isEmpty()) {
             String first = language == null ? "" : language.trim().toLowerCase(Locale.ROOT);
             return first.startsWith("zh") ? "点击查看这笔收益" : first.startsWith("vi")

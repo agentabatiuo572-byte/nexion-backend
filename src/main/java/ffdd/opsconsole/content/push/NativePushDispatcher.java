@@ -3,14 +3,19 @@ package ffdd.opsconsole.content.push;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper.Delivery;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.UserAccountBlocklistVerifier;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.Map;
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.RecoverableDataAccessException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -27,6 +32,7 @@ public class NativePushDispatcher {
     private final TransactionTemplate transaction;
     private final TransactionTemplate discoveryTransaction;
     @Autowired private OpsKillSwitchService killSwitch;
+    @Autowired private NativePushService pushService;
 
     public NativePushDispatcher(NativePushMapper mapper, AuthSessionMapper sessions, UserAccountBlocklistVerifier blocklist,
             PlatformConfigFacade config, DirectPushClient provider, Environment env, PlatformTransactionManager transactions) {
@@ -63,6 +69,22 @@ public class NativePushDispatcher {
     }
 
     void send(Delivery delivery, int sandbox) {
+        try {
+            attemptSend(delivery, sandbox);
+        } catch (EarningRouteReadFailure failure) {
+            // The receipt read can mark the send transaction rollback-only.
+            transaction.executeWithoutResult(tx -> {
+                if (failure.expiresAt != null && !Instant.now().isBefore(failure.expiresAt)) {
+                    finish(delivery, "CANCELLED", "PUSH_EXPIRED", null, 0);
+                } else {
+                    String status = delivery.attempts() >= 5 ? "FAILED" : "RETRY";
+                    finish(delivery, status, "EARNING_ROUTE_READ_FAILED", null, retryDelay(delivery));
+                }
+            });
+        }
+    }
+
+    private void attemptSend(Delivery delivery, int sandbox) {
         // ponytail: serialize one installation through the bounded HTTP call. Replace with a fenced gateway if throughput requires it.
         // Locks stay held through send so an accepted registration/removal cannot race with an old binding's send.
         transaction.executeWithoutResult(tx -> {
@@ -84,17 +106,18 @@ public class NativePushDispatcher {
             if (effectiveExpiry != null && !java.time.Instant.now().isBefore(effectiveExpiry)) {
                 finish(delivery, "CANCELLED", "PUSH_EXPIRED", null, 0); return;
             }
-            if (notification.type().startsWith("EARNING_")
-                    && !earningEligible(notification.type(), delivery.userId(), installation)) {
+            boolean earning = notification.type().startsWith("EARNING_");
+            if (earning && !earningEligible(notification.type(), delivery.userId(), installation)) {
                 finish(delivery, "CANCELLED", "EARNING_INELIGIBLE", null, 0); return;
             }
-            if (notification.type().startsWith("EARNING_")) {
-                String href = notification.ctaHref();
-                if (href != null && href.startsWith("/pages/me/receipts?receiptNo=")) {
-                    String receipt = href.substring(href.indexOf('=') + 1);
-                    if (mapper.ownedReceipt(receipt, delivery.userId()) == 0) {
-                        finish(delivery, "CANCELLED", "EARNING_RECEIPT_UNAVAILABLE", null, 0); return;
-                    }
+            if (earning) {
+                try {
+                    // Push carries only the notification ID. Resolve checks the target again when tapped.
+                    pushService.earningRoute(notification, delivery.userId());
+                } catch (BizException invalidRoute) {
+                    finish(delivery, "CANCELLED", "EARNING_RECEIPT_UNAVAILABLE", null, 0); return;
+                } catch (TransientDataAccessException | RecoverableDataAccessException | DataAccessResourceFailureException failure) {
+                    throw new EarningRouteReadFailure(effectiveExpiry, failure);
                 }
             }
             if (delivery.attempts() > 5) { finish(delivery, "FAILED", "ATTEMPTS_EXHAUSTED", null, 0); return; }
@@ -119,7 +142,6 @@ public class NativePushDispatcher {
                     && NativePushService.TEST_APNS_TOPIC.equals(installation.apnsTopic())
                     && mapper.isNewSignInNotice(notification.id(), delivery.userId());
             DirectPushClient.Result result;
-            boolean earning = notification.type().startsWith("EARNING_");
             if (nova || appUpdate || support || earning || installation.apnsTopic() != null) {
                 String summary = DirectPushClient.message(notification.language());
                 if (support) summary = DirectPushClient.supportReply(notification.language());
@@ -148,13 +170,26 @@ public class NativePushDispatcher {
                 mapper.cancelPending(installation.installationId());
             } else {
                 if ("RETRY".equals(status) && delivery.attempts() >= 5) status = "FAILED";
-                finish(delivery, status, result.code(), result.taskId(), "BLOCKED".equals(status) ? 300 : Math.max(result.retryAfterSeconds(), Math.min(3600, 30 << Math.min(delivery.attempts(), 6))));
+                finish(delivery, status, result.code(), result.taskId(), "BLOCKED".equals(status) ? 300 : Math.max(result.retryAfterSeconds(), retryDelay(delivery)));
             }
         });
     }
 
     private void finish(Delivery d, String status, String error, String task, int delay) {
         mapper.finish(d.id(), d.leaseToken(), status, error, task, delay);
+    }
+
+    private static int retryDelay(Delivery delivery) {
+        return Math.min(3600, 30 << Math.min(delivery.attempts(), 6));
+    }
+
+    private static final class EarningRouteReadFailure extends RuntimeException {
+        private final Instant expiresAt;
+
+        private EarningRouteReadFailure(Instant expiresAt, RuntimeException cause) {
+            super(cause);
+            this.expiresAt = expiresAt;
+        }
     }
 
     private int idleDays() {

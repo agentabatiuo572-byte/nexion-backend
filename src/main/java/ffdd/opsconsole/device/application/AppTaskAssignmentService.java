@@ -338,6 +338,16 @@ public class AppTaskAssignmentService {
     }
 
     @Transactional(readOnly = true)
+    public boolean isReceiptReadable(long userId, String receiptNo) {
+        try {
+            receipt(userId, receiptNo);
+            return true;
+        } catch (BizException unavailable) {
+            return false;
+        }
+    }
+
+    @Transactional(readOnly = true)
     public ApiResult<AppComputeReceiptPage> receipts(Long userId, Integer offset, Integer limit) {
         return receipts(userId, offset, limit, null);
     }
@@ -1117,6 +1127,12 @@ public class AppTaskAssignmentService {
     }
 
     private String canonicalTaskClass(String taskClass) {
+        String canonical = canonicalTaskClassOrNull(taskClass);
+        if (canonical == null) throw new BizException(503, "TASK_ASSIGNMENT_CLASS_INVALID");
+        return canonical;
+    }
+
+    public static String canonicalTaskClassOrNull(String taskClass) {
         return switch (value(taskClass).toUpperCase(Locale.ROOT)) {
             case "IG", "IMAGE_GEN", "IMAGE_GENERATION" -> "IG";
             case "VG", "VIDEO_RENDER", "VIDEO_GENERATION" -> "VG";
@@ -1124,7 +1140,7 @@ public class AppTaskAssignmentService {
             case "FT", "FINE_TUNING", "FINE_TUNE" -> "FT";
             case "EM", "EMBEDDING", "EMBED" -> "EM";
             case "SP", "SPEECH", "SPEECH_PROCESSING" -> "SP";
-            default -> throw new BizException(503, "TASK_ASSIGNMENT_CLASS_INVALID");
+            default -> null;
         };
     }
 

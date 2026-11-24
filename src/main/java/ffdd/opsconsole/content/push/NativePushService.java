@@ -3,16 +3,21 @@ package ffdd.opsconsole.content.push;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper.Installation;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper.Notification;
+import ffdd.opsconsole.device.application.AppTaskAssignmentService;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.CurrentAppSessionService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
@@ -21,8 +26,11 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class NativePushService {
     public static final String TEST_APNS_TOPIC = "ai.uvel.app.test";
+    private static final String EARNING_RECEIPT_ROUTE = "/pages/me/receipts?receiptNo=";
+    private static final String EARNING_FINANCE_ROUTE = "/pages/me/notifications?section=notifications&filter=finance";
     private final NativePushMapper mapper;
     private final CurrentAppSessionService sessions;
+    @Autowired private AppTaskAssignmentService taskAssignments;
 
     public NativePushService(NativePushMapper mapper, CurrentAppSessionService sessions) {
         this.mapper = mapper;
@@ -110,11 +118,15 @@ public class NativePushService {
     }
 
     static Route route(Notification n) {
-        return route(n, java.time.Instant.now());
+        return route(n, Instant.now());
     }
 
-    static Route route(Notification n, java.time.Instant now) {
+    static Route route(Notification n, Instant now) {
         if (n == null) throw new BizException(404, "PUSH_NOTIFICATION_NOT_FOUND");
+        if (n.type().startsWith("EARNING_") && n.createdAt() != null
+                && n.createdAt().plusDays(7).isBefore(LocalDateTime.ofInstant(now, StorageTime.ZONE))) {
+            return new Route(Long.toString(n.id()), EARNING_FINANCE_ROUTE);
+        }
         String route = n.ctaHref();
         if (n.isNova()) {
             String page = switch (route == null ? "" : route) {
@@ -137,25 +149,34 @@ public class NativePushService {
             case "APP_UPDATE" -> route.equals("/pages/me/app-update");
             case "EARNING_FIRST", "EARNING_REALTIME" ->
                     route.matches("/pages/me/receipts\\?receiptNo=[A-Za-z0-9._:-]{1,96}");
-            case "EARNING_DAILY" ->
-                    route.equals("/pages/me/notifications?section=notifications&filter=finance");
+            case "EARNING_DAILY" -> route.equals(EARNING_FINANCE_ROUTE);
             case "EARNING_HALF_HOURLY" ->
-                    route.equals("/pages/me/notifications?section=notifications&filter=finance")
+                    route.equals(EARNING_FINANCE_ROUTE)
                             || route.matches("/pages/me/receipts\\?receiptNo=[A-Za-z0-9._:-]{1,96}");
             default -> false;
         };
         if (!allowed) throw new BizException(409, "PUSH_ROUTE_UNAVAILABLE");
-        if (n.type().startsWith("EARNING_") && n.createdAt() != null
-                && n.createdAt().plusDays(7).isBefore(java.time.LocalDateTime.now(
-                        ffdd.opsconsole.shared.config.StorageTime.ZONE))
-                && route.startsWith("/pages/me/receipts?")) {
-            return new Route(Long.toString(n.id()), "/pages/me/notifications?section=notifications&filter=finance");
-        }
         return new Route(Long.toString(n.id()), route);
     }
 
+    Route earningRoute(Notification notification, long user) {
+        Route target = route(notification);
+        if (target.route().startsWith(EARNING_RECEIPT_ROUTE)) {
+            String receiptNo = target.route().substring(EARNING_RECEIPT_ROUTE.length());
+            if (!receiptNo.equals(mapper.earningReceiptNo(notification.id(), user))
+                    || !taskAssignments.isReceiptReadable(user, receiptNo)) {
+                return new Route(target.notificationId(), EARNING_FINANCE_ROUTE);
+            }
+        }
+        return target;
+    }
+
     private Route ownedRoute(long notificationId, long user) {
-        Route target = route(mapper.ownedNotification(notificationId, user));
+        Notification notification = mapper.ownedNotification(notificationId, user);
+        if (notification != null && notification.type().startsWith("EARNING_")) {
+            return earningRoute(notification, user);
+        }
+        Route target = route(notification);
         String path = target.route();
         if (path.startsWith("/pages/earn/device-detail?id=")
                 && mapper.ownedDevice(Long.parseLong(path.substring(path.indexOf('=') + 1)), user) == 0)
@@ -168,9 +189,6 @@ public class NativePushService {
             throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
         if (path.startsWith("/pages/store/order-detail?id=")
                 && mapper.ownedOrder(path.substring(path.indexOf('=') + 1), user) == 0)
-            throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
-        if (path.startsWith("/pages/me/receipts?receiptNo=")
-                && mapper.ownedReceipt(path.substring(path.indexOf('=') + 1), user) == 0)
             throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
         return target;
     }
