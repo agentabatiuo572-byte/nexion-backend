@@ -55,10 +55,13 @@ import org.springframework.transaction.annotation.Propagation;
 @Slf4j
 public class LeadershipPoolService {
 
+    public static final String LEADERBOARD_PAYOUT_RULE = "CONCENTRATION_WARNING_ONLY";
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(6);
     private static final int SCALE = 6;
     private static final String CONFIG_KEY_TOP1_MAX_PCT = "team.ui.F.pool.top1MaxPct";
     private static final String CONFIG_KEY_TOP5_MAX_PCT = "team.ui.F.pool.top5MaxPct";
+    private static final BigDecimal DEFAULT_TOP1_WARNING_PCT = BigDecimal.valueOf(25);
+    private static final BigDecimal DEFAULT_TOP5_WARNING_PCT = BigDecimal.valueOf(60);
     private static final String CONFIG_KEY_PERIOD_PRIZE = "team.ui.F.pool.periodPrize";
     private static final String CONFIG_KEY_LEADERBOARD_POOL = "team.ui.F.leaderboard.poolUsd";
     private static final String CONFIG_KEY_LEADERBOARD_PAUSED = "team.ui.F.leaderboard.paused";
@@ -314,17 +317,18 @@ public class LeadershipPoolService {
             LeaderboardComputePoints.require(asBigDecimal(candidate.get("computePoints")));
         }
 
-        BigDecimal top1Cap = prizePool.multiply(configPercent(CONFIG_KEY_TOP1_MAX_PCT, new BigDecimal("25")));
-        BigDecimal top5Cap = prizePool.multiply(configPercent(CONFIG_KEY_TOP5_MAX_PCT, new BigDecimal("60")));
-        List<LeaderboardPayoutRow> payout = allocateLeaderboardPrize(prizePool, top1Cap, top5Cap, candidates);
+        BigDecimal top1Pct = leaderboardWarningPercent(CONFIG_KEY_TOP1_MAX_PCT, DEFAULT_TOP1_WARNING_PCT);
+        BigDecimal top5Pct = leaderboardWarningPercent(CONFIG_KEY_TOP5_MAX_PCT, DEFAULT_TOP5_WARNING_PCT);
+        List<LeaderboardPayoutRow> payout = allocateLeaderboardPrize(prizePool, candidates);
+        List<String> concentrationWarnings = leaderboardConcentrationWarnings(payout, prizePool, top1Pct, top5Pct);
         BigDecimal allocated = BigDecimal.ZERO;
         int settled = 0;
         for (LeaderboardPayoutRow row : payout) {
             if (row.amount().signum() <= 0) continue;
             String remark = "F4 leaderboard | settlementKey=" + settlementKey + "| period=" + period
                     + " rank=" + (row.index() + 1)
-                    + " top1MaxPct=" + configText(CONFIG_KEY_TOP1_MAX_PCT, "25")
-                    + " top5MaxPct=" + configText(CONFIG_KEY_TOP5_MAX_PCT, "60");
+                    + " top1MaxPct=" + top1Pct.toPlainString()
+                    + " top5MaxPct=" + top5Pct.toPlainString();
             Long eventId = commissionRepository.insertCommissionEvent(
                     row.userId(), COMMISSION_LEADERBOARD_PRIZE, null, CURRENCY_USDT,
                     row.amount(), ZERO, STATUS_UNLOCKED, 0, remark);
@@ -345,6 +349,8 @@ public class LeadershipPoolService {
                 .result("SUCCESS").riskLevel("HIGH")
                 .detail(linked("period", period, "settlementKey", settlementKey,
                         "configuredPool", prizePool, "allocated", allocated,
+                        "top1MaxPct", top1Pct.toPlainString(), "top5MaxPct", top5Pct.toPlainString(),
+                        "concentrationWarnings", concentrationWarnings,
                         "rankingMetric", LeaderboardComputePoints.METRIC,
                         "minComputePoints", minPoints, "settledUsers", settled, "reason", reason))
                 .build());
@@ -354,9 +360,7 @@ public class LeadershipPoolService {
     /** A closed leaderboard period: the settlement key and the business window it covers. */
     private record LeaderboardPeriod(String period, String key, LocalDateTime from, LocalDateTime to) { }
 
-    /** One ranked payout: the share the ranking grants, the amount the head caps leave, and why. */
-    private record LeaderboardPayoutRow(int index, Long userId, BigDecimal computePoints,
-            BigDecimal uncappedAmount, BigDecimal amount, List<String> limitedBy) { }
+    private record LeaderboardPayoutRow(int index, Long userId, BigDecimal computePoints, BigDecimal amount) { }
 
     /** Resolves and validates the closed period an approved payout names, exactly as it did before. */
     private LeaderboardPeriod resolveClosedLeaderboardPeriod(String period, String requestedPeriodKey) {
@@ -395,42 +399,35 @@ public class LeadershipPoolService {
         return new LeaderboardPeriod(canonical, key, from, to);
     }
 
-    /**
-     * The payout the settlement applies: a weight-based share per ranked user, reduced by the top1 and
-     * top5 head caps. The preview and the settlement both call this, so the numbers an operator sees
-     * before approving are the numbers that get paid.
-     */
-    private List<LeaderboardPayoutRow> allocateLeaderboardPrize(BigDecimal prizePool, BigDecimal top1Cap,
-            BigDecimal top5Cap, List<Map<String, Object>> candidates) {
+    /** The preview and settlement both allocate shares by rank weight, rounded down to six decimals. */
+    private List<LeaderboardPayoutRow> allocateLeaderboardPrize(BigDecimal prizePool,
+            List<Map<String, Object>> candidates) {
         BigDecimal totalWeight = BigDecimal.valueOf((long) candidates.size() * (candidates.size() + 1) / 2);
-        BigDecimal allocatedTop5 = BigDecimal.ZERO;
         List<LeaderboardPayoutRow> rows = new ArrayList<>(candidates.size());
         for (int index = 0; index < candidates.size(); index++) {
             Long userId = asLong(candidates.get(index).get("userId"));
             if (userId == null) continue;
             BigDecimal weight = BigDecimal.valueOf(candidates.size() - index);
-            BigDecimal uncapped = prizePool.multiply(weight).divide(totalWeight, SCALE, RoundingMode.DOWN);
-            BigDecimal share = uncapped;
-            List<String> limitedBy = new ArrayList<>(2);
-            if (index == 0 && share.compareTo(top1Cap) > 0) {
-                share = top1Cap;
-                limitedBy.add("top1MaxPct");
-            }
-            if (index < 5) {
-                BigDecimal remainingTop5 = top5Cap.subtract(allocatedTop5).max(BigDecimal.ZERO);
-                if (share.compareTo(remainingTop5) > 0) {
-                    share = remainingTop5;
-                    limitedBy.add("top5MaxPct");
-                }
-            }
-            // A rank the caps reduced to zero is still part of the ranking an operator confirms: keep
-            // the row so the preview shows every paid rank and the pre-cap total stays complete, and
-            // let the settlement skip it when it inserts events.
-            if (share.signum() > 0 && index < 5) allocatedTop5 = allocatedTop5.add(share);
+            BigDecimal share = prizePool.multiply(weight).divide(totalWeight, SCALE, RoundingMode.DOWN);
             rows.add(new LeaderboardPayoutRow(index, userId, asBigDecimal(candidates.get(index).get("computePoints")),
-                    uncapped, share, List.copyOf(limitedBy)));
+                    share));
         }
         return rows;
+    }
+
+    private static List<String> leaderboardConcentrationWarnings(List<LeaderboardPayoutRow> payout,
+            BigDecimal prizePool, BigDecimal top1Pct, BigDecimal top5Pct) {
+        BigDecimal top1Amount = BigDecimal.ZERO;
+        BigDecimal top5Amount = BigDecimal.ZERO;
+        for (LeaderboardPayoutRow row : payout) {
+            if (row.index() >= 5) break;
+            if (row.index() == 0) top1Amount = row.amount();
+            top5Amount = top5Amount.add(row.amount());
+        }
+        List<String> warnings = new ArrayList<>(2);
+        if (top1Amount.compareTo(prizePool.multiply(top1Pct.movePointLeft(2))) > 0) warnings.add("top1MaxPct");
+        if (top5Amount.compareTo(prizePool.multiply(top5Pct.movePointLeft(2))) > 0) warnings.add("top5MaxPct");
+        return warnings;
     }
 
     /** Same display label the leaderboard reads use for a member number. */
@@ -439,11 +436,7 @@ public class LeadershipPoolService {
         return "U" + "0".repeat(Math.max(0, Math.max(8, raw.length()) - raw.length())) + raw;
     }
 
-    /**
-     * Read-only payout preview for a leaderboard period: rank, real user, the share the ranking grants,
-     * the amount the head caps leave and which cap cut it. Nothing is locked, settled, audited or
-     * written, and no settlement key is claimed, so this can be read before the proposal.
-     */
+    /** Read-only preview of ranked payouts and concentration warnings for a leaderboard period. */
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> previewLeaderboardPayout(String requestedPeriod, String requestedPeriodKey) {
         LeaderboardPeriod period = resolveClosedLeaderboardPeriod(requestedPeriod, requestedPeriodKey);
@@ -455,8 +448,8 @@ public class LeadershipPoolService {
             case "week" -> 50;
             default -> 100;
         };
-        BigDecimal top1Pct = configPercent(CONFIG_KEY_TOP1_MAX_PCT, new BigDecimal("25"));
-        BigDecimal top5Pct = configPercent(CONFIG_KEY_TOP5_MAX_PCT, new BigDecimal("60"));
+        BigDecimal top1Pct = leaderboardWarningPercent(CONFIG_KEY_TOP1_MAX_PCT, DEFAULT_TOP1_WARNING_PCT);
+        BigDecimal top5Pct = leaderboardWarningPercent(CONFIG_KEY_TOP5_MAX_PCT, DEFAULT_TOP5_WARNING_PCT);
         boolean paused = configBoolean(CONFIG_KEY_LEADERBOARD_PAUSED, false);
         boolean alreadySettled = teamCommissionMapper.countLeaderboardBySettlementKey(period.key()) > 0;
         Map<String, Object> result = new LinkedHashMap<>();
@@ -468,43 +461,43 @@ public class LeadershipPoolService {
         result.put("rankingMetric", LeaderboardComputePoints.METRIC);
         result.put("minComputePoints", minPoints);
         result.put("topN", topN);
-        result.put("top1MaxPct", top1Pct.movePointRight(2).stripTrailingZeros().toPlainString());
-        result.put("top5MaxPct", top5Pct.movePointRight(2).stripTrailingZeros().toPlainString());
+        result.put("top1MaxPct", top1Pct.toPlainString());
+        result.put("top5MaxPct", top5Pct.toPlainString());
         if (prizePool.signum() <= 0) {
             result.put("available", false);
             result.put("reason", "F4_LEADERBOARD_POOL_NOT_CONFIGURED");
+            result.put("concentrationWarnings", List.of());
             result.put("rows", List.of());
             return ApiResult.ok(result);
         }
         List<Map<String, Object>> candidates = commissionRepository.leaderboardCandidates(
                 period.period(), period.from(), period.to(), minPoints, topN);
-        List<LeaderboardPayoutRow> payout = allocateLeaderboardPrize(prizePool, prizePool.multiply(top1Pct),
-                prizePool.multiply(top5Pct), candidates);
+        List<LeaderboardPayoutRow> payout = allocateLeaderboardPrize(prizePool, candidates);
         List<Map<String, Object>> rows = new ArrayList<>(payout.size());
-        BigDecimal beforeCaps = BigDecimal.ZERO;
         BigDecimal payable = BigDecimal.ZERO;
+        int paidCount = 0;
         for (LeaderboardPayoutRow row : payout) {
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("rank", row.index() + 1);
             entry.put("userId", row.userId());
             entry.put("userNo", leaderboardUserNo(row.userId()));
             entry.put("computePoints", row.computePoints());
-            entry.put("amountBeforeCaps", row.uncappedAmount());
+            entry.put("amountBeforeCaps", row.amount());
             entry.put("amount", row.amount());
-            entry.put("limitedBy", row.limitedBy());
+            entry.put("limitedBy", List.of());
             rows.add(entry);
-            beforeCaps = beforeCaps.add(row.uncappedAmount());
             payable = payable.add(row.amount());
+            if (row.amount().signum() > 0) paidCount++;
         }
         result.put("candidateCount", candidates.size());
         result.put("rankedCount", rows.size());
-        result.put("paidCount", (int) payout.stream().filter(row -> row.amount().signum() > 0).count());
-        result.put("amountBeforeCaps", beforeCaps);
+        result.put("paidCount", paidCount);
+        result.put("amountBeforeCaps", payable);
         result.put("payableAmount", payable);
-        result.put("reducedByCaps", beforeCaps.subtract(payable));
+        result.put("reducedByCaps", ZERO);
+        result.put("concentrationWarnings", leaderboardConcentrationWarnings(payout, prizePool, top1Pct, top5Pct));
         result.put("rows", rows);
-        boolean hasPayableRow = payout.stream().anyMatch(row -> row.amount().signum() > 0);
-        boolean available = !paused && !alreadySettled && hasPayableRow;
+        boolean available = !paused && !alreadySettled && paidCount > 0;
         result.put("available", available);
         result.put("reason", available ? "" : paused ? "F4_LEADERBOARD_PAUSED"
                 : alreadySettled ? "F4_LEADERBOARD_ALREADY_SETTLED"
@@ -595,17 +588,15 @@ public class LeadershipPoolService {
                 .filter(value -> value != null && value.signum() >= 0);
     }
 
-    private BigDecimal configPercent(String key, BigDecimal fallbackPct) {
-        return configMoney(key).orElse(fallbackPct).min(new BigDecimal("100")).movePointLeft(2);
+    private BigDecimal leaderboardWarningPercent(String key, BigDecimal fallbackPct) {
+        return configFacade.activeValue(key).map(value -> parseMoney(value.replace("%", "")))
+                .filter(value -> value.signum() >= 0).orElse(fallbackPct)
+                .min(BigDecimal.valueOf(100)).stripTrailingZeros();
     }
 
     private boolean configBoolean(String key, boolean fallback) {
         return configFacade.activeValue(key).map(value -> Set.of("on", "true", "1", "paused")
                 .contains(value.trim().toLowerCase())).orElse(fallback);
-    }
-
-    private String configText(String key, String fallback) {
-        return configFacade.activeValue(key).filter(value -> !value.isBlank()).orElse(fallback);
     }
 
     /**

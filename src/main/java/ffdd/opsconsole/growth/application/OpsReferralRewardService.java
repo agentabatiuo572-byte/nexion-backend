@@ -35,6 +35,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.time.Instant;
 import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import lombok.RequiredArgsConstructor;
@@ -947,8 +948,11 @@ public class OpsReferralRewardService {
         for (String record : priorPolicyRecords()) {
             String[] p = record.split("\\|", -1);
             if (p.length != 9) throw new IllegalStateException("H8_PRIOR_POLICY_INVALID");
+            Instant effectiveAt = Instant.parse(p[0]);
+            // The legacy default is not evidence that a reward policy covered this cohort.
+            if (Instant.EPOCH.equals(effectiveAt)) continue;
             policies.add(new PriorPolicy(
-                    LocalDateTime.ofInstant(Instant.parse(p[0]), DATABASE_ZONE),
+                    LocalDateTime.ofInstant(effectiveAt, DATABASE_ZONE),
                     LocalDateTime.ofInstant(Instant.parse(p[1]), DATABASE_ZONE),
                     p[2],
                     new EffectiveRewards(
@@ -1135,8 +1139,12 @@ public class OpsReferralRewardService {
                         OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                         "REFERRAL_REWARD_EFFECTIVE_AT_MISSING"));
         try {
-            return LocalDateTime.ofInstant(Instant.parse(raw), DATABASE_ZONE);
-        } catch (RuntimeException ex) {
+            Instant effectiveAt = Instant.parse(raw);
+            if (Instant.EPOCH.equals(effectiveAt)) {
+                throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_EFFECTIVE_AT_INVALID");
+            }
+            return LocalDateTime.ofInstant(effectiveAt, DATABASE_ZONE);
+        } catch (DateTimeException ex) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_EFFECTIVE_AT_INVALID");
         }
     }

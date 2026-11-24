@@ -22,6 +22,7 @@ import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.market.application.G4ParamApproval;
 import ffdd.opsconsole.team.application.F5CommissionService;
+import ffdd.opsconsole.team.application.LeadershipPoolService;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.team.application.HardwareQuotaApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
@@ -711,6 +712,12 @@ public class AuditReplayBusinessPermissionGuard {
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
         if (isF5StatusUiAlias(command)) {
             return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
+        }
+        if (command != null && "F".equalsIgnoreCase(command.domain())
+                && "f4_leaderboard_period_payout".equalsIgnoreCase(text(command.op()).trim())) {
+            Map<String, Object> params = new LinkedHashMap<>(command.params() == null ? Map.of() : command.params());
+            params.put("payoutRule", LeadershipPoolService.LEADERBOARD_PAYOUT_RULE);
+            return ApiResult.ok(new AuditReplayCommand(command.domain(), command.op(), params));
         }
         if (H4GrowthApproval.supports(command)) {
             return ApiResult.ok(h4GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));

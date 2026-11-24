@@ -2242,7 +2242,7 @@ public class OpsTeamService implements AuditReplayable {
      * 费率/比例上调 = 放大;门槛下调 = 放大。复盖:
      *   F2 unilevel.L{n}(usdtRate 上调)/promo.weekMultiplier 上调/peer.rate 上调
      *   F3 binary.matchRate 上调 / binary.threshold 下调
-     *   F4 pool.ratio/top1MaxPct/top5MaxPct/periodPrize 上调
+     *   F4 pool.ratio/monthlyCap/periodPrize 与 leaderboard.poolUsd 上调
      * 新值解析失败由 validateUiConfig 上层报错；F2 旧门槛缺失或非法值修复会恢复结算，按放宽预检。
      */
     private static boolean loosensPayoutControlUiKey(PlatformConfigFacade configs, String key, String oldValue, String newValue) {
@@ -2287,15 +2287,6 @@ public class OpsTeamService implements AuditReplayable {
                 case "F.pool.ratio" -> LeadershipPoolConfigGuard.isConfiguredRateIncrease(oldValue, newValue);
                 case "F.binary.matchRate" -> BinarySettlementPolicyProvider.normalizeMatchRate(newValue)
                         .compareTo(currentBinaryMatchRate(oldValue)) > 0;
-                case "F.pool.top1MaxPct", "F.pool.top5MaxPct" -> {
-                    // These two caps are stored and settled as percentage points; compare the same unit.
-                    // An unconfigured cap settles with LeadershipPoolService's default (25 / 60), never 0.
-                    BigDecimal current = parseDecimal(
-                            StringUtils.hasText(oldValue) ? oldValue
-                                    : "F.pool.top1MaxPct".equals(key) ? "25" : "60",
-                            BigDecimal.ZERO);
-                    yield parseDecimal(newValue, BigDecimal.ZERO).compareTo(current) > 0;
-                }
                 // 门槛下调 = 放大(更低门槛触发更多结算)
                 case "F.binary.threshold" -> {
                     BigDecimal next = BinarySettlementPolicyProvider.normalizeThreshold(newValue);
@@ -5320,6 +5311,9 @@ public class OpsTeamService implements AuditReplayable {
                         "source", "F4_A2_APPROVED_REPLAY"));
             }
             case "f4_leaderboard_period_payout" -> {
+                if (!LeadershipPoolService.LEADERBOARD_PAYOUT_RULE.equals(str(p, "payoutRule"))) {
+                    return ApiResult.fail(409, "F4_LEADERBOARD_PAYOUT_REVIEW_REQUIRED");
+                }
                 String period = str(p, "period");
                 int settled = leadershipPoolService.settleApprovedLeaderboardPeriod(
                         period, str(p, "periodKey"), operator, reason);
