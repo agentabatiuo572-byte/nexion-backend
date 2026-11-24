@@ -8,6 +8,7 @@ import ffdd.opsconsole.shared.exception.BizException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import org.springframework.dao.DataAccessException;
@@ -43,18 +44,18 @@ public class SupportPerformanceCache {
 
     public SupportPerformanceCache(StringRedisTemplate redis) { this.redis = redis; }
 
-    public SupportPerformance.Snapshot current() {
+    public Optional<SupportPerformance.Snapshot> current() {
         final String payload;
         try { payload = redis.opsForValue().get(SNAPSHOT_KEY); }
         catch (DataAccessException failure) { throw unavailable(); }
-        if (payload == null || payload.isBlank()) throw new BizException(503, "SUPPORT_PERFORMANCE_CACHE_NOT_READY");
+        if (payload == null) return Optional.empty();
         Decoded previous = decoded.get();
-        if (previous != null && previous.payload().equals(payload)) return previous.snapshot();
+        if (previous != null && previous.payload().equals(payload)) return Optional.of(previous.snapshot());
         try {
             SupportPerformance.Snapshot snapshot = json.readValue(payload, SupportPerformance.Snapshot.class);
             if (snapshot.asOf().isAfter(Instant.now().plusSeconds(5))) throw invalid();
             decoded.set(new Decoded(payload, snapshot));
-            return snapshot;
+            return Optional.of(snapshot);
         } catch (java.io.IOException | RuntimeException failure) {
             throw new BizException(503, "SUPPORT_PERFORMANCE_CACHE_INVALID");
         }

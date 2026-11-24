@@ -15,6 +15,7 @@ public final class SupportPerformance {
     /** First instant of the new performance history, inclusive. */
     public static final Instant HISTORY_START = Instant.parse("2026-11-20T14:57:06.829277Z");
 
+    public enum Generation { UPGRADING, READY }
     public enum Coverage { COMPLETE, PARTIAL, UNKNOWN, FAILED }
 
     public enum Reason {
@@ -31,9 +32,9 @@ public final class SupportPerformance {
             catch (DateTimeParseException | NullPointerException failure) { throw invalid(); }
             if (!parsed.toString().equals(month) || from == null || to == null || !from.isBefore(to)
                     || businessZone == null || coverage == null || reasons == null) throw invalid();
-            try { ZoneId.of(businessZone); } catch (RuntimeException failure) { throw invalid(); }
+            if (!ZoneId.getAvailableZoneIds().contains(businessZone)) throw invalid();
             reasons = List.copyOf(reasons);
-            if (coverage == Coverage.COMPLETE && !reasons.isEmpty()) throw invalid();
+            if ((coverage == Coverage.COMPLETE) != reasons.isEmpty()) throw invalid();
         }
     }
 
@@ -42,11 +43,11 @@ public final class SupportPerformance {
      * generation; {@code asOf} is the shared cutoff, never a per-month clock.
      */
     public record Snapshot(String definitionVersion, String sourceVersion, Instant historyStart,
-                           Instant asOf, List<Month> months) {
+                           Instant asOf, Generation generation, List<Month> months) {
         public Snapshot {
             if (!DEFINITION_VERSION.equals(definitionVersion) || sourceVersion == null
                     || sourceVersion.isBlank() || historyStart == null || !HISTORY_START.equals(historyStart)
-                    || asOf == null || asOf.isBefore(HISTORY_START) || months == null) throw invalid();
+                    || asOf == null || asOf.isBefore(HISTORY_START) || generation == null || months == null) throw invalid();
             months = List.copyOf(months);
             if (!months.isEmpty()) {
                 Month first = months.get(0), last = months.get(months.size() - 1);
@@ -95,7 +96,7 @@ public final class SupportPerformance {
             months.add(new Month(month.toString(), from, to, zone, Coverage.UNKNOWN,
                     List.of(Reason.GENERATION_UPGRADING)));
         }
-        return new Snapshot(DEFINITION_VERSION, sourceVersion, HISTORY_START, asOf, months);
+        return new Snapshot(DEFINITION_VERSION, sourceVersion, HISTORY_START, asOf, Generation.UPGRADING, months);
     }
 
     /** Stable source identity for one analytics cutoff and subject set; it is not an HTTP version. */
