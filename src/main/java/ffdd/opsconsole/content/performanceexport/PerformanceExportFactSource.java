@@ -28,10 +28,12 @@ public interface PerformanceExportFactSource {
 
     record Coverage(Status status, List<String> reasons) { }
 
-    record MonthOption(String month, String availability, List<String> reasonCodes) { }
+    record MonthOption(String month, String from, String to, String businessZone,
+                       String availability, List<String> reasonCodes) { }
 
     record Table(Type type, List<String> columns, List<Map<String, String>> rows, Coverage coverage,
                  Integer restrictedHistoryRows, List<Long> disclosedCustomerIds) { }
+    record Preparation(Window window, String blocker, java.util.function.Function<Type, Table> readTable) { }
 
     /** Real supported months from the formal first month; empty means no published catalog yet. */
     List<MonthOption> months();
@@ -42,6 +44,11 @@ public interface PerformanceExportFactSource {
     Table read(Type type, Window window, Scope scope);
 
     String newRequestBlocker(Window window);
+
+    default Preparation prepare(String month, Scope scope) {
+        var window = window(month, scope);
+        return new Preparation(window, newRequestBlocker(window), type -> read(type, window, scope));
+    }
 
     final class Columns {
         private Columns() { }

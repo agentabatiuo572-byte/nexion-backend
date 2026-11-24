@@ -12,8 +12,10 @@ import java.util.Map;
 public interface FinanceSupportPaymentFactsFacade extends DomainFacade {
     SupportPaymentFacts.Snapshot readHistory(Collection<Long> customers);
     default Map<Long, BigDecimal> bankTopupOriginalAmounts(List<SupportPaymentFacts.Fact> provedFacts) { return Map.of(); }
+    default Map<Long, ChainTopupEvidence> chainTopupEvidence(List<SupportPaymentFacts.Fact> provedFacts) { return Map.of(); }
     default List<WalletReference> walletReferences(Collection<Long> customers, Instant from, Instant to) { return List.of(); }
 
+    record ChainTopupEvidence(String network, BigDecimal fee) { }
     record WalletReference(long ledgerId, long customerId, String businessNo, String kind, BigDecimal amount, Instant at) { }
     default BeforeSource beforeSource(long customer, SupportPaymentFacts.Source source, String stableBusinessKey) {
         return beforeSource(customer,source,stableBusinessKey,null);

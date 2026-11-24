@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.application;
 import ffdd.opsconsole.content.domain.SupportPerformance;
 import ffdd.opsconsole.content.domain.SupportPerformance.ObservedDeposit;
 import ffdd.opsconsole.content.mapper.SupportPerformanceHistoryMapper;
+import ffdd.opsconsole.content.mapper.SupportLeaderboardMapper;
 import ffdd.opsconsole.finance.facade.SupportDirectPurchaseFactsFacade;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedDepositCorrection;
@@ -35,15 +36,17 @@ public class SupportPerformanceSampler {
     private final SupportPerformanceHistoryMapper history;
     private final SupportPerformanceFirstPaymentService firstPayments;
     private final FinanceSupportPaymentFactsFacade paymentsEvidence;
+    private final SupportLeaderboardMapper leaderboard;
 
     public SupportPerformanceSampler(SupportPerformanceCache cache, SupportDirectPurchaseFactsFacade directPurchases,
             SupportPerformanceHistoryMapper history, SupportPerformanceFirstPaymentService firstPayments,
-            FinanceSupportPaymentFactsFacade paymentsEvidence) {
+            FinanceSupportPaymentFactsFacade paymentsEvidence, SupportLeaderboardMapper leaderboard) {
         this.cache = cache;
         this.directPurchases = directPurchases;
         this.history = history;
         this.firstPayments = firstPayments;
         this.paymentsEvidence = paymentsEvidence;
+        this.leaderboard = leaderboard;
     }
 
     Capture prepare(Instant asOf, Collection<Long> subjects, SupportPaymentFacts.Snapshot payments) {
@@ -67,26 +70,29 @@ public class SupportPerformanceSampler {
             return new Capture(directory, deposits, purchases,
                     paymentsEvidence.walletReferences(subjects, directory.historyStart(), asOf));
         } catch (RuntimeException failure) {
-            cache.markRefreshFailed();
+            cache.markRefreshFailed(asOf);
             log.warn("Support performance v2 observation unavailable type={}", failure.getClass().getSimpleName());
             return null;
         }
     }
 
-    SupportPerformance.Snapshot freeze(Capture capture, SupportAnalyticsFactSnapshot source) {
+    SupportPerformanceCache.DaySnapshot freeze(Capture capture, SupportAnalyticsFactSnapshot source) {
         if (capture.withdrawalReadFailed) {
-            cache.markRefreshFailed();
+            cache.markRefreshFailed(capture.directory.asOf());
             log.warn("Support performance v2 funds source read failed, previous generation retained");
             return null;
         }
         try {
             var directory = capture.directory;
+            var historyReader = cache.historyReader(history, directory.asOf());
             var attributions = SupportPerformanceDepositAttribution.resolve(source, capture.deposits, capture.depositCorrections);
+            var chainTopups = paymentsEvidence.chainTopupEvidence(source.payments().facts().stream()
+                    .filter(fact -> attributions.verifiedOriginals().containsKey(fact.factId())).toList());
             var events = SupportPerformanceAggregation.events(source.payments(), capture.deposits,
                     capture.depositCorrections, capture.withdrawals, capture.withdrawalReferences, capture.purchases.facts(),
-                    capture.purchases.refunds(), capture.references, directory.historyStart(), directory.asOf(), attributions, history);
-            var first = SupportPerformanceAggregation.firstPayments(
-                    firstPayments.select(source.payments(), capture.purchases, directory.asOf()), history);
+                    capture.purchases.refunds(), capture.references, directory.historyStart(), directory.asOf(), attributions, historyReader, chainTopups);
+            var firstSource = firstPayments.select(source.payments(), capture.purchases, directory.asOf());
+            var first = SupportPerformanceAggregation.firstPayments(firstSource, historyReader);
             var bindings = history.bindingHistory(LocalDateTime.ofInstant(directory.asOf(), ZoneOffset.UTC)).stream()
                     .map(row -> new SupportPerformance.Binding(row.customerId(), new SupportPerformance.EventAttribution(
                             row.groupId() == null ? SupportPerformance.AttributionState.AGENT_WITHOUT_GROUP
@@ -103,11 +109,12 @@ public class SupportPerformanceSampler {
                 months.add(coverage(month, monthEvents, first, reviews, capture));
                 subtotals.addAll(cache.monthlySubtotals(month, monthEvents));
             }
-            return new SupportPerformance.Snapshot(directory.definitionVersion(), directory.sourceVersion(),
+            var snapshot = new SupportPerformance.Snapshot(directory.definitionVersion(), directory.sourceVersion(),
                     directory.historyStart(), directory.asOf(), SupportPerformance.Generation.READY, months, events,
-                    capture.purchases.issues(), subtotals, bindings, first);
+                    capture.purchases.issues(), subtotals, bindings, first, firstSource.coveredCustomers(), null);
+            return new SupportPerformanceCache.DaySnapshot(snapshot, SupportPerformanceCache.RankEvidence.capture(leaderboard));
         } catch (RuntimeException failure) {
-            cache.markRefreshFailed();
+            cache.markRefreshFailed(capture.directory.asOf());
             log.warn("Support performance v2 generation failed type={}", failure.getClass().getSimpleName());
             return null;
         }
@@ -136,11 +143,18 @@ public class SupportPerformanceSampler {
                 reasons.add(SupportPerformance.Reason.ATTRIBUTION_UNKNOWN);
             }
             if (channel.endsWith("DIRECT_PURCHASE")) {
-                if (capture.purchases.issues().stream().anyMatch(issue -> "EXTERNAL_REFUND_UNVERIFIED".equals(issue.reason()))) {
-                    reasons.add(SupportPerformance.Reason.EXTERNAL_REFUND_UNVERIFIED);
-                }
-                if (capture.purchases.issues().stream().anyMatch(issue -> "MISSING_PAYMENT_TIME".equals(issue.reason()))) {
-                    reasons.add(SupportPerformance.Reason.PAYMENT_TIME_UNVERIFIED);
+                for (var issue : capture.purchases.issues()) {
+                    if (issue.paymentMethod() != null && ("HDPAY_BANK".equals(issue.paymentMethod())
+                            != "VN_BANK_DIRECT_PURCHASE".equals(channel))) continue;
+                    if ("EXTERNAL_REFUND_UNVERIFIED".equals(issue.reason())) {
+                        if (issue.paidAt() == null || issue.paidAt().isBefore(month.to())) {
+                            reasons.add(SupportPerformance.Reason.EXTERNAL_REFUND_UNVERIFIED);
+                        }
+                    } else if (issue.paidAt() == null || month.contains(issue.paidAt())) {
+                        reasons.add("MISSING_PAYMENT_TIME".equals(issue.reason())
+                                ? SupportPerformance.Reason.PAYMENT_TIME_UNVERIFIED
+                                : SupportPerformance.Reason.SOURCE_INCOMPLETE);
+                    }
                 }
             } else if (withdrawal && capture.withdrawalReferences.stream().anyMatch(reference -> reference.effectiveAt() == null)) {
                 reasons.add(SupportPerformance.Reason.WITHDRAWAL_TIME_UNVERIFIED);
@@ -178,16 +192,20 @@ public class SupportPerformanceSampler {
                 status, List.copyOf(monthReasons), channels, firstComplete);
     }
 
-    void publish(SupportPerformance.Snapshot snapshot) {
+    void publish(SupportPerformanceCache.DaySnapshot publication) {
         try {
-            cache.publish(snapshot);
+            cache.publish(publication.snapshot(), publication.evidence());
         } catch (BizException failure) {
-            cache.markRefreshFailed();
+            cache.markRefreshFailed(publication.snapshot().asOf());
             log.warn("Support performance v2 publication unavailable reason={}", failure.getMessage());
         } catch (RuntimeException failure) {
-            cache.markRefreshFailed();
+            cache.markRefreshFailed(publication.snapshot().asOf());
             log.warn("Support performance v2 publication failed type={}", failure.getClass().getSimpleName());
         }
+    }
+
+    void markSourceFailed(Instant asOf) {
+        if (enabled && !asOf.isBefore(SupportPerformance.HISTORY_START)) cache.markRefreshFailed(asOf);
     }
 
     static final class Capture {

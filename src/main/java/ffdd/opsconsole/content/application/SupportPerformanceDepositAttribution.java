@@ -80,7 +80,9 @@ final class SupportPerformanceDepositAttribution {
         if ("UNASSIGNED".equals(row.agentStatus()) && "UNASSIGNED".equals(row.groupStatus())) {
             return new EventAttribution(AttributionState.UNASSIGNED, null, null);
         }
-        return new EventAttribution(AttributionState.UNKNOWN, row.agentAdminId(), row.groupId());
+        return new EventAttribution(AttributionState.UNKNOWN,
+                "KNOWN".equals(row.agentStatus()) ? row.agentAdminId() : null,
+                "KNOWN".equals(row.groupStatus()) ? row.groupId() : null);
     }
 
     private record OriginalAttribution(long customerId, EventAttribution attribution) { }

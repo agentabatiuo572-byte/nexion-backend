@@ -8,6 +8,7 @@ import ffdd.opsconsole.content.mapper.SupportPerformanceHistoryMapper.Point;
 import ffdd.opsconsole.finance.facade.SupportDirectPurchaseFactsFacade.Fact;
 import ffdd.opsconsole.finance.facade.SupportDirectPurchaseFactsFacade.Refund;
 import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade.WalletReference;
+import ffdd.opsconsole.finance.facade.FinanceSupportPaymentFactsFacade.ChainTopupEvidence;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedDepositCorrection;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.ConfirmedWithdrawal;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade.WithdrawalReference;
@@ -30,7 +31,9 @@ public final class SupportPerformanceAggregation {
             List<ObservedDeposit> deposits, List<ConfirmedDepositCorrection> corrections,
             List<ConfirmedWithdrawal> withdrawals, List<WithdrawalReference> withdrawalReferences,
             List<Fact> purchases, List<Refund> refunds, List<WalletReference> walletReferences, Instant from, Instant to,
-            SupportPerformanceDepositAttribution.Result attribution, SupportPerformanceHistoryMapper history) {
+            SupportPerformanceDepositAttribution.Result attribution,
+            java.util.function.Function<List<Point>, Map<String, List<Evidence>>> history,
+            Map<Long, ChainTopupEvidence> chainTopups) {
         var originals = new HashMap<String, SupportPaymentFacts.Fact>();
         for (var fact : payments.facts()) {
             if (fact.kind() == SupportPaymentFacts.Kind.DEPOSIT && SupportPerformance.CURRENCY.equals(fact.currency())
@@ -52,20 +55,23 @@ public final class SupportPerformanceAggregation {
             var original = originals.get(deposit.factId());
             if (original == null || original.customerId() != deposit.customerId()) continue;
             var assigned = normalized(attribution.events().get(deposit.factId()));
+            var chain = chainTopups.get(original.ledgerId());
             events.putIfAbsent(deposit.factId(), new Event(deposit.factId(), deposit.customerId(), assigned,
                     archivedInterval(assigned, historical.get(deposit.factId())),
-                    Kind.INFLOW, depositChannel(original), null, false, deposit.sourceBusinessId(), null, null,
+                    Kind.INFLOW, depositChannel(original), chain == null ? null : chain.network(), false, deposit.sourceBusinessId(), null, null,
                     deposit.creditedAt(), deposit.creditedAt(), "CREDITED", deposit.creditedUsdt(),
-                    deposit.creditedUsdt(), null, null, null, null, null, deposit.creditedUsdt(), deposit.receivedVnd()));
+                    deposit.creditedUsdt(), null, null, null, chain == null ? null : chain.fee(), null,
+                    deposit.creditedUsdt(), deposit.receivedVnd()));
         }
         for (var correction : corrections) {
             var original = originals.get(correction.originalFactId());
             if (original == null || original.customerId() != correction.customerId()) continue;
             var assigned = normalized(attribution.events().get(correction.operationNo()));
+            var chain = chainTopups.get(original.ledgerId());
             String id = "CORRECTION:" + correction.operationNo();
             events.putIfAbsent(id, new Event(id, correction.customerId(), assigned,
                     archivedInterval(assigned, historical.get(correction.originalFactId())),
-                    Kind.CORRECTION, depositChannel(original), null, false, correction.operationNo(),
+                    Kind.CORRECTION, depositChannel(original), chain == null ? null : chain.network(), false, correction.operationNo(),
                     original.sourceBusinessId(), correction.originalFactId(), correction.effectiveAt(), correction.effectiveAt(), correction.phase(),
                     correction.signedUsdt().abs(), correction.signedUsdt(), null, null, null, null, null, null, null));
         }
@@ -112,12 +118,11 @@ public final class SupportPerformanceAggregation {
                     Kind.INFLOW, channel, network, true, purchase.orderNo(), null, null,
                     purchase.paidAt(), purchase.paidAt(), "DELIVERED", purchase.businessAmountUsdt(),
                     purchase.businessAmountUsdt(), purchase.roundingAdjustmentUsdt(), purchase.totalUsdt(), null,
-                    purchase.channelFeeUsdt(), purchase.networkFeeUsdt(), null, purchase.paidVnd()));
+                    purchase.channelFeeUsdt(), network == null ? null : purchase.networkFeeUsdt(), null, purchase.paidVnd()));
         }
         for (var refund : refunds) {
             var original = events.get("DIRECT_PURCHASE:" + refund.orderNo());
             if (original == null || original.customerId() != refund.customerId()
-                    || !SupportPerformance.contains(from, to, original.effectiveAt())
                     || !SupportPerformance.contains(from, to, refund.confirmedAt())) continue;
             String id = "DIRECT_REFUND:" + refund.intentNo();
             events.putIfAbsent(id, new Event(id, refund.customerId(), original.attribution(), original.bindingPeriod(),
@@ -175,7 +180,7 @@ public final class SupportPerformanceAggregation {
     private static Map<String, List<Evidence>> history(Collection<SupportPaymentFacts.Fact> deposits,
             ZoneId paymentZone, List<ConfirmedWithdrawal> withdrawals, List<WithdrawalReference> withdrawalReferences,
             List<Fact> purchases, List<SupportPaymentFacts.Fact> references, List<WalletReference> walletReferences,
-            SupportPerformanceHistoryMapper mapper) {
+            java.util.function.Function<List<Point>, Map<String, List<Evidence>>> reader) {
         var points = new LinkedHashMap<String, Point>();
         for (var deposit : deposits) {
             String id = deposit.factId();
@@ -203,29 +208,17 @@ public final class SupportPerformanceAggregation {
             String id = purchaseKey(purchase);
             points.putIfAbsent(id, new Point(id, purchase.customerId(), utc(purchase.paidAt())));
         }
-        return history(List.copyOf(points.values()), mapper);
-    }
-
-    private static Map<String, List<Evidence>> history(List<Point> batch, SupportPerformanceHistoryMapper mapper) {
-        Map<String, List<Evidence>> result = new HashMap<>();
-        for (int offset = 0; offset < batch.size(); offset += 200) {
-            mapper.atEvents(batch.subList(offset, Math.min(offset + 200, batch.size()))).forEach(row ->
-                    result.computeIfAbsent(row.eventId(), unused -> new ArrayList<>()).add(row));
-        }
-        return result;
+        return reader.apply(List.copyOf(points.values()));
     }
 
     static List<FirstPayment> firstPayments(SupportPerformanceFirstPaymentService.Snapshot first,
-            SupportPerformanceHistoryMapper mapper) {
+            java.util.function.Function<List<Point>, Map<String, List<Evidence>>> reader) {
         var payments = first.observedFirst().values().stream().sorted(Comparator
                 .comparingLong(SupportPerformanceFirstPaymentService.ObservedPayment::customerId)).toList();
         var points = payments.stream().map(payment -> new Point(payment.factId(), payment.customerId(),
                 utc(payment.paidAt()))).toList();
-        var history = history(points, mapper);
-        var ready = first.legacyHistory().stream().filter(h -> h.status() == SupportPaymentFacts.Status.READY)
-                .map(SupportPaymentFacts.FirstHistory::customerId).collect(Collectors.toSet());
-        var gaps = first.directIssues().stream().filter(issue -> !"EXTERNAL_REFUND_UNVERIFIED".equals(issue.reason()))
-                .map(issue -> issue.customerId()).collect(Collectors.toSet());
+        var history = reader.apply(points);
+        var ready = first.coveredCustomers();
         return payments.stream().map(payment -> {
             String channel = switch (payment.source()) {
                 case "DEPOSIT_ORDER" -> payment.evidenceId().matches("CR-[0-9]+") ? "CHAIN_TOPUP" : null;
@@ -237,7 +230,7 @@ public final class SupportPerformanceAggregation {
             return new FirstPayment(payment.customerId(), payment.factId(), payment.orderNo(), payment.kind().name(),
                     channel, payment.currency(), payment.amount(), payment.paidAt(),
                     attribution(unique(history.get(payment.factId()))),
-                    ready.contains(payment.customerId()) && !gaps.contains(payment.customerId()));
+                    ready.contains(payment.customerId()));
         }).toList();
     }
 
@@ -248,23 +241,27 @@ public final class SupportPerformanceAggregation {
     }
 
     private static EventAttribution normalized(EventAttribution value) {
-        return value == null || value.state() == AttributionState.UNKNOWN ? UNKNOWN : value;
+        return value == null ? UNKNOWN : value;
     }
 
     private static EventAttribution attribution(Evidence row) {
         if (row == null || row.boundaryUncertain()) return UNKNOWN;
         if (row.bindingId() == null) {
-            return row.routeId() != null
-                    ? new EventAttribution(AttributionState.UNASSIGNED, null, null) : UNKNOWN;
+            if (row.routeId() == null) return UNKNOWN;
+            return row.routeGroupId() == null ? new EventAttribution(AttributionState.UNASSIGNED, null, null)
+                    : new EventAttribution(AttributionState.UNKNOWN, null, row.routeGroupId());
         }
-        if (row.membershipId() == null || row.qualificationId() == null || !"ENABLED".equals(row.qualificationState())
-                || (row.routeId() != null && !Objects.equals(row.routeGroupId(), row.groupId()))) return UNKNOWN;
+        if (row.qualificationId() == null || !"ENABLED".equals(row.qualificationState())) return UNKNOWN;
+        if (row.membershipId() == null || (row.routeId() != null && !Objects.equals(row.routeGroupId(), row.groupId()))) {
+            return new EventAttribution(AttributionState.UNKNOWN, row.agentId(), null);
+        }
         return new EventAttribution(row.groupId() == null ? AttributionState.AGENT_WITHOUT_GROUP : AttributionState.ASSIGNED,
                 row.agentId(), row.groupId());
     }
 
     private static BindingPeriod interval(EventAttribution assigned, Evidence row) {
-        if (assigned.agentId() == null) return null;
+        if (assigned.agentId() == null || assigned.state() == AttributionState.UNKNOWN || row == null
+                || row.bindingFrom() == null || row.groupFrom() == null) return null;
         var from = row.bindingFrom().isAfter(row.groupFrom()) ? row.bindingFrom() : row.groupFrom();
         var to = row.bindingTo();
         if (to == null || row.groupTo() != null && row.groupTo().isBefore(to)) to = row.groupTo();
@@ -280,10 +277,14 @@ public final class SupportPerformanceAggregation {
         var result = new ArrayList<MonthlySubtotal>();
         for (Month month : months) {
             var groups = events.stream().filter(event -> month.contains(event.effectiveAt()))
-                    .collect(Collectors.groupingBy(Event::attribution, LinkedHashMap::new, Collectors.toList()));
+                    .collect(Collectors.groupingBy(event -> subtotalAttribution(event.attribution()), LinkedHashMap::new, Collectors.toList()));
             groups.forEach((attribution, rows) -> result.add(subtotal(month.month(), attribution, rows)));
         }
         return List.copyOf(result);
+    }
+
+    public static EventAttribution subtotalAttribution(EventAttribution attribution) {
+        return attribution.state() == AttributionState.UNKNOWN ? UNKNOWN : attribution;
     }
 
     public static MonthlySubtotal subtotal(String month, EventAttribution attribution, List<Event> events) {

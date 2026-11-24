@@ -53,7 +53,8 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
 
     @Override
     public List<MonthOption> months() {
-        return published().map(snapshot -> snapshot.months().stream().map(month -> new MonthOption(month.month(),
+        return published().map(snapshot -> snapshot.months().stream().sorted(Comparator.comparing(SupportPerformance.Month::month).reversed())
+                .map(month -> new MonthOption(month.month(), month.from().toString(), month.calendarEnd().toString(), month.businessZone(),
                         month.coverage() == SupportPerformance.Coverage.COMPLETE ? "READY" : month.coverage().name(),
                         month.reasons().stream().map(Enum::name).toList())).toList())
                 .orElseGet(List::of);
@@ -61,17 +62,32 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
 
     @Override
     public Window window(String month, Scope scope) {
-        return published().flatMap(snapshot -> snapshot.months().stream().filter(entry -> entry.month().equals(month)).findFirst()
+        return published().map(snapshot -> window(snapshot, month, scope)).orElse(null);
+    }
+
+    private Window window(SupportPerformance.Snapshot snapshot, String month, Scope scope) {
+        return snapshot.months().stream().filter(entry -> entry.month().equals(month)).findFirst()
                 .map(m -> new Window(snapshot.definitionVersion(), snapshot.sourceVersion(), month,
                         "PERIOD_EVENT", m.from().toString(), m.to().toString(), snapshot.asOf().toString(), m.businessZone(),
                         SupportPerformance.digest(snapshot.sourceVersion() + "|" + ownership.actorId() + "|" + scope.kind()
-                                + "|" + scope.groupIds()))))
+                                + "|" + scope.groupIds())))
                 .orElse(null);
     }
 
     @Override
     public Table read(Type type, Window window, Scope scope) {
         var snapshot = published().filter(value -> value.sourceVersion().equals(window.sourceVersion())).orElse(null);
+        return read(type, window, scope, snapshot);
+    }
+
+    @Override
+    public Preparation prepare(String month, Scope scope) {
+        var snapshot = published().orElse(null);
+        var window = snapshot == null ? null : window(snapshot, month, scope);
+        return new Preparation(window, newRequestBlocker(window, snapshot), type -> read(type, window, scope, snapshot));
+    }
+
+    private Table read(Type type, Window window, Scope scope, SupportPerformance.Snapshot snapshot) {
         Long actor = ownership.actorId();
         if (snapshot == null || actor == null) return null;
         var month = usableMonth(snapshot, window.month()).orElse(null);
@@ -93,7 +109,7 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
                 .filter(Objects::nonNull).distinct().toList());
         var groupNames = groupNames();
         var monthlyEvents = snapshot.events().stream().filter(event -> month.contains(event.effectiveAt()))
-                .collect(Collectors.groupingBy(Event::attribution));
+                .collect(Collectors.groupingBy(event -> SupportPerformanceAggregation.subtotalAttribution(event.attribution())));
         var supervisors = history.supervisorsAtCutoff(LocalDateTime.ofInstant(month.to(), ZoneOffset.UTC));
         var supervisorNames = names.byIds(supervisors.stream().map(SupportPerformanceHistoryMapper.Supervisor::adminId).distinct().toList());
         var byGroup = supervisors.stream().collect(Collectors.toMap(SupportPerformanceHistoryMapper.Supervisor::groupId,
@@ -127,9 +143,13 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
 
     @Override
     public String newRequestBlocker(Window window) {
+        var snapshot = window == null ? null : published().filter(value -> value.sourceVersion().equals(window.sourceVersion())).orElse(null);
+        return newRequestBlocker(window, snapshot);
+    }
+
+    private String newRequestBlocker(Window window, SupportPerformance.Snapshot snapshot) {
         if (cache.refreshFailed()) return "EXPORT_REFRESH_FAILED";
         if (window == null) return null;
-        var snapshot = published().filter(value -> value.sourceVersion().equals(window.sourceVersion())).orElse(null);
         if (snapshot == null) return "EXPORT_SOURCE_UNAVAILABLE";
         if (cache.stale(snapshot)) return "EXPORT_DATA_STALE";
         return usableMonth(snapshot, window.month()).isEmpty() ? "EXPORT_ROWS_UNVERIFIED" : null;
@@ -144,7 +164,7 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
 
     private static boolean visible(EventAttribution attribution, Scope scope, Long actor) {
         return switch (scope.kind()) {
-            case "SELF" -> actor.equals(attribution.agentId());
+            case "SELF" -> attribution.state() != SupportPerformance.AttributionState.UNKNOWN && actor.equals(attribution.agentId());
             case "MANAGED_GROUPS" -> attribution.state() == SupportPerformance.AttributionState.ASSIGNED
                     && scope.groupIds().contains(String.valueOf(attribution.groupId()));
             case "ALL" -> true;
@@ -258,12 +278,12 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
         row.put("channel", event.channel());
         row.put("network", event.network());
         row.put("businessNo", event.businessNo());
-        row.put("businessAmount", decimal(event.vnd() == null ? event.amountUsdt() : event.vnd()));
-        row.put("businessCurrency", event.vnd() == null ? SupportPerformance.CURRENCY : "VND");
+        row.put("businessAmount", decimal(event.vndBusiness() ? event.vnd() : event.amountUsdt()));
+        row.put("businessCurrency", event.vndBusiness() ? event.vnd() == null ? null : "VND"
+                : event.amountUsdt() == null ? null : SupportPerformance.CURRENCY);
         row.put("roundingAdjustmentUsdt", decimal(event.roundingUsdt()));
         row.put("totalPaidUsdt", decimal(event.totalPaidUsdt()));
-        boolean settlementUnknown = event.kind() == Kind.WITHDRAWAL_REFERENCE && "CONFIRMED".equals(event.sourceStatus());
-        row.put("performanceDeltaUsdt", settlementUnknown ? null : decimal(event.deltaUsdt()));
+        row.put("performanceDeltaUsdt", event.settlementUnknown() ? null : decimal(event.deltaUsdt()));
         if (event.kind() == Kind.WITHDRAWAL) row.put("walletDebitUsdt", decimal(event.amountUsdt()));
         row.put("withdrawalFeeUsdt", decimal(event.feeUsdt()));
         row.put("channelFeeUsdt", decimal(event.channelFeeUsdt()));
@@ -274,7 +294,14 @@ class SupportPerformanceExportFacts implements PerformanceExportFactSource {
         row.put("sourceStatus", event.sourceStatus());
         row.put("status", event.performanceStatus());
         row.put("originalBusinessNo", event.originalBusinessNo());
-        row.put("coverageReason", String.join(",", coverage.reasons()));
+        var reasons = new LinkedHashSet<>(coverage.reasons());
+        reasons.addAll(event.factReasons());
+        event.missingAmounts(true).forEach((column, reason) -> {
+            if (row.get(column) == null) row.put(column, "未知");
+            if ("businessAmount".equals(column)) row.put("businessCurrency", "未知");
+            reasons.add(SupportPerformanceExportService.label(column) + "：" + reason);
+        });
+        row.put("coverageReason", String.join("，", reasons));
         return row;
     }
 

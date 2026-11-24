@@ -54,6 +54,28 @@ public interface SupportPerformanceHistoryMapper {
         """)
     List<Evidence> atEvents(@Param("points") List<Point> points);
 
+    record Witness(String layer, long rowId, long subjectId, Long relatedId, String state, long version,
+                   LocalDateTime startsAt, LocalDateTime endsAt) { }
+
+    /** The original inputs to atEvents, including interval ends returned in its evidence. */
+    @Select("""
+        SELECT 'assignment' layer,id rowId,user_id subjectId,agent_admin_id relatedId,
+               CONCAT(status,':',is_deleted) state,version,starts_at startsAt,ends_at endsAt
+          FROM nx_support_agent_user_assignment WHERE starts_at < #{before}
+        UNION ALL
+        SELECT 'member',id,agent_admin_id,group_id,'',version,starts_at,ends_at
+          FROM nx_support_group_member_history WHERE starts_at < #{before}
+        UNION ALL
+        SELECT 'route',id,customer_id,group_id,'',version,starts_at,ends_at
+          FROM nx_support_customer_route_history WHERE starts_at < #{before}
+        UNION ALL
+        SELECT 'qualification',id,admin_id,NULL,state,version,starts_at,ends_at
+          FROM nx_support_account_qualification_history
+         WHERE qualification_kind='SERVICE' AND starts_at < #{before}
+        ORDER BY layer,rowId
+        """)
+    List<Witness> checkpointWitnesses(@Param("before") LocalDateTime before);
+
     record BoundCustomer(long customerId, long agentId, Long groupId, LocalDateTime startsAt,
                          LocalDateTime endsAt) { }
 

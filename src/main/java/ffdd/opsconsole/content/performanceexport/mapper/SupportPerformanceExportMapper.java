@@ -47,11 +47,13 @@ public interface SupportPerformanceExportMapper {
     @Select("SELECT LAST_INSERT_ID()")
     Long lastInsertId();
 
-    /** An original command key or the numeric batch id both locate this account's batch. */
-    @Select("<script>SELECT id FROM nx_support_performance_export_request WHERE requester_id=#{requesterId}"
-            + " AND (request_key=#{key}<if test='numeric'> OR CAST(id AS CHAR)=#{key}</if>)</script>")
-    java.util.List<Long> requestIdsForKey(@Param("requesterId") Long requesterId, @Param("key") String key,
-                                          @Param("numeric") boolean numeric);
+    /** Exact original command key for this requester. */
+    @Select("SELECT id FROM nx_support_performance_export_request WHERE requester_id=#{requesterId}"
+            + " AND BINARY request_key=BINARY #{key}")
+    java.util.List<Long> requestIdsForKey(@Param("requesterId") Long requesterId, @Param("key") String key);
+
+    @Select("SELECT id FROM nx_support_performance_export_request WHERE requester_id=#{requesterId} AND CAST(id AS CHAR)=#{id}")
+    java.util.List<Long> requestIdsForBatch(@Param("requesterId") Long requesterId, @Param("id") String batchId);
 
     @Select("SELECT " + "id,request_id AS requestId,requester_id AS requesterId,task_type AS taskType,"
             + "scope_json AS scopeJson,window_json AS windowJson,preview_version AS previewVersion,"

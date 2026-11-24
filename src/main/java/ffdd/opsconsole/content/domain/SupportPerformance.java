@@ -69,6 +69,53 @@ public final class SupportPerformance {
                 default -> "PENDING_REVIEW";
             };
         }
+
+        public boolean settlementUnknown() {
+            return kind == Kind.WITHDRAWAL_REFERENCE && "CONFIRMED".equals(sourceStatus);
+        }
+
+        public boolean vndBusiness() {
+            return "VN_BANK".equals(channel) || "VN_BANK_TOPUP".equals(channel) || "VN_BANK_DIRECT_PURCHASE".equals(channel);
+        }
+
+        public Map<String, String> missingAmounts(boolean csv) {
+            var gaps = new LinkedHashMap<String, String>();
+            if (vndBusiness()) {
+                if (csv && vnd == null) {
+                    gaps.put("businessAmount", "AMOUNT_UNVERIFIED");
+                    gaps.put("vndAmount", "AMOUNT_UNVERIFIED");
+                }
+            } else if (amountUsdt == null) {
+                gaps.put("businessAmount", "AMOUNT_UNVERIFIED");
+            }
+            if (settlementUnknown()) {
+                for (String field : List.of("performanceDeltaUsdt", "walletDebitUsdt", "withdrawalFeeUsdt")) {
+                    gaps.put(field, "WITHDRAWAL_SETTLEMENT_UNVERIFIED");
+                }
+                if (!vndBusiness()) gaps.put("receivedUsdt", "WITHDRAWAL_SETTLEMENT_UNVERIFIED");
+                if (network != null) gaps.put("networkFeeUsdt", "WITHDRAWAL_SETTLEMENT_UNVERIFIED");
+            } else if (kind == Kind.WITHDRAWAL) {
+                if (feeUsdt == null) gaps.put("withdrawalFeeUsdt", "AMOUNT_UNVERIFIED");
+                if (network != null && networkFeeUsdt == null) gaps.put("networkFeeUsdt", "AMOUNT_UNVERIFIED");
+                if (!vndBusiness() && receivedUsdt == null) gaps.put("receivedUsdt", "AMOUNT_UNVERIFIED");
+            }
+            if (kind == Kind.INFLOW && (devicePurchase || "CHAIN_TOPUP".equals(channel)) && channelFeeUsdt == null) {
+                gaps.put("channelFeeUsdt", "AMOUNT_UNVERIFIED");
+            }
+            if (devicePurchase && kind == Kind.INFLOW) {
+                if (roundingUsdt == null) gaps.put("roundingAdjustmentUsdt", "AMOUNT_UNVERIFIED");
+                if (totalPaidUsdt == null) gaps.put("totalPaidUsdt", "AMOUNT_UNVERIFIED");
+                if (network != null && networkFeeUsdt == null) gaps.put("networkFeeUsdt", "AMOUNT_UNVERIFIED");
+            }
+            return gaps;
+        }
+
+        public Set<String> factReasons() {
+            var reasons = new LinkedHashSet<String>();
+            if (attribution.state() == AttributionState.UNKNOWN) reasons.add("ATTRIBUTION_UNKNOWN");
+            if (channel != null && channel.startsWith("CHAIN_") && network == null) reasons.add("CHANNEL_UNVERIFIED");
+            return reasons;
+        }
     }
 
     /** Amounts established by the captured evidence. A missing channel has no verified subtotal. */
@@ -119,7 +166,14 @@ public final class SupportPerformance {
                            List<Event> events,
                            List<SupportDirectPurchaseFactsFacade.Issue> directPurchaseIssues,
                            List<MonthlySubtotal> monthlySubtotals, List<Binding> bindings,
-                           List<FirstPayment> firstPayments) {
+                           List<FirstPayment> firstPayments, java.util.Set<Long> firstHistoryReady, Instant publishedAt) {
+        public Snapshot(String definitionVersion, String sourceVersion, Instant historyStart, Instant asOf,
+                        Generation generation, List<Month> months, List<Event> events,
+                        List<SupportDirectPurchaseFactsFacade.Issue> directPurchaseIssues,
+                        List<MonthlySubtotal> monthlySubtotals, List<Binding> bindings, List<FirstPayment> firstPayments) {
+            this(definitionVersion, sourceVersion, historyStart, asOf, generation, months, events,
+                    directPurchaseIssues, monthlySubtotals, bindings, firstPayments, java.util.Set.of(), null);
+        }
         public Snapshot(String definitionVersion, String sourceVersion, Instant historyStart, Instant asOf,
                         Generation generation, List<Month> months, List<Event> events,
                         List<SupportDirectPurchaseFactsFacade.Issue> directPurchaseIssues,
@@ -138,6 +192,7 @@ public final class SupportPerformance {
             monthlySubtotals = monthlySubtotals == null ? List.of() : List.copyOf(monthlySubtotals);
             bindings = bindings == null ? List.of() : List.copyOf(bindings);
             firstPayments = firstPayments == null ? List.of() : List.copyOf(firstPayments);
+            firstHistoryReady = firstHistoryReady == null ? java.util.Set.of() : java.util.Set.copyOf(firstHistoryReady);
             if (!months.isEmpty()) {
                 Month first = months.get(0), last = months.get(months.size() - 1);
                 if (!first.from().equals(HISTORY_START) || !last.to().equals(asOf)) throw invalid();
@@ -170,6 +225,11 @@ public final class SupportPerformance {
             for (var event : events) {
                 if (!contains(historyStart, asOf, event.effectiveAt()) || !ids.add(event.id())) throw invalid();
             }
+        }
+
+        public Snapshot published(Instant at) {
+            return new Snapshot(definitionVersion, sourceVersion, historyStart, asOf, generation, months, events,
+                    directPurchaseIssues, monthlySubtotals, bindings, firstPayments, firstHistoryReady, at);
         }
     }
 

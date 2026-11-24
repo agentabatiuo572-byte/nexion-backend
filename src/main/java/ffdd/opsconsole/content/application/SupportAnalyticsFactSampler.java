@@ -45,7 +45,7 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
     public void contextClosed() { closing=true; }
     private record Decoded(String json,SupportAnalyticsFactSnapshot snapshot) { }
     private record Sampled(SupportAnalyticsFactSnapshot legacy,
-                           ffdd.opsconsole.content.domain.SupportPerformance.Snapshot performance) { }
+                           SupportPerformanceCache.DaySnapshot performance) { }
     public SupportAnalyticsFactSampler(SupportAnalyticsFactMapper mapper,FinanceSupportPaymentFactsFacade payments,
             SupportFundsReadFacade funds,ProductionSupportPathGuard guard,PlatformTransactionManager transactions,
             SupportAnalyticsRedisStore store,ObjectProvider<SupportAnalyticsService> compiler) {
@@ -87,9 +87,11 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
         if(closing)return;
         String token=store.tryLock();if(token==null)return;
         long startedAt=System.nanoTime();
+        var sourceCutoff = new AtomicReference<>(Instant.now());
         try(var lease=heartbeats==null?SupportBackgroundLeaseHeartbeat.foreground(()->store.renew(token)):heartbeats.start(()->store.renew(token))) {
             var sampled=Objects.requireNonNull(reads.execute(status->{
                 Instant asOf=Objects.requireNonNull(mapper.nowUtc()).toInstant(ZoneOffset.UTC);
+                sourceCutoff.set(asOf);
                 var ids=List.copyOf(mapper.productionCustomers());
                 var payment=ids.isEmpty()?new SupportPaymentFacts.Snapshot(List.of(),List.of(),List.of(),SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),asOf):payments.readHistory(ids);
                 lease.renew();
@@ -116,6 +118,9 @@ public class SupportAnalyticsFactSampler implements SmartInitializingSingleton {
             if(published && sampled.performance()!=null)performance.publish(sampled.performance());
         } catch(SamplingStopped stopped) {
             // The read transaction rolled back and the lease heartbeat closed; there is no partial generation.
+        } catch(RuntimeException failure) {
+            if (performance != null) performance.markSourceFailed(sourceCutoff.get());
+            throw failure;
         } finally {store.release(token);}
     }
     public SupportAnalyticsFactSnapshot current() {

@@ -50,7 +50,12 @@ public class SupportPerformanceExportController {
     public ApiResult<Map<String, Object>> submit(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody(required = false) Map<String, Object> request) {
-        return ApiResult.ok(service.submit(idempotencyKey, request));
+        try {
+            return ApiResult.ok(service.submit(idempotencyKey, request));
+        } catch (BizException denial) {
+            service.auditDenial("SUBMIT", null, denial);
+            throw denial;
+        }
     }
 
     @GetMapping
@@ -99,6 +104,13 @@ public class SupportPerformanceExportController {
             @PathVariable String taskId, @RequestParam String command,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey) {
         return ApiResult.ok(service.commandReceipt(id(taskId), command, idempotencyKey));
+    }
+
+    @GetMapping("/command-receipt")
+    @PreAuthorize(READ_CODES)
+    public ApiResult<Map<String, Object>> creationReceipt(
+            @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey) {
+        return ApiResult.ok(service.creationReceipt(idempotencyKey));
     }
 
     @GetMapping("/{taskId}/file")

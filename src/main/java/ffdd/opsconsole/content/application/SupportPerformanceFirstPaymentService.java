@@ -92,5 +92,14 @@ public class SupportPerformanceFirstPaymentService {
             legacyIssues = List.copyOf(legacyIssues);
             directIssues = List.copyOf(directIssues);
         }
+
+        java.util.Set<Long> coveredCustomers() {
+            var covered = new HashSet<Long>();
+            legacyHistory.stream().filter(h -> h.status() == SupportPaymentFacts.Status.READY)
+                    .forEach(h -> covered.add(h.customerId()));
+            directIssues.stream().filter(issue -> !"EXTERNAL_REFUND_UNVERIFIED".equals(issue.reason()))
+                    .forEach(issue -> covered.remove(issue.customerId()));
+            return java.util.Set.copyOf(covered);
+        }
     }
 }

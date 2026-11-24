@@ -63,19 +63,19 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
         }
         for (var evidence : rows) {
             if (evidence.orderNo() == null) {
-                issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "MISSING_DIRECT_PAYMENT_PROOF"));
+                issues.add(issue(evidence, "MISSING_DIRECT_PAYMENT_PROOF"));
                 continue;
             }
-            if (!DIRECT_PAYMENT_METHODS.contains(evidence.paymentMethod())) {
-                issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "MISSING_PAYMENT_CHANNEL"));
+            if (evidence.paymentMethod() == null || !DIRECT_PAYMENT_METHODS.contains(evidence.paymentMethod())) {
+                issues.add(issue(evidence, "MISSING_PAYMENT_CHANNEL"));
                 continue;
             }
             if (evidence.providerPaidAt() == null) {
-                issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "MISSING_PAYMENT_TIME"));
+                issues.add(issue(evidence, "MISSING_PAYMENT_TIME"));
                 continue;
             }
             if ("PAYMENT_REORG_REVIEW".equals(evidence.reviewReason())) {
-                issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "PAYMENT_REORG_REVIEW"));
+                issues.add(issue(evidence, "PAYMENT_REORG_REVIEW"));
                 continue;
             }
 
@@ -83,7 +83,7 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
             try {
                 quote = quoteReader.readTree(evidence.quoteJson());
             } catch (JsonProcessingException ex) {
-                issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "INVALID_DIRECT_PAYMENT_QUOTE"));
+                issues.add(issue(evidence, "INVALID_DIRECT_PAYMENT_QUOTE"));
                 continue;
             }
             BigDecimal businessAmount = evidence.businessAmountUsdt();
@@ -101,7 +101,7 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
                     || subtotal.add(channelFee).add(networkFee).setScale(2, RoundingMode.HALF_UP).compareTo(total) != 0
                     || (bank && (vnd == null || vnd.signum() <= 0 || fxRate == null || fxRate.signum() <= 0
                     || total.multiply(fxRate).setScale(0, RoundingMode.HALF_UP).compareTo(vnd) != 0))) {
-                issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "INVALID_DIRECT_PAYMENT_AMOUNT"));
+                issues.add(issue(evidence, "INVALID_DIRECT_PAYMENT_AMOUNT"));
                 continue;
             }
 
@@ -114,12 +114,19 @@ public class SupportDirectPurchaseFactsService implements SupportDirectPurchaseF
             if (evidence.refundReceiptJson() != null) {
                 var refund = readRefund(evidence, bank, total, vnd);
                 if (refund != null) refunds.add(refund);
-                else issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "EXTERNAL_REFUND_UNVERIFIED"));
+                else issues.add(issue(evidence, "EXTERNAL_REFUND_UNVERIFIED"));
             } else if ("PAYMENT_REFUNDED_REVIEW".equals(evidence.reviewReason())) {
-                issues.add(new Issue(evidence.intentNo(), evidence.customerId(), "EXTERNAL_REFUND_UNVERIFIED"));
+                issues.add(issue(evidence, "EXTERNAL_REFUND_UNVERIFIED"));
             }
         }
         return new Snapshot(facts, issues, refunds);
+    }
+
+    private static Issue issue(SupportPaymentFactMapper.DirectPurchaseEvidence evidence, String reason) {
+        String method = evidence.paymentMethod();
+        return new Issue(evidence.intentNo(), evidence.customerId(), reason,
+                method != null && DIRECT_PAYMENT_METHODS.contains(method) ? method : null,
+                evidence.providerPaidAt() == null ? null : evidence.providerPaidAt().atZone(StorageTime.ZONE).toInstant());
     }
 
     private Refund readRefund(SupportPaymentFactMapper.DirectPurchaseEvidence evidence, boolean bank,

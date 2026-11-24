@@ -37,6 +37,20 @@ public interface SupportPaymentSourceMapper {
         """)
     List<BankTopupAmount> bankTopupVnd(@Param("ids") List<Long> ids);
 
+    record ChainTopupRow(long ledgerId, long customerId, long cid, String chainId,
+                         java.math.BigDecimal creditedUsdt, java.math.BigDecimal feeUsdt) { }
+
+    @Select("""
+        <script>
+        SELECT ledger_id ledgerId,user_id customerId,cid,chain_id chainId,
+               net_amount creditedUsdt,fee_amount feeUsdt
+          FROM nx_cregis_deposit_event
+         WHERE ledger_id IN <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+           AND credited_at IS NOT NULL AND chain_id IN ('2510','60','195')
+        </script>
+        """)
+    List<ChainTopupRow> chainTopups(@Param("ids") List<Long> ids);
+
     record WalletReferenceRow(long ledgerId, long customerId, String businessNo, String kind,
                               java.math.BigDecimal amount, LocalDateTime at) { }
 

@@ -75,6 +75,31 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
         return Map.copyOf(amounts);
     }
 
+    @Override
+    public Map<Long, ChainTopupEvidence> chainTopupEvidence(List<Fact> provedFacts) {
+        var sources = new HashMap<Long, Fact>();
+        for (var fact : provedFacts) {
+            if (fact.kind() == Kind.DEPOSIT && fact.source() == Source.DEPOSIT_ORDER
+                    && fact.sourceBusinessId().matches("CR-[0-9]+")) sources.put(fact.ledgerId(), fact);
+        }
+        var ids = sources.keySet().stream().sorted().toList();
+        var result = new HashMap<Long, ChainTopupEvidence>();
+        var ambiguous = new HashSet<Long>();
+        for (int offset = 0; offset < ids.size(); offset += 200) {
+            for (var row : mapper.chainTopups(ids.subList(offset, Math.min(offset + 200, ids.size())))) {
+                var source = sources.get(row.ledgerId());
+                if (source.customerId() != row.customerId() || !source.sourceBusinessId().equals("CR-" + row.cid())
+                        || source.amount().compareTo(row.creditedUsdt()) != 0) continue;
+                String network = ffdd.opsconsole.finance.cregis.CregisNetwork.fromChainId(row.chainId()).name();
+                if (result.putIfAbsent(row.ledgerId(), new ChainTopupEvidence(network, row.feeUsdt())) != null) {
+                    ambiguous.add(row.ledgerId());
+                }
+            }
+        }
+        ambiguous.forEach(result::remove);
+        return Map.copyOf(result);
+    }
+
     private final SupportPaymentSourceMapper mapper;
     private final SupportPaymentFactService history;
     private final DataSource dataSource;

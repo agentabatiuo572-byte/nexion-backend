@@ -17,7 +17,7 @@ public interface SupportDirectPurchaseFactsFacade extends DomainFacade {
             BigDecimal subtotalUsdt, BigDecimal roundingAdjustmentUsdt,
             BigDecimal channelFeeUsdt, BigDecimal networkFeeUsdt, BigDecimal totalUsdt, BigDecimal paidVnd) { }
 
-    record Issue(String intentNo, long customerId, String reason) { }
+    record Issue(String intentNo, long customerId, String reason, String paymentMethod, Instant paidAt) { }
 
     record Refund(String intentNo, long customerId, String orderNo, Instant confirmedAt,
                   BigDecimal businessAmountUsdt, BigDecimal originalCurrencyAmount, String currency) { }

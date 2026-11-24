@@ -1,6 +1,7 @@
 package ffdd.opsconsole.content.application;
 
 import ffdd.opsconsole.content.domain.SupportAnalyticsStats.Basis;
+import ffdd.opsconsole.content.domain.SupportAnalyticsStats;
 import ffdd.opsconsole.content.domain.SupportLeaderboard.Board;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadMode;
 import ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope;
@@ -61,18 +62,29 @@ public class SupportPerformanceReadService {
                 .normalize(SupportAnalyticsPrivateQueryService.CURRENCIES, SupportAnalyticsPrivateQueryService.SORTS);
         boolean period = query.basis() == Basis.PERIOD_EVENT;
         boolean firstView = query.view() == View.FIRST_DEPOSITS || query.view() == View.FIRST_PURCHASES;
-        if (eventsView && (!period || query.currency() == null || query.keyword() != null
+        boolean firstFilter = query.firstState() != SupportAnalyticsQueryRequest.First.ALL;
+        boolean firstDependent = firstView || firstFilter || Set.of(SupportAnalyticsQueryRequest.Sort.FIRST_SUCCEEDED_AT,
+                SupportAnalyticsQueryRequest.Sort.FIRST_CONFIRMED_CUSTOMER_COUNT).contains(query.sortKey());
+        if (eventsView && (!period || !SupportPerformance.CURRENCY.equals(query.currency()) || query.keyword() != null
+                || query.category() != SupportAnalyticsQueryRequest.Category.ALL
+                || query.filter() != SupportAnalyticsQueryRequest.ServiceFilter.ALL || firstFilter
                 || !Set.of(SupportAnalyticsQueryRequest.Sort.SUCCEEDED_AT, SupportAnalyticsQueryRequest.Sort.AMOUNT).contains(query.sortKey()))) {
             throw new BizException(422, "SUPPORT_ANALYTICS_DETAIL_QUERY_INVALID");
         }
+        if (firstView && (!period || query.currency() == null
+                || !Set.of(SupportAnalyticsQueryRequest.Sort.SUCCEEDED_AT, SupportAnalyticsQueryRequest.Sort.AMOUNT).contains(query.sortKey()))) {
+            throw new BizException(422, "SUPPORT_ANALYTICS_DETAIL_QUERY_INVALID");
+        }
+        if (!firstView) SupportAnalyticsPrivateQueryService.validateView(query);
         if (amountSort && (!SupportPerformance.CURRENCY.equals(query.currency())
                 || query.basis() != Basis.CURRENT_CUSTOMER_HISTORY || query.view() != View.CUSTOMERS)) {
             throw new BizException(422, "SUPPORT_ANALYTICS_SORT_INVALID");
         }
         if (query.basis() == Basis.CURRENT_ASSET) {
+            if (firstDependent) throw new BizException(422, "SUPPORT_ANALYTICS_SORT_INVALID");
             var independent = new LinkedHashMap<>(baseline.query(parameters));
             independent.putAll(fields("metricVersion", SupportPerformance.DEFINITION_VERSION, "generation",
-                    published().isPresent() ? "READY" : "UPGRADING", "performanceWindow", null, "firstPaymentCoverage", null));
+                    published().isPresent() ? "READY" : "UPGRADING", "performanceWindow", null));
             return independent;
         }
         ReadScope scope = ownership.defaultQueryScope(query.groupId(), query.agentId());
@@ -81,12 +93,12 @@ public class SupportPerformanceReadService {
         var current = published();
         if (current.isEmpty()) {
             if (query.expectedVersion() != null) throw new BizException(409, "SUPPORT_ANALYTICS_QUERY_CHANGED");
-            return fields("metricVersion", SupportPerformance.DEFINITION_VERSION, "generation", "UPGRADING",
-                    "view", eventsView ? "PERFORMANCE_EVENTS" : query.view().name());
+            if (eventsView || firstView) return fields("metricVersion", SupportPerformance.DEFINITION_VERSION,
+                    "generation", "UPGRADING", "view", eventsView ? "PERFORMANCE_EVENTS" : query.view().name());
+            return upgradingAnalytics(parameters, query, scope, firstDependent, firstFilter);
         }
 
         var snapshot = current.get();
-        Map<String, Object> original = eventsView || firstView || amountSort ? Map.of() : baseline.performanceBaseline(parameters);
         Instant from = period && query.from().isAfter(snapshot.historyStart()) ? query.from() : snapshot.historyStart();
         Instant to = period && query.to().isBefore(snapshot.asOf()) ? query.to() : snapshot.asOf();
         if (!from.isBefore(to)) throw new BizException(422, "SUPPORT_PERFORMANCE_RANGE_INVALID");
@@ -109,27 +121,48 @@ public class SupportPerformanceReadService {
                     .forEach(row -> visibleCustomers.put(row.customerId(), row));
         }
         var currentHistory = snapshot.events().stream().filter(e -> visibleCustomers.containsKey(e.customerId())).toList();
+        boolean fullHistory = !snapshot.months().isEmpty() && snapshot.months().stream().allMatch(entry -> entry.coverage() == Coverage.COMPLETE);
+        var historyByCustomer = currentHistory.stream().collect(Collectors.groupingBy(Event::customerId));
+        var firstByCustomer = snapshot.firstPayments().stream().collect(Collectors.toMap(FirstPayment::customerId, f -> f));
+        var baselineParameters = new LinkedHashMap<>(parameters);
+        if (firstView) {
+            baselineParameters.put("view", List.of(View.CUSTOMERS.name()));
+            baselineParameters.remove("sortKey");
+        }
+        var originalPage = baseline.performanceBaseline(baselineParameters,
+                id -> firstSelection(snapshot, firstByCustomer.get(id), id),
+                amountSort ? id -> {
+                    var sum = sumPerformance(historyByCustomer.getOrDefault(id, List.of()));
+                    return sum == null && fullHistory ? BigDecimal.ZERO : sum;
+                } : null);
+        Map<String, Object> original = originalPage.body();
+        var selectedIds = originalPage.selectedCustomers();
+        boolean scopedFirstComplete = snapshot.firstHistoryReady().containsAll(originalPage.eligibleCustomers())
+                && (!firstView || months.get(0).firstHistoryComplete());
+        boolean hasConfirmedFirst = originalPage.eligibleCustomers().stream().map(firstByCustomer::get)
+                .anyMatch(first -> first != null && first.confirmed());
+        var firstCoverage = scopedFirstComplete ? completeFirst() : firstCoverage(hasConfirmedFirst);
+        boolean firstUnavailable = firstDependent && !scopedFirstComplete;
         List<Event> selected = period ? inWindow.stream().filter(e -> historicalScope(e, scope, groups)).toList() : currentHistory;
-        String scopeVersion = version("", snapshot, scope.toString(), new TreeSet<>(groups).toString(), grants.toString(),
-                visibleCustomers.keySet().toString(), query.basis().name());
+        String scopeVersion = scopeVersion(snapshot, scope, groups, grants, query.basis());
         String version = version("saq-v1:", snapshot, scopeVersion, from.toString(), to.toString(),
                 query.view().name(), query.sortKey().name(), query.direction().name(),
                 query.firstState().name(), query.category().name(), query.filter().name(), String.valueOf(query.currency()),
                 String.valueOf(query.keyword()), Boolean.toString(eventsView), Boolean.toString(amountSort),
-                String.valueOf(original.get("queryVersion")));
-        requireVersion(query.expectedVersion(), version, "SUPPORT_ANALYTICS_QUERY_CHANGED");
+                String.valueOf(original.get("queryVersion")), visibleCustomers.keySet().toString(), new TreeSet<>(selectedIds).toString());
+        if (firstUnavailable && query.expectedVersion() != null) throw new BizException(409, "SUPPORT_ANALYTICS_QUERY_CHANGED");
+        boolean versionReady = eventsView || firstView || "READY".equals(original.get("versionState"));
+        requireVersion(query.expectedVersion(), versionReady ? version : null, "SUPPORT_ANALYTICS_QUERY_CHANGED");
         Map<String, Object> window = fields("definitionVersion", SupportPerformance.DEFINITION_VERSION,
                 "sourceVersion", snapshot.sourceVersion(), "sourceScopeVersion", scopeVersion, "month", month, "basis", query.basis().name(),
                 "from", from.toString(), "to", to.toString(), "asOf", snapshot.asOf().toString(), "businessZone", zone);
         boolean complete = !months.isEmpty() && months.stream().allMatch(entry -> entry.coverage() == Coverage.COMPLETE);
         var currentWindow = new LinkedHashMap<String, Object>(window);
-        currentWindow.putAll(fields("sourceScopeVersion", version("", snapshot, scope.toString(), new TreeSet<>(groups).toString(),
-                        grants.toString(), visibleCustomers.keySet().toString(), Basis.CURRENT_CUSTOMER_HISTORY.name()),
+        currentWindow.putAll(fields("sourceScopeVersion", scopeVersion(snapshot, scope, groups, grants, Basis.CURRENT_CUSTOMER_HISTORY),
                 "month", null, "basis", Basis.CURRENT_CUSTOMER_HISTORY.name(), "from", snapshot.historyStart().toString(),
                 "to", snapshot.asOf().toString(), "businessZone", BusinessCalendar.legacy().zoneAt(snapshot.asOf()).getId()));
         var performance = period ? measuredCounts(privateAmounts(selected, window, complete), snapshot, from, to, selected,
                 assignment -> historicalScope(assignment, scope, groups), complete) : privateAmounts(selected, window, complete);
-        boolean fullHistory = !snapshot.months().isEmpty() && snapshot.months().stream().allMatch(entry -> entry.coverage() == Coverage.COMPLETE);
         var cumulative = privateAmounts(currentHistory, currentWindow, fullHistory);
         var summary = mapAt(original, "scopeSummary");
         var financial = mapAt(summary, "financial");
@@ -138,65 +171,77 @@ public class SupportPerformanceReadService {
         currentSummary.put("performance", cumulative);
         summary.putAll(fields("financial", financial, "current", currentSummary,
                 "groups", groups(summary.get("groups"), selected, window, snapshot, currentHistory, currentWindow,
-                        currentOwners, complete, fullHistory, period)));
-        if (scope.mode() == ReadMode.ALL && query.view() == View.OVERVIEW && query.groupId() == null && query.agentId() == null && period) {
-            summary.put("performanceAttribution", fields("unassigned", privateAmounts(bucket(selected, AttributionState.UNASSIGNED), window),
-                    "unknown", privateAmounts(bucket(selected, AttributionState.UNKNOWN), window)));
+                        currentOwners, complete, fullHistory, period, scope, groups, grants)));
+        if (scope.mode() == ReadMode.ALL && query.view() == View.OVERVIEW && query.groupId() == null && query.agentId() == null) {
+            summary.put("performanceAttribution", period
+                    ? fields("unassigned", privateAmounts(bucket(selected, AttributionState.UNASSIGNED), window, complete),
+                            "unknown", privateAmounts(bucket(selected, AttributionState.UNKNOWN), window, complete))
+                    : null);
         }
         var disclosed = selected.stream().filter(e -> visibleCustomers.containsKey(e.customerId())).toList();
         List<Map<String, Object>> records;
+        List<FirstPayment> firstFacts = List.of(), visibleFirst = List.of();
         if (eventsView) {
+            boolean descending = query.direction() == SupportAnalyticsQueryRequest.Direction.DESC;
+            Comparator<BigDecimal> amounts = descending ? Comparator.reverseOrder() : Comparator.naturalOrder();
             Comparator<Event> order = query.sortKey() == SupportAnalyticsQueryRequest.Sort.AMOUNT
-                    ? Comparator.comparing(Event::deltaUsdt) : Comparator.comparing(Event::effectiveAt);
-            if (query.direction() == SupportAnalyticsQueryRequest.Direction.DESC) order = order.reversed();
+                    ? Comparator.comparing(e -> e.settlementUnknown() ? null : e.deltaUsdt(), Comparator.nullsLast(amounts))
+                    : descending ? Comparator.comparing(Event::effectiveAt).reversed() : Comparator.comparing(Event::effectiveAt);
             var agentNames = names.byIds(disclosed.stream().map(e -> e.attribution().agentId()).filter(Objects::nonNull).distinct().toList());
             var groupNames = leaderboard.groups().stream().filter(g -> g.name() != null)
                     .collect(Collectors.toMap(SupportLeaderboardMapper.Group::id, SupportLeaderboardMapper.Group::name));
-            records = disclosed.stream().sorted(order.thenComparing(Event::id))
+            records = disclosed.stream().sorted(order.thenComparing(e -> publicEventId(e.id())))
                     .map(e -> eventRow(e, visibleCustomers.get(e.customerId()), agentNames, groupNames)).toList();
         } else if (firstView) {
             var kind = query.view() == View.FIRST_DEPOSITS ? "DEPOSIT" : "DEVICE_PURCHASE";
             Comparator<FirstPayment> order = query.sortKey() == SupportAnalyticsQueryRequest.Sort.AMOUNT
                     ? Comparator.comparing(FirstPayment::amount) : Comparator.comparing(FirstPayment::at);
             if (query.direction() == SupportAnalyticsQueryRequest.Direction.DESC) order = order.reversed();
-            records = snapshot.firstPayments().stream().filter(first -> first.confirmed() && kind.equals(first.kind())
-                            && (query.currency() == null || query.currency().equals(first.currency()))
-                            && visibleCustomers.containsKey(first.customerId())
-                            && (period ? SupportPerformance.contains(from, to, first.at())
-                                && historicalScope(first.attribution(), scope, groups) : true)
-                            && query.firstState() != SupportAnalyticsQueryRequest.First.NONE
-                            && query.firstState() != SupportAnalyticsQueryRequest.First.UNKNOWN
-                            && matches(query.keyword(), visibleCustomers.get(first.customerId())))
-                    .sorted(order.thenComparing(FirstPayment::factId))
-                    .map(first -> fields("customerId", Long.toString(first.customerId()),
-                            "customerNo", visibleCustomers.get(first.customerId()).customerNo(),
-                            "kind", first.kind(), "currency", first.currency(), "amount", text(first.amount()),
-                            "succeededAt", first.at().toString(), "orderNo", first.orderNo(), "channel", first.channel()))
+            boolean filtered = firstFilter || query.category() != SupportAnalyticsQueryRequest.Category.ALL
+                    || query.filter() != SupportAnalyticsQueryRequest.ServiceFilter.ALL || query.keyword() != null;
+            var permittedIds = firstUnavailable ? originalPage.eligibleCustomers() : selectedIds;
+            firstFacts = snapshot.firstPayments().stream().filter(first -> first.confirmed() && kind.equals(first.kind())
+                            && query.currency().equals(first.currency()) && SupportPerformance.contains(from, to, first.at())
+                            && historicalScope(first.attribution(), scope, groups)
+                            && (!filtered || permittedIds.contains(first.customerId()))).toList();
+            visibleFirst = firstFacts.stream().filter(first -> visibleCustomers.containsKey(first.customerId())).toList();
+            var firstNames = names.byIds(visibleFirst.stream().map(FirstPayment::attribution).map(EventAttribution::agentId)
+                    .filter(Objects::nonNull).distinct().toList());
+            records = visibleFirst.stream().sorted(order.thenComparingLong(FirstPayment::customerId).thenComparing(FirstPayment::factId))
+                    .map(first -> firstRow(first, visibleCustomers.get(first.customerId()), firstNames))
                     .toList();
-        } else if (!original.isEmpty()) {
+        } else {
             records = maps(original.get("records")).stream().map(row -> {
                 Long customerId = id(row.get("customerId"));
-                Long agentId = id(row.get("agentId"));
-                if (customerId != null) row.put("performance", privateAmounts(currentHistory.stream()
-                        .filter(event -> event.customerId() == customerId).toList(), currentWindow, fullHistory));
+                Long agentId = id(row.get("accountId"));
+                if (customerId != null && Set.of(View.OVERVIEW, View.CUSTOMERS, View.ACTIVITY).contains(query.view())) {
+                    row.put("performance", privateAmounts(historyByCustomer.getOrDefault(customerId, List.of()), currentWindow, fullHistory));
+                    var first = firstByCustomer.get(customerId);
+                    if (first != null && first.confirmed() && first.channel() != null) {
+                        var firstViewData = mapAt(row, "first");
+                        firstViewData.put("channel", first.channel());
+                        row.put("first", firstViewData);
+                    }
+                }
                 if (agentId != null && query.view() == View.AGENTS) {
-                    var selectedAgent = selected.stream().filter(event -> agentId.equals(event.attribution().agentId())).toList();
+                    var selectedAgent = selected.stream().filter(event -> event.attribution().state() != AttributionState.UNKNOWN
+                            && agentId.equals(event.attribution().agentId())).toList();
                     var currentAgent = currentHistory.stream().filter(event -> agentId.equals(currentOwners.get(event.customerId()).ownerAgentId())).toList();
                     var currentAgentRow = mapAt(row, "current");
                     var periodAgentRow = mapAt(row, "period");
-                    currentAgentRow.put("performance", privateAmounts(currentAgent, currentWindow, fullHistory));
-                    if (period) periodAgentRow.put("performance", measuredCounts(privateAmounts(selectedAgent, window, complete),
+                    var agentScope = new ReadScope(scope.actorId(), scope.mode(), scope.requestedGroupId(), agentId);
+                    currentAgentRow.put("performance", privateAmounts(currentAgent,
+                            withScopeVersion(currentWindow, scopeVersion(snapshot, agentScope, groups, grants, Basis.CURRENT_CUSTOMER_HISTORY)), fullHistory));
+                    if (period) periodAgentRow.put("performance", measuredCounts(privateAmounts(selectedAgent,
+                            withScopeVersion(window, scopeVersion(snapshot, agentScope, groups, grants, Basis.PERIOD_EVENT)), complete),
                             snapshot, from, to, selectedAgent, a -> agentId.equals(a.agentId()) && historicalScope(a, scope, groups), complete));
-                    row.putAll(fields("current", currentAgentRow, "period", periodAgentRow));
+                    row.putAll(fields("current", currentAgentRow, "period", period ? periodAgentRow : null));
                 }
                 return row;
             }).toList();
-        } else {
-            records = records(query, amountSort, query.view() == View.AGENTS
-                    ? selected.stream().filter(e -> historicalScope(e, scope, groups)).toList() : disclosed,
-                    currentHistory, visibleCustomers, window, currentWindow);
         }
-        var page = original.isEmpty() ? page(records, query.pageNum(), query.pageSize()) : records;
+        boolean explicitDetails = eventsView || firstView;
+        var page = explicitDetails ? page(records, query.pageNum(), query.pageSize()) : records;
         var disclosedIds = disclosed.stream().map(Event::id).collect(Collectors.toSet());
 
         if (!scope.equals(ownership.defaultQueryScope(query.groupId(), query.agentId()))
@@ -204,24 +249,91 @@ public class SupportPerformanceReadService {
             throw new BizException(409, "SUPPORT_ANALYTICS_QUERY_CHANGED");
         }
         var selectedCurrent = mapAt(original, "selectedCurrent");
-        selectedCurrent.put("performance", cumulative);
-        return fields("metricVersion", SupportPerformance.DEFINITION_VERSION, "generation", "READY",
+        selectedCurrent.put("performance", privateAmounts(currentHistory.stream()
+                .filter(event -> selectedIds.contains(event.customerId())).toList(), currentWindow, fullHistory));
+        var firstSummary = firstView ? firstSummary(firstFacts, visibleFirst, query.currency(), scopedFirstComplete) : null;
+        var result = fields("metricVersion", SupportPerformance.DEFINITION_VERSION, "generation", "READY",
                 "view", eventsView ? "PERFORMANCE_EVENTS" : query.view().name(), "basis", query.basis().name(),
                 "asOf", snapshot.asOf().toString(), "businessZone", SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),
-                "queryVersion", version, "sourceVersion", snapshot.sourceVersion(), "performanceWindow", window,
-                "versionState", "READY", "recordsStatus", original.getOrDefault("recordsStatus", complete ? "AVAILABLE" : "PARTIAL"),
-                "total", original.getOrDefault("total", complete ? (long) records.size() : null),
-                "observedTotal", original.getOrDefault("observedTotal", (long) records.size()),
-                "pageNum", query.pageNum(), "pageSize", query.pageSize(), "canContinue", original.getOrDefault("canContinue",
-                query.pageNum() * query.pageSize() < records.size()), "records", page, "scopeSummary", summary,
+                "queryVersion", versionReady ? version : null, "sourceVersion", snapshot.sourceVersion(), "performanceWindow", window,
+                "versionState", versionReady ? "READY" : "UNKNOWN", "recordsStatus", explicitDetails ? (firstView ? scopedFirstComplete : complete) ? "AVAILABLE" : "PARTIAL" : original.get("recordsStatus"),
+                "total", explicitDetails ? (firstView ? scopedFirstComplete : complete) ? (long) records.size() : null : original.get("total"),
+                "observedTotal", explicitDetails ? (long) records.size() : original.get("observedTotal"),
+                "pageNum", query.pageNum(), "pageSize", query.pageSize(), "canContinue", explicitDetails
+                    ? query.pageNum() * query.pageSize() < records.size() : original.get("canContinue"), "records", page, "scopeSummary", summary,
                 "selectedCustomerCount", original.getOrDefault("selectedCustomerCount", (long) visibleCustomers.size()),
                 "selectedCurrent", selectedCurrent,
-                "firstPaymentCoverage", period && months.get(0).firstHistoryComplete() ? completeFirst() : firstCoverage(snapshot.firstPayments().stream().anyMatch(first -> first.confirmed()
-                        && visibleCustomers.containsKey(first.customerId()) && (!period
-                        || historicalScope(first.attribution(), scope, groups)))), "funds", original.get("funds"),
-                "detailSummary", eventsView ? details(selected, disclosed, disclosedIds, window)
-                        : firstView ? fields("visibleCount", count(records.size())) : null,
-                "exportReadiness", exportReadiness(snapshot, selected.isEmpty()));
+                "firstPaymentCoverage", firstCoverage, "funds", original.get("funds"),
+                "detailSummary", eventsView ? details(selected, disclosed, disclosedIds, window, complete)
+                        : firstView ? firstSummary : original.get("detailSummary"),
+                "exportReadiness", period ? exportReadiness(snapshot) : fields("state", "NOT_APPLICABLE", "reasonCodes", List.of()));
+        if (firstUnavailable) {
+            result.putAll(fields("pageNum", 1L, "records", List.of(), "recordsStatus", "UNKNOWN",
+                    "total", null, "versionState", "UNKNOWN", "queryVersion", null, "canContinue", false,
+                    "observedTotal", firstView ? mapAt(firstSummary, "visibleCount").get("observed") : null));
+            if (firstFilter) result.putAll(fields("selectedCustomerCount", null, "selectedCurrent", null, "funds", null));
+        }
+        return result;
+    }
+
+    private Map<String, Object> upgradingAnalytics(Map<String, List<String>> parameters,
+            SupportAnalyticsQueryRequest.Normalized query, ReadScope scope, boolean firstDependent, boolean firstFilter) {
+        var independent = new LinkedHashMap<>(parameters);
+        if (firstDependent) {
+            independent.remove("firstState");
+            independent.remove("sortKey");
+        }
+        var body = new LinkedHashMap<>(baseline.performanceBaseline(independent, id -> new SupportAnalyticsStats.FirstSelection(
+                null, SupportAnalyticsStats.Status.UNKNOWN, List.of("GENERATION_UPGRADING")), null).body());
+        boolean period = query.basis() == Basis.PERIOD_EVENT;
+        var window = fields("definitionVersion", SupportPerformance.DEFINITION_VERSION, "sourceVersion", null,
+                "sourceScopeVersion", SupportPerformance.digest(scope.toString()), "month", period
+                        ? BusinessCalendar.legacy().month(query.from()).toString() : null, "basis", query.basis().name(),
+                "from", period ? query.from().toString() : SupportPerformance.HISTORY_START.toString(),
+                "to", period ? query.to().toString() : null, "asOf", null, "businessZone", SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId());
+        var cumulative = new LinkedHashMap<>(window);
+        cumulative.putAll(fields("basis", Basis.CURRENT_CUSTOMER_HISTORY.name(), "month", null,
+                "from", SupportPerformance.HISTORY_START.toString(), "to", null));
+        var current = privateAmounts(List.of(), cumulative);
+        var periodAmounts = period ? privateAmounts(List.of(), window) : null;
+        var summary = mapAt(body, "scopeSummary");
+        putPerformance(summary, "current", current);
+        putPerformance(summary, "financial", periodAmounts);
+        var groups = maps(summary.get("groups"));
+        groups.forEach(group -> {
+            putPerformance(group, "current", current);
+            putPerformance(group, "period", periodAmounts);
+        });
+        summary.put("groups", groups);
+        if (scope.mode() == ReadMode.ALL && query.view() == View.OVERVIEW && query.groupId() == null && query.agentId() == null) {
+            summary.put("performanceAttribution", period ? fields("unassigned", periodAmounts, "unknown", periodAmounts) : null);
+        }
+        var rows = maps(body.get("records"));
+        rows.forEach(row -> {
+            if (query.view() == View.AGENTS) {
+                putPerformance(row, "current", current);
+                row.put("period", period ? fields("performance", periodAmounts) : null);
+            } else if (Set.of(View.OVERVIEW, View.CUSTOMERS, View.ACTIVITY).contains(query.view())) {
+                row.put("performance", current);
+            }
+        });
+        putPerformance(body, "selectedCurrent", current);
+        body.putAll(fields("metricVersion", SupportPerformance.DEFINITION_VERSION, "generation", "UPGRADING",
+                "performanceWindow", window, "firstPaymentCoverage", fields("status", "UNKNOWN",
+                        "reasonCodes", List.of("GENERATION_UPGRADING")), "scopeSummary", summary,
+                "records", firstDependent ? List.of() : rows, "observedTotal", firstDependent ? null : body.get("observedTotal"),
+                "canContinue", false, "versionState", "UNKNOWN", "queryVersion", null, "total", null,
+                "recordsStatus", firstDependent ? "UNKNOWN" : body.get("recordsStatus"),
+                "exportReadiness", period ? fields("state", "BLOCKED", "reasonCodes", List.of("EXPORT_GENERATION_UPGRADING"))
+                        : fields("state", "NOT_APPLICABLE", "reasonCodes", List.of())));
+        if (firstFilter) body.putAll(fields("selectedCustomerCount", null, "selectedCurrent", null, "funds", null));
+        return body;
+    }
+
+    private static void putPerformance(Map<String, Object> parent, String key, Map<String, Object> performance) {
+        var projection = mapAt(parent, key);
+        projection.put("performance", performance);
+        parent.put(key, projection);
     }
 
     static Map<String, Object> firstCoverage(boolean confirmed) {
@@ -230,6 +342,69 @@ public class SupportPerformanceReadService {
 
     private static Map<String, Object> completeFirst() {
         return fields("status", "COMPLETE", "reasonCodes", List.of());
+    }
+
+    private static SupportAnalyticsStats.FirstSelection firstSelection(Snapshot snapshot, FirstPayment first, long customer) {
+        if (first != null && first.confirmed()) {
+            return new SupportAnalyticsStats.FirstSelection(new SupportAnalyticsStats.FirstCandidate(first.kind(),
+                    first.channel(), LocalDateTime.ofInstant(first.at(), SupportAnalyticsQueryRequest.BUSINESS_ZONE),
+                    6, first.amount(), first.currency(), null), SupportAnalyticsStats.Status.AVAILABLE,
+                    List.of(), SupportAnalyticsStats.FirstState.CONFIRMED);
+        }
+        return snapshot.firstHistoryReady().contains(customer) && first == null
+                ? new SupportAnalyticsStats.FirstSelection(null, SupportAnalyticsStats.Status.AVAILABLE,
+                        List.of(), SupportAnalyticsStats.FirstState.NONE)
+                : new SupportAnalyticsStats.FirstSelection(null, SupportAnalyticsStats.Status.UNKNOWN,
+                        List.of("HISTORY_INCOMPLETE"), SupportAnalyticsStats.FirstState.UNKNOWN);
+    }
+
+    private static Map<String, Object> firstRow(FirstPayment first, RootDisplayRow customer, Map<Long, String> agents) {
+        var attribution = first.attribution();
+        var row = fields("id", publicEventId(first.factId()), "customerId", Long.toString(first.customerId()),
+                "customerNo", customer.customerNo(), "nickname", customer.nickname(),
+                "kind", first.kind(), "currency", first.currency(), "amount", text(first.amount()),
+                "succeededAt", first.at().toString(), "agentId", text(attribution.agentId()),
+                "groupId", text(attribution.groupId()), "agentDisplayName",
+                attribution.agentId() == null ? null : agents.get(attribution.agentId()));
+        if (first.channel() != null) row.put("channel", first.channel());
+        return row;
+    }
+
+    private static Map<String, Object> firstSummary(List<FirstPayment> facts, List<FirstPayment> visible,
+            String currency, boolean complete) {
+        var visibleIds = visible.stream().map(FirstPayment::customerId).collect(Collectors.toSet());
+        var restricted = facts.stream().filter(first -> !visibleIds.contains(first.customerId())).toList();
+        if (complete) {
+            var fullAmount = zeroIfMissing(total(facts.stream().map(FirstPayment::amount).toList()));
+            return fields("currency", currency, "status", "AVAILABLE", "observedAmount", fullAmount, "totalAmount", fullAmount,
+                    "visibleAmount", zeroIfMissing(total(visible.stream().map(FirstPayment::amount).toList())),
+                    "restrictedAmount", zeroIfMissing(total(restricted.stream().map(FirstPayment::amount).toList())),
+                    "totalCount", facts.size(), "visibleCount", visible.size(), "restrictedCount", restricted.size(),
+                    "customerCount", facts.size(), "visibleCustomerCount", visible.size(), "restrictedCustomerCount", restricted.size());
+        }
+        return fields("currency", currency,
+                "totalAmount", firstTotal(facts, complete), "visibleAmount", firstTotal(visible, complete),
+                "restrictedAmount", firstTotal(restricted, complete), "totalCount", firstCount(facts.size(), complete),
+                "visibleCount", firstCount(visible.size(), complete), "restrictedCount", firstCount(restricted.size(), complete),
+                "customerCount", firstCount(facts.size(), complete), "visibleCustomerCount", firstCount(visible.size(), complete),
+                "restrictedCustomerCount", firstCount(restricted.size(), complete));
+    }
+
+    private static String zeroIfMissing(BigDecimal value) {
+        return value == null ? "0" : text(value);
+    }
+
+    private static Map<String, Object> firstTotal(List<FirstPayment> facts, boolean complete) {
+        var sum = total(facts.stream().map(FirstPayment::amount).toList());
+        if (complete) return amount(sum, true);
+        return fields("value", null, "observed", text(sum), "status", sum == null ? "UNKNOWN" : "PARTIAL",
+                "reasons", List.of("HISTORY_INCOMPLETE"));
+    }
+
+    private static Map<String, Object> firstCount(long observed, boolean complete) {
+        return fields("value", complete ? observed : null, "observed", complete || observed > 0 ? observed : null,
+                "status", complete ? "COMPLETE" : observed > 0 ? "PARTIAL" : "UNKNOWN",
+                "reasons", complete ? List.of() : List.of("HISTORY_INCOMPLETE"));
     }
 
     public Map<String, Object> customer(long customer, Map<String, List<String>> raw,
@@ -250,9 +425,11 @@ public class SupportPerformanceReadService {
                 "businessZone", BusinessCalendar.legacy().zoneAt(SupportPerformance.HISTORY_START).getId()));
         var events = current.map(snapshot -> snapshot.events().stream().filter(event -> event.customerId() == customer).toList())
                 .orElseGet(List::of);
-        var projection = privateAmounts(events, window);
+        boolean amountComplete = current.filter(s -> !s.months().isEmpty()
+                && s.months().stream().allMatch(month -> month.coverage() == Coverage.COMPLETE)).isPresent();
+        var projection = privateAmounts(events, window, amountComplete);
         var first = current.flatMap(snapshot -> snapshot.firstPayments().stream()
-                .filter(candidate -> candidate.customerId() == customer && candidate.confirmed()).findFirst());
+                .filter(candidate -> candidate.customerId() == customer).findFirst());
         if (body.get("profile") instanceof Map<?, ?> legacyProfile) {
             var profile = copyFields(legacyProfile);
             for (String key : List.of("statistics", "finance")) {
@@ -261,11 +438,19 @@ public class SupportPerformanceReadService {
                 var view = copyFields(data);
                 view.put("performance", projection);
                 if ("statistics".equals(key)) {
-                    view.put("firstPaymentCoverage", firstCoverage(first.isPresent()));
-                    view.put("first", first.<Map<String, Object>>map(payment -> fields("state", "CONFIRMED", "status", "READY",
-                            "kind", payment.kind(), "currency", payment.currency(), "amount", text(payment.amount()),
-                            "succeededAt", payment.at().toString(), "channel", payment.channel())).orElseGet(() ->
-                            fields("state", "UNKNOWN", "status", "UNKNOWN", "kind", null, "currency", null, "amount", null, "succeededAt", null)));
+                    var selection = current.map(snapshot -> firstSelection(snapshot, first.orElse(null), customer)).orElse(null);
+                    boolean confirmed = selection != null && selection.state() == SupportAnalyticsStats.FirstState.CONFIRMED;
+                    boolean none = selection != null && selection.state() == SupportAnalyticsStats.FirstState.NONE;
+                    view.put("firstPaymentCoverage", current.isEmpty()
+                            ? fields("status", "UNKNOWN", "reasonCodes", List.of("GENERATION_UPGRADING"))
+                            : confirmed || none ? completeFirst() : firstCoverage(first.isPresent()));
+                    var payment = confirmed ? first.orElseThrow() : null;
+                    var firstView = fields("state", confirmed ? "CONFIRMED" : none ? "NONE" : "UNKNOWN",
+                            "status", selection == null ? "UNKNOWN" : selection.status().name(), "kind", payment == null ? null : payment.kind(),
+                            "currency", payment == null ? null : payment.currency(), "amount", payment == null ? null : text(payment.amount()),
+                            "succeededAt", payment == null ? null : payment.at().toString());
+                    if (payment != null && payment.channel() != null) firstView.put("channel", payment.channel());
+                    view.put("first", firstView);
                 }
                 var projectedGroup = copyFields(group);
                 projectedGroup.put("data", view);
@@ -290,106 +475,21 @@ public class SupportPerformanceReadService {
 
     Map<String, Object> leaderboard(SupportLeaderboardQuery.Normalized query, Long requestedAgent, long actor,
             Set<Long> groups, List<Map<String, Object>> scopeOptions) {
-        var current = published();
+        var current = cache.currentPublication().filter(publication -> publication.snapshot().generation() == Generation.READY);
         if (current.isEmpty()) {
             if (query.expectedVersion() != null) throw new BizException(409, "SUPPORT_LEADERBOARD_VERSION_CHANGED");
             return fields("metricVersion", SupportPerformance.DEFINITION_VERSION, "generation", "UPGRADING", "board", query.board().name());
         }
-        var snapshot = current.get();
+        var publication = current.get();
+        var snapshot = publication.snapshot();
         var month = snapshot.months().stream().filter(m -> m.month().equals(query.referenceMonth().toString())).findFirst()
                 .orElseThrow(() -> new BizException(422, "SUPPORT_LEADERBOARD_MONTH_UNAVAILABLE"));
-        var cutoff = LocalDateTime.ofInstant(month.to().minusNanos(1_000), ZoneOffset.UTC);
-        var memberships = leaderboard.memberships().stream()
-                .filter(member -> activeAt(member.startsAt(), member.endsAt(), cutoff))
-                .collect(Collectors.groupingBy(SupportLeaderboardMapper.MemberInterval::agentId, TreeMap::new, Collectors.toList()));
-        var accounts = leaderboard.accounts().stream().filter(account -> Integer.valueOf(0).equals(account.isDeleted())
-                && Integer.valueOf(1).equals(account.compatibleRole())).toList();
-        var groupNames = leaderboard.groups().stream().filter(group -> group.name() != null)
-                .collect(Collectors.toMap(SupportLeaderboardMapper.Group::id, SupportLeaderboardMapper.Group::name,
-                        (a, b) -> a, TreeMap::new));
-        var qualifications = leaderboard.qualifications();
-        var qualified = qualifications.stream().filter(q -> activeAt(q.startsAt(), q.endsAt(), cutoff))
-                .collect(Collectors.groupingBy(SupportLeaderboardMapper.QualificationInterval::agentId, TreeMap::new, Collectors.toList()));
-        var monthAgents = qualifications.stream().filter(q -> "ENABLED".equals(q.state())
-                && q.startsAt().toInstant(ZoneOffset.UTC).isBefore(month.to())
-                && (q.endsAt() == null || q.endsAt().toInstant(ZoneOffset.UTC).isAfter(month.from())))
-                .map(SupportLeaderboardMapper.QualificationInterval::agentId).collect(Collectors.toSet());
-        var currentBindings = leaderboard.currentBindings().stream().filter(binding ->
-                activeAt(binding.startsAt(), binding.endsAt(), cutoff)).toList();
-        var boundByAgent = currentBindings.stream().collect(Collectors.groupingBy(
-                SupportLeaderboardMapper.Binding::agentId, TreeMap::new, Collectors.mapping(
-                        SupportLeaderboardMapper.Binding::customerId, Collectors.toCollection(TreeSet::new))));
-        var duplicated = currentBindings.stream().map(SupportLeaderboardMapper.Binding::customerId).distinct().count() != currentBindings.size();
-        var accountIds = accounts.stream().map(SupportLeaderboardMapper.Account::id).collect(Collectors.toSet());
-        boolean candidatesComplete = leaderboard.qualificationCutoverUtc() != null
-                && memberships.values().stream().allMatch(rows -> rows.size() == 1)
-                && qualified.values().stream().allMatch(rows -> rows.size() == 1)
-                && accountIds.containsAll(boundByAgent.keySet()) && !duplicated;
-        boolean amountComplete = month.coverage() == Coverage.COMPLETE;
-        boolean complete = candidatesComplete && (query.board() == Board.customers
-                || query.board() == Board.firstPayment && month.firstHistoryComplete()
-                || query.board() == Board.netContribution && amountComplete);
-        String version = version("slb-v1:", snapshot, SupportPerformance.DEFINITION_VERSION, query.board().name(),
-                query.currency(), query.scope().name(), new TreeSet<>(groups).toString(), month.month(),
-                accounts.toString(), memberships.toString(), qualifications.toString(), groupNames.toString(), boundByAgent.toString());
+        var board = boardRows(snapshot, month, query, groups, actor, publication.evidence(), true);
+        var observed = board.rows();
+        boolean complete = board.complete(), candidatesComplete = board.candidatesComplete();
+        String version = board.version();
         requireVersion(query.expectedVersion(), version, "SUPPORT_LEADERBOARD_VERSION_CHANGED");
-        var eligible = snapshot.monthlySubtotals().stream().filter(row -> month.month().equals(row.month())
-                && row.attribution().agentId() != null && (groups.isEmpty()
-                || row.attribution().groupId() != null && groups.contains(row.attribution().groupId()))).toList();
-        var byAgent = eligible.stream().collect(Collectors.groupingBy(row -> row.attribution().agentId()));
-        var observed = accounts.stream().filter(account -> (query.board() == Board.customers
-                        ? boundByAgent.containsKey(account.id()) || qualified.getOrDefault(account.id(), List.of()).stream()
-                                .anyMatch(q -> "ENABLED".equals(q.state()))
-                        : byAgent.containsKey(account.id()) || monthAgents.contains(account.id())) && (groups.isEmpty()
-                        || memberships.getOrDefault(account.id(), List.of()).stream()
-                                .anyMatch(member -> member.groupId() != null && groups.contains(member.groupId()))
-                        || query.board() != Board.customers && byAgent.containsKey(account.id())))
-                .map(account -> {
-            long id = account.id();
-            var parts = byAgent.getOrDefault(id, List.of());
-            BigDecimal inflows = total(parts.stream().flatMap(row -> row.inflows().values().stream()).toList());
-            BigDecimal debits = total(parts.stream().flatMap(row -> row.withdrawals().values().stream())
-                    .map(WithdrawalSubtotal::walletDebitedUsdt).toList());
-            BigDecimal value = inflows == null && debits == null ? null : parts.stream()
-                    .map(MonthlySubtotal::performanceUsdt).reduce(BigDecimal.ZERO, BigDecimal::add);
-            java.util.function.Predicate<EventAttribution> agentScope = assignment -> Long.valueOf(id).equals(assignment.agentId())
-                    && (groups.isEmpty() || assignment.groupId() != null && groups.contains(assignment.groupId()));
-            var counts = SupportPerformanceMetrics.counts(snapshot, month.from(), month.to(), List.of(), agentScope);
-            var membership = memberships.getOrDefault(id, List.of());
-            String group = membership.size() == 1 && membership.get(0).groupId() != null
-                    ? groupNames.getOrDefault(membership.get(0).groupId(), "") : "";
-            var qualificationRows = qualified.getOrDefault(id, List.of());
-            String qualification = qualificationRows.size() != 1 ? "UNKNOWN" : switch (qualificationRows.get(0).state()) {
-                case "ENABLED" -> Integer.valueOf(1).equals(account.status()) ? "ACTIVE" : "DISABLED";
-                case "REMOVED" -> "REMOVED";
-                default -> "DISABLED";
-            };
-            var name = account.nickname() == null || account.nickname().isBlank() ? Long.toString(id) : account.nickname();
-            long first = counts.get("firstPayment");
-            long customers = boundByAgent.getOrDefault(id, new TreeSet<>()).size();
-            boolean currentCountsComplete = !duplicated && query.referenceMonth().equals(BusinessCalendar.legacy().month(snapshot.asOf()));
-            BigDecimal metric = query.board() == Board.firstPayment
-                    ? month.firstHistoryComplete() ? BigDecimal.valueOf(first) : observedCount(first)
-                    : query.board() == Board.customers ? BigDecimal.valueOf(customers)
-                    : amountComplete && value == null ? BigDecimal.ZERO : value;
-            boolean metricComplete = query.board() == Board.customers ? currentCountsComplete
-                    : query.board() == Board.firstPayment ? month.firstHistoryComplete() : amountComplete;
-            String avatarUrl = "ATTACHED".equals(account.avatarState()) && Long.valueOf(id).equals(account.avatarAdminId())
-                    && account.avatarAssetId() != null && account.avatarVersion() != null
-                    ? SupportLeaderboardService.performanceAvatarUrl(id, query, version) : null;
-            return new Ranked(id, name, metric, fields("agentId", Long.toString(id), "name", name, "avatarUrl", avatarUrl,
-                    "groupName", group, "qualification", qualification, "rank", null, "isTied", false,
-                    "rankMetricCoverage", metricComplete ? "COMPLETE" : metric == null ? "UNKNOWN" : "PARTIAL",
-                    "firstPayment", boardCount(first, month.firstHistoryComplete()), "customers", boardCount(customers, currentCountsComplete),
-                    "performance", fields("currency", SupportPerformance.CURRENCY, "month", month.month(),
-                            "performanceAmount", amount(value, amountComplete), "inflowTotal", amount(inflows, amountComplete),
-                            "withdrawalTotal", amount(debits, amountComplete)),
-                    "movement", fields("kind", "UNAVAILABLE", "places", null, "previousRank", null,
-                            "baselineAt", null, "baselineVersion", null, "reason", "DEFINITION_CHANGED"),
-                    "canViewCustomers", ownership.canReadAgent(actor, id)));
-        }).sorted(Comparator.comparing(Ranked::amount, Comparator.nullsLast(Comparator.reverseOrder()))
-                .thenComparingLong(Ranked::id)).toList();
-        if (complete) rank(observed, snapshot, month, query, groups, version);
+        if (complete) rank(observed, snapshot, month, query, groups, publication.evidence());
         var matches = observed.stream().filter(r -> query.keyword() == null
                 || r.name().toLowerCase(Locale.ROOT).contains(query.keyword().toLowerCase(Locale.ROOT))).toList();
         Map<String, Object> body = fields("metricVersion", SupportPerformance.DEFINITION_VERSION, "generation", "READY",
@@ -397,12 +497,12 @@ public class SupportPerformanceReadService {
                 "definitionVersion", SupportPerformance.DEFINITION_VERSION, "board", query.board().name(),
                 "rankMonth", query.rankMonth() == null ? null : month.month(), "referenceMonth", month.month(), "scope", query.scope().name(),
                 "currency", SupportPerformance.CURRENCY, "businessZone", month.businessZone(), "asOf", snapshot.asOf().toString(),
-                "publishedAt", snapshot.asOf().toString(), "state", complete ? "COMPLETE" : "PROVISIONAL",
+                "publishedAt", snapshot.publishedAt().toString(), "state", complete ? "COMPLETE" : "PROVISIONAL",
                 "candidateCoverage", candidatesComplete ? "COMPLETE" : observed.isEmpty() ? "UNKNOWN" : "PARTIAL",
                 "stale", cache.stale(snapshot), "refreshFailed", cache.refreshFailed(),
                 "selectableMonths", snapshot.months().stream().map(Month::month).toList(),
                 "currencies", List.of(SupportPerformance.CURRENCY), "scopeOptions", scopeOptions,
-                "exportReadiness", exportReadiness(snapshot, observed.isEmpty()));
+                "exportReadiness", exportReadiness(snapshot));
         if (requestedAgent != null) {
             body.put("row", observed.stream().filter(r -> requestedAgent == r.id()).map(Ranked::row).findFirst()
                     .orElseThrow(() -> new BizException(404, "SUPPORT_LEADERBOARD_AGENT_NOT_FOUND")));
@@ -423,10 +523,212 @@ public class SupportPerformanceReadService {
         return body;
     }
 
+    private record BoardRows(List<Ranked> rows, String version, boolean complete, boolean candidatesComplete) { }
+
+    private BoardRows boardRows(Snapshot snapshot, Month month, SupportLeaderboardQuery.Normalized query,
+            Set<Long> groups, long actor, SupportPerformanceCache.RankEvidence evidence, boolean withCapabilities) {
+        var cutoff = LocalDateTime.ofInstant(month.to().minusNanos(1_000), ZoneOffset.UTC);
+        var memberships = evidence.memberships().stream()
+                .filter(member -> activeAt(member.startsAt(), member.endsAt(), cutoff))
+                .collect(Collectors.groupingBy(SupportLeaderboardMapper.MemberInterval::agentId, TreeMap::new, Collectors.toList()));
+        boolean customersBoard = query.board() == Board.customers;
+        var groupNames = evidence.groups().stream().filter(group -> group.name() != null)
+                .collect(Collectors.toMap(SupportLeaderboardMapper.Group::id, SupportLeaderboardMapper.Group::name,
+                        (a, b) -> a, TreeMap::new));
+        var qualifications = evidence.qualifications();
+        var qualified = qualifications.stream().filter(q -> activeAt(q.startsAt(), q.endsAt(), cutoff))
+                .collect(Collectors.groupingBy(SupportLeaderboardMapper.QualificationInterval::agentId, TreeMap::new, Collectors.toList()));
+        var monthAgents = qualifications.stream().filter(q -> "ENABLED".equals(q.state())
+                && !q.startsAt().isAfter(cutoff)
+                && (q.endsAt() == null || q.endsAt().isAfter(q.startsAt())
+                    && q.endsAt().toInstant(ZoneOffset.UTC).isAfter(month.from())))
+                .map(SupportLeaderboardMapper.QualificationInterval::agentId).collect(Collectors.toSet());
+        var currentBindings = evidence.bindings().stream().filter(binding ->
+                activeAt(binding.startsAt(), binding.endsAt(), cutoff)).toList();
+        var boundByAgent = currentBindings.stream().collect(Collectors.groupingBy(
+                SupportLeaderboardMapper.Binding::agentId, TreeMap::new, Collectors.mapping(
+                        SupportLeaderboardMapper.Binding::customerId, Collectors.toCollection(TreeSet::new))));
+        var duplicated = currentBindings.stream().map(SupportLeaderboardMapper.Binding::customerId).distinct().count() != currentBindings.size();
+        var byAgent = snapshot.monthlySubtotals().stream().filter(row -> month.month().equals(row.month())
+                && row.attribution().agentId() != null && (groups.isEmpty()
+                || row.attribution().groupId() != null && groups.contains(row.attribution().groupId())))
+                .collect(Collectors.groupingBy(row -> row.attribution().agentId()));
+        var firstByAgent = snapshot.firstPayments().stream().filter(first -> first.confirmed()
+                && SupportPerformance.CURRENCY.equals(first.currency()) && month.contains(first.at())
+                && first.attribution().state() != AttributionState.UNKNOWN && first.attribution().agentId() != null
+                && (groups.isEmpty() || first.attribution().groupId() != null && groups.contains(first.attribution().groupId())))
+                .collect(Collectors.groupingBy(first -> first.attribution().agentId(), Collectors.counting()));
+        Set<Long> attributed = query.board() == Board.netContribution ? byAgent.keySet() : firstByAgent.keySet();
+        var accounts = evidence.accounts().stream().filter(account ->
+                Integer.valueOf(0).equals(account.isDeleted()) && Integer.valueOf(1).equals(account.compatibleRole())
+                || customersBoard && boundByAgent.containsKey(account.id())
+                || !customersBoard && (monthAgents.contains(account.id()) || attributed.contains(account.id()))).toList();
+        var accountIds = accounts.stream().map(SupportLeaderboardMapper.Account::id).collect(Collectors.toSet());
+        var monthStart = LocalDateTime.ofInstant(month.from(), ZoneOffset.UTC);
+        var qualificationHistory = qualifications.stream().collect(Collectors.groupingBy(SupportLeaderboardMapper.QualificationInterval::agentId));
+        var memberHistory = evidence.memberships().stream().collect(Collectors.groupingBy(SupportLeaderboardMapper.MemberInterval::agentId));
+        var provedGroups = evidence.groups().stream().map(SupportLeaderboardMapper.Group::id).collect(Collectors.toSet());
+        var firstOwnership = new HashMap<Long, LocalDateTime>();
+        evidence.bindings().forEach(binding -> firstOwnership.merge(binding.agentId(), binding.startsAt(),
+                (a, b) -> a.isBefore(b) ? a : b));
+        snapshot.events().stream().filter(event -> month.contains(event.effectiveAt()) && event.attribution().agentId() != null
+                && event.attribution().state() != AttributionState.UNKNOWN).forEach(event ->
+                firstOwnership.merge(event.attribution().agentId(), LocalDateTime.ofInstant(event.effectiveAt(), ZoneOffset.UTC),
+                        (a, b) -> a.isBefore(b) ? a : b));
+        boolean currentMonth = month.month().equals(BusinessCalendar.legacy().month(snapshot.asOf()).toString());
+        boolean knownCurrentBounds = currentMonth && !duplicated && accountIds.containsAll(boundByAgent.keySet())
+                && boundByAgent.keySet().stream().allMatch(id -> qualificationHistory.getOrDefault(id, List.of()).stream()
+                        .anyMatch(interval -> "ENABLED".equals(interval.state()) && !interval.startsAt().isAfter(cutoff)))
+                && accounts.stream().filter(account -> Integer.valueOf(1).equals(account.serviceProfile())
+                        && (groups.isEmpty() || memberships.getOrDefault(account.id(), List.of()).stream()
+                            .anyMatch(member -> member.groupId() != null && groups.contains(member.groupId()))))
+                    .allMatch(account -> qualified.getOrDefault(account.id(), List.of()).size() == 1);
+        var historyAgents = new HashSet<>(monthAgents);
+        historyAgents.addAll(firstOwnership.keySet());
+        historyAgents.addAll(memberHistory.keySet());
+        historyAgents.addAll(attributed);
+        boolean historicalCandidates = evidence.cutover() != null && !monthStart.isBefore(evidence.cutover())
+                && accountIds.containsAll(monthAgents) && accountIds.containsAll(attributed)
+                && accounts.stream().filter(account -> historyAgents.contains(account.id())
+                        || Integer.valueOf(1).equals(account.serviceProfile())).allMatch(account -> {
+                    var member = memberships.getOrDefault(account.id(), List.of());
+                    boolean mayBeInScope = groups.isEmpty() || attributed.contains(account.id()) || member.isEmpty() || member.stream()
+                            .anyMatch(row -> row.groupId() != null && groups.contains(row.groupId()));
+                    return !mayBeInScope || SupportLeaderboardSourceService.completeHistory(account,
+                            qualificationHistory.getOrDefault(account.id(), List.of()), memberHistory.getOrDefault(account.id(), List.of()),
+                            provedGroups, monthStart, cutoff, evidence.cutover(), firstOwnership.get(account.id()));
+                });
+        boolean candidatesComplete = (customersBoard ? knownCurrentBounds : historicalCandidates)
+                && memberships.values().stream().allMatch(rows -> rows.size() == 1
+                        && (rows.get(0).groupId() == null || provedGroups.contains(rows.get(0).groupId())))
+                && qualified.values().stream().allMatch(rows -> rows.size() == 1) && !duplicated;
+        boolean amountComplete = month.coverage() == Coverage.COMPLETE;
+        boolean complete = candidatesComplete && (query.board() == Board.customers
+                || query.board() == Board.firstPayment && month.firstHistoryComplete()
+                || query.board() == Board.netContribution && amountComplete);
+        String version = version("slb-v1:", snapshot, SupportPerformance.DEFINITION_VERSION, query.board().name(),
+                query.currency(), query.scope().name(), new TreeSet<>(groups).toString(), month.month(),
+                accounts.toString(), memberships.toString(), qualifications.toString(), groupNames.toString(), boundByAgent.toString());
+        var observed = accounts.stream().filter(account -> (query.board() == Board.customers
+                        ? boundByAgent.containsKey(account.id()) || qualified.getOrDefault(account.id(), List.of()).stream()
+                                .anyMatch(q -> "ENABLED".equals(q.state()) && Integer.valueOf(1).equals(account.status())
+                                        && Integer.valueOf(1).equals(account.profileEnabled())
+                                        && Integer.valueOf(1).equals(account.compatibleRole())
+                                        && Integer.valueOf(0).equals(account.isDeleted()))
+                        : monthAgents.contains(account.id()) || attributed.contains(account.id())) && (groups.isEmpty()
+                        || memberships.getOrDefault(account.id(), List.of()).stream()
+                                .anyMatch(member -> member.groupId() != null && groups.contains(member.groupId()))
+                        || query.board() == Board.netContribution && byAgent.containsKey(account.id())
+                        || query.board() == Board.firstPayment && firstByAgent.containsKey(account.id())))
+                .map(account -> {
+            long id = account.id();
+            var parts = byAgent.getOrDefault(id, List.of());
+            BigDecimal inflows = total(parts.stream().flatMap(row -> row.inflows().values().stream()).toList());
+            BigDecimal debits = total(parts.stream().flatMap(row -> row.withdrawals().values().stream())
+                    .map(WithdrawalSubtotal::walletDebitedUsdt).toList());
+            BigDecimal value = inflows == null && debits == null ? null : parts.stream()
+                    .map(MonthlySubtotal::performanceUsdt).reduce(BigDecimal.ZERO, BigDecimal::add);
+            var membership = memberships.getOrDefault(id, List.of());
+            String group = membership.size() == 1 && membership.get(0).groupId() != null
+                    ? groupNames.getOrDefault(membership.get(0).groupId(), "") : "";
+            var qualificationRows = qualified.getOrDefault(id, List.of());
+            boolean wasQualified = qualificationHistory.getOrDefault(id, List.of()).stream()
+                    .anyMatch(q -> "ENABLED".equals(q.state()) && !q.startsAt().isAfter(cutoff));
+            String qualification = boundByAgent.containsKey(id) && wasQualified
+                    && (qualificationRows.size() != 1 || !"ENABLED".equals(qualificationRows.get(0).state())
+                        || !Integer.valueOf(1).equals(account.status()) || !Integer.valueOf(1).equals(account.profileEnabled()))
+                    ? "HANDOVER_REQUIRED" : qualificationRows.size() != 1 ? "UNKNOWN"
+                    : switch (qualificationRows.get(0).state()) {
+                case "ENABLED" -> Integer.valueOf(1).equals(account.status()) && Integer.valueOf(1).equals(account.profileEnabled()) ? "ACTIVE" : "DISABLED";
+                case "REMOVED" -> "REMOVED";
+                default -> "DISABLED";
+            };
+            var name = account.nickname() == null || account.nickname().isBlank() ? Long.toString(id) : account.nickname();
+            long first = firstByAgent.getOrDefault(id, 0L);
+            long customers = boundByAgent.getOrDefault(id, new TreeSet<>()).size();
+            boolean currentCountsComplete = knownCurrentBounds;
+            BigDecimal metric = query.board() == Board.firstPayment
+                    ? month.firstHistoryComplete() ? BigDecimal.valueOf(first) : observedCount(first)
+                    : query.board() == Board.customers ? BigDecimal.valueOf(customers)
+                    : amountComplete && value == null ? BigDecimal.ZERO : value;
+            boolean metricComplete = query.board() == Board.customers ? currentCountsComplete
+                    : query.board() == Board.firstPayment ? month.firstHistoryComplete() : amountComplete;
+            String avatarUrl = "ATTACHED".equals(account.avatarState()) && Long.valueOf(id).equals(account.avatarAdminId())
+                    && account.avatarAssetId() != null && account.avatarVersion() != null
+                    ? SupportLeaderboardService.performanceAvatarUrl(id, query, version) : null;
+            return new Ranked(id, name, metric, fields("agentId", Long.toString(id), "name", name, "avatarUrl", avatarUrl,
+                    "groupName", group, "qualification", qualification, "rank", null, "isTied", false,
+                    "rankMetricCoverage", metricComplete ? "COMPLETE" : metric == null ? "UNKNOWN" : "PARTIAL",
+                    "firstPayment", boardCount(first, month.firstHistoryComplete()), "customers", boardCount(customers, currentCountsComplete),
+                    "performance", fields("currency", SupportPerformance.CURRENCY, "month", month.month(),
+                            "performanceAmount", amount(value, amountComplete), "inflowTotal", amount(inflows, amountComplete),
+                            "withdrawalTotal", amount(debits, amountComplete)),
+                    "movement", movementUnavailable(!candidatesComplete ? "CANDIDATES_INCOMPLETE" : "METRIC_INCOMPLETE"),
+                    "canViewCustomers", withCapabilities && ownership.canReadAgent(actor, id)));
+        }).sorted(Comparator.comparing(Ranked::amount, Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparingLong(Ranked::id)).toList();
+        return new BoardRows(observed, version, complete, candidatesComplete);
+    }
+
     private void rank(List<Ranked> rows, Snapshot snapshot, Month month, SupportLeaderboardQuery.Normalized query,
-                      Set<Long> groups, String version) {
-        Map<BigDecimal, Long> frequencies = rows.stream().collect(Collectors.groupingBy(
-                Ranked::amount, TreeMap::new, Collectors.counting()));
+                      Set<Long> groups, SupportPerformanceCache.RankEvidence evidence) {
+        var ranks = ranks(rows, true);
+        var calendar = BusinessCalendar.legacy();
+        var day = calendar.dateAt(snapshot.asOf());
+        String unavailable = null;
+        BoardRows priorBoard = null;
+        SupportPerformanceCache.DaySnapshot prior = null;
+        if (!YearMonth.from(day).toString().equals(month.month())) {
+            unavailable = "HISTORICAL_MONTH";
+        } else if (day.getDayOfMonth() == 1 && query.board() != Board.customers) {
+            unavailable = "MONTH_START";
+        } else {
+            prior = cache.priorDay(day, query.board());
+            if (prior == null || prior.evidence() == null || prior.snapshot().months().isEmpty()) {
+                unavailable = "NO_BASELINE";
+            } else {
+                var priorMonth = prior.snapshot().months().get(prior.snapshot().months().size() - 1);
+                priorBoard = boardRows(prior.snapshot(), priorMonth, query, groups, 0, prior.evidence(), false);
+                if (!priorBoard.complete()) unavailable = "NO_BASELINE";
+            }
+        }
+        var priorRanks = unavailable == null ? ranks(priorBoard.rows(), false) : Map.<Long, Integer>of();
+        if (unavailable == null && !priorRanks.keySet().equals(ranks.keySet())) {
+            var baselineAt = LocalDateTime.ofInstant(prior.snapshot().asOf(), ZoneOffset.UTC);
+            var evaluatedAt = LocalDateTime.ofInstant(snapshot.asOf(), ZoneOffset.UTC);
+            var births = evidence.qualifications().stream().filter(interval -> interval.version() == 1
+                    && "ENABLED".equals(interval.state()) && evidence.cutover() != null
+                    && !interval.startsAt().isBefore(evidence.cutover()) && interval.startsAt().isAfter(baselineAt)
+                    && !interval.startsAt().isAfter(evaluatedAt)).map(SupportLeaderboardMapper.QualificationInterval::agentId)
+                    .collect(Collectors.toSet());
+            if (!groups.isEmpty() || !ranks.keySet().containsAll(priorRanks.keySet()) || ranks.keySet().stream()
+                    .anyMatch(id -> !priorRanks.containsKey(id) && !births.contains(id))) unavailable = "MEMBERS_CHANGED";
+        }
+        for (var row : rows) {
+            if (unavailable != null) {
+                row.row().put("movement", movementUnavailable(unavailable));
+                continue;
+            }
+            Integer priorRank = priorRanks.get(row.id());
+            if (priorRank == null) {
+                row.row().put("movement", fields("kind", "NEW", "places", null, "previousRank", null,
+                        "baselineAt", prior.snapshot().asOf().toString(), "baselineVersion", priorBoard.version(), "reason", "NONE"));
+                continue;
+            }
+            int change = priorRank - ranks.get(row.id());
+            row.row().put("movement", fields("kind", change > 0 ? "UP" : change < 0 ? "DOWN" : "SAME",
+                    "places", Math.abs(change), "previousRank", priorRank, "baselineAt", prior.snapshot().asOf().toString(),
+                    "baselineVersion", priorBoard.version(), "reason", "NONE"));
+        }
+    }
+
+    private static Map<String, Object> movementUnavailable(String reason) {
+        return fields("kind", "UNAVAILABLE", "places", null, "previousRank", null,
+                "baselineAt", null, "baselineVersion", null, "reason", reason);
+    }
+
+    private static Map<Long, Integer> ranks(List<Ranked> rows, boolean project) {
+        var frequencies = rows.stream().collect(Collectors.groupingBy(Ranked::amount, TreeMap::new, Collectors.counting()));
         var ranks = new TreeMap<Long, Integer>();
         BigDecimal previous = null;
         int rank = 0;
@@ -435,25 +737,12 @@ public class SupportPerformanceReadService {
             if (previous == null || previous.compareTo(row.amount()) != 0) rank = index + 1;
             previous = row.amount();
             ranks.put(row.id(), rank);
-            row.row().put("rank", rank);
-            row.row().put("isTied", frequencies.get(row.amount()) > 1);
+            if (project) {
+                row.row().put("rank", rank);
+                row.row().put("isTied", frequencies.get(row.amount()) > 1);
+            }
         }
-        var day = BusinessCalendar.legacy().dateAt(snapshot.asOf());
-        boolean historical = !YearMonth.from(day).toString().equals(month.month());
-        var prior = historical ? null : cache.compareAndSaveRanks(SupportPerformance.digest(
-                query.board() + "|" + query.scope() + "|" + new TreeSet<>(groups) + "|"
-                    + (query.board() == Board.customers ? "" : month.month())), day, snapshot.asOf(), version, ranks);
-        String unavailable = historical ? "HISTORICAL_MONTH" : prior == null ? "NO_BASELINE"
-                : !prior.ranks().keySet().equals(ranks.keySet()) ? "MEMBERS_CHANGED" : null;
-        for (var row : rows) {
-            Integer priorRank = unavailable == null ? prior.ranks().get(row.id()) : null;
-            int change = priorRank == null ? 0 : priorRank - ranks.get(row.id());
-            row.row().put("movement", fields("kind", unavailable != null ? "UNAVAILABLE" : change > 0 ? "UP" : change < 0 ? "DOWN" : "SAME",
-                    "places", unavailable == null ? Math.abs(change) : null, "previousRank", priorRank,
-                    "baselineAt", unavailable == null ? prior.asOf() : null,
-                    "baselineVersion", unavailable == null ? prior.version() : null,
-                    "reason", unavailable == null ? "NONE" : unavailable));
-        }
+        return ranks;
     }
 
     private static boolean activeAt(LocalDateTime from, LocalDateTime to, LocalDateTime at) {
@@ -463,7 +752,7 @@ public class SupportPerformanceReadService {
     private static BigDecimal observedCount(long count) { return count == 0 ? null : BigDecimal.valueOf(count); }
 
     private static Map<String, Object> boardCount(long value, boolean complete) {
-        return fields("value", complete ? value : null, "coverage", complete ? "COMPLETE" : value == 0 ? "UNKNOWN" : "PARTIAL",
+        return fields("value", complete ? value : null, "coverage", complete ? "COMPLETE" : "UNKNOWN",
                 "reason", complete ? "NONE" : "METRIC_INCOMPLETE");
     }
 
@@ -480,9 +769,9 @@ public class SupportPerformanceReadService {
         return cache.current().filter(s -> s.generation() == SupportPerformance.Generation.READY);
     }
 
-    private Map<String, Object> exportReadiness(SupportPerformance.Snapshot snapshot, boolean empty) {
+    private Map<String, Object> exportReadiness(SupportPerformance.Snapshot snapshot) {
         String reason = cache.refreshFailed() ? "EXPORT_REFRESH_FAILED" : cache.stale(snapshot)
-                ? "EXPORT_DATA_STALE" : empty ? "EXPORT_ROWS_UNVERIFIED" : null;
+                ? "EXPORT_DATA_STALE" : null;
         return fields("state", reason == null ? "ELIGIBLE" : "BLOCKED", "reasonCodes", reason == null ? List.of() : List.of(reason));
     }
 
@@ -491,6 +780,9 @@ public class SupportPerformanceReadService {
     }
 
     private static boolean historicalScope(EventAttribution assignment, ReadScope scope, Set<Long> groups) {
+        if (assignment.state() == AttributionState.UNKNOWN) {
+            return scope.mode() == ReadMode.ALL && scope.requestedAgentId() == null && scope.requestedGroupId() == null;
+        }
         if (scope.requestedAgentId() != null && !scope.requestedAgentId().equals(assignment.agentId())) return false;
         if (scope.requestedGroupId() != null && !scope.requestedGroupId().equals(assignment.groupId())) return false;
         return switch (scope.mode()) {
@@ -507,7 +799,7 @@ public class SupportPerformanceReadService {
                 .forEach((key, value) -> counts.put(key, (key.equals("firstPayment")
                         ? snapshot.months().stream().anyMatch(month -> month.firstHistoryComplete() && month.from().equals(from) && month.to().equals(to))
                         : complete)
-                        ? fields("value", value, "observed", null, "status", "COMPLETE", "reasons", List.of())
+                        ? fields("value", value, "observed", value, "status", "COMPLETE", "reasons", List.of())
                         : value > 0 ? count(value) : unknownCount()));
         performance.put("counts", counts);
         return performance;
@@ -519,26 +811,42 @@ public class SupportPerformanceReadService {
 
     private static List<Map<String, Object>> groups(Object original, List<Event> events, Map<String, Object> window,
             SupportPerformance.Snapshot snapshot, List<Event> current, Map<String, Object> currentWindow,
-            Map<Long, SupportAnalyticsMapper.CurrentCustomer> owners, boolean complete, boolean fullHistory, boolean period) {
-        var byGroup = events.stream().filter(e -> e.attribution().groupId() != null)
+            Map<Long, SupportAnalyticsMapper.CurrentCustomer> owners, boolean complete, boolean fullHistory, boolean period,
+            ReadScope scope, Set<Long> grantedGroups, List<String> grants) {
+        var byGroup = events.stream().filter(e -> e.attribution().state() == AttributionState.ASSIGNED
+                        && e.attribution().groupId() != null)
                 .collect(Collectors.groupingBy(e -> e.attribution().groupId()));
         var groups = new TreeMap<Long, Map<String, Object>>();
         maps(original).forEach(group -> groups.put(id(group.get("groupId")), group));
         if (period) byGroup.keySet().forEach(id -> groups.putIfAbsent(id, fields("groupId", id.toString())));
         groups.forEach((id, group) -> {
+            var groupScope = new ReadScope(scope.actorId(), scope.mode(), id, scope.requestedAgentId());
             var currentRows = current.stream().filter(event -> id.equals(owners.get(event.customerId()).currentGroupId())).toList();
             var currentGroup = mapAt(group, "current");
-            currentGroup.put("performance", privateAmounts(currentRows, currentWindow, fullHistory));
+            currentGroup.put("performance", privateAmounts(currentRows, withScopeVersion(currentWindow,
+                    scopeVersion(snapshot, groupScope, grantedGroups, grants, Basis.CURRENT_CUSTOMER_HISTORY)), fullHistory));
             var periodGroup = mapAt(group, "period");
             if (period) {
                 var rows = byGroup.getOrDefault(id, List.of());
-                periodGroup.put("performance", measuredCounts(privateAmounts(rows, window, complete), snapshot,
+                var groupWindow = withScopeVersion(window, scopeVersion(snapshot, groupScope, grantedGroups, grants, Basis.PERIOD_EVENT));
+                periodGroup.put("performance", measuredCounts(privateAmounts(rows, groupWindow, complete), snapshot,
                         Instant.parse((String) window.get("from")), Instant.parse((String) window.get("to")),
-                        rows, assignment -> id.equals(assignment.groupId()), complete));
+                        rows, assignment -> assignment.state() == AttributionState.ASSIGNED && id.equals(assignment.groupId()), complete));
             }
             group.putAll(fields("current", currentGroup, "period", periodGroup));
         });
         return List.copyOf(groups.values());
+    }
+
+    private static String scopeVersion(Snapshot snapshot, ReadScope scope, Set<Long> groups, List<String> grants, Basis basis) {
+        String effectiveGroups = scope.requestedGroupId() == null ? new TreeSet<>(groups).toString() : scope.requestedGroupId().toString();
+        return version("", snapshot, scope.toString(), effectiveGroups, grants.toString(), basis.name());
+    }
+
+    private static Map<String, Object> withScopeVersion(Map<String, Object> source, String version) {
+        var window = new LinkedHashMap<>(source);
+        window.put("sourceScopeVersion", version);
+        return window;
     }
 
     private static Map<String, Object> privateAmounts(List<Event> rows, Map<String, Object> window) {
@@ -558,7 +866,7 @@ public class SupportPerformanceReadService {
                     "fee", amount(debit == null ? null : debit.feeUsdt()), "netReceived", amount(debit == null ? null : debit.receivedUsdt())));
         }
         var applicable = "PERIOD_EVENT".equals(window.get("basis")) ? unknownCount() : notApplicable();
-        return fields("window", window, "currency", SupportPerformance.CURRENCY,
+        var projection = fields("window", window, "currency", SupportPerformance.CURRENCY,
                 "performanceAmount", amount(totals.inflows().isEmpty() && totals.withdrawals().isEmpty() ? null : totals.performanceUsdt(), complete),
                 "inflowTotal", amount(total(totals.inflows().values()), complete),
                 "withdrawalTotal", amount(total(totals.withdrawals().values().stream().map(WithdrawalSubtotal::walletDebitedUsdt).toList()), complete),
@@ -575,58 +883,38 @@ public class SupportPerformanceReadService {
                                 .map(Event::amountUsdt).toList()))),
                 "counts", fields("boundAtCutoff", applicable, "newlyBound", applicable, "withInflow", applicable,
                         "withWithdrawal", applicable, "firstPayment", applicable, "negativePerformance", applicable));
+        if (window.get("sourceVersion") == null) markUpgrading(projection);
+        return projection;
+    }
+
+    private static void markUpgrading(Map<String, Object> projection) {
+        if ("UNKNOWN".equals(projection.get("status"))
+                && !List.of("NOT_APPLICABLE").equals(projection.get("reasons"))) {
+            projection.put("reasons", List.of("GENERATION_UPGRADING"));
+            return;
+        }
+        projection.forEach((key, value) -> {
+            if (!"window".equals(key) && value instanceof Map<?, ?> child) {
+                @SuppressWarnings("unchecked")
+                var typed = (Map<String, Object>) child;
+                markUpgrading(typed);
+            }
+        });
     }
 
     private static boolean refund(Event event) {
         return "REFUND".equals(event.sourceStatus()) || "EXTERNAL_REFUND_CONFIRMED".equals(event.sourceStatus());
     }
 
-    private List<Map<String, Object>> records(SupportAnalyticsQueryRequest.Normalized query, boolean amountSort,
-            List<Event> selected, List<Event> currentHistory, Map<Long, RootDisplayRow> customers,
-            Map<String, Object> window, Map<String, Object> currentWindow) {
-        boolean agents = query.view() == View.AGENTS;
-        if (!agents && !Set.of(View.CUSTOMERS, View.OVERVIEW, View.ACTIVITY).contains(query.view())) return List.of();
-        var rows = selected.stream().filter(e -> !agents || e.attribution().agentId() != null)
-                .collect(Collectors.groupingBy(e -> agents ? e.attribution().agentId() : e.customerId(),
-                        TreeMap::new, Collectors.toList()));
-        var customerHistory = agents ? Map.<Long, List<Event>>of()
-                : currentHistory.stream().collect(Collectors.groupingBy(Event::customerId));
-        if (!agents) customers.forEach((id, profile) -> {
-            if (matches(query.keyword(), profile)) rows.putIfAbsent(id, List.of());
-            else rows.remove(id);
-        });
-        Map<Long, String> agentNames = agents ? names.byIds(rows.keySet()) : Map.of();
-        var entries = new ArrayList<>(rows.entrySet());
-        if (amountSort) {
-            Comparator<BigDecimal> direction = query.direction() == SupportAnalyticsQueryRequest.Direction.DESC
-                    ? Comparator.reverseOrder() : Comparator.naturalOrder();
-            Comparator<Map.Entry<Long, List<Event>>> byAmount = Comparator.comparing(entry ->
-                    total(entry.getValue().stream().map(Event::deltaUsdt).toList()), Comparator.nullsLast(direction));
-            entries.sort(byAmount.thenComparing(Map.Entry::getKey));
-        }
-        return entries.stream().filter(entry -> !agents || query.keyword() == null
-                || matches(query.keyword(), agentNames.get(entry.getKey())))
-                .map(entry -> agents ? fields("agentId", entry.getKey().toString(), "name", agentNames.get(entry.getKey()),
-                        "period", fields("performance", privateAmounts(entry.getValue(), window)))
-                        : fields("customerId", entry.getKey().toString(), "customerNo", customers.get(entry.getKey()).customerNo(),
-                        "performance", privateAmounts(customerHistory.getOrDefault(entry.getKey(), List.of()), currentWindow), "current", fields("performance",
-                                privateAmounts(customerHistory.getOrDefault(entry.getKey(), List.of()), currentWindow)))).toList();
-    }
-
-    private static boolean matches(String keyword, RootDisplayRow row) {
-        return keyword == null || matches(keyword, row.customerNo()) || matches(keyword, row.nickname());
-    }
-
-    private static boolean matches(String keyword, String value) {
-        return value != null && value.toLowerCase(Locale.ROOT).contains(keyword.toLowerCase(Locale.ROOT));
+    private static BigDecimal sumPerformance(List<Event> rows) {
+        return total(rows.stream().filter(event -> event.kind() == Kind.INFLOW || event.kind() == Kind.CORRECTION
+                || event.kind() == Kind.WITHDRAWAL).map(Event::deltaUsdt).toList());
     }
 
     private static Map<String, Object> eventRow(Event e, RootDisplayRow customer, Map<Long, String> agents, Map<Long, String> groups) {
-        var reasons = new LinkedHashMap<String, String>();
-        if (e.amountUsdt() == null) reasons.put("businessAmount", "AMOUNT_UNVERIFIED");
-        boolean settlementUnknown = e.kind() == Kind.WITHDRAWAL_REFERENCE && "CONFIRMED".equals(e.sourceStatus());
-        if (settlementUnknown) reasons.put("performanceDeltaUsdt", "WITHDRAWAL_SETTLEMENT_UNVERIFIED");
-        boolean vndBusiness = "VN_BANK_DIRECT_PURCHASE".equals(e.channel()) || "VN_BANK".equals(e.channel());
+        var amounts = e.missingAmounts(false);
+        var reasons = e.factReasons();
+        reasons.addAll(amounts.values());
         return fields("eventId", publicEventId(e.id()), "customerId", Long.toString(e.customerId()), "customerNo", customer.customerNo(),
                 "maskedNickname", SupportPerformance.maskNickname(customer.nickname()),
                 "attributionState", e.attribution().state().name(), "agentId", text(e.attribution().agentId()),
@@ -634,21 +922,21 @@ public class SupportPerformanceReadService {
                 "groupName", e.attribution().groupId() == null ? null : groups.get(e.attribution().groupId()),
                 "kind", e.kind() == Kind.WITHDRAWAL_REFERENCE ? "WITHDRAWAL"
                         : e.kind() == Kind.REFERENCE ? e.sourceStatus() : e.kind().name(), "channel", e.channel(),
-                "reasonCodes", reasons.values().stream().distinct().toList(),
+                "reasonCodes", List.copyOf(reasons),
                 "references", e.devicePurchase() ? List.of("DEVICE_PURCHASE") : refund(e) ? List.of("REFUND")
                         : e.kind() == Kind.REFERENCE ? List.of(e.sourceStatus()) : List.of(),
                 "network", e.network(), "businessNo", e.businessNo(), "originalBusinessNo", e.originalBusinessNo(),
                 "originalEventId", e.originalEventId() == null ? null : publicEventId(e.originalEventId()),
                 "occurredAt", text(e.occurredAt()), "effectiveAt", e.effectiveAt().toString(), "sourceStatus", e.sourceStatus(),
                 "status", e.performanceStatus(),
-                "businessAmount", vndBusiness ? null : text(e.amountUsdt()),
-                "businessCurrency", vndBusiness ? null : SupportPerformance.CURRENCY,
-                "performanceDeltaUsdt", settlementUnknown ? null : text(e.deltaUsdt()),
+                "businessAmount", e.vndBusiness() ? null : text(e.amountUsdt()),
+                "businessCurrency", e.vndBusiness() || e.amountUsdt() == null ? null : SupportPerformance.CURRENCY,
+                "performanceDeltaUsdt", e.settlementUnknown() ? null : text(e.deltaUsdt()),
                 "walletDebitUsdt", text(e.kind() == Kind.WITHDRAWAL ? e.amountUsdt() : null),
                 "withdrawalFeeUsdt", text(e.feeUsdt()), "channelFeeUsdt", text(e.channelFeeUsdt()),
                 "networkFeeUsdt", text(e.networkFeeUsdt()), "receivedUsdt", text(e.receivedUsdt()),
                 "roundingAdjustmentUsdt", text(e.roundingUsdt()), "totalPaidUsdt", text(e.totalPaidUsdt()),
-                "amountReasons", reasons, "vndAmount", null);
+                "amountReasons", amounts, "vndAmount", null);
     }
 
     private static String publicEventId(String id) {
@@ -656,16 +944,23 @@ public class SupportPerformanceReadService {
     }
 
     private static Map<String, Object> details(List<Event> selected, List<Event> visible, Set<String> disclosed,
-            Map<String, Object> window) {
+            Map<String, Object> window, boolean complete) {
         var restricted = selected.stream().filter(event -> !disclosed.contains(event.id())).toList();
         var visibleCustomers = visible.stream().map(Event::customerId).collect(Collectors.toSet());
-        return fields("performance", privateAmounts(selected, window), "visiblePerformance", privateAmounts(visible, window),
-                "restrictedPerformance", privateAmounts(restricted, window), "totalCount", count(selected.size()),
-                "visibleCount", count(visible.size()), "restrictedCount", count(restricted.size()),
-                "customerCount", count(selected.stream().map(Event::customerId).distinct().count()),
-                "visibleCustomerCount", count(visible.stream().map(Event::customerId).distinct().count()),
+        return fields("performance", privateAmounts(selected, window, complete),
+                "visiblePerformance", privateAmounts(visible, window, complete),
+                "restrictedPerformance", privateAmounts(restricted, window, complete),
+                "totalCount", count(selected.size(), complete), "visibleCount", count(visible.size(), complete),
+                "restrictedCount", count(restricted.size(), complete),
+                "customerCount", count(selected.stream().map(Event::customerId).distinct().count(), complete),
+                "visibleCustomerCount", count(visible.stream().map(Event::customerId).distinct().count(), complete),
                 "restrictedCustomerCount", count(restricted.stream().map(Event::customerId)
-                        .filter(id -> !visibleCustomers.contains(id)).distinct().count()));
+                        .filter(id -> !visibleCustomers.contains(id)).distinct().count(), complete));
+    }
+
+    private static Map<String, Object> count(long observed, boolean complete) {
+        return complete ? fields("value", observed, "observed", observed, "status", "COMPLETE", "reasons", List.of())
+                : observed > 0 ? count(observed) : unknownCount();
     }
 
     private static Map<String, Object> count(long observed) {
@@ -677,8 +972,10 @@ public class SupportPerformanceReadService {
     }
 
     private static Map<String, Object> amount(BigDecimal value, boolean complete) {
-        if (complete) return fields("value", text(value == null ? BigDecimal.ZERO : value),
-                "observed", null, "status", "COMPLETE", "reasons", List.of());
+        if (complete) {
+            var verified = text(value == null ? BigDecimal.ZERO : value);
+            return fields("value", verified, "observed", verified, "status", "COMPLETE", "reasons", List.of());
+        }
         return fields("value", null, "observed", text(value), "status", value == null ? "UNKNOWN" : "PARTIAL",
                 "reasons", List.of("SOURCE_INCOMPLETE"));
     }
