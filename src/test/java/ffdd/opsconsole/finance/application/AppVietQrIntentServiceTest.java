@@ -230,7 +230,6 @@ class AppVietQrIntentServiceTest {
     @Test
     void retiredManualCreationIsRejectedEvenWithoutActiveBankAccounts() {
         when(mapper.findIntentByCreateKey(41L, "create-no-active-bank")).thenReturn(null);
-        when(mapper.countActiveIntentsForUser(41L)).thenReturn(0L);
         when(mapper.listActiveBankAccountsForUpdate()).thenReturn(List.of());
 
         assertThatThrownBy(() -> service.create(41L, "create-no-active-bank", new BigDecimal("25")))
