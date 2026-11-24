@@ -566,7 +566,7 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
     NotificationActionReceipt findNotificationActionReceipt(@Param("idempotencyKey") String idempotencyKey);
 
     @Insert("""
-            INSERT IGNORE INTO nx_notification_action_receipt
+            INSERT INTO nx_notification_action_receipt
               (notification_id,user_id,action,route,idempotency_key,created_at,is_deleted)
             VALUES
               (#{notificationId},#{userId},#{action},#{route},#{idempotencyKey},NOW(),0)

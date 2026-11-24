@@ -17,6 +17,8 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -112,7 +114,8 @@ public class AppNotificationService {
         return ApiResult.ok(updated);
     }
 
-    @Transactional
+    // A missing key must not lock a gap while another request holds the notification row.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<NotificationActionResult> recordAction(
             Long userId, Long notificationId, String action, String idempotencyKey) {
         if (userId == null || userId <= 0) {
@@ -147,11 +150,19 @@ public class AppNotificationService {
                 || ("swipe_conversion".equals(normalizedAction) && "system".equalsIgnoreCase(fact.kind()))) {
             return ApiResult.fail(422, "NOTIFICATION_ACTION_NOT_ALLOWED");
         }
-        boolean recorded = repository.recordNotificationAction(
-                userId, notificationId, normalizedAction, route, key);
+        boolean recorded = false;
+        boolean uniqueKeyConflict = false;
+        try {
+            recorded = repository.recordNotificationAction(userId, notificationId, normalizedAction, route, key);
+        } catch (DuplicateKeyException conflict) {
+            uniqueKeyConflict = true;
+        }
         if (!recorded) {
             NotificationActionReceipt raced = repository.findNotificationActionReceipt(key).orElse(null);
             if (raced == null) {
+                if (uniqueKeyConflict) {
+                    return ApiResult.fail(409, "NOTIFICATION_ACTION_ALREADY_RECORDED");
+                }
                 throw new IllegalStateException("NOTIFICATION_ACTION_RECEIPT_MISMATCH");
             }
             return matches(raced, userId, notificationId, normalizedAction, route)
