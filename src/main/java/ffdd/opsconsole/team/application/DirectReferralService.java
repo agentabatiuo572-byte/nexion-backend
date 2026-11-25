@@ -51,6 +51,15 @@ public class DirectReferralService {
 
     public String groupForEvent(Long id){return mapper.groupForEvent(id);}
 
+    public Long pairedOperationEventId(Long eventId) {
+        String no = groupForEvent(eventId);
+        if (no == null) return null;
+        var group = mapper.group(no);
+        if (group == null || "network".equals(text(group, "source_type"))) return null;
+        return eventId.equals(number(group, "usdt_event_id"))
+                ? number(group, "nex_event_id") : number(group, "usdt_event_id");
+    }
+
     public int settle(String kind,String ref,Long claimedUserId) {
         var target=self==null?this:self.getObject();
         int prepared=target.prepareSettlement(kind,ref,claimedUserId);

@@ -654,6 +654,19 @@ public class OpsAuditCenterService {
         }
         String refundOrderNo = refundOrderNo(command);
         if (promotions != null && refundOrderNo != null) promotions.lockOrderParticipants(refundOrderNo);
+        List<AuditLockTarget> targets = request.targets();
+        if (descriptor != null && "F5".equals(descriptor.sourceDomain())) {
+            if (target != null && "commission_event".equals(target.type())) {
+                var commissionTargets = teams.commissionEventApprovalTargets(target);
+                if (commissionTargets.size() > 1) {
+                    targets = commissionTargets;
+                    target = null;
+                }
+            } else if ("f5_commission_reissue".equalsIgnoreCase(command.op())) {
+                targets = targets.stream().flatMap(t -> teams.commissionEventApprovalTargets(t).stream())
+                        .distinct().sorted(Comparator.comparing(AuditLockTarget::id)).toList();
+            }
+        }
         // 加目标对象锁(防 pending 期间重复发起)
         if (target != null) {
             int exists = lockMapper.countActiveByTarget(target.domain(), target.type(), target.id());
@@ -674,8 +687,7 @@ public class OpsAuditCenterService {
                 return ApiResult.fail(409, "OBJECT_ALREADY_PENDING");
             }
         }
-        // 多锁扩展(J 域 batch_kill/emergency_block):per-target 循环插锁,任一冲突整单回滚
-        java.util.List<AuditLockTarget> targets = request.targets();
+        // 多锁按目标分别插入，任一冲突整单回滚
         if (targets != null && !targets.isEmpty()) {
             for (AuditLockTarget t : targets) {
                 int exists = lockMapper.countActiveByTarget(t.domain(), t.type(), t.id());

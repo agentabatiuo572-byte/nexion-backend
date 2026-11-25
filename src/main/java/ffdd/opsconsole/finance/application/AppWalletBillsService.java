@@ -226,8 +226,14 @@ public class AppWalletBillsService {
         var deposits = ids.isEmpty() ? Map.<Long, List<AppWalletBillsMapper.DepositDetail>>of()
                 : mapper.depositDetails(userId, ids).stream()
                     .collect(Collectors.groupingBy(AppWalletBillsMapper.DepositDetail::ledgerId));
+        var commissionLedgerIds = rows.stream()
+                .filter(row -> "USDT".equals(row.asset()) && "TEAM_COMMISSION".equals(row.bizType()))
+                .map(AppWalletBillsMapper.LedgerRow::id).toList();
+        var salaryLedgerIds = commissionLedgerIds.isEmpty() ? Set.<Long>of()
+                : Set.copyOf(mapper.salaryLedgerIds(userId, commissionLedgerIds));
         return rows.stream().map(row -> {
             var item = bill(row);
+            if (salaryLedgerIds.contains(row.id())) item.put("presentationCode", "vrankSalary");
             if (chainTopup(row)) {
                 var matches = deposits.getOrDefault(row.id(), List.of());
                 var deposit = matches.size() == 1 ? matches.get(0) : null;

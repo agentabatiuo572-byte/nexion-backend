@@ -2062,6 +2062,15 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
+    public List<AuditLockTarget> commissionEventApprovalTargets(AuditLockTarget target) {
+        Long eventId = parseLongFromMap(target.id().replaceFirst("^CM-", ""));
+        var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
+        Long pairedEventId = eventId == null || direct == null ? null : direct.pairedOperationEventId(eventId);
+        if (pairedEventId == null || pairedEventId.equals(eventId)) return List.of(target);
+        var paired = new AuditLockTarget(target.domain(), target.type(), "CM-" + pairedEventId);
+        return List.of(target, paired).stream().sorted(Comparator.comparing(AuditLockTarget::id)).toList();
+    }
+
     private ApiResult<Map<String, Object>> updateCommissionEventStatus(
             String idempotencyKey,
             TeamCommissionConfigUpdateRequest request,
@@ -2086,10 +2095,13 @@ public class OpsTeamService implements AuditReplayable {
         if (!A2ReplayContext.isReplaying() || !StringUtils.hasText(A2ReplayContext.operationId())) {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
-        var locks = lockMapper.selectActiveByTicketId(A2ReplayContext.operationId());
-        if (locks.size() != 1 || !"F".equals(locks.get(0).getTargetDomain())
-                || !"commission_event".equals(locks.get(0).getTargetType())
-                || !eventId.equals(locks.get(0).getTargetId())) {
+        var target = new AuditLockTarget("F", "commission_event", eventId);
+        var lockedTargets = lockMapper.selectActiveByTicketId(A2ReplayContext.operationId()).stream()
+                .map(lock -> new AuditLockTarget(lock.getTargetDomain(), lock.getTargetType(), lock.getTargetId()))
+                .toList();
+        // Historical tickets carry only the requested event lock.
+        if (!lockedTargets.equals(List.of(target)) && (lockedTargets.size() != 2
+                || !Set.copyOf(lockedTargets).equals(Set.copyOf(commissionEventApprovalTargets(target))))) {
             return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
         }
         Long directEventId = parseLongFromMap(eventId.replaceFirst("^CM-", ""));

@@ -26,6 +26,26 @@ public interface AppWalletBillsMapper extends BaseMapper<Object> {
     record DepositDetail(long ledgerId, String chainId, String txid, BigDecimal grossAmount,
                          BigDecimal feeAmount, BigDecimal netAmount) { }
 
+    // D4 embeds the commission event ID in its release and reversal business numbers.
+    @Select("""
+            <script>
+            SELECT l.id
+              FROM nx_visible_wallet_ledger l
+              JOIN nx_commission_event e ON e.id = CASE
+                   WHEN REGEXP_LIKE(l.biz_no, '^F5-COMMISSION-[1-9][0-9]{0,18}-', 'c')
+                   THEN CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(l.biz_no, '-', 3), '-', -1) AS UNSIGNED)
+                   END
+               AND e.user_id=l.user_id AND e.currency='USDT' AND e.is_deleted=0
+               AND e.commission_type='vrank_salary'
+             WHERE l.user_id=#{userId} AND l.is_deleted=0 AND l.asset='USDT' AND l.biz_type='TEAM_COMMISSION'
+               AND l.biz_no=CONCAT('F5-COMMISSION-', e.id,
+                   CASE l.direction WHEN 'IN' THEN '-RELEASE' WHEN 'OUT' THEN '-REVERSE' END)
+               AND l.id IN
+             <foreach collection="ledgerIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<Long> salaryLedgerIds(@Param("userId") long userId, @Param("ledgerIds") List<Long> ledgerIds);
+
     /** Compatibility overload; the mapped statement remains the 3-argument paged query. */
     default List<LedgerRow> rows(Long userId, int limit) {
         return rows(userId, limit, 0);
