@@ -104,6 +104,14 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
         """)
     int replaceAppSessions(@Param("userId") long userId);
 
+    @Update("""
+        UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,NOW()),
+          session_ended_reason='SECURITY_REVOKED',updated_at=NOW()
+        WHERE user_id=#{userId} AND session_group='H5' AND is_deleted=0
+          AND session_ended_reason IS NULL
+        """)
+    int replaceH5Sessions(@Param("userId") long userId);
+
     @Update("UPDATE nx_user_session SET session_ended_reason=#{reason} WHERE session_chain_id=#{chainId} AND session_ended_reason IS NULL")
     int endChain(@Param("chainId") String chainId, @Param("reason") String reason);
 

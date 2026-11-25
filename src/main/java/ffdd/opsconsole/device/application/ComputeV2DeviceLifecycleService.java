@@ -130,6 +130,12 @@ public class ComputeV2DeviceLifecycleService {
         simulated.cancelForReplacement(lockedRuntime);
     }
 
+    /** Called under the account and device locks before the H5 sign-in can release the phone slot. */
+    public void stopForH5Login(long userId, long deviceId, String instanceNo) {
+        var runtimeToStop = lockAppReplacementRuntime(userId, deviceId, instanceNo, true);
+        if (runtimeToStop != null) cancelSimulatedForReplacement(runtimeToStop);
+    }
+
     private Optional<RuntimeView> ownedView(long user,long device) {
         if(runtime.isEmpty() || !enrolled.contains(device))return Optional.empty();
         if(!runtime.get().isReady())throw new BizException(503,"COMPUTE_V2_RUNTIME_RECOVERING");

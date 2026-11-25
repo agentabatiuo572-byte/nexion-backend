@@ -489,8 +489,24 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     public void endedApp(long userId) {
         var binding = mapper.phoneBinding(userId,"PRODUCTION","");
         if (binding == null) return;
+        stopPhoneExecution(userId);
+    }
+
+    @Override
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    public void releaseForH5Login(long userId) {
+        if (!Integer.valueOf(0).equals(mapper.lockUserSandbox(userId))) return;
+        var binding = mapper.phoneBinding(userId, "PRODUCTION", "");
+        if (binding == null) return;
+        stopPhoneExecution(userId);
+        long phoneId = binding.userDeviceId();
+        if (mapper.ownedPhoneInstance(userId, "PRODUCTION", "", phoneId) != null)
+            capacity.releaseBoundPhoneSlot(userId, phoneId);
+    }
+
+    private void stopPhoneExecution(long userId) {
         mapper.claimPhoneExecution(userId, "");
-        cancelReplacedPhoneTasks(userId,-1L);
+        cancelReplacedPhoneTasks(userId, -1L);
     }
 
     /** Only the guarded current APP may call this; it never claims or stops another installation. */

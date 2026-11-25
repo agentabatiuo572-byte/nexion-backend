@@ -83,8 +83,12 @@ public class AppSingleSessionService {
             long version = Math.addExact(previousVersion, 1L);
             session.setAppSessionVersion(version);
             sessions.replaceAppSessions(userId);
+            sessions.replaceH5Sessions(userId);
             if (sessions.advanceAppState(userId, version, session.getSessionChainId(), context.installationId(),
                     context.executionSupported()) != 1) throw new IllegalStateException("APP_SESSION_ADVANCE_FAILED");
+        } else {
+            sessions.replaceAppSessions(userId);
+            phone.releaseForH5Login(userId);
         }
         if (sessions.insert(session) != 1) throw new IllegalStateException("APP_SESSION_INSERT_FAILED");
         if (context.group() == AppSessionSurface.APP)
