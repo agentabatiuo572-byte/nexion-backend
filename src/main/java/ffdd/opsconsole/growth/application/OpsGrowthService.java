@@ -185,6 +185,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private static final Set<String> WHEEL_REWARD_KINDS = Set.of("uvt", "usdt", "coupon");
     private static final Set<String> WHEEL_REDEEMABLE_KINDS = Set.of("uvt", "usdt", "coupon");
     private static final Set<String> WHEEL_GUARD_KEYS = Set.of("budget", "cap", "kill");
+    private static final Pattern WHEEL_BUDGET_VALUE_PATTERN = Pattern.compile("^\\$?\\s*\\d[\\d,]*(?:\\.\\d{1,2})?$");
     private static final Map<String, Set<String>> H3_BINDING_EVENT_TYPES = Map.of(
             "ORDER", Set.of("checkout.started"),
             "REFERRAL", Set.of("H8_REFERRAL_REWARD_SETTLED"),
@@ -2382,14 +2383,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             if (!expectedTextMatches(request.expectedValue(), oldValue)) {
                 return validation("WHEEL_GUARD_STALE");
             }
-            if (oldValue.equalsIgnoreCase(value)) {
+            boolean isBudget = "budget".equals(key);
+            int budgetChange = isBudget ? numericToken(value).compareTo(numericToken(oldValue)) : 0;
+            if (oldValue.equalsIgnoreCase(value) || (isBudget && budgetChange == 0
+                    && WHEEL_BUDGET_VALUE_PATTERN.matcher(oldValue.trim()).matches())) {
                 return validation("WHEEL_GUARD_NO_CHANGE");
             }
             boolean realPrizeWasEnabled = "kill".equals(key) && h4RealPrizeEnabled(oldValue);
             boolean realPrizeWillBeEnabled = "kill".equals(key) && h4RealPrizeEnabled(value);
             boolean enablesRealPrize = !realPrizeWasEnabled && realPrizeWillBeEnabled;
             boolean disablesRealPrize = realPrizeWasEnabled && !realPrizeWillBeEnabled;
-            int budgetChange = "budget".equals(key) ? numericToken(value).compareTo(numericToken(oldValue)) : 0;
             boolean increasesBudget = budgetChange > 0;
             if (!disablesRealPrize && budgetChange >= 0) {
                 var trialGate = requireTrialGateForH4Mutation();
@@ -6328,7 +6331,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         String value = normalizeQuestValue("wheel.guards." + key, raw);
         if ("budget".equals(key)) {
-            if (!value.matches("^\\$?\\s*\\d[\\d,]*(?:\\.\\d{1,2})?$")) {
+            if (!WHEEL_BUDGET_VALUE_PATTERN.matcher(value).matches()) {
                 throw new IllegalArgumentException("WHEEL_BUDGET_INVALID");
             }
             BigDecimal budget = numericToken(value);
