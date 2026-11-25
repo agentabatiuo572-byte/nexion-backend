@@ -7,6 +7,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -28,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -234,7 +236,8 @@ public class F5CommissionService {
         output.writeBytes(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
         writeCsvLine(output, List.of(
                 "commissionId", "eventId", "user", "kind", "currency", "amount",
-                "sourceUser", "layer", "status", "settledAt", "sourceRef", "settlementNo"));
+                "sourceUser", "layer", "status", "settledAt", "sourceRef", "settlementNo",
+                "salaryMonth", "salaryRank", "claimNo", "claimedAt"));
         long written = 0L;
         Long cursor = null;
         while (written < expectedRows) {
@@ -276,7 +279,9 @@ public class F5CommissionService {
                         redactUserId(longValue(row.get("sourceUserId"))),
                         Objects.toString(row.get("layer"), ""),
                         status,
-                        text(row.get("settledAt")),text(row.get("orderNo")),text(row.get("settlementNo"))));
+                        text(row.get("settledAt")), text(row.get("orderNo")), text(row.get("settlementNo")),
+                        text(row.get("salaryMonth")), text(row.get("salaryRank")), text(row.get("claimNo")),
+                        Objects.toString(salaryClaimedAt(row), "")));
                 cursor = eventId;
                 written++;
                 if (written > expectedRows || written > EXPORT_MAX_ROWS) {
@@ -873,8 +878,16 @@ public class F5CommissionService {
                 "status", "open");
     }
 
+    private Instant salaryClaimedAt(Map<String, Object> row) {
+        LocalDateTime claimedAt = (LocalDateTime) row.get("claimedAt");
+        return claimedAt == null ? null : claimedAt.atZone(StorageTime.ZONE).toInstant();
+    }
+
     private Map<String, Object> eventView(Map<String, Object> raw) {
         Map<String, Object> row = new LinkedHashMap<>(raw);
+        if (raw.containsKey("claimedAt")) {
+            row.put("claimedAt", salaryClaimedAt(raw));
+        }
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
         Long eventId = longValue(raw.get("eventId"));
         boolean grouped = direct != null && eventId != null && direct.groupForEvent(eventId) != null;

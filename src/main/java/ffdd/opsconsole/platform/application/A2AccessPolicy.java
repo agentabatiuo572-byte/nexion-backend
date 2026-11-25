@@ -167,6 +167,11 @@ public class A2AccessPolicy {
         return grants.containsAll(Set.of("network_f1_read", "network_f1_promote_user", "platform_a2_write"));
     }
 
+    boolean canWithdrawV8Proposal(long actorId) {
+        return roleResolver.isActiveAdministrator(actorId)
+                && hasVRankOverrideMakerGrants(permissions.getPermissionCodes(actorId));
+    }
+
     boolean canDecide(Long actorId) {
         return actorId != null && A2ReplayContext.hasAuthority("platform_a2_operation_approve")
                 && roleResolver.isActiveAdministrator(actorId);
@@ -403,15 +408,18 @@ public class A2AccessPolicy {
      * Missing, malformed and cross-domain IDs intentionally collapse to a denial.
      */
     public boolean canAccessOperation(String operationId) {
+        return canAccessTicket(operationForAccess(operationId));
+    }
+
+    AuditOperationTicketEntity operationForAccess(String operationId) {
         if (!StringUtils.hasText(operationId)) {
-            return false;
+            return null;
         }
         String normalized = operationId.trim().toUpperCase(Locale.ROOT);
         if (normalized.length() > 64 || !OPERATION_ID.matcher(normalized).matches()) {
-            return false;
+            return null;
         }
-        AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(normalized);
-        return canAccessTicket(ticket);
+        return ticketMapper.selectActiveByOperationId(normalized);
     }
 
     /** Rechecks the row selected under the decision transaction's lock. */

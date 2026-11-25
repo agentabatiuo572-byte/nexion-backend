@@ -968,8 +968,13 @@ public class OpsTeamService implements AuditReplayable {
         detail.put("action", change.action());
         detail.put("beforeRevision", change.before().get("policyRevision"));
         detail.put("afterRevision", change.after().get("policyRevision"));
-        detail.put("before", vRankPolicyChangedFields(change, change.before()));
-        detail.put("after", vRankPolicyChangedFields(change, change.after()));
+        var before = vRankPolicyChangedFields(change, change.before());
+        var after = vRankPolicyChangedFields(change, change.after());
+        detail.put("before", before);
+        detail.put("after", after);
+        if ("threshold".equals(change.action()) && isPromotionThreshold(change.field())) {
+            detail.put("delta", vRankPolicySummary(before) + " → " + vRankPolicySummary(after));
+        }
         detail.put("reason", makerReason.trim());
         detail.put("idempotencyKey", idempotencyKey.trim());
         audit("F_TEAM_VRANK_POLICY_CHANGED", "nx_v_rank_config:" + change.rank(), actor(null), detail, true);
@@ -1192,6 +1197,24 @@ public class OpsTeamService implements AuditReplayable {
                 .collect(java.util.stream.Collectors.joining("，"));
     }
 
+    private boolean isPromotionThreshold(String field) {
+        return VRANK_ORDERED_FIELDS.contains(field) || "directRefs".equals(field);
+    }
+
+    private String vRankPolicyFieldLabel(String field) {
+        return switch (field) {
+            case "selfBuy" -> "自购算力点";
+            case "teamGv" -> "团队算力点";
+            case "directRefs" -> "一二级已购人数";
+            case "legCount" -> "下级领导者人数";
+            case "legRank" -> "下级领导者最低等级";
+            case "purchaseL1Rate" -> "好友购买一级比例";
+            case "purchaseL2Rate" -> "好友购买二级比例";
+            case VRankSalaryService.POLICY_FIELD -> "月薪(USDT)";
+            default -> throw new IllegalArgumentException("Unknown V-rank policy field: " + field);
+        };
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> vRankPolicyReviewFields(Map<String, Object> policy) {
         Map<String, Object> fields = new LinkedHashMap<>();
@@ -1199,16 +1222,7 @@ public class OpsTeamService implements AuditReplayable {
         for (String field : List.of("selfBuy", "teamGv", "directRefs", "legCount", "legRank",
                 "purchaseL1Rate", "purchaseL2Rate", VRankSalaryService.POLICY_FIELD)) {
             if (!policy.containsKey(field)) continue;
-            String label = switch (field) {
-                case "selfBuy" -> "自购算力点";
-                case "teamGv" -> "团队算力点";
-                case "directRefs" -> "直接邀请人数";
-                case "legCount" -> "达标分支数";
-                case "purchaseL1Rate" -> "好友购买一级比例";
-                case "purchaseL2Rate" -> "好友购买二级比例";
-                case VRankSalaryService.POLICY_FIELD -> "月薪(USDT)";
-                default -> "分支最低等级";
-            };
+            String label = vRankPolicyFieldLabel(field);
             Object value = policy.get(field);
             if (PURCHASE_RANK_FIELDS.contains(field)) {
                 value = ((BigDecimal) value).movePointRight(2).stripTrailingZeros().toPlainString() + "%";
@@ -1327,13 +1341,19 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "VRANK_BUSINESS_TABLE_UPDATE_FAILED");
         }
         String resourceId = "nx_v_rank_config:" + rankCode + "." + normalizedField;
-        audit("F_TEAM_VRANK_THRESHOLD_CHANGED", resourceId, actor(request.operator()), Map.of(
+        Map<String, Object> detail = new LinkedHashMap<>(Map.of(
                 "rank", rankCode,
                 "field", normalizedField,
                 "oldValue", oldValue,
                 "newValue", value,
                 "reason", request.reason().trim(),
-                "idempotencyKey", idempotencyKey.trim()), VRankSalaryService.POLICY_FIELD.equals(normalizedField));
+                "idempotencyKey", idempotencyKey.trim()));
+        if (isPromotionThreshold(normalizedField)) {
+            detail.put("delta", rankCode + " · " + vRankPolicyFieldLabel(normalizedField)
+                    + " " + oldValue + " → " + value);
+        }
+        audit("F_TEAM_VRANK_THRESHOLD_CHANGED", resourceId, actor(request.operator()), detail,
+                VRankSalaryService.POLICY_FIELD.equals(normalizedField));
         Map<String, Object> response = ranks().getData();
         response.put("updated", Map.of("key", rankCode + "." + normalizedField, "source", "nx_v_rank_config", "oldValue", oldValue, "newValue", value));
         return ApiResult.ok(response);

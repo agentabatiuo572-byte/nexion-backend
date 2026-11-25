@@ -469,8 +469,7 @@ public class OpsAuditController {
     }
 
     @PostMapping("/operations/{operationId}/withdraw")
-    @PreAuthorize("hasAuthority('platform_a2_proposal_create')"
-            + " && @a2AccessPolicy.canAccessOperation(#operationId)")
+    @PreAuthorize("@opsAuditCenterService.canWithdrawOperation(#operationId)")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> withdrawOperation(
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @PathVariable String operationId,

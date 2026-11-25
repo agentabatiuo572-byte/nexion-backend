@@ -71,6 +71,10 @@ public interface F5CommissionMapper {
                       LIMIT 1
                    ) AS ledgerBizNo,
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
+                   DATE_FORMAT(salary.salary_month, '%Y-%m') AS salaryMonth,
+                   salary.rank_code AS salaryRank,
+                   salary.claim_no AS claimNo,
+                   salary.claimed_at AS claimedAt,
                    CASE
                      WHEN LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                        THEN GREATEST(0, COALESCE(DATEDIFF(e.unlock_at, NOW()), 0))
@@ -91,6 +95,8 @@ public interface F5CommissionMapper {
                    DATE_FORMAT(u.created_at, '%Y-%m') AS cohort
               FROM nx_commission_event e
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
+              LEFT JOIN nx_v_rank_salary_claim salary
+                ON salary.commission_event_id = e.id AND LOWER(e.commission_type) = 'vrank_salary'
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
                    ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
@@ -160,6 +166,10 @@ public interface F5CommissionMapper {
                    e.order_no AS orderNo,
                    (SELECT s.settlement_no FROM nx_direct_referral_settlement s WHERE s.usdt_event_id=e.id OR s.nex_event_id=e.id LIMIT 1) AS settlementNo,
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
+                   DATE_FORMAT(salary.salary_month, '%Y-%m') AS salaryMonth,
+                   salary.rank_code AS salaryRank,
+                   salary.claim_no AS claimNo,
+                   salary.claimed_at AS claimedAt,
                    CASE
                      WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK') THEN 'reversed'
                      WHEN UPPER(e.status) = 'REJECTED' THEN 'rejected'
@@ -174,6 +184,8 @@ public interface F5CommissionMapper {
                    END AS status
               FROM nx_commission_event e
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
+              LEFT JOIN nx_v_rank_salary_claim salary
+                ON salary.commission_event_id = e.id AND LOWER(e.commission_type) = 'vrank_salary'
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
                    ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')

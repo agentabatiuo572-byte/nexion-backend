@@ -293,6 +293,33 @@ public class OpsAuditCenterService {
                 () -> decide(idempotencyKey, operationId, request, STATUS_REJECTED, "A2_OPERATION_REJECTED"));
     }
 
+    public boolean canWithdrawOperation(String operationId) {
+        var ticket = accessPolicy.operationForAccess(operationId);
+        if (ticket == null) return false;
+        var command = deserializeCommand(ticket.getCommandJson());
+        if (!isV8Promotion(command)) {
+            return A2ReplayContext.hasAuthority("platform_a2_proposal_create") && accessPolicy.canAccessTicket(ticket);
+        }
+        return canAccessWithdrawal(ticket, command, ticketMakerId(ticket, command),
+                A2ReplayContext.authenticatedAdminId());
+    }
+
+    private boolean isV8Promotion(AuditReplayCommand command) {
+        return AuditReplayBusinessPermissionGuard.isVRankOverride(command) && command.params() != null
+                && "V8".equalsIgnoreCase(Objects.toString(command.params().get("targetV"), "").trim())
+                && "promote".equalsIgnoreCase(Objects.toString(command.params().get("direction"), "").trim());
+    }
+
+    private boolean canAccessWithdrawal(AuditOperationTicketEntity ticket, AuditReplayCommand command,
+            Long makerId, Long actorId) {
+        if (actorId == null) return false;
+        if (isV8Promotion(command)) {
+            return actorId.equals(makerId) && accessPolicy.canWithdrawV8Proposal(actorId);
+        }
+        return A2ReplayContext.hasAuthority("platform_a2_proposal_create")
+                && accessPolicy.canAccessTicket(ticket, makerId);
+    }
+
     public ApiResult<AuditOperationTicket> withdraw(
             String idempotencyKey, String operationId, AuditOperationWithdrawRequest request) {
         return idempotentTicket("WITHDRAW:" + operationId, idempotencyKey, request,
@@ -907,7 +934,11 @@ public class OpsAuditCenterService {
                 // A successful old decision still needs today's actor/global/scope authorization.
                 // It does not need to qualify as a new decision against a now-terminal ticket.
                 if ("WITHDRAW".equals(verb)) {
-                    if (!A2ReplayContext.hasAuthority("platform_a2_proposal_create")) return fail(OpsErrorCode.FORBIDDEN);
+                    if (ticket == null) return fail(OpsErrorCode.FORBIDDEN);
+                    var command = deserializeCommand(ticket.getCommandJson());
+                    if (!canAccessWithdrawal(ticket, command, ticketMakerId(ticket, command), actorId)) {
+                        return fail(OpsErrorCode.FORBIDDEN);
+                    }
                 } else {
                     var access = decisionAccess(ticket, ticket == null ? null : ticketMakerId(ticket,
                             deserializeCommand(ticket.getCommandJson())), actorId);
@@ -1058,7 +1089,10 @@ public class OpsAuditCenterService {
         Long makerId = ticketMakerId(ticket, command);
         boolean mine = Long.valueOf(actorId).equals(makerId);
         if (operationId == null && !mine) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
-        if ("WITHDRAW".equals(verb) && !mine) return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
+        if ("WITHDRAW".equals(verb)) {
+            if (!canAccessWithdrawal(ticket, command, makerId, actorId)) return fail(OpsErrorCode.FORBIDDEN);
+            if (!mine) return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
+        }
         if ("PROPOSE".equals(verb) && K1RiskApproval.supports(command)
                 && (!mine || !canReadOwnProposal(ticket, command, actorId))) {
             return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
@@ -1082,7 +1116,7 @@ public class OpsAuditCenterService {
             }
             if (canReadOwnProposal(ticket, command, actorId)) return ApiResult.ok(toTicket(ticket, true));
         }
-        if (!accessPolicy.canAccessTicket(ticket, makerId)
+        if (!"WITHDRAW".equals(verb) && !accessPolicy.canAccessTicket(ticket, makerId)
                 && !("PROPOSE".equals(verb) && accessPolicy.canAccessOwnBusinessProposal(command, actorId))) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
         }
@@ -1094,7 +1128,8 @@ public class OpsAuditCenterService {
         return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
                 metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate()),
                 decisionQualification(ticket, command, makerId, actorId, true),
-                decisionQualification(ticket, command, makerId, actorId, false), disclosureReview(ticket, command)));
+                decisionQualification(ticket, command, makerId, actorId, false), disclosureReview(ticket, command),
+                commissionReverseEvidence(command)));
     }
 
     private ApiResult<Void> decisionAccess(AuditOperationTicketEntity ticket, Long makerId, Long actorId) {
@@ -1278,7 +1313,7 @@ public class OpsAuditCenterService {
             if (qualification.getCode() != 0) return ApiResult.fail(qualification.getCode(), qualification.getMessage());
         } else {
             if (ticket == null) return fail(OpsErrorCode.VALIDATION_FAILED, "A2_OPERATION_NOT_FOUND");
-            if (!accessPolicy.canAccessTicket(ticket, makerId)) return fail(OpsErrorCode.FORBIDDEN);
+            if (!canAccessWithdrawal(ticket, ticketCommand, makerId, actorId)) return fail(OpsErrorCode.FORBIDDEN);
             if (expectedStatus != null && !status(ticket.getStatus()).equalsIgnoreCase(expectedStatus.trim()))
                 return fail(OpsErrorCode.INVALID_STATE_TRANSITION, "A2_WITHDRAW_STALE");
             if (!STATUS_PENDING.equals(status(ticket.getStatus())))
@@ -1826,7 +1861,20 @@ public class OpsAuditCenterService {
                 approve.getCode() == 0, reject.getCode() == 0,
                 approve.getCode() == 0 ? null : approve.getCode(), approve.getCode() == 0 ? null : approve.getMessage(),
                 reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage(),
-                objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command), disclosureReview(row, command));
+                objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command), disclosureReview(row, command),
+                commissionReverseEvidence(command));
+    }
+
+    private AuditCenterOverview.CommissionReverseEvidence commissionReverseEvidence(AuditReplayCommand command) {
+        if (command == null || !"F".equalsIgnoreCase(command.domain())
+                || !"f5_commission_reverse".equalsIgnoreCase(command.op()) || command.params() == null) {
+            return null;
+        }
+        String ref = Objects.toString(command.params().get("refundRef"), "");
+        if (ref.isBlank()) return null;
+        String type = ref.trim().matches("(?i)SAL-[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+                ? "SALARY_CLAIM_NO" : "REFUND_REF";
+        return new AuditCenterOverview.CommissionReverseEvidence(type, ref);
     }
 
     private com.fasterxml.jackson.databind.JsonNode disclosureReview(AuditOperationTicketEntity row, AuditReplayCommand command) {
