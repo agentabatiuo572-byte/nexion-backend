@@ -1799,7 +1799,7 @@ public class OpsTeamService implements AuditReplayable {
         String field = key.startsWith("F.unilevel.nex.") ? "nexPerUsd" : "usdtRate";
         if(layerNo==1&&"nexPerUsd".equals(field)&&sevenPolicy!=null&&sevenPolicy.sevenLayerActive(sevenPolicy.now())&&sevenPolicy.at(sevenPolicy.now()).schemaVersion()==2&&sevenPolicy.at(sevenPolicy.now()).purchase().enabled())return ApiResult.fail(409,"L1_LEGACY_NEX_READ_ONLY_DURING_SPLIT");
         Object businessValue = "usdtRate".equals(field)
-                ? percentPointRatio(value, BigDecimal.ZERO)
+                ? unilevelUsdtRate(value)
                 : parseDecimal(value, BigDecimal.ZERO);
         String oldValue = unilevelRuleValue(commissionRepository, key);
         requirePayoutIncreaseCoverage(
@@ -1843,7 +1843,7 @@ public class OpsTeamService implements AuditReplayable {
             BigDecimal nexPerUsd;
             try {
                 usdtPct = parseDecimal(layer.usdtPct(), null);
-                usdtRate = percentPointRatio(layer.usdtPct(), null);
+                usdtRate = percentPointRatio(usdtPct);
                 nexPerUsd = parseDecimal(layer.nexPerUsd(), null)
                         .setScale(6, RoundingMode.UNNECESSARY);
                 if (nexPerUsd.precision() - nexPerUsd.scale() > 12) {
@@ -2292,13 +2292,9 @@ public class OpsTeamService implements AuditReplayable {
         }
         try {
             if (isUnilevelRuleKey(key)) {
-                if (key.startsWith("F.unilevel.nex.L")) {
-                    // nexPerUsd 上调 = 每美元兑更多 UVT,放大 UVT 派发
-                    return parseDecimal(newValue, BigDecimal.ZERO).compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
-                }
-                // usdtRate 百分比上调 = 版税费率放大
-                return percentPointRatio(newValue, BigDecimal.ZERO)
-                        .compareTo(percentPointRatio(oldValue, BigDecimal.ZERO)) > 0;
+                // Compare in percentage points or UVT per dollar. Historical values can exceed the write range.
+                return parseDecimal(newValue, BigDecimal.ZERO)
+                        .compareTo(parseDecimal(oldValue, BigDecimal.ZERO)) > 0;
             }
             return switch (key) {
                 case "F.cooldown" -> parseDecimal(newValue.replaceAll("[^0-9].*$", ""), BigDecimal.ZERO)
@@ -4384,23 +4380,32 @@ public class OpsTeamService implements AuditReplayable {
         }
     }
 
-    /** Batch proposals share the F2 write precision boundary before creating an approval ticket. */
-    public static void validateUnilevelRatePrecision(String key, String value) {
+    /** Check the proposed F2 layer rate before creating or approving a ticket. */
+    public static void validateUnilevelUsdtRate(String key, String value) {
         if (isUnilevelRuleKey(key) && !key.startsWith("F.unilevel.nex.")) {
-            percentPointRatio(value, BigDecimal.ZERO);
+            unilevelUsdtRate(value);
         }
     }
 
-    /** F2 percentage points must convert exactly to the stored DECIMAL(10,6) ratio. */
-    private static BigDecimal percentPointRatio(String raw, BigDecimal fallback) {
-        if (!StringUtils.hasText(raw)) {
-            return BigDecimal.ZERO;
+    private static BigDecimal unilevelUsdtRate(String value) {
+        BigDecimal percentagePoints;
+        try {
+            percentagePoints = parseDecimal(value);
+        } catch (IllegalArgumentException invalid) {
+            throw new BizException(422, "F2_USDT_RATE_INVALID");
         }
-        BigDecimal ratio = parseDecimal(raw, fallback).movePointLeft(2);
-        if (ratio.stripTrailingZeros().scale() > 6) {
+        if (percentagePoints.signum() < 0 || percentagePoints.compareTo(BigDecimal.valueOf(100)) > 0) {
+            throw new BizException(422, "F2_USDT_RATE_OUT_OF_RANGE");
+        }
+        return percentPointRatio(percentagePoints);
+    }
+
+    /** F2 percentage points must convert exactly to the stored DECIMAL(10,6) ratio. */
+    private static BigDecimal percentPointRatio(BigDecimal percentagePoints) {
+        if (percentagePoints.stripTrailingZeros().scale() > 4) {
             throw new BizException(422, "F2_USDT_RATE_PRECISION_INVALID");
         }
-        return ratio.setScale(6);
+        return percentagePoints.movePointLeft(2).setScale(6);
     }
 
     private static BigDecimal percentRatio(String raw, BigDecimal fallback) {

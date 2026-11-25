@@ -96,21 +96,22 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             @Param("chainId") String chainId, @Param("installationId") String installationId,
             @Param("executionSupported") boolean executionSupported);
 
-    @Update("""
-        UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,NOW()),
-          session_ended_reason='APP_REPLACED',updated_at=NOW()
-        WHERE user_id=#{userId} AND session_group='APP' AND is_deleted=0
-          AND session_ended_reason IS NULL
-        """)
-    int replaceAppSessions(@Param("userId") long userId);
+    default int replaceAppSessions(long userId) {
+        return replaceSessions(userId, "APP", "APP_REPLACED");
+    }
+
+    default int replaceH5Sessions(long userId) {
+        return replaceSessions(userId, "H5", "APP_REPLACED");
+    }
 
     @Update("""
         UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,NOW()),
-          session_ended_reason='H5_REPLACED',updated_at=NOW()
-        WHERE user_id=#{userId} AND session_group='H5' AND is_deleted=0
+          session_ended_reason=#{reason},updated_at=NOW()
+        WHERE user_id=#{userId} AND session_group=#{group} AND is_deleted=0
           AND session_ended_reason IS NULL
         """)
-    int replaceH5Sessions(@Param("userId") long userId);
+    int replaceSessions(@Param("userId") long userId, @Param("group") String group,
+            @Param("reason") String reason);
 
     @Update("UPDATE nx_user_session SET session_ended_reason=#{reason} WHERE session_chain_id=#{chainId} AND session_ended_reason IS NULL")
     int endChain(@Param("chainId") String chainId, @Param("reason") String reason);
@@ -125,6 +126,11 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     String LIVE_SESSION = "revoked_at IS NULL AND expires_at>NOW() "
             + "AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)";
     String RECENT_ROTATION = "rotation_redeemed_at>DATE_SUB(NOW(),INTERVAL 10 SECOND)";
+
+    @Select("SELECT app_session_version,installation_id FROM nx_user_session "
+            + "WHERE user_id=#{userId} AND session_group='APP' AND is_deleted=0 AND session_ended_reason IS NULL "
+            + "AND " + LIVE_SESSION + " AND " + READ_FIXED_CONTEXT + " LIMIT 1")
+    UserSessionEntity findLiveAppSession(@Param("userId") long userId, @Param("idleDays") int idleDays);
 
     @Select("""
         SELECT a.user_id FROM nx_app_session_state a

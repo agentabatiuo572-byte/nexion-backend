@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -77,10 +78,13 @@ public class AppSingleSessionService {
         session.setLastActiveAt(now);
         session.setExpiresAt(now.plusDays(refreshDays));
         session.setIsDeleted(0);
+        boolean appLogin = context.group() == AppSessionSurface.APP;
+        String replacementReason = appLogin ? "APP_REPLACED" : "H5_REPLACED";
+        boolean recordAppReplacement = appLogin;
         long previousVersion = 0;
         String previousInstallation = "";
         int replacedH5Rows = 0;
-        if (context.group() == AppSessionSurface.APP) {
+        if (appLogin) {
             sessions.initializeAppState(userId);
             previousVersion = sessions.lockAppVersion(userId);
             previousInstallation = sessions.appInstallation(userId);
@@ -91,11 +95,17 @@ public class AppSingleSessionService {
             if (sessions.advanceAppState(userId, version, session.getSessionChainId(), context.installationId(),
                     context.executionSupported()) != 1) throw new IllegalStateException("APP_SESSION_ADVANCE_FAILED");
         } else {
-            sessions.replaceAppSessions(userId);
+            var previousApp = sessions.findLiveAppSession(userId, idleDays());
+            int replacedAppRows = sessions.replaceSessions(userId, "APP", replacementReason);
+            if (previousApp != null && replacedAppRows > 0) {
+                recordAppReplacement = true;
+                previousVersion = previousApp.getAppSessionVersion();
+                previousInstallation = previousApp.getInstallationId();
+            }
             phone.releaseForH5Login(userId, false);
         }
         if (sessions.insert(session) != 1) throw new IllegalStateException("APP_SESSION_INSERT_FAILED");
-        if (context.group() == AppSessionSurface.APP)
+        if (appLogin)
             phone.authenticatedApp(userId, context.installationId(), context.executionSupported());
         audit.recordRequired(AuditLogWriteRequest.builder().action("AUTH_SESSION_ISSUED")
                 .resourceType("USER_SESSION").resourceId(session.getSessionChainId()).userId(userId)
@@ -103,19 +113,21 @@ public class AppSingleSessionService {
                 .detail(Map.of("sessionGroup", session.getSessionGroup(), "loginAttemptId", context.loginAttemptId(),
                         "appSessionVersion", session.getAppSessionVersion() == null ? 0L : session.getAppSessionVersion()))
                 .build());
-        if (context.group() == AppSessionSurface.APP) {
+        if (recordAppReplacement) {
             Map<String, Object> fact = Map.of("userId", userId, "oldSessionVersion", previousVersion,
-                    "newSessionVersion", session.getAppSessionVersion(), "oldInstallationId",
+                    "newSessionVersion", appLogin ? session.getAppSessionVersion() : 0L, "oldInstallationId",
                     previousInstallation == null ? "" : previousInstallation, "newInstallationId", context.installationId(),
                     "operationId", context.loginAttemptId(), "committedAt", now.toString());
+            Map<String, Object> detail = new HashMap<>(fact);
+            detail.put("sessionEndedReason", replacementReason);
             audit.recordRequired(AuditLogWriteRequest.builder().action("account.app_session_replaced")
                     .resourceType("USER_SESSION").resourceId(session.getSessionChainId()).userId(userId)
-                    .actorType("USER").actorId(userId).result("SUCCESS").riskLevel("MEDIUM").detail(fact).build());
+                    .actorType("USER").actorId(userId).result("SUCCESS").riskLevel("MEDIUM").detail(detail).build());
             if (replacedH5Rows > 0) {
                 audit.recordRequired(AuditLogWriteRequest.builder().action("AUTH_H5_SESSION_REPLACED")
                         .resourceType("USER_SESSION").resourceId(session.getSessionChainId()).userId(userId)
                         .actorType("USER").actorId(userId).result("SUCCESS").riskLevel("MEDIUM")
-                        .detail(Map.of("replacedSessionRows", replacedH5Rows, "sessionEndedReason", "H5_REPLACED")).build());
+                        .detail(Map.of("replacedSessionRows", replacedH5Rows, "sessionEndedReason", replacementReason)).build());
             }
             outbox.publish("USER_SECURITY", String.valueOf(userId), "account.app_session_replaced", fact);
         }
@@ -138,14 +150,15 @@ public class AppSingleSessionService {
         if (surfaces.size() < 2) return;
 
         boolean keepApp = "APP".equals(surfaces.get(0));
-        int replacedRows = keepApp ? sessions.replaceH5Sessions(userId) : sessions.replaceAppSessions(userId);
+        String replacementReason = keepApp ? "APP_REPLACED" : "H5_REPLACED";
+        int replacedRows = keepApp ? sessions.replaceH5Sessions(userId) : sessions.replaceSessions(userId, "APP", replacementReason);
         if (!keepApp) phone.releaseForH5Login(userId, true);
         audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder().action("AUTH_LEGACY_DUAL_SESSION_RECONCILED")
                 .resourceType("USER_SESSION").resourceId(Long.toString(userId)).userId(userId)
                 .actorType("SYSTEM").actorId(0L).actorUsername("system").result("SUCCESS").riskLevel("MEDIUM")
                 .method("SCHEDULED").path("/internal/auth/legacy-dual-session-reconciliation")
                 .detail(Map.of("retainedSurface", surfaces.get(0), "replacedSessionRows", replacedRows,
-                        "sessionEndedReason", keepApp ? "H5_REPLACED" : "APP_REPLACED")).build());
+                        "sessionEndedReason", replacementReason)).build());
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

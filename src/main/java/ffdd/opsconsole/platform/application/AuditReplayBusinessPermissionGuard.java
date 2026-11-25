@@ -539,6 +539,9 @@ public class AuditReplayBusinessPermissionGuard {
             if ("f_config".equals(operation) && OpsTeamService.isBinaryPayoutControlKey(value(command.params(), "key"))) {
                 return ApiResult.fail(422, "F3_UI_CONFIG_COMMAND_REQUIRED");
             }
+            if (Set.of("f_config", "f_ui_config", "f_unilevel_rule").contains(operation)) {
+                OpsTeamService.validateUnilevelUsdtRate(value(command.params(), "key"), value(command.params(), "value"));
+            }
             if ("f_ui_config".equals(operation)) {
                 ApiResult<Void> direction = validateF3ConfigProposal(command.params());
                 if (direction.getCode() != 0) return direction;
@@ -549,7 +552,7 @@ public class AuditReplayBusinessPermissionGuard {
                     if (item instanceof Map<?, ?> change) {
                         String key = value(change, "key");
                         String next = value(change, "value");
-                        OpsTeamService.validateUnilevelRatePrecision(key, next);
+                        OpsTeamService.validateUnilevelUsdtRate(key, next);
                         if (OpsTeamService.isBinaryPayoutControlKey(key)) {
                             ApiResult<Void> direction = validateF3ConfigProposal(change);
                             if (direction.getCode() != 0) return direction;
