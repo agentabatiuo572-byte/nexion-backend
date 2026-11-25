@@ -1362,7 +1362,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (H4GrowthApproval.isRaffleOpen(boundCommand)) {
             return describeH4Proposal(request, boundCommand);
         }
-        if (isVersionedFUiConfigProposal(boundCommand)) {
+        if (G3MarketApproval.supports(boundCommand) || isVersionedFUiConfigProposal(boundCommand)) {
             return validateRequestContext(request, boundCommand);
         }
         return validateProposalContext(request);
