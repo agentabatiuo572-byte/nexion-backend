@@ -450,11 +450,7 @@ public class OpsAuditCenterService {
             ticket.setOperationType(descriptor.operationType());
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
             ticket.setSos(j1Restore ? 1 : 0);
-            ticket.setRoleGate(H7VoucherDisposition.isOperation(command) ? "有审批和代金券操作权限的管理员"
-                    : superAdminProposal ? "超管"
-                    : command != null && "E".equals(command.domain())
-                        && Set.of("e1_sku_create", "e1_sku_update").contains(command.op())
-                        ? ROLE_GATE_E1_SKU : ROLE_GATE_DELEGATED_APPROVER);
+            ticket.setRoleGate(superAdminProposal ? "超管" : ROLE_GATE_DELEGATED_APPROVER);
             sourceDomain = descriptor.sourceDomain();
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();
@@ -720,6 +716,8 @@ public class OpsAuditCenterService {
                 }
             }
         }
+        String approvalRoleGate = approvalRoleGateText(ticket.getRoleGate(), command);
+        if (approvalRoleGate != null) ticket.setRoleGate(approvalRoleGate);
         ticketMapper.insert(ticket);
         if (promotions != null && refundOrderNo != null) promotions.holdA2Refund(ticket.getOperationId(), refundOrderNo);
 
@@ -1173,7 +1171,7 @@ public class OpsAuditCenterService {
         }
         var metadata = ticketMetadata(ticket, command);
         return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
-                metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate()),
+                metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate(), command),
                 decisionQualification(ticket, command, makerId, actorId, true),
                 decisionQualification(ticket, command, makerId, actorId, false), disclosureReview(ticket, command),
                 commissionReverseEvidence(command), v8PromotionSnapshot(ticket, command)));
@@ -1915,7 +1913,7 @@ public class OpsAuditCenterService {
                 isTrue(row.getSos()),
                 row.getCreatedAt() == null ? row.getTimeLabel() : row.getCreatedAt().format(ISO),
                 mine,
-                roleGateText(row.getRoleGate()),
+                roleGateText(row.getRoleGate(), command),
                 row.getReason(),
                 status(row.getStatus()), phoneCalibrationProposal(command),
                 OpsKillSwitchService.RESTORE_OPERATION.equals(metadata.operationCode()) && isTrue(row.getAmplifies())
@@ -2105,6 +2103,7 @@ public class OpsAuditCenterService {
         if ("H".equals(command.domain()) && "h2_trial_charge".equals(command.op())) return true;
         if ("E".equals(command.domain()) && "e2_task_delete".equals(command.op())) return true;
         if ("E".equals(command.domain()) && "e2_task_lifecycle_change".equals(command.op())
+                && command.params() != null
                 && command.params().get("values") instanceof Map<?, ?> values
                 && "delete".equalsIgnoreCase(Objects.toString(values.get("action"), ""))) return true;
         if (!"E".equals(command.domain()) || command.params() == null) return false;
@@ -2685,13 +2684,12 @@ public class OpsAuditCenterService {
         return first >= 'A' && first <= 'M' ? String.valueOf(first) : "A";
     }
 
-    /**
-     * Stored machine code for the delegation threshold gate. The ticket column keeps historical plain
-     * text, so reads fold this code back to the label that every existing response already shows.
-     */
+    // Older tickets and proposal requests can still carry the delegation code or its display label.
     private static final String ROLE_GATE_DELEGATED_APPROVER = "DELEGATED_APPROVER";
     private static final String ROLE_GATE_DELEGATED_APPROVER_LABEL = "另一位有审批批准权限和对应业务权限的管理员";
-    private static final String ROLE_GATE_E1_SKU = "另一位具备 A2 批准权限及 device_e1_write 商品管理写权限的管理员";
+    private static final String ROLE_GATE_SUPER_ADMIN = "另一位具备 A2 批准权限的超级管理员，如该操作另有业务权限要求，也须具备";
+    private static final Set<String> LEGACY_APPROVER_LABELS = Set.of("财务 / 超管", "负责人", "运维", "审批确认",
+            "需要审批（发起人和审批人不能是同一人）");
 
     private String normalizeRoleGate(String value) {
         if (!StringUtils.hasText(value) || "TWO_PERSON".equalsIgnoreCase(value.trim())) {
@@ -2700,12 +2698,33 @@ public class OpsAuditCenterService {
         return value.trim();
     }
 
-    /** Ticket role gate as it is shown: the structured code and historical text render identically. */
-    private String roleGateText(String value) {
+    private String roleGateText(String value, AuditReplayCommand command) {
         String normalized = normalizeRoleGate(value);
-        return ROLE_GATE_DELEGATED_APPROVER.equalsIgnoreCase(normalized) || "门槛者".equals(normalized)
-                ? ROLE_GATE_DELEGATED_APPROVER_LABEL
-                : normalized;
+        String approvalRoleGate = approvalRoleGateText(normalized, command);
+        if (approvalRoleGate != null) return approvalRoleGate;
+        return isDelegatedRoleGate(normalized) ? ROLE_GATE_DELEGATED_APPROVER_LABEL : normalized;
+    }
+
+    private String approvalRoleGateText(String value, AuditReplayCommand command) {
+        // Retired and non-replayable tickets keep their original execution label.
+        if (!AuditReplayDispatcher.recognizesOperation(command) || retiredOperation(command)
+                || AuditReplayBusinessPermissionGuard.requiresDirectJ1Execution(command)
+                || replayBusinessPermissionGuard.isF5StatusUiAlias(command)) return null;
+        if (AuditReplayBusinessPermissionGuard.isVRankOverride(command))
+            return "另一位具备 A2 批准权限和用户 V 等级调整权限的管理员";
+        if ("H".equals(command.domain()) && H7VoucherDisposition.isOperation(command))
+            return "另一位具备 A2 批准权限和代金券操作权限的超级管理员";
+        if (replayBusinessPermissionGuard.requiresProductWritePermission(command))
+            return "另一位具备 A2 批准权限和商品管理写权限的超级管理员";
+        // The decision guard requires a super administrator for the remaining operations.
+        // Preserve already accurate labels, including the literal used by the A4 and I7 flows.
+        return isDelegatedRoleGate(value) || LEGACY_APPROVER_LABELS.contains(value)
+                || value.contains("管理员") && !value.contains("超级管理员") && !value.contains("超管")
+                ? ROLE_GATE_SUPER_ADMIN : null;
+    }
+
+    private boolean isDelegatedRoleGate(String value) {
+        return ROLE_GATE_DELEGATED_APPROVER.equalsIgnoreCase(value) || "门槛者".equals(value);
     }
 
     private List<AuditStatsBucket> topActions() {

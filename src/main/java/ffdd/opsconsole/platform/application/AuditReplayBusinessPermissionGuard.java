@@ -375,7 +375,7 @@ public class AuditReplayBusinessPermissionGuard {
         };
     }
 
-    private boolean isF5StatusUiAlias(AuditReplayCommand command) {
+    boolean isF5StatusUiAlias(AuditReplayCommand command) {
         return command != null && "F".equalsIgnoreCase(text(command.domain()))
                 && "f_ui_config".equalsIgnoreCase(text(command.op()))
                 && OpsTeamService.isCommissionEventStatusKey(value(command.params(), "key"));
@@ -473,12 +473,7 @@ public class AuditReplayBusinessPermissionGuard {
                     ? ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_COMMAND_REQUIRED")
                     : ApiResult.ok();
         }
-        if ("J".equalsIgnoreCase(command.domain())) {
-            String operation = command.op().trim().toLowerCase(Locale.ROOT);
-            if (operation.startsWith("j1_") && !OpsKillSwitchService.isRestoreCommand(command)) {
-                return ApiResult.fail(409, "J1_DIRECT_EXECUTION_REQUIRED");
-            }
-        }
+        if (requiresDirectJ1Execution(command)) return ApiResult.fail(409, "J1_DIRECT_EXECUTION_REQUIRED");
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
         if ("E".equalsIgnoreCase(command.domain()) && operation.startsWith("e5_datacenter_")) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
@@ -942,7 +937,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (genesisParamApproval) return ApiResult.fail(422, "G4_GENESIS_PARAM_KEY_INVALID");
         if (ffdd.opsconsole.market.application.OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op()))
             return ApiResult.fail(422, "RETIRED_FEATURE");
-        if ("J".equalsIgnoreCase(command.domain()) && operation.startsWith("j1_"))
+        if (requiresDirectJ1Execution(command))
             return ApiResult.fail(409, "J1_DIRECT_EXECUTION_REQUIRED");
         if (H1GrowthApproval.supports(command)) {
             ApiResult<Void> h1Checker = h1GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
@@ -1275,6 +1270,12 @@ public class AuditReplayBusinessPermissionGuard {
 
     static boolean isVRankOverride(AuditReplayCommand command) {
         return command != null && "F".equals(command.domain()) && "f_vrank_override".equals(command.op());
+    }
+
+    static boolean requiresDirectJ1Execution(AuditReplayCommand command) {
+        return command != null && "J".equalsIgnoreCase(command.domain()) && command.op() != null
+                && command.op().trim().toLowerCase(Locale.ROOT).startsWith("j1_")
+                && !OpsKillSwitchService.isRestoreCommand(command);
     }
 
     /**
@@ -2652,6 +2653,10 @@ public class AuditReplayBusinessPermissionGuard {
             case "e6_compute_config", "e6_compute_config_batch", "e6_phone_calibration", "e6_onboarding_yield_sku" -> "device_e6_read";
             default -> null;
         };
+    }
+
+    boolean requiresProductWritePermission(AuditReplayCommand command) {
+        return "E".equals(command.domain()) && E1_WRITE_AUTHORITY.equals(requiredAuthority(command, command.op()));
     }
 
     /** Mirrors the batch writer's ordered key/value items without executing or creating sub-proposals. */
