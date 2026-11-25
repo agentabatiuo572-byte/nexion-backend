@@ -184,7 +184,7 @@ public class SupportPerformanceExportService {
         boolean allScope = platformSuperAdmin();
         List<String> groups = groupsOf(actor).stream().map(String::valueOf).toList();
         if ("APPROVALS".equals(normalized)) {
-            if (!readCode() || !owns(APPROVE_PERMISSION) || !outCapable(actor)) {
+            if (!readCode() || !owns(APPROVE_PERMISSION)) {
                 throw new BizException(403, "PERMISSION_DENIED");
             }
             rows = mapper.listApprovals(allScope, groups, offset, size);
