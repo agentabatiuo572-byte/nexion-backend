@@ -81,7 +81,7 @@ public class AuditReplayBusinessPermissionGuard {
     static final String E4_REFUND_AUTHORITY = "device_e4_order_refund";
     static final String DECISION_SUPER_ADMIN_REQUIRED = "A2_SUPER_ADMIN_APPROVAL_REQUIRED";
     private static final String E1_WRITE_AUTHORITY = "device_e1_write";
-    private static final Set<String> E1_ORIGINAL_KEY_RECOVERY_OPERATIONS = Set.of(
+    private static final Set<String> E1_RELEASE_RULE_OPERATIONS = Set.of(
             "e1_phase_create", "e1_phase_patch", "e1_phase_archive", "e1_gate_create", "e1_gate_patch",
             "e1_gate_archive", "e1_gate_field", "e1_bundle_discount", "e1_early_access_update");
     public static final Set<String> F5_ACTION_AUTHORITIES = Set.of(
@@ -287,6 +287,11 @@ public class AuditReplayBusinessPermissionGuard {
         return command != null && "E".equals(command.domain()) && "e4_order_refund".equals(command.op());
     }
 
+    static boolean isE1ReleaseRuleOperation(AuditReplayCommand command) {
+        return command != null && "E".equals(command.domain()) && command.op() != null
+                && E1_RELEASE_RULE_OPERATIONS.contains(command.op());
+    }
+
     static boolean isUserSessionRevocation(AuditReplayCommand command) {
         return command != null && "C".equalsIgnoreCase(command.domain())
                 && "c2_session_revoke_all".equalsIgnoreCase(command.op());
@@ -306,8 +311,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (WithdrawalConfigApproval.supports(command)) {
             return canReadOwnFinanceProposal(command, actorId, grants);
         }
-        if ("E".equals(command.domain()) && command.op() != null
-                && E1_ORIGINAL_KEY_RECOVERY_OPERATIONS.contains(command.op())) {
+        if (isE1ReleaseRuleOperation(command)) {
             return command.params() != null && !command.params().isEmpty() && grants.contains(E1_WRITE_AUTHORITY);
         }
         String operation = text(command.op()).toLowerCase(Locale.ROOT);
@@ -1413,6 +1417,26 @@ public class AuditReplayBusinessPermissionGuard {
     private ApiResult<DelegatedProposalDescriptor> validateRequestContext(
             AuditOperationProposalRequest request, AuditReplayCommand command) {
         boolean delegated = delegatedProposal();
+        if (isE1ReleaseRuleOperation(command)
+                && !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            var permission = devices.validateReplayPermission(command);
+            if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());
+            OpsDeviceService.E1ReleaseProposalReview review;
+            try {
+                review = devices.e1ReleaseProposalReview(command);
+            } catch (ffdd.opsconsole.shared.exception.BizException invalid) {
+                return ApiResult.fail(invalid.getCode(), invalid.getMessage());
+            } catch (IllegalArgumentException invalid) {
+                return ApiResult.fail(422, invalid.getMessage());
+            }
+            if (!"E1".equals(text(request.sourceDomain())) || !review.objectId().equals(text(request.obj()))
+                    || !review.target().equals(request.target())
+                    || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return ApiResult.ok(new DelegatedProposalDescriptor(review.action(), review.objectId(), review.before(),
+                    review.after(), "E1", review.operationType(), review.amplifies(), review.target()));
+        }
         if(command!=null && "E".equals(command.domain()) && Set.of("e1_sku_create","e1_sku_update").contains(command.op()))
             return ApiResult.ok(delegatedDescriptor(command)); // E1 derives its lock target from the typed SKU, including generated create ids.
 
@@ -2609,7 +2633,7 @@ public class AuditReplayBusinessPermissionGuard {
                         "e5_device_batch_pause", "e5_device_batch_resume" -> "device_e5_write";
                 case "e6_compute_config" -> e6ComputeAuthority(command.params());
                 case "e6_compute_config_batch", "e6_phone_calibration", "e6_onboarding_yield_sku" -> "device_e6_write";
-                default -> null;
+                default -> isE1ReleaseRuleOperation(command) ? E1_WRITE_AUTHORITY : null;
             };
             // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
             // 按 params.value 目标状态分流 freeze/release/reverse;OpsTeamService.updateCommissionEventStatus 二次校验兜底。

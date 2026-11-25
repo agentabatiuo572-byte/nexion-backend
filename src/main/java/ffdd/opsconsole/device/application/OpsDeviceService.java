@@ -2756,11 +2756,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_PHASE_REQUEST_REQUIRED");
         }
         return e1Idempotent("E1_PHASE_PATCH", idempotencyKey, phaseId, request, () -> {
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("E", "device_phase", phaseId) > 0) {
+        String currentPhaseId = matchConfiguredE1PhaseId(phaseId, true);
+        if (e1ReleaseTargetLocked("device_phase", phaseId, currentPhaseId)) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        String currentPhaseId = matchConfiguredE1PhaseId(phaseId, true);
         DevicePhaseView before = catalogRepository.findPhase(E1_PHASE_SCOPE, currentPhaseId).orElse(null);
         if (before == null) {
             return ApiResult.fail(404, "E1_PHASE_NOT_FOUND");
@@ -2804,11 +2803,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return guard;
         }
         return e1Idempotent("E1_PHASE_ARCHIVE", idempotencyKey, phaseId, request, () -> {
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("E", "device_phase", phaseId) > 0) {
+        String normalized = matchConfiguredE1PhaseId(phaseId, true);
+        if (e1ReleaseTargetLocked("device_phase", phaseId, normalized)) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        String normalized = matchConfiguredE1PhaseId(phaseId, true);
         DevicePhaseView before = catalogRepository.findPhase(E1_PHASE_SCOPE, normalized).orElse(null);
         if (before == null) {
             return ApiResult.fail(404, "E1_PHASE_NOT_FOUND");
@@ -2858,7 +2856,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         boolean eligibility = Boolean.TRUE.equals(request.eligibility());
         boolean forceUnlock = Boolean.TRUE.equals(request.forceUnlock());
         ApiResult<Map<String, Object>> forceUnlockGuard =
-                requireE1ForceUnlockTransition(false, forceUnlock, eligibility, phase);
+                requireE1ForceUnlockTransition(clearsArchivedForceUnlock(existing, forceUnlock), forceUnlock, eligibility, phase);
         if (forceUnlockGuard != null) {
             return forceUnlockGuard;
         }
@@ -2899,11 +2897,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "E1_GATE_REQUEST_REQUIRED");
         }
         return e1Idempotent("E1_GATE_PATCH", idempotencyKey, skuId, request, () -> {
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("E", "device_generation_gate", skuId) > 0) {
+        String normalized = normalizeGenerationId(skuId);
+        if (e1ReleaseTargetLocked("device_generation_gate", skuId, normalized)) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        String normalized = normalizeGenerationId(skuId);
         catalogRepository.backfillPhaseReferences(E1_PHASE_SCOPE, LocalDateTime.now(clock));
         DeviceGenerationGateView before = catalogRepository.findGenerationGate(normalized).orElse(null);
         if (before == null) {
@@ -2954,11 +2951,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return guard;
         }
         return e1Idempotent("E1_GATE_ARCHIVE", idempotencyKey, skuId, request, () -> {
-        if (!A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("E", "device_generation_gate", skuId) > 0) {
+        String normalized = normalizeGenerationId(skuId);
+        if (e1ReleaseTargetLocked("device_generation_gate", skuId, normalized)) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
-        String normalized = normalizeGenerationId(skuId);
         DeviceGenerationGateView before = catalogRepository.findGenerationGate(normalized).orElse(null);
         if (before == null) {
             return ApiResult.fail(404, "E1_GATE_NOT_FOUND");
@@ -3687,6 +3683,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "REASON_LENGTH_INVALID");
         }
         return null;
+    }
+
+    private boolean e1ReleaseTargetLocked(String type, String requestedId, String canonicalId) {
+        return !A2ReplayContext.isReplaying() && (lockMapper.countActiveByTarget("E", type, requestedId) > 0
+                || (!canonicalId.isEmpty() && !canonicalId.equals(requestedId)
+                    && lockMapper.countActiveByTarget("E", type, canonicalId) > 0));
     }
 
 
@@ -4525,6 +4527,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (beforeForceUnlock && !forceUnlock && !hasAuthority("device_e1_generation_gate_force_lock"))
             return ApiResult.fail(403, "E1_FORCE_LOCK_FORBIDDEN");
         return null;
+    }
+
+    private boolean clearsArchivedForceUnlock(DeviceGenerationGateView existing, boolean forceUnlock) {
+        // A create that turns forced opening on still requires the unlock grant, even for a reopened gate.
+        return !forceUnlock && existing != null && "archived".equals(existing.status())
+                && Boolean.TRUE.equals(existing.forceUnlock());
     }
 
     private ApiResult<DeviceSkuView> requireE1SkuListingAllowed(String skuId) {
@@ -5854,6 +5862,155 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return "E";
     }
 
+    public record E1ReleaseProposalReview(AuditLockTarget target, String objectId, String action,
+            String before, String after, String operationType, boolean amplifies) {
+        public E1ReleaseProposalReview {
+            before = boundedReleaseReviewText(before);
+            after = boundedReleaseReviewText(after);
+        }
+    }
+
+    public E1ReleaseProposalReview e1ReleaseProposalReview(AuditReplayCommand command) {
+        Map<String, Object> params = command.params() == null ? Map.of() : command.params();
+        boolean canReadE1 = hasAuthority("device_e1_read");
+        return switch (command.op()) {
+            case "e1_phase_create", "e1_phase_patch", "e1_phase_archive" -> {
+                boolean create = "e1_phase_create".equals(command.op());
+                boolean archive = "e1_phase_archive".equals(command.op());
+                String label = str(params, "label");
+                String phaseId = str(params, "phaseId");
+                String targetId;
+                try {
+                    targetId = create ? normalizePhaseLabel(label) : matchConfiguredE1PhaseId(phaseId, true);
+                } catch (IllegalArgumentException invalid) {
+                    throw new BizException(422, invalid.getMessage());
+                }
+                if (targetId.isEmpty()) throw new BizException(404, "E1_PHASE_NOT_FOUND");
+                if (!create && !targetId.equals(phaseId)) throw new BizException(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+                String before = "当前值需商品管理读取权限查看";
+                if (canReadE1) {
+                    var current = create ? catalogRepository.findPhaseByLabel(E1_PHASE_SCOPE, targetId)
+                            : catalogRepository.findPhase(E1_PHASE_SCOPE, targetId);
+                    before = current.map(phase -> releaseProposalSummary(phaseSnapshot(phase),
+                            "status", "sortOrder", "label", "meta", "skus")).orElse("未创建");
+                }
+                String after = archive ? "已归档" : e1PhaseProposalAfter(params, create);
+                yield new E1ReleaseProposalReview(new AuditLockTarget("E", "device_phase", targetId), targetId,
+                        create ? "新建生命周期阶段" : archive ? "归档生命周期阶段" : "更新生命周期阶段",
+                        before, after, archive ? "sos" : "param", false);
+            }
+            case "e1_gate_create", "e1_gate_patch", "e1_gate_archive", "e1_gate_field" -> {
+                boolean create = "e1_gate_create".equals(command.op());
+                boolean archive = "e1_gate_archive".equals(command.op());
+                boolean field = "e1_gate_field".equals(command.op());
+                String[] gateField = field ? normalizeE1GateKey(str(params, "key")) : null;
+                String skuId = field ? gateField[0] : normalizeGenerationId(str(params, "skuId"));
+                if (skuId.isEmpty()) throw new BizException(422, "E1_GATE_SKU_ID_INVALID");
+                String before = "当前值需商品管理读取权限查看";
+                if (canReadE1) {
+                    var current = catalogRepository.findGenerationGate(skuId);
+                    before = current.map(gate -> field ? gateField[1] + " = " + generationGateFieldValue(gate, gateField[1])
+                            : releaseProposalSummary(generationGateSnapshot(gate), "forceUnlock", "eligibility", "phase",
+                                    "releaseMonth", "phaseOffset", "status", "name")).orElse("未创建");
+                }
+                String after;
+                if (archive) {
+                    after = "已归档";
+                } else if (field) {
+                    String value = str(params, "value");
+                    String normalized = "phase".equals(gateField[1]) ? e1GateProposalPhase(value)
+                            : normalizeE1GateValue(gateField[1], value);
+                    after = gateField[1] + " = " + normalized;
+                } else {
+                    after = e1GateProposalAfter(params, create);
+                }
+                boolean amplifies = !archive && (field
+                        ? "forceUnlock".equals(gateField[1]) && Boolean.TRUE.equals(boolVal(params, "value"))
+                        : Boolean.TRUE.equals(boolVal(params, "forceUnlock")));
+                String action = switch (command.op()) {
+                    case "e1_gate_create" -> "新建上架门";
+                    case "e1_gate_patch" -> "更新上架门";
+                    case "e1_gate_archive" -> "归档上架门";
+                    default -> "调整上架门字段";
+                };
+                yield new E1ReleaseProposalReview(new AuditLockTarget("E", "device_generation_gate", skuId), skuId,
+                        action, before, after, archive ? "sos" : "param", amplifies);
+            }
+            case "e1_bundle_discount" -> {
+                DeviceBundleDiscountUpdateRequest proposed = bundleDiscountRequest(params, null, null);
+                validateBundleDiscount(proposed);
+                String before = "当前值需商品管理读取权限查看";
+                if (canReadE1) {
+                    var current = e1BundleDiscount().getData();
+                    before = "版本 " + current.get("version") + " · " + bundleReleaseReviewText(current);
+                }
+                yield new E1ReleaseProposalReview(new AuditLockTarget("E", "store_bundle_discount", "canonical"),
+                        "App 组合购阶梯折扣", "调整 App 组合购阶梯折扣", before,
+                        bundleReleaseReviewText(params), "fund", true);
+            }
+            case "e1_early_access_update" -> {
+                String before = "当前值需 E3 读取权限查看";
+                if (hasAuthority("device_e3_read")) {
+                    before = releaseProposalSummary(deviceRepository.e3Config(), "earlyAccessEnabled", "earlyAccessLeadDays");
+                    if (before.isEmpty()) before = "尚未配置";
+                }
+                yield new E1ReleaseProposalReview(new AuditLockTarget("E", "device_release_early_access", "trade-in"),
+                        "置换侧抢先购", "调整置换侧抢先购", before, releaseProposalSummary(
+                                detail("enabled", boolVal(params, "enabled"), "leadDays", intVal(params, "leadDays")),
+                                "enabled", "leadDays"), "param", false);
+            }
+            default -> throw new IllegalArgumentException("Not an E1 release proposal");
+        };
+    }
+
+    private String e1PhaseProposalAfter(Map<String, Object> params, boolean create) {
+        String label = str(params, "label");
+        String status = str(params, "status");
+        return releaseProposalSummary(detail("label", StringUtils.hasText(label) ? label : null,
+                "sortOrder", intVal(params, "sortOrder"), "status", create || status != null ? normalizePhaseStatus(status) : null,
+                "meta", str(params, "meta"), "skus", str(params, "skus")), "label", "sortOrder", "status", "meta", "skus");
+    }
+
+    private String e1GateProposalAfter(Map<String, Object> params, boolean create) {
+        String phase = str(params, "phase");
+        String status = str(params, "status");
+        String name = str(params, "name");
+        Boolean forceUnlock = boolVal(params, "forceUnlock");
+        Boolean eligibility = boolVal(params, "eligibility");
+        Integer offset = intVal(params, "phaseOffset");
+        return releaseProposalSummary(detail("forceUnlock", create ? Boolean.valueOf(Boolean.TRUE.equals(forceUnlock)) : forceUnlock,
+                "eligibility", create ? Boolean.valueOf(Boolean.TRUE.equals(eligibility)) : eligibility,
+                "phase", phase == null ? null : e1GateProposalPhase(phase), "releaseMonth", intVal(params, "releaseMonth"),
+                "phaseOffset", create && offset == null ? Integer.valueOf(0) : offset,
+                "status", create || status != null ? normalizeGenerationGateStatus(status) : null,
+                "name", StringUtils.hasText(name) ? name : null),
+                "forceUnlock", "eligibility", "phase", "releaseMonth", "phaseOffset", "status", "name");
+    }
+
+    private String e1GateProposalPhase(String phase) {
+        String phaseId = normalizeE1Phase(phase);
+        if (!phaseId.equals(normalizeText(phase))) {
+            throw new IllegalArgumentException("E1_GATE_PHASE_INVALID");
+        }
+        return phaseId;
+    }
+
+    private static String bundleReleaseReviewText(Map<String, Object> params) {
+        return "2 件 " + decimal(params, "twoItemsPct").stripTrailingZeros().toPlainString()
+                + "% · 3 件 " + decimal(params, "threeItemsPct").stripTrailingZeros().toPlainString()
+                + "% · 4+ 件 " + decimal(params, "fourPlusItemsPct").stripTrailingZeros().toPlainString() + "%";
+    }
+
+    private static String releaseProposalSummary(Map<String, ?> params, String... fields) {
+        return java.util.Arrays.stream(fields).filter(key -> params.get(key) != null)
+                .map(key -> key + " = " + params.get(key).toString().trim()).collect(java.util.stream.Collectors.joining(" · "));
+    }
+
+    private static String boundedReleaseReviewText(String summary) {
+        return summary.codePointCount(0, summary.length()) <= 128 ? summary
+                : summary.substring(0, summary.offsetByCodePoints(0, 127)) + "…";
+    }
+
     @Override
     public ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {
         Map<String, Object> params = cmd.params() == null ? Map.of() : cmd.params();
@@ -5868,8 +6025,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         boolean beforeForceUnlock;
         boolean forceUnlock;
         if ("e1_gate_create".equals(cmd.op())) {
-            beforeForceUnlock = false;
             forceUnlock = Boolean.TRUE.equals(boolVal(params, "forceUnlock"));
+            var existing = catalogRepository.findGenerationGate(normalizeGenerationId(str(params, "skuId"))).orElse(null);
+            beforeForceUnlock = clearsArchivedForceUnlock(existing, forceUnlock);
         } else if ("e1_gate_patch".equals(cmd.op())) {
             var gate = catalogRepository.findGenerationGate(normalizeId(str(params, "skuId"))).orElse(null);
             if (gate == null) return ApiResult.fail(404, "E1_GATE_NOT_FOUND");

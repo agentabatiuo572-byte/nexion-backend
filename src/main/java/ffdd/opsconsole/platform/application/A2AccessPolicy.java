@@ -252,12 +252,23 @@ public class A2AccessPolicy {
     boolean canRecoverOwnWriteProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command,
             OriginalKeyReader reader) {
         Set<String> grants = reader.grants();
+        if (canRecoverOwnE1ReleaseProposal(ticket, command, reader)) return true;
         if (command == null || !grants.contains("platform_a2_write") || grants.contains("platform_a2_read")
                 || !StringUtils.hasText(ticket.getSourceDomain())) return false;
         String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
         if (!domain.matches("[A-M]")) return false;
         return domain.equalsIgnoreCase(command.domain())
                 && replayBusinessPermissionGuard.hasMappedProposalGrant(command, domain, reader.actorId(), grants);
+    }
+
+    /** The caller has already matched the key and the ticket maker. */
+    boolean canRecoverOwnE1ReleaseProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command,
+            OriginalKeyReader reader) {
+        Set<String> grants = reader.grants();
+        return ("E".equals(ticket.getSourceDomain()) || "E1".equals(ticket.getSourceDomain()))
+                && AuditReplayBusinessPermissionGuard.isE1ReleaseRuleOperation(command)
+                && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"))
+                && replayBusinessPermissionGuard.hasMappedProposalGrant(command, "E", reader.actorId(), grants);
     }
 
     /** H1 override maker recovery: exact maker, existing revoke authority, no A2 global read grant. */

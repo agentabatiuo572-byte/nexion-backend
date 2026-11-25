@@ -427,6 +427,7 @@ public class OpsAuditCenterService {
         }
         if (descriptor != null) {
             boolean j1Restore = OpsKillSwitchService.isRestoreCommand(command);
+            boolean e1ReleaseRule = AuditReplayBusinessPermissionGuard.isE1ReleaseRuleOperation(command);
             boolean superAdminProposal = j1Restore || "A1".equals(descriptor.sourceDomain())
                     || superAdminProposalCommand(command) || A4RegistryApproval.supports(command)
                     || AuditReplayBusinessPermissionGuard.isE4Refund(command);
@@ -457,8 +458,8 @@ public class OpsAuditCenterService {
             }
             ticket.setOperationType(descriptor.operationType());
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
-            ticket.setSos(j1Restore ? 1 : 0);
-            ticket.setRoleGate(superAdminProposal ? "超管" : ROLE_GATE_DELEGATED_APPROVER);
+            ticket.setSos(j1Restore || (e1ReleaseRule && "sos".equals(descriptor.operationType())) ? 1 : 0);
+            ticket.setRoleGate(superAdminProposal || e1ReleaseRule ? "超管" : ROLE_GATE_DELEGATED_APPROVER);
             sourceDomain = descriptor.sourceDomain();
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
             target = descriptor.target();
@@ -1178,7 +1179,10 @@ public class OpsAuditCenterService {
             var role = replayBusinessPermissionGuard.validateDecisionRole(command);
             if (role.getCode() != 0) return ApiResult.fail(role.getCode(), role.getMessage());
         } else if (!"WITHDRAW".equals(verb) && !accessPolicy.canAccessTicket(ticket, makerId)
-                && !("PROPOSE".equals(verb) && accessPolicy.canAccessOwnBusinessProposal(command, actorId))) {
+                && !("PROPOSE".equals(verb) && (accessPolicy.canAccessOwnBusinessProposal(command, actorId)
+                        || (AuditReplayBusinessPermissionGuard.isE1ReleaseRuleOperation(command)
+                            && accessPolicy.canRecoverOwnE1ReleaseProposal(ticket, command,
+                                    accessPolicy.requireOriginalKeyProposalReader()))))) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
         }
         var metadata = ticketMetadata(ticket, command);
