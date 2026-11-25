@@ -147,6 +147,11 @@ public class AdminIdempotencyTransactionExecutor {
     private <T> Claim<T> claimInternal(String scope, String idempotencyKey, String requestHash,
                                       LocalDateTime expiresAt, Class<T> responseType, boolean retainSuccess,
                                       AdminCommandOrigin origin) {
+        var a3Content = AdminCommandOrigin.A3Content.forScope(scope);
+        if (a3Content != null && origin != null) {
+            // Serialize the check and claim even before the first configuration row exists.
+            recordMapper.lockA3ContentClaims(a3Content.scopePrefix);
+        }
         boolean scopeUsesOriginRetention = originAddsRetention(scope);
         boolean originRetains = origin != null && scopeUsesOriginRetention;
         retainSuccess = retainSuccess || originRetains;
@@ -164,6 +169,10 @@ public class AdminIdempotencyTransactionExecutor {
         } else if (current != null && (retainSuccess
                 || scopeUsesOriginRetention && current.getOriginAdminId() != null)
                 && (STATUS_SUCCEEDED.equals(current.getStatus()) || STATUS_FAILED.equals(current.getStatus()))) {
+            if (a3Content != null && STATUS_FAILED.equals(current.getStatus())) {
+                if (!requestHash.equals(current.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+                throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
+            }
             // Never recycle a retained success; FAILED retries use a status CAS,
             // so a concurrent completion cannot be overwritten by an expiry reset.
             return resolveKnownRecord(current, requestHash, expiresAt, responseType, origin);
@@ -198,11 +207,13 @@ public class AdminIdempotencyTransactionExecutor {
             throw conflict("IDEMPOTENCY_RECLAIM_CONFLICT");
         } else if (record == null) {
             String targetsJson = origin == null || origin.targets().isEmpty() ? null : writeJson(origin.targets());
-            if (targetsJson != null && recordMapper.countUnresolvedTargets(targetsJson, scope, idempotencyKey,
+            if (a3Content != null && origin != null) {
+                requireA3ContentAvailable(a3Content, scope, idempotencyKey);
+            } else if (targetsJson != null && recordMapper.countUnresolvedTargets(targetsJson, scope, idempotencyKey,
                     permittedBatchParent(scope, idempotencyKey, targetsJson)) > 0) {
                 throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
             }
-            if (origin != null && origin.target() != null && recordMapper.countUnresolvedOrigin(
+            if (a3Content == null && origin != null && origin.target() != null && recordMapper.countUnresolvedOrigin(
                     scope, origin.method(), origin.path(), origin.target(), idempotencyKey) > 0) {
                 throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
             }
@@ -351,6 +362,10 @@ public class AdminIdempotencyTransactionExecutor {
                 || !requestHash.equals(record.getRequestHash())) {
             return Claim.replayed(replay(record, requestHash, responseType, origin));
         }
+        var a3Content = AdminCommandOrigin.A3Content.forScope(record.getScope());
+        if (a3Content != null && origin != null) {
+            requireA3ContentAvailable(a3Content, record.getScope(), record.getIdempotencyKey());
+        }
         if (origin != null && !origin.targets().isEmpty()) {
             String currentTargets = writeJson(origin.targets());
             if (recordMapper.countUnresolvedTargets(currentTargets, record.getScope(), record.getIdempotencyKey(),
@@ -376,6 +391,12 @@ public class AdminIdempotencyTransactionExecutor {
             return Claim.replayed(replay(raced, requestHash, responseType, origin));
         }
         throw conflict("IDEMPOTENCY_RETRY_CONFLICT");
+    }
+
+    private void requireA3ContentAvailable(AdminCommandOrigin.A3Content content, String scope, String key) {
+        if (recordMapper.countUnresolvedA3Content(content.scopePattern, scope, key) > 0) {
+            throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
+        }
     }
 
     private <T> T replay(AdminIdempotencyRecordEntity record, String requestHash, Class<T> responseType,

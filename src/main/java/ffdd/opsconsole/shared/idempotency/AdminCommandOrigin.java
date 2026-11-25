@@ -24,6 +24,50 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
             "WHEEL_TIER_CREATE", "WHEEL_TIER_UPDATE", "WHEEL_TIER_DELETE", "WHEEL_TIER_RETIRE",
             "WHEEL_PROBABILITIES_UPDATE");
     public record Target(String action, String domain, String type, String id) {}
+
+    enum A3Content {
+        DEVELOPER_DOCS("A3_DEVELOPER_DOCS_UPDATE", "/api/admin/developer/docs", "developer.docs.published",
+                "DEVELOPER_DOCS_PUBLISHED_CONTENT_CHANGED"),
+        HOW_CONTENT("A3_HOW_CONTENT_UPDATE", "/api/admin/content/how-it-works", "how-it-works.published",
+                "HOW_CONTENT_PUBLISHED_CHANGED");
+
+        final String scopePrefix;
+        final String scopePattern;
+        final String path;
+        final String configKey;
+        final String auditAction;
+
+        A3Content(String scopePrefix, String path, String configKey, String auditAction) {
+            this.scopePrefix = scopePrefix;
+            this.scopePattern = "^" + scopePrefix + ":[1-9][0-9]{0,18}$";
+            this.path = path;
+            this.configKey = configKey;
+            this.auditAction = auditAction;
+        }
+
+        String scope(long actor) { return scopePrefix + ":" + actor; }
+
+        List<Target> targets() { return List.of(new Target("UPDATE", "A3", "published_content", configKey)); }
+
+        static A3Content forScope(String scope) {
+            if (scope != null) {
+                for (var content : values()) {
+                    if (scope.startsWith(content.scopePrefix) && scope.matches(content.scopePattern)) return content;
+                }
+            }
+            return null;
+        }
+
+        static A3Content forRoute(String method, String path) {
+            if ("PUT".equals(method)) {
+                for (var content : values()) {
+                    if (content.path.equals(path)) return content;
+                }
+            }
+            return null;
+        }
+    }
+
     public static AdminCommandOrigin current(String scope) {
         return current(scope, readAuthority(scope), null);
     }
@@ -42,6 +86,11 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         catch (NumberFormatException invalid) { return null; }
         var request = attributes.getRequest();
         if (actor < 1 || !request.getRequestURI().startsWith("/api/admin/") || request.getRequestURI().length() > 512) return null;
+        var a3Content = A3Content.forScope(scope);
+        if (a3Content != null) {
+            if (!scope.equals(a3Content.scope(actor)) || a3Content != A3Content.forRoute(request.getMethod(), request.getRequestURI())) return null;
+            return new AdminCommandOrigin(actor, "PUT", a3Content.path, a3Content.configKey, readAuthority, a3Content.targets());
+        }
         Object variables = request.getAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE);
         String target = boundTarget;
         String g2Param = g2ParameterKey(scope);
@@ -131,7 +180,8 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
         if (java.util.Set.of("I4_DISCLOSURE_PUBLISH", "I4_GATE_ADJUST").contains(scope)) return "content_i5_read";
         if (i4TrustWrite(scope)) return "content_i4_read";
         if (h9CommandScope(scope)) return "growth_h9_read";
-        if (a3FeatureFlagScope(scope) || "A3_PLATFORM_EXPERIENCE".equals(scope)) return "platform_a3_read";
+        if (a3FeatureFlagScope(scope) || "A3_PLATFORM_EXPERIENCE".equals(scope)
+                || A3Content.forScope(scope) != null) return "platform_a3_read";
         if (a3PlatformParamScope(scope)) return null; // Bound per canonical key by executeBound.
         if (a4CommandScope(scope)) return "platform_a4_read";
         if (userDetailScope(scope)) return "user_c1hub_read";
@@ -172,6 +222,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || a3FeatureFlagScope(scope)
                 || "A3_PLATFORM_EXPERIENCE".equals(scope)
                 || a3PlatformParamScope(scope)
+                || A3Content.forScope(scope) != null
                 || a4CommandScope(scope)
                 || userDetailScope(scope)
                 || e3TradeinScope(scope)
@@ -349,6 +400,7 @@ public record AdminCommandOrigin(long actorId, String method, String path, Strin
                 || j4LocalRecord(scope)
                 || h9CommandScope(scope)
                 || a3PlatformParamScope(scope)
+                || A3Content.forScope(scope) != null
                 || fLocalConfiguration(scope)
                 || i7CourseDraftOnly(scope)
                 || h4DirectScope(scope)

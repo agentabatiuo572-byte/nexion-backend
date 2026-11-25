@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.idempotency.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
 import java.util.List;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Select;
@@ -166,16 +167,34 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    rollback_confirmed = 0,
                    response_json = NULL,
                    error_message = NULL,
-                   expires_at = #{expiresAt},
+                   expires_at = IF(REGEXP_LIKE(scope, '^A3_(DEVELOPER_DOCS|HOW_CONTENT)_UPDATE:[1-9][0-9]{0,18}$', 'c'),
+                       expires_at, #{expiresAt}),
                    updated_at = NOW()
              WHERE id = #{id}
                AND status = 'FAILED'
                AND is_deleted = 0
                AND (scope <> 'D3_RESERVE_INJECTION' OR origin_admin_id IS NULL OR response_json IS NULL)
+               AND (expires_at > NOW()
+                    OR NOT REGEXP_LIKE(scope, '^A3_(DEVELOPER_DOCS|HOW_CONTENT)_UPDATE:[1-9][0-9]{0,18}$', 'c'))
             """)
     int resetFailedById(@Param("id") Long id,
                         @Param("requestHash") String requestHash,
                         @Param("expiresAt") java.time.LocalDateTime expiresAt);
+
+    @Insert("""
+            INSERT INTO nx_admin_operation_mutex (lock_key) VALUES (#{scopePrefix})
+            ON DUPLICATE KEY UPDATE updated_at=updated_at
+            """)
+    int lockA3ContentClaims(@Param("scopePrefix") String scopePrefix);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_admin_idempotency_record
+             WHERE is_deleted=0 AND origin_admin_id IS NOT NULL AND status IN ('UNKNOWN','PROCESSING','FAILED')
+               AND REGEXP_LIKE(scope, #{scopePattern}, 'c')
+               AND NOT (scope=#{scope} AND BINARY idempotency_key=BINARY #{key})
+            """)
+    int countUnresolvedA3Content(@Param("scopePattern") String scopePattern, @Param("scope") String scope,
+                                 @Param("key") String key);
 
     @Select("""
             SELECT COUNT(*) FROM nx_admin_idempotency_record
