@@ -1033,6 +1033,30 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     int insertSku(@Param("sku") SkuWrite sku);
 
+    String PURCHASE_GATE_PROPERTIES = """
+            '["rankMin","activeDirectMin","teamComputePointsMin","mode","quotaCap","quotaSold","quotaPeriod","enforce"]'
+            """;
+    String PURCHASE_GATE_DEFAULTS = """
+            '{"rankMin":0,"activeDirectMin":0,"teamComputePointsMin":0}'
+            """;
+    // E1 reads the three absent thresholds as zero and serializes absent optional fields as null.
+    String SAME_PURCHASE_GATE = """
+            CASE WHEN JSON_VALID(purchase_gate_json)=1 AND JSON_VALID(VALUES(purchase_gate_json))=1
+                   THEN CAST(purchase_gate_json AS JSON) <=> CAST(VALUES(purchase_gate_json) AS JSON)
+                     OR (JSON_CONTAINS(
+            """ + PURCHASE_GATE_PROPERTIES + """
+                           , JSON_KEYS(purchase_gate_json))
+                         AND JSON_CONTAINS(
+            """ + PURCHASE_GATE_PROPERTIES + """
+                           , JSON_KEYS(VALUES(purchase_gate_json)))
+                         AND JSON_MERGE_PATCH(
+            """ + PURCHASE_GATE_DEFAULTS + """
+                           , JSON_MERGE_PATCH('{}', purchase_gate_json)) <=> JSON_MERGE_PATCH(
+            """ + PURCHASE_GATE_DEFAULTS + """
+                           , JSON_MERGE_PATCH('{}', VALUES(purchase_gate_json))))
+                 ELSE purchase_gate_json <=> VALUES(purchase_gate_json) END
+            """;
+
     @Insert("""
             INSERT INTO nx_admin_device_sku (
               sku_id,name,tier,tagline,badge,gpu,vram,hash_rate,power_text,datacenter,uptime,warranty,phone_daily_earn,phone_daily_earn_nex,price,
@@ -1057,18 +1081,24 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               share_yield_max=VALUES(share_yield_max),monthly_target_usdt=VALUES(monthly_target_usdt),monthly_target_band_pct=VALUES(monthly_target_band_pct),base_rate=VALUES(base_rate),stock_text=VALUES(stock_text),
               ai_image_gen_per_min=VALUES(ai_image_gen_per_min),
               ai_llm_tokens_per_sec=VALUES(ai_llm_tokens_per_sec),ai_video_min_per_hour=VALUES(ai_video_min_per_hour),
-              ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),spec_document_title=VALUES(spec_document_title),spec_document_url=VALUES(spec_document_url),features_json=VALUES(features_json),
+              ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),spec_document_title=VALUES(spec_document_title),spec_document_url=VALUES(spec_document_url),
+              features_json=CASE
+                WHEN features_json IS NULL AND VALUES(features_json)='[]' THEN features_json
+                WHEN CASE WHEN JSON_VALID(features_json)=1 AND JSON_VALID(VALUES(features_json))=1
+                       THEN CAST(features_json AS JSON) = CAST(VALUES(features_json) AS JSON)
+                       ELSE FALSE END THEN features_json
+                ELSE VALUES(features_json) END,
               generation=VALUES(generation),lifecycle=VALUES(lifecycle),superseded_by=VALUES(superseded_by),
               tradein_discount=VALUES(tradein_discount),unlock_phase='',unlock_phase_id=VALUES(unlock_phase_id),
-              purchase_gate_generation=CASE WHEN CASE
-                    WHEN JSON_VALID(purchase_gate_json)=1 AND JSON_VALID(VALUES(purchase_gate_json))=1
-                      THEN CAST(purchase_gate_json AS JSON) <=> CAST(VALUES(purchase_gate_json) AS JSON)
-                    ELSE purchase_gate_json <=> VALUES(purchase_gate_json)
-                  END THEN purchase_gate_generation ELSE purchase_gate_generation+1 END,
-              purchase_gate_json=VALUES(purchase_gate_json),
+              purchase_gate_generation=CASE WHEN
+            """ + SAME_PURCHASE_GATE + """
+                THEN purchase_gate_generation ELSE purchase_gate_generation+1 END,
+              purchase_gate_json=CASE WHEN
+            """ + SAME_PURCHASE_GATE + """
+                THEN purchase_gate_json ELSE VALUES(purchase_gate_json) END,
               image_preview_url=CASE
-                WHEN (#{sku.displaySoldBase} IS NOT NULL OR #{sku.liveActivityVisible} IS NOT NULL)
-                     AND (image_asset_id <=> VALUES(image_asset_id)) AND (image_object_key <=> VALUES(image_object_key))
+                WHEN (BINARY image_asset_id <=> BINARY VALUES(image_asset_id))
+                     AND (BINARY image_object_key <=> BINARY VALUES(image_object_key))
                   THEN image_preview_url
                 ELSE VALUES(image_preview_url) END,
               image_asset_id=VALUES(image_asset_id),image_object_key=VALUES(image_object_key),

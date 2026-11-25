@@ -187,11 +187,12 @@ public class AppBinaryProjectionService {
         if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
             return "COVERAGE_BELOW_REDLINE";
         }
-        if (directMembers < 2 || trackAMembers + trackBMembers != directMembers
-                || trackAMembers < 1 || trackBMembers < 1) {
+        int assignedMembers = trackAMembers + trackBMembers;
+        if (assignedMembers < directMembers) {
             return "BINARY_LEG_ASSIGNMENT_INCOMPLETE";
         }
-        if (trackA.compareTo(threshold) < 0 || trackB.compareTo(threshold) < 0) {
+        if (directMembers < 2 || assignedMembers > directMembers || trackAMembers < 1 || trackBMembers < 1
+                || trackA.compareTo(threshold) < 0 || trackB.compareTo(threshold) < 0) {
             return "BINARY_THRESHOLD_NOT_MET";
         }
         if (!due(today, settlePeriod)) return "F3_SETTLEMENT_NOT_DUE";
