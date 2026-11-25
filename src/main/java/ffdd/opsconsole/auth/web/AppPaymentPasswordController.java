@@ -4,6 +4,7 @@ import ffdd.opsconsole.promotion.web.PromotionItemImages;
 import ffdd.opsconsole.auth.application.AppPaymentPasswordService;
 import ffdd.opsconsole.auth.facade.ExternalPurchaseCommandQuery;
 import ffdd.opsconsole.auth.application.AppPaymentPasswordService.Change;
+import ffdd.opsconsole.auth.application.AppPaymentPasswordService.ChangeVerification;
 import ffdd.opsconsole.auth.application.AppPaymentPasswordService.Reset;
 import ffdd.opsconsole.auth.application.AppPaymentPasswordService.Setup;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -32,7 +33,13 @@ public class AppPaymentPasswordController {
     @PostMapping("/api/app/security/payment-password/change")
     public ApiResult<Map<String,Object>> change(Authentication auth,@RequestHeader("Idempotency-Key") String key,
                                                @RequestBody(required=false) Change request) {
-        return service.change(user(auth).id(),key,request);
+        User user=user(auth);
+        return service.change(user.id(),user.session(),key,request);
+    }
+    @PostMapping("/api/app/security/payment-password/change/verify")
+    public ApiResult<?> changeVerify(Authentication auth,@RequestBody(required=false) ChangeVerification request) {
+        User user=user(auth);
+        return service.changeVerify(user.id(),user.session(),request);
     }
     @GetMapping("/api/app/security/payment-password/commands/{commandKey}")
     public ApiResult<Map<String,Object>> command(Authentication auth,@PathVariable String commandKey) {

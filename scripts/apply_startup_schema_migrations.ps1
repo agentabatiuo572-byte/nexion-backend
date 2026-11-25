@@ -396,6 +396,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261123_test_ios_update_push.sql")
   (Join-Path $root "scripts\migrations\20261030_business_notification_session_indexes.sql")
   (Join-Path $root "scripts\migrations\20261030_payment_password.sql")
+  (Join-Path $root "scripts\migrations\20261125_b95_payment_password_change_proof.sql")
   (Join-Path $root "scripts\migrations\20261031_l6_payment_password_route.sql")
   (Join-Path $root "scripts\migrations\20261031_payment_password_permissions.sql")
   # The schema baseline already owns nx_order.activation_status on both local paths.

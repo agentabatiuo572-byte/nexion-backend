@@ -16,6 +16,7 @@ import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -35,6 +36,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
     private static final Set<String> PURCHASE_KINDS = Set.of("order-pay", "trial-convert", "trade-in",
             "capacity-replace", "capacity-keep");
+    private static final String CHANGE_VERIFICATION_KIND = "change-verify";
+    private static final String CHANGE_PROOF_INVALID = "PAYMENT_PASSWORD_CHANGE_PROOF_INVALID_OR_EXPIRED";
+    private static final String ATTEMPT_NO_FORMAT = "[A-Za-z0-9:_-]{8,128}";
     private final PaymentPasswordMapper repo;
     private final ObjectMapper json;
     private final Clock clock;
@@ -73,8 +77,15 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
         @Override public String toString() { return "Setup[REDACTED]"; }
     }
     public record Change(String currentPassword, String newPassword, String confirmPassword,
-                         Long expectedCredentialVersion, String attemptNo) {
+                         Long expectedCredentialVersion, String attemptNo, String changeProof) {
+        public Change(String currentPassword, String newPassword, String confirmPassword,
+                      Long expectedCredentialVersion, String attemptNo) {
+            this(currentPassword,newPassword,confirmPassword,expectedCredentialVersion,attemptNo,null);
+        }
         @Override public String toString() { return "Change[REDACTED]"; }
+    }
+    public record ChangeVerification(String currentPassword, Long expectedCredentialVersion, String attemptNo) {
+        @Override public String toString() { return "ChangeVerification[REDACTED]"; }
     }
     public record Reset(String resetProof, String newPassword, String confirmPassword,
                         Long expectedCredentialVersion) {
@@ -125,12 +136,66 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                 new Authorization(request.currentPassword(),request.expectedCredentialVersion(),request.attemptNo()),() -> {
             if (request.newPassword().equals(request.currentPassword()))
                 throw new BizException(422,"PAYMENT_PASSWORD_NEW_MUST_DIFFER");
-            Map<String,Object> user=repo.user(userId,true);
-            if (user==null) throw new BizException(401,"USER_AUTH_REQUIRED");
-            writePassword(userId,request.newPassword(),verifiedPhone(userId,user));
-            auditMutation(userId,"USER_PAYMENT_PASSWORD_CHANGED");
-            return mutation(userId,key);
+            return changePassword(userId,key,request.newPassword());
         });
+    }
+
+    public ApiResult<?> changeVerify(long userId,String sessionId,ChangeVerification request) {
+        requireAvailable();
+        String sessionHash=hash(sessionId);
+        Authorization authorization=request==null ? null : new Authorization(
+                request.currentPassword(),request.expectedCredentialVersion(),request.attemptNo());
+        return independent.execute(tx -> {
+            ApiResult<State> verification=verify(userId,CHANGE_VERIFICATION_KIND,sessionHash,authorization);
+            if (verification.getCode()!=0) return verification;
+            String proof=UUID.randomUUID().toString()+UUID.randomUUID();
+            Instant expiresAt=Instant.ofEpochMilli(clock.millis()).plusSeconds(600);
+            repo.writeChangeProof(userId,sessionHash,hash(proof),verification.getData().credentialVersion(),
+                    expiresAt.toEpochMilli());
+            return ApiResult.ok(Map.of("changeProof",proof,"expiresAt",expiresAt));
+        });
+    }
+
+    public ApiResult<Map<String,Object>> change(long userId,String sessionId,String key,Change request) {
+        if (request==null || request.changeProof()==null) return change(userId,key,request);
+        requireAvailable();
+        if (request.currentPassword()!=null || request.changeProof().isBlank() || request.changeProof().length()>128
+                || request.expectedCredentialVersion()==null)
+            return ApiResult.fail(422,CHANGE_PROOF_INVALID);
+        requireNew(request.newPassword(),request.confirmPassword());
+        if (request.attemptNo()==null) throw new BizException(422,"PAYMENT_PASSWORD_REQUIRED");
+        if (!request.attemptNo().matches(ATTEMPT_NO_FORMAT)) throw new BizException(422,"PAYMENT_PASSWORD_INVALID");
+        String sessionHash=hash(sessionId);
+        String proofHash=hash(request.changeProof());
+        long version=request.expectedCredentialVersion();
+        List<Object> summary=List.of("change-proof",sessionHash,proofHash,version,request.attemptNo(),
+                secret("change-proof|"+userId+"|"+key+"|"+request.newPassword()));
+        return command(userId,"change",key,summary,null,() -> {
+            Map<String,Object> credential=repo.credential(userId,true);
+            Instant now=clock.instant();
+            if (credential==null || credential.get("password_hash")==null
+                    || PaymentPasswordMapper.number(credential,"credential_version")!=version
+                    || repo.consumeChangeProof(userId,sessionHash,proofHash,version,now.toEpochMilli())!=1)
+                return ApiResult.fail(422,CHANGE_PROOF_INVALID);
+            State state=stateOf(userId,credential);
+            if (state.lockedUntil()!=null) return ApiResult.fail(429,"PAYMENT_PASSWORD_LOCKED",Map.of(
+                    "configured",state.configured(),"credentialVersion",state.credentialVersion(),
+                    "lockedUntil",state.lockedUntil(),"remainingAttempts",state.remainingAttempts(),
+                    "serverTime",state.serverTime()));
+            if (!pepperVersion.equals(credential.get("pepper_version")))
+                throw new BizException(503,"PAYMENT_PASSWORD_UNAVAILABLE");
+            if (encoder.matches(secret(request.newPassword()),String.valueOf(credential.get("password_hash"))))
+                throw new BizException(422,"PAYMENT_PASSWORD_NEW_MUST_DIFFER");
+            return changePassword(userId,key,request.newPassword());
+        });
+    }
+
+    private ApiResult<Map<String,Object>> changePassword(long userId,String key,String newPassword) {
+        Map<String,Object> user=repo.user(userId,true);
+        if (user==null) throw new BizException(401,"USER_AUTH_REQUIRED");
+        writePassword(userId,newPassword,verifiedPhone(userId,user));
+        auditMutation(userId,"USER_PAYMENT_PASSWORD_CHANGED");
+        return mutation(userId,key);
     }
 
     private ApiResult<Map<String,Object>> mutation(long userId,String key) {
@@ -178,13 +243,14 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
             Supplier<Runnable> prepareAdmission, Supplier<ApiResult<T>> action) {
         requireKey(key);
         String digest=hash(String.valueOf(summary));
+        boolean proofChange="change".equals(kind) && authorization==null;
         independent.executeWithoutResult(tx -> {
             String legacyScope=legacyScope(userId,kind);
             Map<String,Object> legacy=legacyScope==null ? null : repo.legacy(legacyScope,key);
             if ("capacity-replace".equals(kind) && legacy==null && repo.command(userId,kind,key,false)==null) {
                 throw new BizException(409,"CAPACITY_REPLACEMENT_PURCHASE_RETIRED");
             }
-            repo.ensure(userId);
+            if (!proofChange) repo.ensure(userId);
             repo.insertCommand(userId,kind,key,digest,clock.millis());
             if (legacy!=null && "SUCCEEDED".equals(legacy.get("status")) && legacy.get("response_json")!=null) {
                 if (!digest.equals(legacy.get("request_hash"))) throw new BizException(409,"PAYMENT_COMMAND_INPUT_CHANGED");
@@ -202,7 +268,7 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                 return existing;
             }
             if (prepareAdmission == null) requireAvailable();
-            boolean needsVerification = !"setup".equals(kind) && !"reset".equals(kind);
+            boolean needsVerification = !"setup".equals(kind) && !"reset".equals(kind) && !proofChange;
             if (needsVerification) {
                 ApiResult<State> verification;
                 try {
@@ -262,9 +328,15 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
     private ApiResult<State> verify(long userId,String kind,String key,Authorization authorization) {
         if (authorization==null || authorization.paymentPassword()==null || authorization.credentialVersion()==null
                 || authorization.attemptNo()==null) return ApiResult.fail(422,"PAYMENT_PASSWORD_REQUIRED",state(userId));
-        if (!authorization.paymentPassword().matches("[0-9]{6}") || !authorization.attemptNo().matches("[A-Za-z0-9:_-]{8,128}"))
+        if (!authorization.paymentPassword().matches("[0-9]{6}") || !authorization.attemptNo().matches(ATTEMPT_NO_FORMAT))
             return ApiResult.fail(422,"PAYMENT_PASSWORD_INVALID",state(userId));
         Map<String,Object> current=repo.credential(userId,true);
+        if (CHANGE_VERIFICATION_KIND.equals(kind)) {
+            if (current==null || current.get("password_hash")==null)
+                return ApiResult.fail(409,"PAYMENT_PASSWORD_NOT_CONFIGURED",stateOf(userId,current));
+            if (PaymentPasswordMapper.number(current,"credential_version")!=authorization.credentialVersion())
+                return ApiResult.fail(409,"PAYMENT_PASSWORD_VERSION_CONFLICT",stateOf(userId,current));
+        }
         String binding=hash(kind+"|"+key+"|"+authorization.credentialVersion());
         Map<String,Object> prior=repo.attempt(userId,authorization.attemptNo());
         if (prior!=null) {
@@ -291,7 +363,8 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
             repo.clearFailures(userId,now.toEpochMilli());
             repo.clearAttemptFailures(userId);
         }
-        repo.insertAttempt(userId,authorization.attemptNo(),binding,code,message,now.toEpochMilli(),"change".equals(kind) ? "CHANGE" : "PAYMENT");
+        String purpose="change".equals(kind) || CHANGE_VERIFICATION_KIND.equals(kind) ? "CHANGE" : "PAYMENT";
+        repo.insertAttempt(userId,authorization.attemptNo(),binding,code,message,now.toEpochMilli(),purpose);
         State after=stateOf(userId,repo.credential(userId,false));
         if (!correct && after.remainingAttempts()==0) {
             long until=now.plusSeconds(policy.lockSeconds()).toEpochMilli();
