@@ -471,7 +471,8 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
     }
 
     @Select("""
-            SELECT COUNT(*)
+            SELECT COUNT(*) AS unread,
+                   COUNT(*) - COUNT(CASE WHEN CAST(LOWER(n.type) AS BINARY) = 'earning_credited' THEN 1 END) AS actionableUnread
               FROM nx_notification n
               LEFT JOIN nx_user_preference pref
                 ON pref.user_id = n.user_id AND pref.is_deleted = 0
@@ -490,7 +491,10 @@ public interface NotificationCampaignMapper extends BaseMapper<NotificationCampa
                        ELSE pref.notify_system END, 1) = 1
                )
             """)
-    long countUnreadForUser(@Param("userId") Long userId);
+    NotificationUnreadCounts countUnreadForUser(@Param("userId") Long userId);
+
+    record NotificationUnreadCounts(long unread, long actionableUnread) {
+    }
 
     @Update("""
             UPDATE nx_notification

@@ -254,7 +254,8 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
         String nextCursor = hasMore && !items.isEmpty()
                 ? String.valueOf(items.get(items.size() - 1).id())
                 : null;
-        return new AppNotificationPage(List.copyOf(items), nextCursor, campaignMapper.countUnreadForUser(userId));
+        var counts = campaignMapper.countUnreadForUser(userId);
+        return new AppNotificationPage(List.copyOf(items), nextCursor, counts.unread(), counts.actionableUnread());
     }
 
     @Override

@@ -28,7 +28,7 @@ class AppNotificationServiceTest {
     @Test
     void pageIsServerCanonicalAndAppliesRetentionBeforeReading() {
         when(repository.pageUserNotifications(7L, null, "high", 20, null))
-                .thenReturn(new AppNotificationPage(List.of(), null, 0));
+                .thenReturn(new AppNotificationPage(List.of(), null, 0, 0));
 
         var result = service.page(7L, null, "high", 20);
 

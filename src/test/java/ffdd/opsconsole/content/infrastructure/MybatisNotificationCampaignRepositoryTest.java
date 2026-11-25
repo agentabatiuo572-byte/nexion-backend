@@ -129,7 +129,8 @@ class MybatisNotificationCampaignRepositoryTest {
 
     @Test
     void categoryPageUsesOneExtraMatchingRowAndKeepsUnreadAccountWide() {
-        when(campaignMapper.countUnreadForUser(7L)).thenReturn(35L);
+        when(campaignMapper.countUnreadForUser(7L))
+                .thenReturn(new NotificationCampaignMapper.NotificationUnreadCounts(35L, 30L));
         when(campaignMapper.selectUserNotifications(7L, 10L, "high", 3, "finance"))
                 .thenReturn(List.of(notification(8L), notification(6L), notification(4L)));
 
@@ -138,6 +139,7 @@ class MybatisNotificationCampaignRepositoryTest {
         assertThat(page.items()).extracting(AppNotificationView::id).containsExactly(8L, 6L);
         assertThat(page.nextCursor()).isEqualTo("6");
         assertThat(page.unread()).isEqualTo(35L);
+        assertThat(page.actionableUnread()).isEqualTo(30L);
         verify(campaignMapper).selectUserNotifications(7L, 10L, "high", 3, "finance");
         verify(campaignMapper).countUnreadForUser(7L);
 

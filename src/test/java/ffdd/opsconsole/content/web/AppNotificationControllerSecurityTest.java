@@ -25,7 +25,7 @@ class AppNotificationControllerSecurityTest {
         when(authentication.getPrincipal()).thenReturn("7");
         when(authentication.getDetails()).thenReturn(Map.of("subjectType", "USER"));
         when(service.page(7L, "42", "high", 20, "finance"))
-                .thenReturn(ApiResult.ok(new AppNotificationPage(java.util.List.of(), null, 35L)));
+                .thenReturn(ApiResult.ok(new AppNotificationPage(java.util.List.of(), null, 35L, 30L)));
 
         var page = controller.page("42", 20, "high", "finance", authentication);
 
