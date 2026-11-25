@@ -38,7 +38,8 @@ class OpsRepurchaseAdminServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final OpsNexMarketService marketOverview = mock(OpsNexMarketService.class);
     private final OpsRepurchaseAdminService service = new OpsRepurchaseAdminService(
-            mapper, coverage, idempotency, outbox, audit, marketOverview);
+            mapper, coverage, idempotency, outbox, audit, marketOverview,
+            mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class));
 
     @AfterEach
     void clearSecurityContext() {

@@ -316,7 +316,7 @@ class PhoneActivationCapacityMySqlTest {
         assertThat(tradeinMapper.lockActiveDeviceCount(user)).isEqualTo(6);
         assertThat(opsMapper.countActiveDevicesByUser(user)).isEqualTo(6);
         assertThat(promotionMapper.occupiedDeviceSlots(user)).isEqualTo(6);
-        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(6);
         assertThat(homeMapper.activeSlotCount(user)).isEqualTo(6);
         transaction.executeWithoutResult(status -> assertFull(user));
         jdbc.update("UPDATE nx_user_device SET status='DEACTIVATED',deactivated_at=NOW() WHERE id=?", cloud);
@@ -344,7 +344,7 @@ class PhoneActivationCapacityMySqlTest {
             assertThat(opsMapper.countActiveDevicesByUser(user)).isEqualTo(6);
             assertThat(promotionMapper.occupiedDeviceSlots(user)).isEqualTo(6);
             assertThat(deviceRepository.countOccupiedSlotsForE5Activation(user)).isEqualTo(6);
-            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(6);
             assertThat(homeMapper.activeSlotCount(user)).isEqualTo(6);
             assertThat(homeMapper.activeDevices(user, false)).isEqualTo(6);
             assertFull(user);
@@ -399,7 +399,7 @@ class PhoneActivationCapacityMySqlTest {
             jdbc.update("INSERT INTO nx_promotion_device_receipt VALUES(?,?)", "REWARD-" + user, gift);
             transaction.executeWithoutResult(status -> {
                 assertCapacityKeepReservations(user, 0);
-                assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+                assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(6);
                 assertFull(user);
             });
         }
@@ -414,14 +414,14 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.update("UPDATE nx_trial_claim SET expires_at=DATE_SUB(NOW(),INTERVAL 30 DAY) WHERE user_id=?", user);
         transaction.executeWithoutResult(status -> {
             assertThat(mapper.lockReservedTrialSlotCount(user)).isEqualTo(1);
-            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(6);
             assertThat(homeMapper.reservedTrialSlotCount(user)).isEqualTo(1);
             assertFull(user);
         });
         jdbc.update("UPDATE nx_trial_claim SET status='CANCELLED',closed_at=NOW() WHERE user_id=?", user);
         transaction.executeWithoutResult(status -> {
             assertThat(mapper.lockReservedTrialSlotCount(user)).isZero();
-            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(5);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(5);
             service.requireCapacity(user, null);
         });
     }
@@ -440,7 +440,7 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.update("UPDATE nx_order SET order_status=? WHERE order_no=?", terminal, "ORDER-" + user);
         transaction.executeWithoutResult(status -> {
             assertCapacityKeepReservations(user, 0);
-            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(4);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(4);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE user_id=?", Integer.class, user)).isEqualTo(4);
             service.requireCapacity(user, null);
         });
@@ -456,7 +456,7 @@ class PhoneActivationCapacityMySqlTest {
         jdbc.update("INSERT INTO nx_promotion_reservation VALUES(?,?,'DEVICE','RESERVED',1,?)","PROMO-"+user,user,"ORDER-"+user);
         transaction.executeWithoutResult(status->{
             assertCapacityKeepReservations(user,paid?2:0);
-            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(paid?6:4);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(paid?6:4);
         });
     }
 
@@ -521,7 +521,7 @@ class PhoneActivationCapacityMySqlTest {
         assertThat(bundle.insertBundleOrder(user,"NEW-BUNDLE-"+user,2L,2,2,new BigDecimal("2"),BigDecimal.ZERO,new BigDecimal("2"))).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT SUM(inventory_reserved) FROM nx_order WHERE user_id=?",Integer.class,user)).isZero();
         assertThat(mapper.reservedDeviceOrderCount(user)).isZero();
-        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isZero();
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isZero();
         assertThat(jdbc.queryForMap("SELECT stock,sold_count FROM nx_product WHERE id=2")).isEqualTo(stock);
     }
 
@@ -544,8 +544,8 @@ class PhoneActivationCapacityMySqlTest {
                 var now=jdbc.queryForObject("SELECT NOW(6)",java.time.LocalDateTime.class);
                 assertThat(now.getNano()).isGreaterThan(0);
                 String instance="PAID-SHARE-"+user;
-                int inserted=bundled?paymentMapper.insertWalletDevice("ORDER-"+user,user,2L,instance,0)
-                        :paymentMapper.insertDevelopmentDevice("ORDER-"+user,user,instance,0);
+                int inserted=bundled?paymentMapper.insertWalletDevice("ORDER-"+user,user,2L,instance,0, "DC-TEST", true)
+                        :paymentMapper.insertDevelopmentDevice("ORDER-"+user,user,instance,0, "DC-TEST", true);
                 assertThat(inserted).isEqualTo(1);
                 var purchased=jdbc.queryForObject("SELECT purchased_at FROM nx_user_device WHERE instance_no=?",
                         java.time.LocalDateTime.class,instance);
@@ -565,15 +565,15 @@ class PhoneActivationCapacityMySqlTest {
         long user=user(false);
         for(int i=0;i<5;i++)device(user);
         order(user,2,"SINGLE",orderState,activationState);
-        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(6);
         assertThat(homeMapper.reservedDeviceOrderCount(user)).isEqualTo(1);
         trial(user,"ACTIVE");
-        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(7);
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(7);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device WHERE user_id=?",Integer.class,user)).isEqualTo(5);
         jdbc.update("UPDATE nx_order SET order_status='CANCELLED',activation_status='CANCELLED' WHERE order_no=?","ORDER-"+user);
-        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(6);
         jdbc.update("UPDATE nx_trial_claim SET status='CANCELLED' WHERE user_id=?",user);
-        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(5);
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(5);
     }
 
     @Test void committedCapacityChangesRefreshPaymentSqlEvenAfterItsOldSnapshot() {
@@ -583,7 +583,7 @@ class PhoneActivationCapacityMySqlTest {
             order(user,2,"SINGLE","PENDING_PAYMENT","WAITING_PAYMENT");
             orderItem(user,2);
             trial(user,"ACTIVE");
-        }, ignored -> assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(8));
+        }, ignored -> assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(8));
     }
 
     @Test void legacyReservedShareAndTrialCannotBothOwnTheLastSlot() throws Exception {
@@ -613,7 +613,7 @@ class PhoneActivationCapacityMySqlTest {
             int successful=(trialCommand.get(20,java.util.concurrent.TimeUnit.SECONDS)?1:0)
                     +(shareCommand.get(20,java.util.concurrent.TimeUnit.SECONDS)?1:0);
             assertThat(successful).isEqualTo(1);
-            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user)).isEqualTo(6);
+            assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null)).isEqualTo(6);
         } finally { pool.shutdownNow(); }
     }
 
@@ -750,7 +750,7 @@ class PhoneActivationCapacityMySqlTest {
         assertThat(tradeinMapper.lockReservedDeviceOrderCount(user)).isEqualTo(expected);
         assertThat(promotionMapper.occupiedDeviceSlots(user))
                 .isEqualTo((long) mapper.activeDeviceCount(user) + expected + mapper.lockReservedTrialSlotCount(user));
-        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user))
+        assertThat(paymentMapper.lockOccupiedDeviceSlotCount(user, null))
                 .isEqualTo((long) mapper.activeDeviceCount(user) + expected + mapper.lockReservedTrialSlotCount(user));
         assertThat(homeMapper.reservedDeviceOrderCount(user)).isEqualTo(expected);
     }
@@ -769,7 +769,7 @@ class PhoneActivationCapacityMySqlTest {
         var row = new AppTradeinMapper.DeliveredDeviceWrite(user, "ORDER-" + user, 1L, "capacity-box", "S1",
                 instance, "Synthetic box", "BOX", 1, "fixture GPU", 8,
                 BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE);
-        assertThat(tradeinMapper.insertCapacityKeepTargetDevice(row)).isEqualTo(1);
+        assertThat(tradeinMapper.insertCapacityKeepTargetDevice(row, "DC-TEST")).isEqualTo(1);
         jdbc.update("UPDATE nx_user_device SET status='INACTIVE',activated_at=NULL,last_seen_at=NULL WHERE instance_no=?", instance);
         return tradeinMapper.findDeviceIdByInstanceNo(instance);
     }

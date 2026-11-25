@@ -280,7 +280,7 @@ class AppUserAuthServiceTest {
         var result = service.login(new UserLoginRequest("+84", "901234567", "wrong"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         assertThat(result.getCode()).isEqualTo(401);
-        verify(loginGuards).recordFailure(any(), eq(5), eq(guard.getWindowStartedAt()), any(LocalDateTime.class));
+        verify(loginGuards).recordFailure(any(), eq(5), eq(guard.getWindowStartedAt()), any(LocalDateTime.class), org.mockito.ArgumentMatchers.nullable(String.class));
     }
 
     @Test
@@ -296,7 +296,7 @@ class AppUserAuthServiceTest {
         service.login(new UserLoginRequest("+84", "901234567", "wrong"), "local", context(AppSessionSurface.APP,"PASSWORD"));
 
         ArgumentCaptor<LocalDateTime> lockedUntil = ArgumentCaptor.forClass(LocalDateTime.class);
-        verify(loginGuards).recordFailure(any(), eq(5), eq(guard.getWindowStartedAt()), lockedUntil.capture());
+        verify(loginGuards).recordFailure(any(), eq(5), eq(guard.getWindowStartedAt()), lockedUntil.capture(), org.mockito.ArgumentMatchers.nullable(String.class));
         assertThat(lockedUntil.getValue()).isBetween(before.plusMinutes(14), before.plusMinutes(16));
     }
 
@@ -726,7 +726,7 @@ class AppUserAuthServiceTest {
 
         assertThat(fifth.getCode()).isEqualTo(422);
         ArgumentCaptor<LocalDateTime> lockUntil = ArgumentCaptor.forClass(LocalDateTime.class);
-        verify(loginGuards, times(2)).recordFailure(any(), any(Integer.class), any(), lockUntil.capture());
+        verify(loginGuards, times(2)).recordFailure(any(), any(Integer.class), any(), lockUntil.capture(), org.mockito.ArgumentMatchers.nullable(String.class));
         assertThat(lockUntil.getAllValues().get(1)).isAfter(LocalDateTime.now());
 
         UserLoginGuardRecord locked = new UserLoginGuardRecord();

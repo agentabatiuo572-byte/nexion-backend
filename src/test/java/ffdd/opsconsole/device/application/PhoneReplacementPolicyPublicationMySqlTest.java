@@ -101,7 +101,7 @@ class PhoneReplacementPolicyPublicationMySqlTest {
         var a2=mock(A2RuntimePolicy.class);when(a2.retentionMonths()).thenReturn(13);when(a2.schemaVersion()).thenReturn("v3");
         var json=new ObjectMapper().findAndRegisterModules();
         var audit=spy(new AuditLogService(sql.getMapper(AuditLogMapper.class),new AuditLogSanitizer(json),
-                new ApplicationNameProperties(),new AuditProperties(),admins,a2));
+                new ApplicationNameProperties(),new AuditProperties(),admins,a2, new com.fasterxml.jackson.databind.ObjectMapper()));
         doAnswer(call->{Object result=call.callRealMethod();if("AUDIT".equals(failAfterWrite.get()))throw new IllegalStateException("injected-after-audit");return result;})
                 .when(audit).recordRequired(any());
         var outbox=spy(new EventOutboxService(sql.getMapper(EventOutboxMapper.class),json,new OutboxProperties(),mock(A4RuntimePolicyService.class)));

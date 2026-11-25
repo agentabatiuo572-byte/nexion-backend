@@ -95,7 +95,7 @@ class OpsRiskServiceTest {
             idempotencyService,
             superAdminAuthorization,
             userAccountControlFacade,
-            eventOutboxService,
+            eventOutboxService, mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class),
             chainAddressReputationGateway,
             mock(RiskReleaseParamsService.class));
 
@@ -1336,7 +1336,7 @@ class OpsRiskServiceTest {
                 });
         OpsRiskService publishService = new OpsRiskService(repository, mock(ffdd.opsconsole.risk.mapper.RiskOpsMapper.class), configFacade, auditLogService, lockMapper,
                 idempotencyService, superAdminAuthorization, userAccountControlFacade,
-                eventOutboxService,
+                eventOutboxService, mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class),
             chainAddressReputationGateway,
             mock(RiskReleaseParamsService.class));
         var method = OpsRiskService.class.getDeclaredMethod(
@@ -1862,9 +1862,9 @@ class OpsRiskServiceTest {
                         LocalDateTime.now().minusDays(2), LocalDateTime.now().minusDays(1)),
                 new RiskRuleView("WR-06", "金额", "单笔 >= $500(P1 期旧线)", "manual", "archived", true, LocalDateTime.now().minusDays(30), LocalDateTime.now().minusDays(20))));
         private final List<RiskRuleHitView> withdrawHits = new ArrayList<>(List.of(
-                new RiskRuleHitView("WD-1", "usr_1", "$1,200", "WR-01", "金额", "manual", "单笔大额提现转人工", "今天 10:00"),
-                new RiskRuleHitView("WD-2", "usr_2", "$400", "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:05"),
-                new RiskRuleHitView("WD-3", "usr_3", "$500", "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:10")));
+                new RiskRuleHitView("WD-1", "usr_1", "$1,200", null, null, null, "WR-01", "金额", "manual", "单笔大额提现转人工", "今天 10:00", null),
+                new RiskRuleHitView("WD-2", "usr_2", "$400", null, null, null, "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:05", null),
+                new RiskRuleHitView("WD-3", "usr_3", "$500", null, null, null, "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:10", null)));
         private final List<RiskWithdrawCandidateView> withdrawCandidates = new ArrayList<>(List.of(
                 new RiskWithdrawCandidateView("WD-K3-1", "U00000001", BigDecimal.valueOf(1_500), 1,
                         BigDecimal.valueOf(1_500), 100, "normal", "", "USDT-TRC20", "TR-DRY-ONE"),
@@ -2062,12 +2062,12 @@ class OpsRiskServiceTest {
             withdrawHits.add(new RiskRuleHitView(
                     withdrawalNo,
                     userNo,
-                    "$" + amount,
+                    "$" + amount, null, null, null,
                     rule.ruleId(),
                     rule.dimension(),
                     rule.action(),
                     rule.conditionText(),
-                    "now"));
+                    "now", null));
         }
 
         @Override

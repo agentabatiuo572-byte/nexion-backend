@@ -41,7 +41,8 @@ class H3MissionDurableIdempotencyTest {
     private final AdminIdempotencyService idempotency = new AdminIdempotencyService(
             transactionExecutor,
             Clock.fixed(Instant.parse("2026-08-10T00:00:00Z"), ZoneOffset.UTC));
-    private final OpsGrowthCommandBoundary boundary = new OpsGrowthCommandBoundary(idempotency, outbox, java.util.Optional.empty());
+    private final OpsGrowthCommandBoundary boundary = new OpsGrowthCommandBoundary(idempotency, outbox, java.util.Optional.empty(),
+                org.mockito.Mockito.mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class));
 
     @BeforeEach
     void persistIdempotencyRecordsInMemory() {

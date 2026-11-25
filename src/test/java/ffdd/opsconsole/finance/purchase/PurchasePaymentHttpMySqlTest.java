@@ -275,7 +275,7 @@ class PurchasePaymentHttpMySqlTest {
             var sessionProxy=new ProxyFactory(session.getMapper(AuthSessionMapper.class));sessionProxy.setInterfaces(AuthSessionMapper.class);
             sessionProxy.addAdvice(new TransactionInterceptor(tx,new AnnotationTransactionAttributeSource()));authSessions=(AuthSessionMapper)sessionProxy.getProxy();
             var repository=new MybatisPlatformConfigRepository(mapper(PlatformConfigItemMapper.class));configs=new PlatformConfigFacadeAdapter(repository);
-            audit=new AuditLogService(mapper(AuditLogMapper.class),new AuditLogSanitizer(json),new ApplicationNameProperties(),new AuditProperties(),mapper(AdminMapper.class),new A2RuntimePolicy(repository));
+            audit=new AuditLogService(mapper(AuditLogMapper.class),new AuditLogSanitizer(json),new ApplicationNameProperties(),new AuditProperties(),mapper(AdminMapper.class),new A2RuntimePolicy(repository),json);
             var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(mapper(AdminIdempotencyRecordMapper.class)));
             commands=new AdminIdempotencyService(proxy(new AdminIdempotencyTransactionExecutor(mapper(AdminIdempotencyRecordMapper.class),json,expiry,new AdminIdempotencyRollbackEvidence(mapper(AdminIdempotencyRecordMapper.class)))),Clock.systemUTC());
             pin=spy(new AppPaymentPasswordService(mapper(PaymentPasswordMapper.class),json,Clock.systemUTC(),mock(UserOtpDeliveryService.class),configs,audit,tx,"synthetic-http-pepper-material-32-bytes","v1",5,900,900));
@@ -283,6 +283,8 @@ class PurchasePaymentHttpMySqlTest {
             var attribution=mock(ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.class,invocation->{throw new AssertionError("External principal reached wallet attribution");});
             var outbox=new EventOutboxService(mapper(EventOutboxMapper.class),json,new OutboxProperties(),new A4RuntimePolicyService(repository));
             orders=proxy(new AppOrderCommandService(mapper(AppOrderCommandMapper.class),commands,audit,new FundsSandboxProfileGuard(new FundsSandboxProperties(),env),null,null,null,outbox,30,null,attribution,pin, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
+            var hostingCenters = new ffdd.opsconsole.device.application.HostingCenterService(configs,audit);
+            org.springframework.test.util.ReflectionTestUtils.setField(orders,"hostingCenters",hostingCenters);
             hd.setMode(HdPayProperties.Mode.PROVIDER);hd.setBaseUrl("http://127.0.0.1:18999/api/order");hd.setAllowInsecureBaseUrlForTests(true);hd.setMerchantId("123456");hd.setMd5Key("synthetic-hdpay-key-32-characters");hd.setServerIp("8.8.8.8");hd.setCallbackBaseUrl("https://callback.synthetic.invalid");hd.setCallbackHosts(List.of("callback.synthetic.invalid"));hd.setPaymentPageHosts(List.of("pay.synthetic.invalid"));
             var cr=new CregisProperties();cr.setMode(CregisProperties.Mode.PROVIDER);cr.setDepositEnabled(true);cr.setDepositCreditEnabled(true);cr.setProjectId(99);cr.setDepositConfirmations(15);cr.setBscRpcUrl("https://bsc.synthetic.invalid");
             var router=mock(CregisGatewayRouter.class);when(router.provider()).thenReturn(bscProvider);
@@ -290,7 +292,10 @@ class PurchasePaymentHttpMySqlTest {
             when(bscProvider.addressBelongs("2510",bscAddress)).thenReturn(true);when(bscProvider.zeroAddressBalance(CregisConstants.USDT_BEP20_CURRENCY,bscAddress)).thenReturn(true);
             when(bscChain.zeroUsdtBalance(CregisNetwork.BEP20,bscAddress)).thenReturn(true);when(bscChain.head(CregisNetwork.BEP20)).thenReturn(new BscDepositProof.Head(100,allocationHash));when(bscChain.blockHash(CregisNetwork.BEP20,100)).thenReturn(allocationHash);
             policy=new PurchasePaymentPolicyService(mapper(PurchasePaymentMapper.class),new CregisDepositPolicyService(mapper(CregisDepositPolicyMapper.class),audit,cr),commands,audit,json);
-            payments=new PurchasePaymentService(mapper(PurchasePaymentMapper.class),policy,orders,mock(AppTradeinService.class),mock(AppTrialLifecycleService.class),hd,provider,cr,router,bscChain,mapper(VietnamPaymentMapper.class),tx,json,audit,commands, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class),clock);
+            var paymentMapper = mapper(PurchasePaymentMapper.class);
+            var quotaHolds = new PurchaseQuotaHolds(paymentMapper,json,new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy());
+            payments=new PurchasePaymentService(paymentMapper,quotaHolds,policy,orders,mock(AppTradeinService.class),mock(AppTrialLifecycleService.class),hd,provider,cr,router,bscChain,mapper(VietnamPaymentMapper.class),tx,json,audit,commands, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class),clock);
+            org.springframework.test.util.ReflectionTestUtils.setField(payments,"hostingCenters",hostingCenters);
             var properties=new JwtProperties();properties.setSecret("synthetic-http-jwt-signing-material-only-32-bytes");jwt=new JwtTokenProvider(properties);
         }
         void seed(){

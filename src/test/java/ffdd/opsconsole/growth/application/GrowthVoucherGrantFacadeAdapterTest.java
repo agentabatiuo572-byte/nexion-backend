@@ -43,7 +43,7 @@ class GrowthVoucherGrantFacadeAdapterTest {
     @Test
     void grantsActiveVoucherOnceWithRequiredAuditAndOutbox() {
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
-        when(mapper.lockGrantableVoucher(eq("VC-100"), anyLong()))
+        when(mapper.lockGrantableVoucher(eq("VC-100"), eq("VRANK_REWARD"), anyLong()))
                 .thenReturn(Map.of("voucherId", "VC-100", "status", "active"));
         when(mapper.insertGrant(any(), eq("vrank:42:v5:VC-100"), eq("VC-100"), eq(42L),
                 eq("VRANK_REWARD"), eq("42:V5:voucher"), eq("ENGINE"), eq("F1 V-Rank voucher reward")))
@@ -77,7 +77,7 @@ class GrowthVoucherGrantFacadeAdapterTest {
     @Test
     void duplicateInsertRaceReturnsTheAlreadyUsedGrantState() {
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
-        when(mapper.lockGrantableVoucher(eq("VC-100"), anyLong()))
+        when(mapper.lockGrantableVoucher(eq("VC-100"), eq("VRANK_REWARD"), anyLong()))
                 .thenReturn(Map.of("voucherId", "VC-100", "status", "active"));
         when(mapper.findByGrantKey("vrank:42:v5:VC-100")).thenReturn(null, null, Map.of(
                 "grantId", "VGR-existing", "grantKey", "vrank:42:v5:VC-100", "voucherId", "VC-100",
@@ -96,7 +96,7 @@ class GrowthVoucherGrantFacadeAdapterTest {
     @Test
     void rejectsUnknownInactiveOrExpiredVoucherBeforeWritingGrant() {
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
-        when(mapper.lockGrantableVoucher(eq("VC-100"), anyLong())).thenReturn(null);
+        when(mapper.lockGrantableVoucher(eq("VC-100"), eq("VRANK_REWARD"), anyLong())).thenReturn(null);
 
         assertThatThrownBy(() -> service.grant(command()))
                 .isInstanceOf(BizException.class)
@@ -108,7 +108,7 @@ class GrowthVoucherGrantFacadeAdapterTest {
     @Test
     void inventoryLimitIsSerializedByVoucherLockAndFailsClosedBeforeInsert() {
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
-        when(mapper.lockGrantableVoucher(eq("VC-100"), anyLong()))
+        when(mapper.lockGrantableVoucher(eq("VC-100"), eq("VRANK_REWARD"), anyLong()))
                 .thenReturn(Map.of("voucherId", "VC-100", "status", "active"));
         when(mapper.issuanceLimit("VC-100")).thenReturn(100L);
         when(mapper.issuedCount("VC-100")).thenReturn(100L);
@@ -123,7 +123,7 @@ class GrowthVoucherGrantFacadeAdapterTest {
     @Test
     void requiredAuditFailurePropagatesAndPreventsOutboxPublication() {
         when(mapper.lockActiveUser(42L)).thenReturn(42L);
-        when(mapper.lockGrantableVoucher(eq("VC-100"), anyLong()))
+        when(mapper.lockGrantableVoucher(eq("VC-100"), eq("VRANK_REWARD"), anyLong()))
                 .thenReturn(Map.of("voucherId", "VC-100", "status", "active"));
         when(mapper.insertGrant(any(), any(), any(), anyLong(), any(), any(), any(), any())).thenReturn(1);
         doThrow(new IllegalStateException("audit unavailable")).when(audit).recordRequired(any());

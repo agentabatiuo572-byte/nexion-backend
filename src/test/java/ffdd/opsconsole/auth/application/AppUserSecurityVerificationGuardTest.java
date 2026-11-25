@@ -57,7 +57,7 @@ class AppUserSecurityVerificationGuardTest {
         assertThat(result.failedCount()).isEqualTo(5);
         assertThat(result.rateLimited()).isTrue();
         verify(mapper).bindUser(anyString(), eq(42L));
-        verify(mapper).recordFailure(anyString(), eq(5), any(), any());
+        verify(mapper).recordFailure(anyString(), eq(5), any(), any(), org.mockito.ArgumentMatchers.nullable(String.class));
         ArgumentCaptor<AuditLogWriteRequest> auditRequest = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
         verify(audit).recordRequired(auditRequest.capture());
         assertThat(auditRequest.getValue().getAction()).isEqualTo("USER_SECURITY_PASSWORD_VERIFICATION_REJECTED");
@@ -76,7 +76,7 @@ class AppUserSecurityVerificationGuardTest {
 
         assertThat(result.failedCount()).isEqualTo(1);
         assertThat(result.rateLimited()).isFalse();
-        verify(mapper).recordFailure(anyString(), eq(1), any(), eq(null));
+        verify(mapper).recordFailure(anyString(), eq(1), any(), eq(null), org.mockito.ArgumentMatchers.nullable(String.class));
         verify(mapper).clear(anyString());
     }
 

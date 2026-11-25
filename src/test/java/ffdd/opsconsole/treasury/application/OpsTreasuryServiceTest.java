@@ -75,7 +75,7 @@ class OpsTreasuryServiceTest {
     private OpsTreasuryService service(OpsReadTimeSeedPolicy seedPolicy) {
         OpsTreasuryService service = new OpsTreasuryService(
                 ledgerRepository,
-                configFacade,
+                configFacade, mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
                 emergencyRepository,
                 riskTamperSignalFacade,
                 auditLogService,
@@ -1823,6 +1823,13 @@ class OpsTreasuryServiceTest {
         public Optional<BigDecimal> actualUserBalance(Long userId, String asset) {
             return Optional.ofNullable(actualBalances.get(userId + ":" + asset))
                     .or(() -> currentUserBalance(userId, asset));
+        }
+
+        @Override
+        public void postLedgerEntryWithBalanceAfter(String bizNo, Long userId, String bizType, String asset,
+                                                    String direction, BigDecimal amount, BigDecimal balanceAfter,
+                                                    String status, String remark) {
+            postLedgerEntry(bizNo, userId, bizType, asset, direction, amount, status, remark);
         }
 
         @Override

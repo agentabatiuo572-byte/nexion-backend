@@ -56,7 +56,7 @@ class AuditProposalRecoveryMySqlTest {
         mapper=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(configuration)).getMapper(AuditLogMapper.class);
         audit=new AuditLogService(mapper,new AuditLogSanitizer(new com.fasterxml.jackson.databind.ObjectMapper()),
                 new ApplicationNameProperties(),new AuditProperties(),mock(ffdd.opsconsole.auth.mapper.AdminMapper.class),
-                mock(ffdd.opsconsole.platform.application.A2RuntimePolicy.class));
+                mock(ffdd.opsconsole.platform.application.A2RuntimePolicy.class), new com.fasterxml.jackson.databind.ObjectMapper());
     }
 
     @AfterAll void dropOwnedSchema() throws Exception {

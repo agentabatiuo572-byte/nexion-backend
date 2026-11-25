@@ -24,7 +24,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 class OpsBiExportQueryServiceTest {
     private final BiReportRepository reports = mock(BiReportRepository.class);
     private final AuditLogService audits = mock(AuditLogService.class);
-    private final OpsBiExportQueryService service = new OpsBiExportQueryService(reports, audits);
+    private final OpsBiExportQueryService service = new OpsBiExportQueryService(reports, audits, mock(ffdd.opsconsole.shared.security.AdminPermissionCache.class));
 
     @Test void existingL5AuthorityStillGuardsAuditEndpoint() {
         try (var context = new AnnotationConfigApplicationContext(SecurityFixture.class)) {

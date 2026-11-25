@@ -20,7 +20,7 @@ class StorefrontPurchaseGatePolicyTest {
                 "\"quotaCap\":null", "\"quotaPeriod\":null");
         var qualified = new StorefrontPurchaseGatePolicy.Facts(5, 0, BigDecimal.ZERO);
         assertThat(policy.evaluate(gate, qualified)).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
-        assertThat(policy.project(gate, qualified).conditions()).singleElement()
+        assertThat(policy.project(gate, qualified, 0L).conditions()).singleElement()
                 .satisfies(condition -> {
                     assertThat(condition.kind()).isEqualTo("rank");
                     assertThat(condition.required()).isEqualByComparingTo("2");
@@ -43,11 +43,11 @@ class StorefrontPurchaseGatePolicyTest {
         assertThat(policy.evaluate(gate, below).code()).isEqualTo("PURCHASE_GATE_NOT_MET");
         assertThat(policy.evaluate(gate, qualified)).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
         assertThat(policy.evaluate(gate, null).code()).isEqualTo("PURCHASE_GATE_FACTS_UNAVAILABLE");
-        assertThat(policy.project(gate, below).conditions()).singleElement().satisfies(condition -> {
+        assertThat(policy.project(gate, below, 0L).conditions()).singleElement().satisfies(condition -> {
             assertThat(condition.kind()).isEqualTo("rank");
             assertThat(condition.met()).isFalse();
         });
-        assertThat(policy.project(gate, null).decision().code()).isEqualTo("PURCHASE_GATE_FACTS_UNAVAILABLE");
+        assertThat(policy.project(gate, null, 0L).decision().code()).isEqualTo("PURCHASE_GATE_FACTS_UNAVAILABLE");
     }
 
     @ParameterizedTest
@@ -58,15 +58,15 @@ class StorefrontPurchaseGatePolicyTest {
                 ",\"rankMin\":null,\"activeDirectMin\":null,\"teamComputePointsMin\":null"}) {
             String gate = controls + fields + "}";
             assertThat(policy.evaluate(gate, null)).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
-            assertThat(policy.project(gate, null).conditions()).isEmpty();
-            assertThat(policy.project(gate, null).decision()).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
+            assertThat(policy.project(gate, null, 0L).conditions()).isEmpty();
+            assertThat(policy.project(gate, null, 0L).decision()).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
             assertThat(policy.hasQuota(gate)).isFalse();
             String available = controls + fields + ",\"quotaCap\":2,\"quotaSold\":0,\"quotaPeriod\":\"lifetime\"}";
             assertThat(policy.evaluate(available, null)).isEqualTo(StorefrontPurchaseGatePolicy.Decision.open());
             String soldOut = controls + fields + ",\"quotaCap\":2,\"quotaSold\":2,\"quotaPeriod\":\"lifetime\"}";
             assertThat(policy.hasQuota(soldOut)).isTrue();
             assertThat(policy.evaluate(soldOut, null).code()).isEqualTo("PURCHASE_GATE_SOLD_OUT");
-            assertThat(policy.project(soldOut, null).conditions()).singleElement()
+            assertThat(policy.project(soldOut, null, 0L).conditions()).singleElement()
                     .satisfies(condition -> assertThat(condition.kind()).isEqualTo("lifetimeQuota"));
         }
     }
@@ -92,7 +92,7 @@ class StorefrontPurchaseGatePolicyTest {
                 + "\"rankMin\":2,\"activeDirectMin\":null,\"teamComputePointsMin\":null}";
         assertThat(policy.evaluate(gate, new StorefrontPurchaseGatePolicy.Facts(1, 0, BigDecimal.ZERO)).code())
                 .isEqualTo("PURCHASE_GATE_NOT_MET");
-        assertThat(policy.project(gate, null).decision().code()).isEqualTo("PURCHASE_GATE_FACTS_UNAVAILABLE");
+        assertThat(policy.project(gate, null, 0L).decision().code()).isEqualTo("PURCHASE_GATE_FACTS_UNAVAILABLE");
     }
 
     @Test
@@ -105,7 +105,7 @@ class StorefrontPurchaseGatePolicyTest {
                 new DevicePurchaseGateView(null, null, new BigDecimal("200"), "either", null, null, null, true));
         for (String gate : new String[]{direct, volume}) {
             assertThat(policy.evaluate(gate, facts).code()).isEqualTo("PURCHASE_GATE_NOT_MET");
-            assertThat(policy.project(gate, facts).conditions()).singleElement()
+            assertThat(policy.project(gate, facts, 0L).conditions()).singleElement()
                     .satisfies(condition -> assertThat(condition.met()).isFalse());
         }
         String available = json.writeValueAsString(
@@ -116,7 +116,7 @@ class StorefrontPurchaseGatePolicyTest {
                 new DevicePurchaseGateView(null, null, null, "all", 2, 2, "lifetime", true));
         assertThat(policy.hasQuota(quota)).isTrue();
         assertThat(policy.evaluate(quota, facts).code()).isEqualTo("PURCHASE_GATE_SOLD_OUT");
-        assertThat(policy.project(quota, facts).conditions()).singleElement()
+        assertThat(policy.project(quota, facts, 0L).conditions()).singleElement()
                 .satisfies(condition -> assertThat(condition.kind()).isEqualTo("lifetimeQuota"));
     }
 
@@ -134,7 +134,7 @@ class StorefrontPurchaseGatePolicyTest {
         String gate = "{\"mode\":\"all\",\"enforce\":true," + fields + "}";
         var facts = new StorefrontPurchaseGatePolicy.Facts(5, 10, new BigDecimal("99999"));
         assertThat(policy.evaluate(gate, facts).code()).isEqualTo("PURCHASE_GATE_INVALID");
-        assertThat(policy.project(gate, facts).decision().code()).isEqualTo("PURCHASE_GATE_INVALID");
+        assertThat(policy.project(gate, facts, 0L).decision().code()).isEqualTo("PURCHASE_GATE_INVALID");
         assertThat(policy.hasQuota(gate)).isFalse();
     }
 

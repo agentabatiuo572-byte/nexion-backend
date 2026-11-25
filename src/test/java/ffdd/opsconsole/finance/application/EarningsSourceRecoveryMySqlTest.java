@@ -326,7 +326,7 @@ class EarningsSourceRecoveryMySqlTest {
         auditProperties=new AuditProperties();var auditPolicy=mock(A2RuntimePolicy.class);
         when(auditPolicy.retentionMonths()).thenReturn(24);when(auditPolicy.schemaVersion()).thenReturn("1");
         var audit=new AuditLogService(session.getMapper(AuditLogMapper.class),new AuditLogSanitizer(json),
-                new ApplicationNameProperties(),auditProperties,mock(AdminMapper.class),auditPolicy);
+                new ApplicationNameProperties(),auditProperties,mock(AdminMapper.class),auditPolicy,json);
         var profile=mock(FundsSandboxProfileGuard.class);when(profile.isStrictProductionRuntime()).thenReturn(true);
         service=proxy(new EarningsReleaseService(mapper,mock(RiskReleaseParamsService.class),idempotency,audit,profile));
         ledger=proxy(new MybatisTreasuryLedgerRepository(session.getMapper(TreasuryLedgerMapper.class),mock(EventOutboxService.class),ffdd.opsconsole.treasury.application.SupportCommissionTestCapture.real(session,dataSource,json)));

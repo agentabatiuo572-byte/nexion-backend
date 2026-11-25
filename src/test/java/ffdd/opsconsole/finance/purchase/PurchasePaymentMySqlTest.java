@@ -79,6 +79,7 @@ class PurchasePaymentMySqlTest {
             ScriptUtils.executeSqlScript(c,deadlines);ScriptUtils.executeSqlScript(c,deadlines);
         }
         jdbc.execute("ALTER TABLE nx_purchase_payment_arrival ADD COLUMN chain_id VARCHAR(32) NOT NULL DEFAULT '2510'");
+        jdbc.execute("ALTER TABLE nx_purchase_payment_intent ADD COLUMN quota_reservation_json JSON NULL");
         Configuration config=new Configuration();config.setEnvironment(new Environment("direct-pay-isolated",new SpringManagedTransactionFactory(),source));
         config.setLocalCacheScope(LocalCacheScope.STATEMENT);config.addMapper(PurchasePaymentMapper.class);
         db=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(config)).getMapper(PurchasePaymentMapper.class);
@@ -104,9 +105,12 @@ class PurchasePaymentMySqlTest {
         when(provider.projectCoins()).thenReturn(List.of(new CregisGateway.Coin(CregisNetwork.BEP20.currency(),"USDT-BEP20","2510",CregisNetwork.BEP20.tokenId(),true,true),
                 new CregisGateway.Coin(CregisNetwork.ERC20.currency(),"USDT-ERC20","60",CregisNetwork.ERC20.tokenId(),true,true)));
         var fx=mock(VietnamPaymentMapper.class);when(fx.findFxQuoteConfig()).thenReturn(Map.of("baseRateVndPerUsdt","25000","buySpreadPct","0","version",1));
-        service=new PurchasePaymentService(db,policy,orders,tradeins,mock(AppTrialLifecycleService.class),hd,gateway,cr,router,chain,fx,new DataSourceTransactionManager(source),new ObjectMapper(),audit,commands, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class),clock);
+        service=new PurchasePaymentService(db,new PurchaseQuotaHolds(db,new ObjectMapper(),new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy()),policy,orders,tradeins,mock(AppTrialLifecycleService.class),hd,gateway,cr,router,chain,fx,new DataSourceTransactionManager(source),new ObjectMapper(),audit,commands, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class),clock);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"hostingCenters",
+                new ffdd.opsconsole.device.application.HostingCenterService(
+                        mock(ffdd.opsconsole.platform.facade.PlatformConfigFacade.class),audit));
         when(gateway.createPayOrder(any())).thenReturn(new HdPayGateway.PayPage("https://pay.example/hosted"));
-        when(orders.settleVerifiedExternal(eq(7L),eq("ORDER-1"))).thenAnswer(i->{
+        when(orders.settleVerifiedExternal(eq(7L),eq("ORDER-1"),isNull())).thenAnswer(i->{
             VerifiedPurchasePayment.require(7, new BigDecimal("19.995"));
             jdbc.update("INSERT INTO purchase_test_effect VALUES('ORDER-1',1)");
             jdbc.update("INSERT INTO nx_user_device VALUES('DIRECT-ORDER-1',7,'ORDER-1')");
@@ -167,7 +171,7 @@ class PurchasePaymentMySqlTest {
             jdbc.update("UPDATE nx_order SET payment_status='PAID',order_status='COMPLETED' WHERE order_no='ORDER-2'");
             jdbc.update("INSERT INTO purchase_test_effect VALUES('ORDER-2',1)");jdbc.update("INSERT INTO nx_user_device VALUES('DIRECT-ORDER-2',7,'ORDER-2')");
             return ApiResult.ok(Map.of("orderNo","ORDER-2","paymentStatus","PAID","canonicalStatus","activated"));
-        }).when(orderedCommands).settleVerifiedExternal(7L,"ORDER-2");
+        }).when(orderedCommands).settleVerifiedExternal(7L,"ORDER-2",null);
         org.springframework.test.util.ReflectionTestUtils.setField(service,"orders",orderedCommands);
         var transaction=new org.springframework.transaction.support.TransactionTemplate(new DataSourceTransactionManager(source));
         transaction.setIsolationLevel(Connection.TRANSACTION_READ_COMMITTED);
@@ -195,7 +199,7 @@ class PurchasePaymentMySqlTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device",Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT usdt_available FROM nx_user_wallet WHERE user_id=7",BigDecimal.class)).isEqualByComparingTo("100");
         assertThat(jdbc.queryForObject("SELECT nex_available FROM nx_user_wallet WHERE user_id=7",BigDecimal.class)).isEqualByComparingTo("50");
-        verify(orderedCommands,times(1)).expireDirectPaymentOrder(7L,"ORDER-1");verify(orderedCommands,times(1)).settleVerifiedExternal(7L,"ORDER-2");
+        verify(orderedCommands,times(1)).expireDirectPaymentOrder(7L,"ORDER-1");verify(orderedCommands,times(1)).settleVerifiedExternal(7L,"ORDER-2",null);
     }
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"-1,false","-1,true","0,false","0,true","1,false","1,true"})
@@ -218,12 +222,12 @@ class PurchasePaymentMySqlTest {
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM purchase_test_effect",Integer.class)).isZero();
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device",Integer.class)).isZero();
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_payment_record",Integer.class)).isZero();
-            verify(orders,never()).settleVerifiedExternal(anyLong(),anyString());
+            verify(orders,never()).settleVerifiedExternal(anyLong(),anyString(),any());
         }else{
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM purchase_test_effect",Integer.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_device",Integer.class)).isEqualTo(1);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_payment_record",Integer.class)).isEqualTo(1);
-            verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1");
+            verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1",null);
         }
         assertThat(jdbc.queryForObject("SELECT usdt_available FROM nx_user_wallet WHERE user_id=7",BigDecimal.class)).isEqualByComparingTo("100");
         assertThat(jdbc.queryForObject("SELECT nex_available FROM nx_user_wallet WHERE user_id=7",BigDecimal.class)).isEqualByComparingTo("50");
@@ -263,7 +267,7 @@ class PurchasePaymentMySqlTest {
         service.scheduled();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_intent WHERE intent_no LIKE 'HIST-%' AND observed_at IS NOT NULL",Integer.class)).isEqualTo(20);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_intent WHERE intent_no LIKE 'HIST-%' AND reconciliation_status='QUERY_UNKNOWN'",Integer.class)).isEqualTo(20);
-        verify(gateway,times(1)).queryPayOrder("HIST-000");verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1");
+        verify(gateway,times(1)).queryPayOrder("HIST-000");verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1",null);
     }
     @Test void oldFailedKeyRemainsStableAfterAnotherAttemptDeliveredTheOrder(){
         var deadline=orderDeadline();time(deadline.minusSeconds(60));var q=quote("HDPAY_BANK");String old=text(service.create(7,"old-failed-key",text(q.get("paymentQuoteId"))).get("intentNo"));
@@ -274,7 +278,7 @@ class PurchasePaymentMySqlTest {
         assertThat(service.get(7,old)).containsEntry("status","EXPIRED").containsEntry("reason","PAYMENT_FAILED");
         assertThat(service.lookup(7,"ORDER_PAY","old-failed-key")).containsEntry("intentNo",old).containsEntry("reason","PAYMENT_FAILED");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_result WHERE outcome='PAYMENT_TIMEOUT'",Integer.class)).isZero();
-        verify(orders,never()).expireDirectPaymentOrder(anyLong(),anyString());verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1");
+        verify(orders,never()).expireDirectPaymentOrder(anyLong(),anyString());verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1",null);
     }
     @Test void reviewResultPreservesTheFullCanonicalNinetySixCharacterOrderNumber(){
         String no="Z".repeat(96);jdbc.update("UPDATE nx_order SET order_no=?",no);jdbc.update("UPDATE nx_order_item SET order_no=?",no);
@@ -344,7 +348,7 @@ class PurchasePaymentMySqlTest {
         service.scheduled();service.scheduled();
         assertThat(service.get(7,next)).containsEntry("status","MANUAL_REVIEW").containsEntry("reason","PAYMENT_LATE_REVIEW").containsEntry("reconciliationStatus","REVIEW");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_purchase_payment_result WHERE outcome='MANUAL_REVIEW'",Integer.class)).isEqualTo(1);
-        verify(orders,never()).settleVerifiedExternal(anyLong(),anyString());
+        verify(orders,never()).settleVerifiedExternal(anyLong(),anyString(),any());
     }
     @Test void timeoutReleaseFailureRollsBackIntentAndResultFact(){
         var deadline=orderDeadline();time(deadline.minusSeconds(30));var quote=quote("HDPAY_BANK");String no=text(service.create(7,"atomic-timeout",text(quote.get("paymentQuoteId"))).get("intentNo"));
@@ -429,7 +433,7 @@ class PurchasePaymentMySqlTest {
         assertThat(map(done.get("receipt"))).containsEntry("walletDebitUsdt","0.00").containsEntry("paymentMethod","HDPAY_BANK")
                 .containsEntry("amountUsdt","19.995000").containsEntry("paymentSubtotalUsdt","20.00").containsEntry("roundingAdjustmentUsdt","0.005000");
         service.create(7,"purchase-command-1",quoteId);service.get(7,no);
-        verify(gateway,times(1)).createPayOrder(any());verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1");
+        verify(gateway,times(1)).createPayOrder(any());verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1",null);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_payment_record",Integer.class)).isEqualTo(1);
         assertThatThrownBy(()->service.get(8,no)).hasMessage("PURCHASE_PAYMENT_INTENT_NOT_FOUND");
     }
@@ -524,7 +528,7 @@ class PurchasePaymentMySqlTest {
             VerifiedPurchasePayment.require(7,new BigDecimal("80.008000"));
             jdbc.update("UPDATE nx_order SET payment_status='PAID',order_status='COMPLETED' WHERE order_no='ORDER-1'");
             return ApiResult.ok(Map.of("orderNo","ORDER-1","amountUsdt",new BigDecimal("80.008000"),"paymentStatus","PAID","canonicalStatus","activated"));
-        }).when(orders).settleVerifiedExternal(7L,"ORDER-1");
+        }).when(orders).settleVerifiedExternal(7L,"ORDER-1",null);
         var q=quote("HDPAY_BANK");assertThat(q).containsEntry("businessAmountUsdt","80.008000").containsEntry("subtotalUsdt","80.01").containsEntry("roundingAdjustmentUsdt","0.002000");
         var pending=service.create(7,"rounding-80008",text(q.get("paymentQuoteId")));String no=text(pending.get("intentNo"));
         when(gateway.queryPayOrder(no)).thenReturn(new HdPayGateway.PayOrder(no,"PROVIDER-80008",3,new BigDecimal(text(q.get("amountVnd"))),"BANKQR",null));
@@ -566,7 +570,7 @@ class PurchasePaymentMySqlTest {
             assertThat(service.get(7,text(pending.get("intentNo")))).containsEntry("status","MANUAL_REVIEW")
                     .containsEntry("fulfilmentStatus","DELIVERED").containsEntry("reason","PAYMENT_REORG_REVIEW");
             assertThat(jdbc.queryForObject("SELECT state FROM nx_cregis_provision_gate",String.class)).isEqualTo("BLOCKED");
-            verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1");
+            verify(orders,times(1)).settleVerifiedExternal(7L,"ORDER-1",null);
         }finally{deposits.closePoolWorkers();}
     }
 }

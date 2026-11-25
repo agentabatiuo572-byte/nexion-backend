@@ -47,13 +47,13 @@ class PurchaseResourceAdmissionTest {
                     assertThat(locked).as("delivery must not take buyer 7 before ordered participants [3,7]").isTrue();
                     throw new BizException(409,"TEST_CHECKPOINT_BEFORE_PRICING");
                 });
-        var service=new PurchasePaymentService(db,null,orders,null,null,null,gateway,null,null,null,null,
+        var service=new PurchasePaymentService(db,new PurchaseQuotaHolds(db,new ObjectMapper(),new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy()),null,orders,null,null,null,gateway,null,null,null,null,
                 new DataSourceTransactionManager(source),new ObjectMapper(),null,null,admission,java.time.Clock.systemUTC());
         assertThatCode(()->ReflectionTestUtils.invokeMethod(service,"deliver","PAID-INTENT",false)).doesNotThrowAnyException();
         var sequence=inOrder(admission,promotions,db);sequence.verify(admission).lock();
         sequence.verify(promotions).lockOrderParticipants("PAID-ORDER");
         sequence.verify(db).one("SELECT id,status,CAST(sandbox AS UNSIGNED) sandbox FROM nx_user WHERE id=? AND is_deleted=0 FOR UPDATE",7L);
-        verify(orders,never()).settleVerifiedExternal(anyLong(),anyString());
+        verify(orders,never()).settleVerifiedExternal(anyLong(),anyString(),any());
         verify(db,never()).write(contains("SET status='DELIVERED'"),any(Object[].class));
     }
 
@@ -68,7 +68,7 @@ class PurchaseResourceAdmissionTest {
         when(gateway.queryPayOrder("PARENT-INTENT")).thenReturn(new HdPayGateway.PayOrder("PARENT-INTENT","PROVIDER-1",3,new BigDecimal("250000"),"BANKQR",null));
         doThrow(new BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE")).when(admission).lock();
         var manager=new DataSourceTransactionManager(source);
-        var service=new PurchasePaymentService(db,null,null,null,null,null,gateway,null,null,null,null,manager,
+        var service=new PurchasePaymentService(db,new PurchaseQuotaHolds(db,new ObjectMapper(),new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy()),null,null,null,null,null,gateway,null,null,null,null,manager,
                 new ObjectMapper(),null,null,admission,java.time.Clock.systemUTC());
         var parent=new org.springframework.transaction.support.TransactionTemplate(manager);
         parent.setIsolationLevel(Connection.TRANSACTION_READ_COMMITTED);
@@ -89,7 +89,7 @@ class PurchaseResourceAdmissionTest {
         when(db.one("SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?","PAID-INTENT")).thenReturn(before);
         when(gateway.queryPayOrder("PAID-INTENT")).thenReturn(new HdPayGateway.PayOrder("PAID-INTENT","PROVIDER-1",3,new BigDecimal("250000"),"BANKQR",null));
         doThrow(new BizException(503,"TEST_CLOUD_RESOURCE_CAPACITY_UNAVAILABLE")).when(admission).lock();
-        var service=new PurchasePaymentService(db,null,null,null,null,null,gateway,null,null,null,null,
+        var service=new PurchasePaymentService(db,new PurchaseQuotaHolds(db,new ObjectMapper(),new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy()),null,null,null,null,null,gateway,null,null,null,null,
                 new DataSourceTransactionManager(source),new ObjectMapper(),null,null,admission,java.time.Clock.systemUTC());
         assertThatCode(()->ReflectionTestUtils.invokeMethod(service,"deliver","PAID-INTENT",false)).doesNotThrowAnyException();
         verify(delivery).rollback(); verify(delivery,never()).commit(); verify(review).commit();
@@ -105,7 +105,7 @@ class PurchaseResourceAdmissionTest {
         when(commands.executeRetained(anyString(),anyString(),anyString(),eq(Map.class),any()))
                 .thenAnswer(call->((Supplier<?>)call.getArgument(4)).get());
         doThrow(new BizException(503,"TEST_CLOUD_RESOURCE_ADMISSION_UNAVAILABLE")).when(admission).lock();
-        var service=new PurchasePaymentService(db,null,null,null,null,null,null,null,null,null,null,null,
+        var service=new PurchasePaymentService(db,new PurchaseQuotaHolds(db,new ObjectMapper(),new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy()),null,null,null,null,null,null,null,null,null,null,null,
                 new ObjectMapper(),null,commands,admission,java.time.Clock.systemUTC());
         assertThatThrownBy(()->service.revalidate("PAID-INTENT","capacity-revalidate",Map.of("reason","review capacity after reservation","expectedVersion",0)))
                 .hasMessage("TEST_CLOUD_RESOURCE_ADMISSION_UNAVAILABLE");

@@ -124,7 +124,7 @@ class OnboardingActivationTransactionMySqlTest {
         var a2=mock(A2RuntimePolicy.class);when(a2.retentionMonths()).thenReturn(13);when(a2.schemaVersion()).thenReturn("v3");
         var json=new ObjectMapper().findAndRegisterModules();
         var audit=spy(new AuditLogService(sql.getMapper(AuditLogMapper.class),new AuditLogSanitizer(json),
-                new ApplicationNameProperties(),new AuditProperties(),mock(AdminMapper.class),a2));
+                new ApplicationNameProperties(),new AuditProperties(),mock(AdminMapper.class),a2,json));
         doAnswer(call->{Object result=call.callRealMethod();AuditLogWriteRequest r=call.getArgument(0);
             if("audit".equals(fail.get()) && "PHONE_REPLACEMENT_COMMAND".equals(r.getAction()))throw new IllegalStateException("injected-audit-after-write");return result;
         }).when(audit).recordRequired(any());

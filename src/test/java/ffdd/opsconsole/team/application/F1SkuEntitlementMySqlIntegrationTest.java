@@ -97,7 +97,7 @@ class F1SkuEntitlementMySqlIntegrationTest {
     private void action(String direction) {
         A2ReplayContext.enterReplay("isolated-sku-" + direction);
         try {
-            var request = new VRankRewardPayoutActionRequest("isolated original SKU correction", "acceptance");
+            var request = new VRankRewardPayoutActionRequest("isolated original SKU correction", "acceptance", null);
             var result = "reverse".equals(direction) ? ops.reverseRewardPayout("pay-21", "sku-reverse", request)
                     : ops.reissueRewardPayout("pay-21", "sku-reissue", request);
             assertThat(result.getCode()).isZero();

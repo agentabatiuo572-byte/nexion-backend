@@ -52,7 +52,7 @@ class PurchasePaymentExpiryLockOrderTest {
         when(db.one("SELECT pay_by FROM nx_promotion_order_receipt WHERE order_no=?","EXPIRE-ORDER")).thenReturn(null);
         when(db.write(anyString(),any(Object[].class))).thenReturn(1);
         when(clock.instant()).thenReturn(CREATED.plusSeconds(2100));
-        service=new PurchasePaymentService(db,null,orders,null,null,null,null,null,null,null,null,
+        service=new PurchasePaymentService(db,new PurchaseQuotaHolds(db,new ObjectMapper(),new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy()),null,orders,null,null,null,null,null,null,null,null,
                 new DataSourceTransactionManager(source),new ObjectMapper(),null,null,mock(TestCloudActivationAdmission.class),
                 clock);
     }

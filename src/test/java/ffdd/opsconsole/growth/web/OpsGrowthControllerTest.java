@@ -25,7 +25,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 class OpsGrowthControllerTest {
     private final OpsGrowthService growthService = mock(OpsGrowthService.class);
     private final OpsGrowthCommandBoundary commandBoundary = mock(OpsGrowthCommandBoundary.class);
-    private final OpsGrowthController controller = new OpsGrowthController(growthService, commandBoundary, null);
+    private final OpsGrowthController controller = new OpsGrowthController(growthService, commandBoundary, null, null, null, null);
 
     @BeforeEach
     @SuppressWarnings("unchecked")

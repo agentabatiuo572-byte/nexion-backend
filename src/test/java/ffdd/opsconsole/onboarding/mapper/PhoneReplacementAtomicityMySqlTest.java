@@ -85,7 +85,7 @@ class PhoneReplacementAtomicityMySqlTest {
         when(a2.retentionMonths()).thenReturn(13);when(a2.schemaVersion()).thenReturn("v3");
         ObjectMapper json=new ObjectMapper().findAndRegisterModules();
         AuditLogService audit=spy(new AuditLogService(sqlSession.getMapper(AuditLogMapper.class),new AuditLogSanitizer(json),
-                new ApplicationNameProperties(),new AuditProperties(),mock(AdminMapper.class),a2));
+                new ApplicationNameProperties(),new AuditProperties(),mock(AdminMapper.class),a2,json));
         doAnswer(call->{
             AuditLogWriteRequest r=call.getArgument(0);
             if(r.getAction().equals(failAudit.get())) throw new IllegalStateException("injected audit failure");

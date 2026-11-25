@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.mapper.DeviceOpsMapper;
 import ffdd.opsconsole.growth.dto.GrowthPublicStatsUpdateRequest;
 import ffdd.opsconsole.growth.dto.GlobeDisplayConfig;
+import ffdd.opsconsole.home.application.HomeSharedSnapshotCache;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -33,9 +34,10 @@ class GrowthPublicStatsServiceTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final DeviceOpsMapper deviceOps = mock(DeviceOpsMapper.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-07T10:15:30Z"), ZoneOffset.UTC);
+    private final HomeSharedSnapshotCache homeSnapshots = mock(HomeSharedSnapshotCache.class);
     private final MockEnvironment environment = new MockEnvironment();
     private final GrowthPublicStatsService service = new GrowthPublicStatsService(
-            config, users, deviceOps, audit, new ObjectMapper(), clock, environment, Optional.empty());
+            config, users, deviceOps, audit, new ObjectMapper(), clock, environment, Optional.empty(), homeSnapshots);
 
     @BeforeEach
     void setUp() {
@@ -71,10 +73,11 @@ class GrowthPublicStatsServiceTest {
     void networkPulseUsesConfiguredMembersAndTheSameCurrentHomeDisplayBatch() {
         HomeDisplayService display = mock(HomeDisplayService.class);
         long now = clock.millis();
-        when(display.current()).thenReturn(Map.of("startAt", now - 1000, "serverNow", now,
-                "online", new long[]{28000, 28002, 28005}));
+        when(display.current()).thenReturn(Map.of("enabled", true, "startAt", now - 1000, "serverNow", now,
+                "validUntil", now + 1000, "sequence", 1L, "online", new long[]{28000, 28002, 28005},
+                "paidCents", new long[]{0, 0, 0}, "activeJobs", new Long[3]));
         GrowthPublicStatsService withDisplay = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, environment, Optional.of(display));
+                config, users, deviceOps, audit, new ObjectMapper(), clock, environment, Optional.of(display), homeSnapshots);
         Map<String, Object> projection = withDisplay.publicProjection().getData();
         assertThat((Map<String, Object>) projection.get("networkPulse"))
                 .containsEntry("registeredUsers", 5000L).containsEntry("onlineDevices", 28002L);
@@ -83,7 +86,7 @@ class GrowthPublicStatsServiceTest {
 
         Clock monthLater = Clock.offset(clock, java.time.Duration.ofDays(30));
         GrowthPublicStatsService later = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), monthLater, environment, Optional.of(display));
+                config, users, deviceOps, audit, new ObjectMapper(), monthLater, environment, Optional.of(display), homeSnapshots);
         assertThat((Map<String, Object>) later.publicProjection().getData().get("networkPulse"))
                 .containsEntry("registeredUsers", 5250L);
     }
@@ -93,7 +96,7 @@ class GrowthPublicStatsServiceTest {
         HomeDisplayService display = mock(HomeDisplayService.class);
         when(display.current()).thenThrow(new IllegalStateException("cache unavailable"));
         GrowthPublicStatsService withDisplay = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, environment, Optional.of(display));
+                config, users, deviceOps, audit, new ObjectMapper(), clock, environment, Optional.of(display), homeSnapshots);
         ApiResult<Map<String, Object>> projection = withDisplay.publicProjection();
         assertThat(projection.getCode()).isZero();
         assertThat((Map<String, Object>) projection.getData().get("networkPulse"))
@@ -124,7 +127,7 @@ class GrowthPublicStatsServiceTest {
                 .withProperty("NEXION_ACCEPTANCE_RUN_ID", "home-public-stats-20260819");
         sandbox.setActiveProfiles("test");
         GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox, Optional.empty());
+                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox, Optional.empty(), homeSnapshots);
 
         ApiResult<Map<String, Object>> result = sandboxService.publicProjection();
 
@@ -144,7 +147,7 @@ class GrowthPublicStatsServiceTest {
         MockEnvironment development = new MockEnvironment();
         development.setActiveProfiles("dev");
         GrowthPublicStatsService developmentService = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, development, Optional.empty());
+                config, users, deviceOps, audit, new ObjectMapper(), clock, development, Optional.empty(), homeSnapshots);
 
         ApiResult<Map<String, Object>> result = developmentService.publicProjection();
 
@@ -221,7 +224,7 @@ class GrowthPublicStatsServiceTest {
         MockEnvironment sandbox = new MockEnvironment();
         sandbox.setActiveProfiles("test");
         GrowthPublicStatsService sandboxService = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox, Optional.empty());
+                config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox, Optional.empty(), homeSnapshots);
 
         ApiResult<Map<String, Object>> result = sandboxService.publicProjection();
 
@@ -236,7 +239,7 @@ class GrowthPublicStatsServiceTest {
         MockEnvironment mixed = new MockEnvironment();
         mixed.setActiveProfiles("dev", "prod");
         GrowthPublicStatsService mixedService = new GrowthPublicStatsService(
-                config, users, deviceOps, audit, new ObjectMapper(), clock, mixed, Optional.empty());
+                config, users, deviceOps, audit, new ObjectMapper(), clock, mixed, Optional.empty(), homeSnapshots);
 
         ApiResult<Map<String, Object>> result = mixedService.publicProjection();
 
@@ -550,7 +553,7 @@ class GrowthPublicStatsServiceTest {
     private GrowthPublicStatsService sandboxService(String runId) {
         MockEnvironment sandbox = new MockEnvironment().withProperty("NEXION_ACCEPTANCE_RUN_ID", runId);
         sandbox.setActiveProfiles("test");
-        return new GrowthPublicStatsService(config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox, Optional.empty());
+        return new GrowthPublicStatsService(config, users, deviceOps, audit, new ObjectMapper(), clock, sandbox, Optional.empty(), homeSnapshots);
     }
 
     private void stubSandbox(String runId, int fleetDevices) {

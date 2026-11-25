@@ -54,7 +54,7 @@ class LeadershipPoolServiceTest {
         service = new LeadershipPoolService(
                 teamCommissionMapper, commissionRepository, ledgerPostingFacade, configFacade,
                 auditLogService, eventOutboxService, new LeadershipPoolConfigGuard(configFacade),
-                settlementConfigAlertService);
+                settlementConfigAlertService, org.mockito.Mockito.mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class));
     }
 
     private Map<String, Object> voter(long userId, int votes) {

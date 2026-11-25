@@ -32,7 +32,7 @@ class OpsPlatformMenuServiceTest {
     @Test void retiredMenuCannotBeRecreatedOrAssignedToAnOrdinaryMenu() {
         var mapper=mock(AdminMenuMapper.class);
         var service=new OpsPlatformMenuService(mapper,mock(AdminRoleMenuMapper.class),
-                mock(AdminPermissionMapper.class),mock(AuditLogService.class),passThroughIdempotency());
+                mock(AdminPermissionMapper.class),mock(AuditLogService.class),passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
         var auth=new UsernamePasswordAuthenticationToken("41",null,List.of());
         auth.setDetails(Map.of("subjectType","ADMIN","username","alice.admin"));
         SecurityContextHolder.getContext().setAuthentication(auth);
@@ -52,7 +52,7 @@ class OpsPlatformMenuServiceTest {
     @Test void retiredTicketDeskMenuCannotBeRecreatedOrAssignedToAnOrdinaryMenu() {
         var mapper=mock(AdminMenuMapper.class);
         var service=new OpsPlatformMenuService(mapper,mock(AdminRoleMenuMapper.class),
-                mock(AdminPermissionMapper.class),mock(AuditLogService.class),passThroughIdempotency());
+                mock(AdminPermissionMapper.class),mock(AuditLogService.class),passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
         var auth=new UsernamePasswordAuthenticationToken("41",null,List.of());
         auth.setDetails(Map.of("subjectType","ADMIN","username","alice.admin"));
         SecurityContextHolder.getContext().setAuthentication(auth);
@@ -81,7 +81,7 @@ class OpsPlatformMenuServiceTest {
         when(menuMapper.selectAllActive()).thenReturn(List.of());
         OpsPlatformMenuService service = new OpsPlatformMenuService(
                 menuMapper, mock(AdminRoleMenuMapper.class), mock(AdminPermissionMapper.class),
-                mock(AuditLogService.class), passThroughIdempotency());
+                mock(AuditLogService.class), passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.overview();
 
@@ -106,7 +106,7 @@ class OpsPlatformMenuServiceTest {
         SecurityContextHolder.getContext().setAuthentication(authentication);
         OpsPlatformMenuService service = new OpsPlatformMenuService(
                 menuMapper, mock(AdminRoleMenuMapper.class), mock(AdminPermissionMapper.class),
-                auditLogService, passThroughIdempotency());
+                auditLogService, passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.createNode("idem-menu-create",
                 new PlatformMenuNodeCreateRequest("Z9", "Test Menu", "测试菜单", null,
@@ -133,7 +133,7 @@ class OpsPlatformMenuServiceTest {
         when(menuMapper.selectChildren(91L)).thenReturn(List.of());
         when(permissionMapper.countActiveByMenuId(91L)).thenReturn(2L);
         OpsPlatformMenuService service = new OpsPlatformMenuService(
-                menuMapper, roleMenuMapper, permissionMapper, mock(AuditLogService.class), passThroughIdempotency());
+                menuMapper, roleMenuMapper, permissionMapper, mock(AuditLogService.class), passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.deleteNode(91L, "idem-delete-menu",
                 new ffdd.opsconsole.platform.dto.AdminAccountActionRequest(
@@ -160,7 +160,7 @@ class OpsPlatformMenuServiceTest {
         authentication.setDetails(Map.of("subjectType", "ADMIN", "username", "alice.admin"));
         SecurityContextHolder.getContext().setAuthentication(authentication);
         OpsPlatformMenuService service = new OpsPlatformMenuService(
-                menuMapper, roleMenuMapper, permissionMapper, auditLogService, passThroughIdempotency());
+                menuMapper, roleMenuMapper, permissionMapper, auditLogService, passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.updateNode(91L, "idem-disable-parent",
                 new PlatformMenuNodeUpdateRequest(null, null, null, null, null,
@@ -197,7 +197,7 @@ class OpsPlatformMenuServiceTest {
         when(menuMapper.selectChildren(91L)).thenReturn(List.of());
         when(permissionMapper.countActiveByMenuId(91L)).thenReturn(1L);
         OpsPlatformMenuService service = new OpsPlatformMenuService(
-                menuMapper, roleMenuMapper, permissionMapper, mock(AuditLogService.class), passThroughIdempotency());
+                menuMapper, roleMenuMapper, permissionMapper, mock(AuditLogService.class), passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.updateNode(91L, "idem-disable-permission-menu",
                 updateStatus(0, "disable permission menu"));
@@ -220,7 +220,7 @@ class OpsPlatformMenuServiceTest {
         when(permissionMapper.countActiveByMenuId(91L)).thenReturn(0L);
         when(roleMenuMapper.countActiveByMenuId(91L)).thenReturn(2L);
         OpsPlatformMenuService service = new OpsPlatformMenuService(
-                menuMapper, roleMenuMapper, permissionMapper, mock(AuditLogService.class), passThroughIdempotency());
+                menuMapper, roleMenuMapper, permissionMapper, mock(AuditLogService.class), passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.updateNode(91L, "idem-disable-role-menu",
                 updateStatus(0, "disable role bound menu"));
@@ -242,7 +242,7 @@ class OpsPlatformMenuServiceTest {
         when(menuMapper.selectActiveForUpdate(91L)).thenReturn(parent);
         OpsPlatformMenuService service = new OpsPlatformMenuService(
                 menuMapper, mock(AdminRoleMenuMapper.class), mock(AdminPermissionMapper.class),
-                mock(AuditLogService.class), passThroughIdempotency());
+                mock(AuditLogService.class), passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.updateNode(92L, "idem-enable-child",
                 updateStatus(1, "enable child under parent"));
@@ -265,7 +265,7 @@ class OpsPlatformMenuServiceTest {
         when(roleMenuMapper.countActiveByMenuId(91L)).thenReturn(1L);
         AuditLogService auditLogService = mock(AuditLogService.class);
         OpsPlatformMenuService service = new OpsPlatformMenuService(
-                menuMapper, roleMenuMapper, permissionMapper, auditLogService, passThroughIdempotency());
+                menuMapper, roleMenuMapper, permissionMapper, auditLogService, passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.deleteNode(91L, "idem-delete-role-menu",
                 new ffdd.opsconsole.platform.dto.AdminAccountActionRequest(
@@ -298,7 +298,7 @@ class OpsPlatformMenuServiceTest {
                 .when(auditLogService).recordRequiredInNewTransaction(any(AuditLogWriteRequest.class));
         OpsPlatformMenuService service = new OpsPlatformMenuService(
                 menuMapper, mock(AdminRoleMenuMapper.class), permissionMapper,
-                auditLogService, passThroughIdempotency());
+                auditLogService, passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         assertThatThrownBy(() -> service.updateNode(91L, "idem-disable-parent",
                 updateStatus(0, "disable parent with child")))
@@ -313,7 +313,7 @@ class OpsPlatformMenuServiceTest {
         AdminMenuMapper menuMapper = mock(AdminMenuMapper.class);
         OpsPlatformMenuService service = new OpsPlatformMenuService(
                 menuMapper, mock(AdminRoleMenuMapper.class), mock(AdminPermissionMapper.class),
-                mock(AuditLogService.class), passThroughIdempotency());
+                mock(AuditLogService.class), passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.deleteNode(91L, "idem-short-reason",
                 new ffdd.opsconsole.platform.dto.AdminAccountActionRequest("short", "superadmin"));
@@ -331,7 +331,7 @@ class OpsPlatformMenuServiceTest {
         when(menuMapper.selectActiveForUpdate(91L)).thenReturn(menu);
         OpsPlatformMenuService service = new OpsPlatformMenuService(
                 menuMapper, mock(AdminRoleMenuMapper.class), mock(AdminPermissionMapper.class),
-                auditLogService, passThroughIdempotency());
+                auditLogService, passThroughIdempotency(), java.time.Clock.fixed(java.time.Instant.parse("2026-11-25T00:00:00Z"), java.time.ZoneOffset.UTC));
 
         var result = service.updateNode(91L, "idem-stale-menu",
                 new PlatformMenuNodeUpdateRequest(

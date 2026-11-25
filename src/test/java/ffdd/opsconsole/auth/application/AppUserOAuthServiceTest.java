@@ -45,10 +45,12 @@ class AppUserOAuthServiceTest {
     private final OAuthSandboxChallengeService sandboxChallengeService = mock(OAuthSandboxChallengeService.class);
     private AppUserOAuthService service;
 
+    private final AppUserRegistrationService registration = mock(AppUserRegistrationService.class);
+
     @BeforeEach
     void setUp() {
         service = new AppUserOAuthService(identityMapper, userMapper, passwordEncoder,
-                authService, outboxService, environment, sandboxChallengeService);
+                authService, outboxService, environment, sandboxChallengeService, registration);
         when(environment.getActiveProfiles()).thenReturn(new String[] {"test"});
         when(environment.getProperty("oauth.enabled", "false")).thenReturn("true");
         when(environment.getProperty("server.forward-headers-strategy")).thenReturn("none");

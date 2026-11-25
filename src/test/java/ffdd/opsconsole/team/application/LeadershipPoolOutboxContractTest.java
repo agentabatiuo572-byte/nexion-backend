@@ -37,7 +37,7 @@ class LeadershipPoolOutboxContractTest {
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final AuditLogService audit = mock(AuditLogService.class);
     private final LeadershipPoolService service = new LeadershipPoolService(mapper, repository, ledger, config,
-            audit, publisher, new LeadershipPoolConfigGuard(config), mock(LeadershipPoolConfigAlertService.class));
+            audit, publisher, new LeadershipPoolConfigGuard(config), mock(LeadershipPoolConfigAlertService.class), mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class));
 
     LeadershipPoolOutboxContractTest() {
         // Exact ACTIVE/full commission.paid rev312 properties read on 2026-10-17.

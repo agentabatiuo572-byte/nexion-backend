@@ -2105,7 +2105,7 @@ class OpsNexMarketServiceTest {
         }
 
         @Override
-        public long stakingPositionCountByStatus(String status) {
+        public long stakingPositionCountByStatus(String status, LocalDateTime now) {
             return stakingPositions.stream()
                     .filter(position -> status.equals(position.status()))
                     .count();
@@ -2120,7 +2120,7 @@ class OpsNexMarketServiceTest {
         }
 
         @Override
-        public List<StakingPositionView> stakingPositionsByStatus(String status, int limit) {
+        public List<StakingPositionView> stakingPositionsByStatus(String status, int limit, LocalDateTime now) {
             return stakingPositions.stream()
                     .filter(position -> status.equals(position.status()))
                     .limit(limit)
@@ -2549,6 +2549,7 @@ class OpsNexMarketServiceTest {
                     lockedAt,
                     unlockAt,
                     new BigDecimal(interestUsdt),
+                    status,
                     status,
                     status,
                     "ACTIVE".equals(status) ? "ok" : "warn",

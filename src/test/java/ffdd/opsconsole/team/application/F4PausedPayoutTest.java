@@ -39,7 +39,7 @@ class F4PausedPayoutTest {
     private final AuditLogService audit = mock(AuditLogService.class);
     private final EventOutboxService outbox = mock(EventOutboxService.class);
     private final LeadershipPoolService service = new LeadershipPoolService(mapper, commissions, ledger, config,
-            audit, outbox, new LeadershipPoolConfigGuard(config), mock(LeadershipPoolConfigAlertService.class));
+            audit, outbox, new LeadershipPoolConfigGuard(config), mock(LeadershipPoolConfigAlertService.class), mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class));
     private final AuditReplayBusinessPermissionGuard guard = new AuditReplayBusinessPermissionGuard(
             mock(TrustDisclosureRepository.class), mock(AdminOperatorRoleResolver.class),
             mock(EmergencyControlRepository.class), null, config);

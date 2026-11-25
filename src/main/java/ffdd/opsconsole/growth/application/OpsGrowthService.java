@@ -3832,6 +3832,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         var guard = requireCommand("H5_PREVIEW", request.reason());
         if (guard != null) return ApiResult.fail(guard.getCode(), guard.getMessage());
         var mapper = questEventMapper.orElseThrow(() -> new BizException(422, "H5_MILESTONE_MUTEX_UNAVAILABLE"));
+        // The A2 proposal transaction keeps this mutex through creation of the ticket and its object lock.
+        if (!"H5_MILESTONE".equals(mapper.lockGrowthMutation("H5_MILESTONE"))) {
+            return ApiResult.fail(422, "H5_MILESTONE_MUTEX_UNAVAILABLE");
+        }
         validateEarnMilestoneCreation(mapper, request);
         requireH5Coverage();
         return ApiResult.ok(new H5ConfigReview(target, H5GrowthApproval.EARN_CREATE_ACTION,

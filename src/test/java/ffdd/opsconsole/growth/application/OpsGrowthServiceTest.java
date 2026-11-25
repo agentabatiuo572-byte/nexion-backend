@@ -151,29 +151,28 @@ class OpsGrowthServiceTest {
             return 1;
         }).when(questEventMapper).upsertCheckInRuleValue(anyString(), anyString(), anyString(), anyBoolean(), anyInt());
         when(questEventMapper.streakMilestones()).thenAnswer(ignored -> streakMilestones);
-        doAnswer(invocation -> {
+        when(questEventMapper.lockStreakMilestone(anyInt())).thenAnswer(invocation -> {
             int id = invocation.getArgument(0);
-            Map<String, Object> existing = findRow(streakMilestones, "id", String.valueOf(id));
-            if (existing == null) {
-                return 0;
-            }
-            existing.put("reward", invocation.getArgument(1, String.class));
-            existing.put("kind", invocation.getArgument(2, String.class).toLowerCase());
-            return 1;
-        }).when(questEventMapper).updateStreakMilestoneReward(anyInt(), anyString(), anyString(), any(BigDecimal.class));
+            Map<String, Object> state = findRow(streakMilestones, "id", String.valueOf(id));
+            return state == null ? null : row(
+                    "day", id + 1, "rewardType", state.get("rewardType"), "amount", state.get("amount"),
+                    "reward", state.get("reward"), "status", 1, "deleted", 0);
+        });
         doAnswer(invocation -> {
             int id = invocation.getArgument(0);
             String reward = invocation.getArgument(1);
-            String expectedReward = invocation.getArgument(4);
+            Map<String, Object> before = invocation.getArgument(4);
             Map<String, Object> existing = findRow(streakMilestones, "id", String.valueOf(id));
-            if (existing == null || !expectedReward.equals(String.valueOf(existing.get("reward")))) {
+            if (existing == null || !before.get("reward").equals(existing.get("reward"))) {
                 return 0;
             }
             existing.put("reward", reward);
+            existing.put("rewardType", invocation.getArgument(2));
+            existing.put("amount", invocation.getArgument(3));
             existing.put("kind", invocation.getArgument(2, String.class).toLowerCase());
             return 1;
         }).when(questEventMapper).updateStreakMilestoneRewardCas(
-                anyInt(), anyString(), anyString(), any(BigDecimal.class), anyString());
+                anyInt(), anyString(), anyString(), any(BigDecimal.class), org.mockito.ArgumentMatchers.anyMap());
         when(questEventMapper.streakDistribution()).thenReturn(List.of());
         when(questEventMapper.powerUps()).thenAnswer(ignored -> powerUps);
         doAnswer(invocation -> {
@@ -2065,6 +2064,9 @@ class OpsGrowthServiceTest {
     @Test
     void updateStreakMilestoneWritesConfigAndAudit() {
         seedCheckInConfiguredRows();
+        Map<String, Object> previous = findRow(streakMilestones, "id", "1");
+        previous.put("reward", "+21 UVT");
+        previous.put("amount", BigDecimal.valueOf(21));
 
         ApiResult<Map<String, Object>> result = service.updateStreakMilestone(
                 "idem-h5-ms",
@@ -3022,7 +3024,8 @@ class OpsGrowthServiceTest {
         checkInRules.add(row("key", "broken", "name", "断签阈值", "sub", "", "cur", "48", "hot", false));
         streakMilestones.clear();
         for (int i = 0; i < 7; i++) {
-            streakMilestones.add(row("id", i, "day", (i + 1) + " 天", "reward", "+" + (i + 1) + " UVT", "kind", "nex"));
+            streakMilestones.add(row("id", i, "day", (i + 1) + " 天", "reward", "+" + (i + 1) + " UVT",
+                    "kind", "nex", "rewardType", "UVT", "amount", BigDecimal.valueOf(i + 1L)));
         }
         powerUps.clear();
         for (int i = 0; i < 4; i++) {

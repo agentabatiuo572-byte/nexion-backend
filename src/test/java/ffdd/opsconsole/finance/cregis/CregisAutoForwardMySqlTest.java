@@ -21,6 +21,7 @@ import org.springframework.core.io.FileSystemResource;
 @EnabledIfEnvironmentVariable(named="CREGIS_AUTO_MYSQL_IT",matches="true")
 @ResourceLock("cregis_auto_forward_it")
 class CregisAutoForwardMySqlTest {
+    final String platform = "0x" + "1".repeat(40), counterparty = "0x" + "2".repeat(40);
     static final String SCHEMA="cregis_auto_forward_it";final long project=1466552794661984L;
     DriverManagerDataSource root,data;JdbcTemplate jdbc;CregisAutoForwardMapper db;CregisDepositMapper deposits;boolean owned;
     final String a="0x"+"a".repeat(40),b="0x"+"b".repeat(40);
@@ -29,7 +30,8 @@ class CregisAutoForwardMySqlTest {
         root=new DriverManagerDataSource(url,System.getenv("CREGIS_AUTO_MYSQL_USER"),System.getenv("CREGIS_AUTO_MYSQL_PASSWORD"));
         new JdbcTemplate(root).execute("CREATE DATABASE "+SCHEMA);owned=true;
         data=new DriverManagerDataSource(url.replace("/?","/"+SCHEMA+"?"),System.getenv("CREGIS_AUTO_MYSQL_USER"),System.getenv("CREGIS_AUTO_MYSQL_PASSWORD"));jdbc=new JdbcTemplate(data);
-        new ResourceDatabasePopulator(new FileSystemResource(Path.of("scripts/migrations/20261022_05_cregis_auto_forward.sql"))).execute(data);
+        new ResourceDatabasePopulator(new FileSystemResource(Path.of("scripts/migrations/20261022_05_cregis_auto_forward.sql")),
+                new FileSystemResource(Path.of("scripts/migrations/20261109_cregis_multinetwork_auto_forward.sql"))).execute(data);
         jdbc.execute("CREATE TABLE nx_cregis_deposit_event(chain_id VARCHAR(16) NOT NULL DEFAULT '2510',id BIGINT PRIMARY KEY,project_id BIGINT,user_id BIGINT,txid VARCHAR(66),log_index INT,address VARCHAR(42),gross_amount DECIMAL(18,6),net_amount DECIMAL(18,6),fee_amount DECIMAL(18,6),block_number BIGINT,status VARCHAR(30)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_cregis_deposit_address(project_id BIGINT,address VARCHAR(42),user_id BIGINT,chain_id VARCHAR(8),state VARCHAR(20)) ENGINE=InnoDB");
         jdbc.execute("CREATE TABLE nx_cregis_risk_alert(project_id BIGINT,alert_key VARCHAR(100),severity VARCHAR(5),kind VARCHAR(40),evidence JSON,resolved_at DATETIME,UNIQUE KEY uk(project_id,alert_key)) ENGINE=InnoDB");
@@ -40,7 +42,7 @@ class CregisAutoForwardMySqlTest {
     @AfterEach void cleanup(){if(owned)new JdbcTemplate(root).execute("DROP DATABASE "+SCHEMA);}
     void seed(long id,String address){jdbc.update("INSERT INTO nx_cregis_deposit_event(id,project_id,user_id,txid,log_index,address,gross_amount,net_amount,fee_amount,block_number,status) VALUES(?,?,7,?,0,?,5,4,1,90,'CREDITED')",id,project,"0x"+"c".repeat(64),address);jdbc.update("INSERT INTO nx_cregis_deposit_address VALUES(?,?,7,'2510','READY')",project,address);}
     Map<String,Object> event(long id){return db.lockEvent(project, CregisNetwork.BEP20, id);}
-    void enqueue(long id){db.enqueue(project,event(id),CregisFundsPreparationService.PLATFORM,CregisFundsPreparationService.COUNTERPARTY,"CA-P-"+project+"-"+id);}
+    void enqueue(long id){db.enqueue(project,event(id),platform,counterparty,"CA-P-"+project+"-"+id);}
     Map<String,Object> task(){return db.page(project, CregisNetwork.BEP20, 0, 20).get(0);}
     @Test void defaultsAndFirstActivationWatermarkExcludeHistory(){
         var p=db.policy(project, CregisNetwork.BEP20);assertThat(p.get("collectionEnabled")).isIn(false,0);assertThat(p.get("paymentEnabled")).isIn(false,0);assertThat(p.get("startEventId")).isNull();

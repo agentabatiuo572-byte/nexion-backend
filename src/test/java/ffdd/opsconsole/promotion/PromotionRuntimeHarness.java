@@ -70,12 +70,12 @@ public final class PromotionRuntimeHarness {
         session=new SqlSessionTemplate(new MybatisSqlSessionFactoryBuilder().build(mybatis));
         db=session.getMapper(PromotionMapper.class);
         var repository=new MybatisPlatformConfigRepository(session.getMapper(PlatformConfigItemMapper.class));config=new PlatformConfigFacadeAdapter(repository);a2=new A2RuntimePolicy(repository);
-        audit=new AuditLogService(session.getMapper(AuditLogMapper.class),new AuditLogSanitizer(json),new ApplicationNameProperties(),new AuditProperties(),session.getMapper(AdminMapper.class),a2);
+        audit=new AuditLogService(session.getMapper(AuditLogMapper.class),new AuditLogSanitizer(json),new ApplicationNameProperties(),new AuditProperties(),session.getMapper(AdminMapper.class),a2,json);
         var idemMapper=session.getMapper(AdminIdempotencyRecordMapper.class);var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(idemMapper));
         idempotency=new AdminIdempotencyService(proxy(new AdminIdempotencyTransactionExecutor(idemMapper,json,expiry,new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(idemMapper))),Clock.systemUTC());
         earningsPolicy=new RiskReleaseParamsService(config,idempotency,audit,null);
         natives=new PromotionNativeContractResolver(db,config,earningsPolicy,a2,new MockEnvironment().withProperty("spring.profiles.active","test"),30);
-        validator=new PromotionContractValidator(json);resolver=new PromotionPolicyResolver(db,validator,natives);policies=new PromotionPolicyService(db,validator,resolver,natives);
+        validator=new PromotionContractValidator(json);resolver=new PromotionPolicyResolver(db,validator,natives);policies=new PromotionPolicyService(db,validator,resolver,natives,session.getMapper(AdminMapper.class));
         admin=new PromotionAdminService(db,validator,resolver,policies,natives,null,null,null,null,idempotency,audit,a2,null,org.mockito.Mockito.mock(PromotionBannerService.class),org.mockito.Mockito.mock(PromotionAccountSampleService.class),org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class));
         authenticate(maker);
         var request=values("reason","隔离治理契约真实验收说明","draft",values("category","PROMOTION","template","SKU_GIFT"));

@@ -66,6 +66,7 @@ public class GrowthPublicStatsService {
     private final HomeSharedSnapshotCache homeSnapshots;
 
     private record RuntimeScope(boolean sandbox, String runId, String versionKey, String valuesKey) { }
+    private record PublishedStats(ApiResult<Map<String, Object>> overview, String homeDisplayBatch) { }
 
     public ApiResult<Map<String, Object>> overview() {
         String runtimeError = runtimeError();
@@ -76,8 +77,11 @@ public class GrowthPublicStatsService {
     }
 
     private ApiResult<Map<String, Object>> overview(RuntimeScope scope) {
-        Optional<Long> version = readVersion(scope, false);
-        Optional<Map<String, Object>> values = readValues(scope);
+        return overview(scope, readVersion(scope, false), readValues(scope));
+    }
+
+    private ApiResult<Map<String, Object>> overview(RuntimeScope scope, Optional<Long> version,
+                                                    Optional<Map<String, Object>> values) {
         Optional<BigDecimal> dailyUsd = scope.sandbox()
                 ? Optional.of(SANDBOX_DAILY_USD) : decimalConfig(DAILY_USD_KEY);
         if (version.isEmpty() || values.isEmpty() || dailyUsd.isEmpty()) {
@@ -139,9 +143,7 @@ public class GrowthPublicStatsService {
     }
 
     /**
-     * Management-only snapshot of the same App display sources. It reads the H9 aggregate once,
-     * the shared HomeDisplay batch once, and uses the same registration/online formulas as the public
-     * App projection. It does not change the public projection, write path, permissions or cache rules.
+     * The management display uses one committed version of the H9 aggregate and its HomeDisplay batch.
      */
     public ApiResult<Map<String, Object>> appDisplay() {
         String runtimeError = runtimeError();
@@ -149,13 +151,26 @@ public class GrowthPublicStatsService {
             return ApiResult.fail(503, runtimeError);
         }
         RuntimeScope scope = runtimeScope();
-        ApiResult<Map<String, Object>> result = overview(scope);
+        PublishedStats published = publishedStats(scope);
+        ApiResult<Map<String, Object>> result = published.overview();
         if (result.getCode() != 0) {
             return result;
         }
+        Map<String, Object> current = homeDisplayBatch(scope);
+        Map<String, Object> batch = null;
+        if (current != null) {
+            HomeDisplayService displayService = homeDisplay.orElseThrow();
+            batch = displayService.published(published.homeDisplayBatch(), current);
+            if (batch == null) {
+                // The ordinary lazy refresh may just have created or extended the durable batch.
+                published = publishedStats(scope);
+                result = published.overview();
+                if (result.getCode() != 0) return result;
+                batch = displayService.published(published.homeDisplayBatch(), current);
+            }
+        }
         Map<String, Object> data = result.getData();
         Map<?, ?> values = (Map<?, ?>) data.get("values");
-        Map<String, Object> batch = homeDisplayBatch(scope);
         long sampleNow = batch == null ? clock.millis() : longValue(batch.get("serverNow"));
         Long registeredUsers = estimatedMembers(values, sampleNow);
         Map<String, Object> display = homeDisplayAt(batch);
@@ -210,6 +225,18 @@ public class GrowthPublicStatsService {
         response.put("centerNodesStep", centers == null ? null : sampleNow / globe.intervalMs());
         response.put("unavailable", unavailable);
         return ApiResult.ok(response);
+    }
+
+    private PublishedStats publishedStats(RuntimeScope scope) {
+        if (scope.sandbox()) return new PublishedStats(overview(scope), null);
+        Map<String, String> rows;
+        try {
+            rows = config.activeValuesByKeys(List.of(scope.versionKey(), scope.valuesKey(), HomeDisplayService.STATE_KEY));
+        } catch (RuntimeException ex) {
+            rows = Map.of();
+        }
+        return new PublishedStats(overview(scope, parseVersion(rows.get(scope.versionKey())),
+                parseValues(rows.get(scope.valuesKey()))), rows.get(HomeDisplayService.STATE_KEY));
     }
 
     /** Matches App src/lib/globe-simulation.ts splitByWeights(total, weights, true) in fixed center order. */
@@ -684,38 +711,49 @@ public class GrowthPublicStatsService {
         try {
             Optional<String> raw = lock
                     ? config.activeValueForUpdate(scope.versionKey()) : config.activeValue(scope.versionKey());
-            return raw.map(Long::parseLong).filter(value -> value >= 0);
+            return parseVersion(raw.orElse(null));
         } catch (RuntimeException ex) {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<Long> parseVersion(String value) {
+        try {
+            return Optional.ofNullable(value).map(Long::parseLong).filter(version -> version >= 0);
+        } catch (NumberFormatException ex) {
             return Optional.empty();
         }
     }
 
     private Optional<Map<String, Object>> readValues(RuntimeScope scope) {
         try {
-            return config.activeValue(scope.valuesKey()).map(value -> {
-                try {
-                    Map<String, Object> stored = objectMapper.readValue(value, MAP_TYPE);
-                    // Older H9 records retain their timestamp and start with a static display until configured.
-                    stored.putIfAbsent("homeOnlineCurrent", Math.round(decimalValue(stored.get("fleetDevices")).doubleValue()
-                            * decimalValue(stored.get("onlineRatePct")).doubleValue() / 100));
-                    HOME_FIELDS.forEach(key -> stored.putIfAbsent(key, 0));
-                    stored.putIfAbsent("homeDisplayAnchorAt", stored.get("effectiveAt"));
-                    stored.putIfAbsent("homeDisplayEnabled", false);
-                    stored.putIfAbsent("activeJobsBase", null);
-                    stored.put("globeDisplay", stored.containsKey("globeDisplay")
-                            ? objectMapper.convertValue(stored.get("globeDisplay"), GlobeDisplayConfig.class)
-                            : GlobeDisplayConfig.defaults());
-                    Object legacyStep = stored.remove(LEGACY_TICK_STEP);
-                    if (legacyStep != null) {
-                        stored.putIfAbsent(TICK_STEP_MIN, legacyStep);
-                        stored.putIfAbsent(TICK_STEP_MAX, legacyStep);
-                    }
-                    return stored;
-                } catch (Exception ex) {
-                    throw new IllegalArgumentException(ex);
-                }
-            });
+            return config.activeValue(scope.valuesKey()).flatMap(this::parseValues);
         } catch (RuntimeException ex) {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<Map<String, Object>> parseValues(String value) {
+        if (value == null) return Optional.empty();
+        try {
+            Map<String, Object> stored = objectMapper.readValue(value, MAP_TYPE);
+            // Older H9 records retain their timestamp and start with a static display until configured.
+            stored.putIfAbsent("homeOnlineCurrent", Math.round(decimalValue(stored.get("fleetDevices")).doubleValue()
+                    * decimalValue(stored.get("onlineRatePct")).doubleValue() / 100));
+            HOME_FIELDS.forEach(key -> stored.putIfAbsent(key, 0));
+            stored.putIfAbsent("homeDisplayAnchorAt", stored.get("effectiveAt"));
+            stored.putIfAbsent("homeDisplayEnabled", false);
+            stored.putIfAbsent("activeJobsBase", null);
+            stored.put("globeDisplay", stored.containsKey("globeDisplay")
+                    ? objectMapper.convertValue(stored.get("globeDisplay"), GlobeDisplayConfig.class)
+                    : GlobeDisplayConfig.defaults());
+            Object legacyStep = stored.remove(LEGACY_TICK_STEP);
+            if (legacyStep != null) {
+                stored.putIfAbsent(TICK_STEP_MIN, legacyStep);
+                stored.putIfAbsent(TICK_STEP_MAX, legacyStep);
+            }
+            return Optional.of(stored);
+        } catch (Exception ex) {
             return Optional.empty();
         }
     }

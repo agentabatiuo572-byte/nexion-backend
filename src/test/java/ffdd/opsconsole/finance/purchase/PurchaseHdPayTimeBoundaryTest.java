@@ -54,7 +54,7 @@ class PurchaseHdPayTimeBoundaryTest {
             });
             var source=mock(DataSource.class);var connection=mock(Connection.class);
             when(source.getConnection()).thenReturn(connection);when(connection.getAutoCommit()).thenReturn(true);
-            var service=new PurchasePaymentService(db,null,null,null,null,hd,gateway,null,null,null,null,
+            var service=new PurchasePaymentService(db,new PurchaseQuotaHolds(db,new ObjectMapper(),new ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy()),null,null,null,null,hd,gateway,null,null,null,null,
                     new DataSourceTransactionManager(source),json,null,null,mock(TestCloudActivationAdmission.class),
                     Clock.fixed(grace?DEADLINE.plusSeconds(60):CREATED.plusSeconds(10),ZoneOffset.UTC));
             assertThat((Boolean)ReflectionTestUtils.invokeMethod(service,"observeHd",row)).isTrue();

@@ -254,7 +254,7 @@ class TestComputeWorkerServiceTest {
         AuditLogMapper auditMapper = mock(AuditLogMapper.class);
         var policy = mock(A2RuntimePolicy.class); when(policy.schemaVersion()).thenReturn("v1");
         var actualAudit = new AuditLogService(auditMapper, new AuditLogSanitizer(new ObjectMapper()),
-                new ApplicationNameProperties(), new AuditProperties(), mock(AdminMapper.class), policy);
+                new ApplicationNameProperties(), new AuditProperties(), mock(AdminMapper.class), policy, new com.fasterxml.jackson.databind.ObjectMapper());
         var actual = new TestComputeWorkerService(mapper, actualAudit, Clock.fixed(INSTANT, ZoneOffset.UTC), env);
         var verified = actual.verify(grant, task(grant.taskNo()), validRequest(), NOW);
         var detail = actual.proofDetail(grant, verified);

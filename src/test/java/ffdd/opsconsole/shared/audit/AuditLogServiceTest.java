@@ -36,7 +36,7 @@ class AuditLogServiceTest {
     private final AdminMapper adminMapper = org.mockito.Mockito.mock(AdminMapper.class);
     private final A2RuntimePolicy a2RuntimePolicy = org.mockito.Mockito.mock(A2RuntimePolicy.class);
     private final AuditLogService service = new AuditLogService(
-            auditLogMapper, sanitizer, applicationNameProperties, auditProperties, adminMapper, a2RuntimePolicy);
+            auditLogMapper, sanitizer, applicationNameProperties, auditProperties, adminMapper, a2RuntimePolicy, new com.fasterxml.jackson.databind.ObjectMapper());
 
     AuditLogServiceTest() {
         when(a2RuntimePolicy.schemaVersion()).thenReturn("audit.v4");

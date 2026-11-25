@@ -2821,6 +2821,7 @@ class OpsEmergencyControlServiceTest {
         @Override
         public void updateExecutionProgressIndependent(
                 String executionId,
+                long executionGeneration,
                 List<String> steps,
                 Map<String, Object> notificationDispatch,
                 List<Map<String, Object>> domainActions) {
@@ -2833,15 +2834,20 @@ class OpsEmergencyControlServiceTest {
         @Override
         public void updateExecutionProgress(
                 String executionId,
+                long executionGeneration,
                 List<String> steps,
                 Map<String, Object> notificationDispatch,
                 List<Map<String, Object>> domainActions) {
-            updateExecutionProgressIndependent(executionId, steps, notificationDispatch, domainActions);
+            updateExecutionProgressIndependent(executionId, executionGeneration, steps, notificationDispatch, domainActions);
         }
 
         @Override
-        public boolean claimExecutionRecovery(String executionId, LocalDateTime staleBefore) {
-            return execution(executionId).isPresent();
+        public long claimExecutionRecovery(String executionId) {
+            return execution(executionId).map(row -> {
+                long generation = ((Number) row.getOrDefault("executionGeneration", 0L)).longValue() + 1L;
+                row.put("executionGeneration", generation);
+                return generation;
+            }).orElse(-1L);
         }
 
         @Override

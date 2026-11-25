@@ -150,8 +150,8 @@ class MybatisNotificationCampaignRepositoryTest {
         assertThat(repository.pageUserNotifications(7L, 2L, null, 2, "finance").nextCursor()).isNull();
     }
 
-    private AppNotificationView notification(long id) {
-        return new AppNotificationView(id, "wallet", "high", "title", "body", "", "", now, null);
+    private NotificationCampaignMapper.NotificationPageRow notification(long id) {
+        return new NotificationCampaignMapper.NotificationPageRow(id, "wallet", "high", "title", "body", "", "", now, null, null, null, null, null, null);
     }
 
     private NotificationCapRuleEntity cap(String tier, String label, boolean locked) {

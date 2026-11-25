@@ -79,7 +79,7 @@ class HomePurchaseEligibilityProbeTransactionTest {
         AppHomeOverviewService target = new AppHomeOverviewService(mapper,
                 mock(ComputeTaskProofVerifier.class), mock(GrowthPublicStatsService.class), probe,
                 mock(HomeSharedSnapshotCache.class), Clock.fixed(Instant.parse("2026-08-15T00:00:00Z"), ZoneOffset.UTC),
-                mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService.class), environment);
+                mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService.class), environment, jdbc.transactions);
         AppHomeOverviewService home = proxiedHome(target, jdbc.transactions);
 
         var result = home.overview(42L);

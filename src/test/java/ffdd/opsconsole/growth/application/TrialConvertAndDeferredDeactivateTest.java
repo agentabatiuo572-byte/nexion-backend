@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import static ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.TRIAL_HOSTING_CENTER;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade.Prepared;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
@@ -47,7 +48,7 @@ class TrialConvertAndDeferredDeactivateTest {
     private final TreasuryCoverageFacade coverage = mock(TreasuryCoverageFacade.class);
     private final StorefrontProductReleasePolicy productReleasePolicy = mock(StorefrontProductReleasePolicy.class);
     private final CanonicalStateMapper canonicalStateMapper = mock(CanonicalStateMapper.class);
-    private final AppTrialLifecycleService service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture,
+    private final AppTrialLifecycleService service = ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.trialBusinessOnly(new AppTrialLifecycleService(capture,
             mapper, earningsRelease, idempotency, coverage,
             mock(AuditLogService.class), mock(EventOutboxService.class), productReleasePolicy, canonicalStateMapper, productionEnvironment(),
             TEST_CLOCK, org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
@@ -102,7 +103,7 @@ class TrialConvertAndDeferredDeactivateTest {
         when(mapper.insertConversionOrder(eq(7L), anyString(), eq(11L), any(), any(), any())).thenReturn(1);
         when(mapper.insertConversionOrderItem(anyString(), eq(11L), eq("stellarbox-s1"), eq("S1"), any())).thenReturn(1);
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
-                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299"))))
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")), eq(TRIAL_HOSTING_CENTER)))
                 .thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString()))
@@ -143,7 +144,7 @@ class TrialConvertAndDeferredDeactivateTest {
                 eq(new BigDecimal("1278.958334")));
         verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString());
         verify(mapper).insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
-                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")));
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")), eq(TRIAL_HOSTING_CENTER));
         org.mockito.Mockito.verify(capture).prepare(7L, Source.TRIAL_CONVERT, "USER:7");
         var captureOrder = org.mockito.Mockito.inOrder(capture, mapper);
         captureOrder.verify(capture).prepare(7L, Source.TRIAL_CONVERT, "USER:7");
@@ -174,7 +175,7 @@ class TrialConvertAndDeferredDeactivateTest {
         verify(capture).trialReward(any(Prepared.class), eq("ER-LEGACY-NEX"));
         verify(earningsRelease, never()).creditReward(anyLong(), anyString(), anyString(), anyString(), any(), anyString());
         verify(mapper).insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
-                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")));
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")), eq(TRIAL_HOSTING_CENTER));
         verify(mapper).markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(),
                 argThat(snapshot -> snapshot.contains("trialDailyUsdt=38.52")
                         && snapshot.contains("deviceDailyUsdt=1") && snapshot.contains("deviceDailyNex=1")));
@@ -201,7 +202,7 @@ class TrialConvertAndDeferredDeactivateTest {
     void deviceInsertFailureRollsBackLegacyConversionTransaction() {
         stubLegacyConversion();
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
-                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299"))))
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")), eq(TRIAL_HOSTING_CENTER)))
                 .thenReturn(0);
         PlatformTransactionManager tx = mock(PlatformTransactionManager.class);
         TransactionStatus status = mock(TransactionStatus.class);
@@ -240,7 +241,7 @@ class TrialConvertAndDeferredDeactivateTest {
         when(mapper.insertConversionOrder(eq(7L), anyString(), eq(11L), any(), any(), any())).thenReturn(1);
         when(mapper.insertConversionOrderItem(anyString(), eq(11L), eq("stellarbox-s1"), eq("S1"), any())).thenReturn(1);
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(11L), eq("stellarbox-s1"), any(),
-                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299"))))
+                eq("DEVICE"), anyString(), eq("NexGridBox S1"), eq(new BigDecimal("1299")), eq(TRIAL_HOSTING_CENTER)))
                 .thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString()))
@@ -327,7 +328,7 @@ class TrialConvertAndDeferredDeactivateTest {
         verify(mapper, never()).settleWallet(any(), any(), any(), any());
         verify(mapper, never()).decrementProductStock(any());
         verify(mapper, never()).insertConversionOrder(any(), any(), any(), any(), any(), any());
-        verify(mapper, never()).insertPurchasedDevice(any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(mapper, never()).insertPurchasedDevice(any(), any(), any(), any(), any(), any(), any(), any(), any(), any());
         verify(mapper, never()).recordHardwarePurchase(any(), any(), any(), any());
     }
 

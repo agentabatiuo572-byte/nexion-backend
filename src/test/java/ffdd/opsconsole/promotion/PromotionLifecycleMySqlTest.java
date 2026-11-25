@@ -460,7 +460,7 @@ class PromotionLifecycleMySqlTest {
                     BigDecimal amount=decimal(pending.get("amount_usdt")),after=wallet.usdtAvailable().subtract(amount);
                     changed(paymentMapper.debitDevelopmentWallet(buyer,amount,wallet.version()));
                     changed(paymentMapper.insertDevelopmentPurchaseLedger(order,buyer,amount,after));
-                    if(paymentMapper.markDevelopmentOrderActivated(order,buyer,"WALLET-PAY-"+order)!=1)
+                    if(paymentMapper.markDevelopmentOrderDelivered(order,buyer,"WALLET-PAY-"+order,"ACTIVATED",null)!=1)
                         throw new ffdd.opsconsole.shared.exception.BizException(409,"ORDER_STATE_CONFLICT");
                     orders.afterPaid(buyer,order);return true;
                 });}catch(ffdd.opsconsole.shared.exception.BizException failure){assertEquals(409,failure.getCode());return false;}
@@ -509,7 +509,7 @@ class PromotionLifecycleMySqlTest {
                     BigDecimal amount=decimal(pending.get("amount_usdt")),after=wallet.usdtAvailable().subtract(amount);
                     changed(paymentMapper.debitDevelopmentWallet(buyer,amount,wallet.version()));
                     changed(paymentMapper.insertDevelopmentPurchaseLedger(order,buyer,amount,after));
-                    if(paymentMapper.markDevelopmentOrderActivated(order,buyer,"WALLET-PAY-"+order)!=1)
+                    if(paymentMapper.markDevelopmentOrderDelivered(order,buyer,"WALLET-PAY-"+order,"ACTIVATED",null)!=1)
                         throw new ffdd.opsconsole.shared.exception.BizException(409,"ORDER_STATE_CONFLICT");
                     orders.afterPaid(buyer,order);return true;
                 });}catch(ffdd.opsconsole.shared.exception.BizException failure){assertEquals(409,failure.getCode());return false;}

@@ -42,7 +42,8 @@ class OpsGrowthCommandBoundaryTest {
     void setUp() {
         idempotency = mock(AdminIdempotencyService.class);
         outbox = mock(EventOutboxService.class);
-        boundary = new OpsGrowthCommandBoundary(idempotency, outbox, java.util.Optional.empty());
+        boundary = new OpsGrowthCommandBoundary(idempotency, outbox, java.util.Optional.empty(),
+                org.mockito.Mockito.mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class));
         when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any(Supplier.class)))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
     }

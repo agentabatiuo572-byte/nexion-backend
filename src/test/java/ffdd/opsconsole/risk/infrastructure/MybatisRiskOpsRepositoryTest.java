@@ -242,7 +242,7 @@ class MybatisRiskOpsRepositoryTest {
         when(mapper.activeScoreOverride("U00000052")).thenReturn(override);
         when(mapper.updateScoreUserModelIfVersion(eq("U00000052"), eq(7L), eq(15), eq("k4-v45"), any())).thenReturn(1);
         when(mapper.findScoreUser("U00000052")).thenReturn(
-                new RiskOpsMapper.ScoreUserRecord("U00000052", 15, "k4-v45", 8L, "now", "now"));
+                new RiskOpsMapper.ScoreUserRecord("U00000052", 15, "k4-v45", 8L, "now", "now", null));
         when(mapper.scoreConfigRows()).thenReturn(java.util.List.of());
         when(mapper.scoreContributions("U00000052")).thenReturn(java.util.List.of());
 
@@ -268,7 +268,7 @@ class MybatisRiskOpsRepositoryTest {
         MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
                 mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         when(mapper.findScoreUser("U00000052")).thenReturn(
-                new RiskOpsMapper.ScoreUserRecord("U00000052", 15, "k4-v45", 8L, "now", "now"));
+                new RiskOpsMapper.ScoreUserRecord("U00000052", 15, "k4-v45", 8L, "now", "now", null));
         when(mapper.bumpScoreUserVersion(eq("U00000052"), eq(8L), any())).thenReturn(1);
         when(mapper.scoreConfigRows()).thenReturn(java.util.List.of());
         when(mapper.scoreContributions("U00000052")).thenReturn(java.util.List.of());
@@ -304,7 +304,7 @@ class MybatisRiskOpsRepositoryTest {
         MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
                 mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         when(mapper.findCurrentScoreUser("U00000067")).thenReturn(
-                new RiskOpsMapper.ScoreUserRecord("U00000067", 67, "k4-v23", 4L, "now", "now"));
+                new RiskOpsMapper.ScoreUserRecord("U00000067", 67, "k4-v23", 4L, "now", "now", null));
         when(mapper.activeScoreModel()).thenReturn(new RiskOpsMapper.ScoreModelRecord(
                 23L, 8L, "active", "{}", "{}", "{}",
                 35, 65, 80, "non-default threshold test", "risk-admin", "risk-admin", "now", "now"));
@@ -327,7 +327,7 @@ class MybatisRiskOpsRepositoryTest {
         MybatisRiskOpsRepository repository = new MybatisRiskOpsRepository(
                 mapper, OpsReadTimeSeedPolicy.disabledForDirectConstruction());
         when(mapper.findCurrentScoreUser("U00000068")).thenReturn(
-                new RiskOpsMapper.ScoreUserRecord("U00000068", 88, "k4-v24", 5L, "now", "now"));
+                new RiskOpsMapper.ScoreUserRecord("U00000068", 88, "k4-v24", 5L, "now", "now", null));
         when(mapper.activeScoreModel()).thenReturn(new RiskOpsMapper.ScoreModelRecord(
                 24L, 9L, "active", "{}", "{}", "{}",
                 40, 90, 85, "invalid escalation threshold", "risk-admin", "risk-admin", "now", "now"));

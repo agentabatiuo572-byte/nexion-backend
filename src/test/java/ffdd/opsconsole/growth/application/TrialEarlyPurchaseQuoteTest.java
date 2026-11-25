@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.application;
 
+import static ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.TRIAL_HOSTING_CENTER;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -82,7 +83,7 @@ class TrialEarlyPurchaseQuoteTest {
         when(mapper.insertConversionOrder(eq(7L), anyString(), eq(9L), any(), any(), any())).thenReturn(1);
         when(mapper.insertConversionOrderItem(anyString(), eq(9L), eq("stellarbox-s1"), anyString(), any())).thenReturn(1);
         when(mapper.insertPurchasedDevice(eq(7L), anyString(), eq(9L), eq("stellarbox-s1"), eq("Entry"),
-                eq("DEVICE"), anyString(), eq("Trial"), any())).thenReturn(1);
+                eq("DEVICE"), anyString(), eq("Trial"), any(), eq(TRIAL_HOSTING_CENTER))).thenReturn(1);
         when(mapper.deviceIdByInstanceNo(anyString())).thenReturn(77L);
         when(mapper.markRedeemed(eq(1L), eq(0L), eq(77L), any(), any(), any(), any(), any(), any(), any(), anyString()))
                 .thenReturn(1);
@@ -251,7 +252,7 @@ class TrialEarlyPurchaseQuoteTest {
     }
 
     private AppTrialLifecycleService service(Instant at) {
-        return ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.businessOnly(new AppTrialLifecycleService(capture, mapper, earnings, idempotency, coverage, audit, outbox,
+        return ffdd.opsconsole.auth.support.AuthorizedPurchaseFixture.trialBusinessOnly(new AppTrialLifecycleService(capture, mapper, earnings, idempotency, coverage, audit, outbox,
                 releasePolicy, canonicalStateMapper, environment(), Clock.fixed(at, SHANGHAI), org.mockito.Mockito.mock(ffdd.opsconsole.device.application.TestCloudActivationAdmission.class)));
     }
 

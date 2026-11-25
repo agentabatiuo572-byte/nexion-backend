@@ -2197,6 +2197,9 @@ class OpsTeamServiceTest {
     }
 
     private static final class FakeTeamCommissionRepository implements TeamCommissionRepository {
+        @Override
+        public int countEventUserSuspended(long eventId) { return 0; }
+
 
         @Override public Map<String, Object> commissionEventById(long eventId) { return Map.of(); }
 
@@ -2308,6 +2311,11 @@ class OpsTeamServiceTest {
         }
 
         @Override
+        public List<Map<String, Object>> f2PayoutStatistics() {
+            return List.of();
+        }
+
+        @Override
         public List<Map<String, Object>> f2Metrics() {
             return f2Metrics;
         }
@@ -2373,6 +2381,11 @@ class OpsTeamServiceTest {
         @Override
         public Map<String, Object> leadershipPoolSummary() {
             return leadershipPoolSummary;
+        }
+
+        @Override
+        public List<Map<String, Object>> leadershipVoterRanks(int minRank) {
+            return leadershipRanks();
         }
 
         @Override
@@ -3055,7 +3068,7 @@ class OpsTeamServiceTest {
     @Test
     void reissueRejectsMissingIdempotencyKey() {
         ApiResult<Map<String, Object>> result = service.reissueRewardPayout("pay-x", null,
-                new VRankRewardPayoutActionRequest("reissue reason test", "tester"));
+                new VRankRewardPayoutActionRequest("reissue reason test", "tester", null));
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus());
     }
 
@@ -3063,7 +3076,7 @@ class OpsTeamServiceTest {
     @Test
     void reissueRejectsMissingPayout() {
         ApiResult<Map<String, Object>> result = service.reissueRewardPayout("pay-missing", "idem-reissue-1",
-                new VRankRewardPayoutActionRequest("reissue missing payout", "tester"));
+                new VRankRewardPayoutActionRequest("reissue missing payout", "tester", null));
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.VALIDATION_FAILED.httpStatus());
         assertThat((String) result.getMessage()).contains("PAYOUT_NOT_FOUND");
     }
@@ -3075,7 +3088,7 @@ class OpsTeamServiceTest {
                 "REVERSED", "2026-07-15 10:00:00", new BigDecimal("50"), 1234L));
 
         ApiResult<Map<String, Object>> result = service.reissueRewardPayout("pay-a2-reissue", "idem-a2-reissue",
-                new VRankRewardPayoutActionRequest("direct payout reissue attempt", "tester"));
+                new VRankRewardPayoutActionRequest("direct payout reissue attempt", "tester", null));
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
@@ -3095,7 +3108,7 @@ class OpsTeamServiceTest {
         ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
         try {
             result = service.reissueRewardPayout("pay-reissue-1", "idem-reissue-2",
-                    new VRankRewardPayoutActionRequest("manual reissue payout", "admin-1"));
+                    new VRankRewardPayoutActionRequest("manual reissue payout", "admin-1", null));
         } finally {
             ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
         }
@@ -3119,7 +3132,7 @@ class OpsTeamServiceTest {
         ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
         try {
             assertThat(service.reverseRewardPayout("pay-reissue-1", "idem-reverse-reissue",
-                    new VRankRewardPayoutActionRequest("reverse reissued payout", "risk-admin")).getCode()).isZero();
+                    new VRankRewardPayoutActionRequest("reverse reissued payout", "risk-admin", null)).getCode()).isZero();
         } finally {
             ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
         }
@@ -3133,7 +3146,7 @@ class OpsTeamServiceTest {
                 "GRANTED", "2026-07-15 10:00:00", new BigDecimal("30"), null));
 
         ApiResult<Map<String, Object>> result = service.reissueRewardPayout("pay-granted", "idem-reissue-3",
-                new VRankRewardPayoutActionRequest("double reissue attempt", "tester"));
+                new VRankRewardPayoutActionRequest("double reissue attempt", "tester", null));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat((String) result.getMessage()).contains("PAYOUT_REISSUE_REQUIRES_REVERSED");
@@ -3149,7 +3162,7 @@ class OpsTeamServiceTest {
         ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
         try {
             result = service.reverseRewardPayout("pay-reverse-1", "idem-reverse-1",
-                    new VRankRewardPayoutActionRequest("fraud detection reversal", "risk-admin"));
+                    new VRankRewardPayoutActionRequest("fraud detection reversal", "risk-admin", null));
         } finally {
             ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
         }
@@ -3175,7 +3188,7 @@ class OpsTeamServiceTest {
                 "GRANTED", "2026-07-15 10:00:00", new BigDecimal("80"), 5670L));
 
         ApiResult<Map<String, Object>> result = service.reverseRewardPayout("pay-a2-reverse", "idem-a2-reverse",
-                new VRankRewardPayoutActionRequest("direct payout reverse attempt", "tester"));
+                new VRankRewardPayoutActionRequest("direct payout reverse attempt", "tester", null));
 
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("A2_CONFIRMATION_REQUIRED");
@@ -3194,7 +3207,7 @@ class OpsTeamServiceTest {
         ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
         try {
             result = service.reverseRewardPayout("pay-voucher", "idem-reverse-2",
-                    new VRankRewardPayoutActionRequest("voucher grant rollback", "tester"));
+                    new VRankRewardPayoutActionRequest("voucher grant rollback", "tester", null));
         } finally {
             ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
         }
@@ -3212,7 +3225,7 @@ class OpsTeamServiceTest {
                 "REVERSED", "2026-07-15 10:00:00", new BigDecimal("10"), 9999L));
 
         ApiResult<Map<String, Object>> result = service.reverseRewardPayout("pay-twice", "idem-reverse-3",
-                new VRankRewardPayoutActionRequest("double reverse attempt", "tester"));
+                new VRankRewardPayoutActionRequest("double reverse attempt", "tester", null));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat((String) result.getMessage()).contains("PAYOUT_REVERSE_STATE_INVALID");

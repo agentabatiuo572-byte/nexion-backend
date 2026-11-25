@@ -1086,7 +1086,7 @@ class OpsSupportAgentServiceTest {
                 String position,
                 List<String> serviceTypes,
                 List<String> tags,
-                int maxConcurrent,
+                Integer maxConcurrent,
                 LocalDateTime now) {
             defaultProfileAttempts.add(adminId);
             if (!profiles.containsKey(adminId)) {
@@ -1112,7 +1112,7 @@ class OpsSupportAgentServiceTest {
                 String position,
                 List<String> serviceTypes,
                 List<String> tags,
-                int maxConcurrent,
+                Integer maxConcurrent,
                 boolean enabled,
                 boolean transferable,
                 boolean busy,
@@ -1134,7 +1134,7 @@ class OpsSupportAgentServiceTest {
         @Override
         public boolean updateProfileCas(
                 Long adminId, String seatType, String position, List<String> serviceTypes, List<String> tags,
-                int maxConcurrent, boolean enabled, boolean transferable, boolean busy,
+                Integer maxConcurrent, boolean enabled, boolean transferable, boolean busy,
                 long expectedVersion, LocalDateTime now) {
             SupportAgentProfileRecord current = profiles.get(adminId);
             if (current == null || current.version() != expectedVersion) {

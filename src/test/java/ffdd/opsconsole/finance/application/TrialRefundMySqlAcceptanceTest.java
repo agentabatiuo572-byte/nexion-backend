@@ -79,7 +79,7 @@ class TrialRefundMySqlAcceptanceTest {
         var repository=new MybatisPlatformConfigRepository(mapper(PlatformConfigItemMapper.class));
         var policy=new A2RuntimePolicy(repository);
         var audit=new AuditLogService(mapper(AuditLogMapper.class),new AuditLogSanitizer(json),
-                new ApplicationNameProperties(),new AuditProperties(),mapper(AdminMapper.class),policy);
+                new ApplicationNameProperties(),new AuditProperties(),mapper(AdminMapper.class),policy,json);
         var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(mapper(AdminIdempotencyRecordMapper.class)));
         commands=new AdminIdempotencyService(proxy(new AdminIdempotencyTransactionExecutor(
                 mapper(AdminIdempotencyRecordMapper.class),json,expiry,
