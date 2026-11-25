@@ -3,6 +3,7 @@ package ffdd.opsconsole.content.web;
 import ffdd.opsconsole.content.application.SupportInviteCodeService;
 import ffdd.opsconsole.content.dto.SupportGroupManagementViews.InviteCodeView;
 import ffdd.opsconsole.shared.api.ApiResult;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -19,7 +20,9 @@ public class OpsSupportInviteCodeController {
     public ApiResult<InviteCodeView> self() {return ApiResult.ok(invites.self());}
 
     @PostMapping("/self/invite-code")
-    public ApiResult<InviteCodeView> issue(@RequestHeader("Idempotency-Key") String key,@RequestBody Issue request) {
+    public ApiResult<InviteCodeView> issue(@RequestHeader("Idempotency-Key") String key,
+                                         @RequestBody Issue request, HttpServletRequest httpRequest) {
+        SupportSelfAccountGuard.requireMatch(httpRequest);
         return ApiResult.ok(invites.change(null,request.expectedVersion(),null,key));
     }
 

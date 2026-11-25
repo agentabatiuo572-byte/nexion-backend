@@ -7,6 +7,7 @@ import ffdd.opsconsole.content.dto.SupportAvatarRequests.*;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.idempotency.AdminCommandInvestigationService;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import jakarta.servlet.http.HttpServletRequest;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -32,20 +33,35 @@ public class OpsSupportAdminAvatarController {
     public ApiResult<Map<String,Object>> prepareDefault(@RequestHeader("Idempotency-Key") String key,@RequestBody DefaultPrepare request){return ApiResult.ok(self.prepareAdmin(key,request));}
     @PostMapping(value="/self/avatar-assets",consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("isAuthenticated()")
-    public ApiResult<Map<String,Object>> selfUpload(@RequestParam Map<String,String> params,@RequestHeader("Idempotency-Key") String key,@RequestPart MultipartFile file){
+    public ApiResult<Map<String,Object>> selfUpload(@RequestParam Map<String,String> params,
+            @RequestHeader("Idempotency-Key") String key, @RequestPart MultipartFile file,
+            HttpServletRequest httpRequest) {
+        SupportSelfAccountGuard.requireMatch(httpRequest);
         if(!params.keySet().equals(java.util.Set.of("clientUploadId")))throw new ffdd.opsconsole.shared.exception.BizException(422,"AVATAR_COMMAND_INVALID");
         return ApiResult.ok(self.upload(params.get("clientUploadId"),key,file));
     }
     @PostMapping("/self/avatar-assets/default") @PreAuthorize("isAuthenticated()")
-    public ApiResult<Map<String,Object>> selfDefault(@RequestHeader("Idempotency-Key") String key,@RequestBody DefaultPrepare request){return ApiResult.ok(self.prepareDefault(key,request));}
+    public ApiResult<Map<String,Object>> selfDefault(@RequestHeader("Idempotency-Key") String key,
+            @RequestBody DefaultPrepare request, HttpServletRequest httpRequest) {
+        SupportSelfAccountGuard.requireMatch(httpRequest);
+        return ApiResult.ok(self.prepareDefault(key,request));
+    }
     @GetMapping("/self/avatar-assets/{id}") @PreAuthorize("isAuthenticated()")
     public ResponseEntity<byte[]> selfPreview(@PathVariable String id){return image(self.preview(id));}
     @DeleteMapping("/self/avatar-assets/{id}") @PreAuthorize("isAuthenticated()")
-    public ApiResult<Map<String,Object>> selfCancel(@PathVariable String id,@RequestHeader("Idempotency-Key") String key){return ApiResult.ok(self.cancel(id,key));}
+    public ApiResult<Map<String,Object>> selfCancel(@PathVariable String id,
+            @RequestHeader("Idempotency-Key") String key, HttpServletRequest httpRequest) {
+        SupportSelfAccountGuard.requireMatch(httpRequest);
+        return ApiResult.ok(self.cancel(id,key));
+    }
     @GetMapping("/self/avatar") @PreAuthorize("isAuthenticated()")
     public ApiResult<Map<String,Object>> selfSnapshot(){return ApiResult.ok(self.snapshot());}
     @PatchMapping("/self/avatar") @PreAuthorize("isAuthenticated()")
-    public ApiResult<Map<String,Object>> selfSave(@RequestHeader("Idempotency-Key") String key,@RequestBody SelfSave request){return ApiResult.ok(self.save(key,request));}
+    public ApiResult<Map<String,Object>> selfSave(@RequestHeader("Idempotency-Key") String key,
+            @RequestBody SelfSave request, HttpServletRequest httpRequest) {
+        SupportSelfAccountGuard.requireMatch(httpRequest);
+        return ApiResult.ok(self.save(key,request));
+    }
     @GetMapping("/self/avatar/content") @PreAuthorize("isAuthenticated()")
     public ResponseEntity<byte[]> selfContent(){return image(self.content());}
     @PostMapping(value="/avatar-assets",consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
