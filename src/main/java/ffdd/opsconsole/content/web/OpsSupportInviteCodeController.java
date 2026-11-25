@@ -17,7 +17,10 @@ public class OpsSupportInviteCodeController {
     public record Revoke(Long expectedVersion,String reason) {}
 
     @GetMapping("/self/invite-code")
-    public ApiResult<InviteCodeView> self() {return ApiResult.ok(invites.self());}
+    public ApiResult<InviteCodeView> self(HttpServletRequest httpRequest) {
+        SupportSelfAccountGuard.requireMatch(httpRequest);
+        return ApiResult.ok(invites.self());
+    }
 
     @PostMapping("/self/invite-code")
     public ApiResult<InviteCodeView> issue(@RequestHeader("Idempotency-Key") String key,

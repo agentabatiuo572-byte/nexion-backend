@@ -237,7 +237,7 @@ public class PurchasePaymentService {
             Instant trialDeadline = "TRIAL_CONVERT".equals(kind) ? trials.requireExternalPaymentConversion(owner) : null;
             Instant pricingAt=now();
             var target=new ReplacementTarget();
-            var pricing=pricing(owner,kind,payload,pricingAt,false,false,true,target,false,null,Map.of());
+            var pricing=pricing(owner,kind,payload,pricingAt,false,false,true,target,false,null,Map.of(),true);
             if ("ORDER_PAY".equals(kind)) {
                 payload.put("orderNo", pricing.get("orderNo"));
                 requireOrdinaryOrderPayment(owner, payload);
@@ -440,7 +440,8 @@ public class PurchasePaymentService {
     }
     private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,
                                       boolean legacyTrialQuote, boolean legacyTrialVersion, boolean checkReplacementSource, ReplacementTarget target,
-                                      boolean lockReplacement, PurchaseQuotaReservation reservation, Map<String, String> trialPolicy){
+                                      boolean lockReplacement, PurchaseQuotaReservation reservation, Map<String, String> trialPolicy,
+                                      boolean newTrialQuote){
         hostingCenters.requirePool();
         switch(kind){
             case "ORDER_PAY":{
@@ -489,12 +490,18 @@ public class PurchasePaymentService {
                         && !text(payload.get("quoteVersion")).equals(text(q.get("quoteVersion")))) {
                     throw trialQuoteConflict("TRIAL_QUOTE_CHANGED", payload, q);
                 }
-                if(!legacyTrialQuote){
-                    String expected=text(payload.get("expectedAmountUsdt"));
-                    if(!expected.matches("[0-9]{1,7}(\\.[0-9]{1,2})?")||new BigDecimal(expected).compareTo(new BigDecimal("1000000"))>0)throw new BizException(409,"TRIAL_AMOUNT_INVALID");
-                    if(money(q.get("amountUsdt")).compareTo(new BigDecimal(expected))>0)throw trialQuoteConflict("TRIAL_AMOUNT_MISMATCH", payload, q);
+                String expected = text(payload.get("expectedAmountUsdt"));
+                if (!legacyTrialQuote && (!expected.matches("[0-9]{1,7}(\\.[0-9]{1,2})?")
+                        || new BigDecimal(expected).compareTo(new BigDecimal("1000000")) > 0)) {
+                    throw new BizException(409, "TRIAL_AMOUNT_INVALID");
                 }
-                return values("businessAmountUsdt",text(q.get("amountUsdt")),"subtotalUsdt",money(q.get("amountUsdt")).toPlainString(),"quoteVersion",q.get("quoteVersion"),"productNo",payload.get("productNo"),"trial",q);
+                Object businessAmount = q.get("amountUsdt");
+                if (newTrialQuote) requireExternalTrialAmount(businessAmount);
+                BigDecimal subtotal = money(businessAmount);
+                if (!legacyTrialQuote && subtotal.compareTo(new BigDecimal(expected)) > 0) {
+                    throw trialQuoteConflict("TRIAL_AMOUNT_MISMATCH", payload, q);
+                }
+                return values("businessAmountUsdt",text(businessAmount),"subtotalUsdt",subtotal.toPlainString(),"quoteVersion",q.get("quoteVersion"),"productNo",payload.get("productNo"),"trial",q);
             }
             default:throw new BizException(422,"PURCHASE_PAYMENT_KIND_INVALID");
         }
@@ -544,6 +551,13 @@ public class PurchasePaymentService {
 
     private static <T> T require(ApiResult<T> response){if(response==null||response.getCode()!=0)throw new BizException(response==null?503:response.getCode(),response==null?"PURCHASE_PAYMENT_UNAVAILABLE":response.getMessage());return response.getData();}
     private static Long optionalLong(Object value){return value==null?null:number(value);}
+
+    private static void requireExternalTrialAmount(Object amount) {
+        if (amount != null && TrialPurchaseOptions.isPositiveSubcent(new BigDecimal(text(amount)))) {
+            throw new BizException(409, "TRIAL_PAYMENT_AMOUNT_REQUIRES_WALLET");
+        }
+    }
+
     private void requireUnusedQuote(String quoteId) {
         if (db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE quote_id=?", quoteId) != null) {
             throw new BizException(409, "PURCHASE_PAYMENT_QUOTE_ALREADY_USED");
@@ -617,7 +631,10 @@ public class PurchasePaymentService {
             throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
         }
         if ("ACCRUED_B90".equals(frozen.get("trialOffsetBasis"))
-                && text(payload.get("quoteVersion")).equals(text(current.get("quoteVersion")))) return null;
+                && text(payload.get("quoteVersion")).equals(text(current.get("quoteVersion")))) {
+            requireExternalTrialAmount(frozen.get("businessAmountUsdt"));
+            return null;
+        }
         var rejection = trialQuoteConflict("TRIAL_QUOTE_CHANGED", payload, current);
         db.write("INSERT INTO nx_trial_external_rejection(user_id,command_key,quote_id,receipt_json) VALUES(?,?,?,?)",
                 owner, key, storedQuote.get("quote_id"), json(values("message", rejection.getMessage(), "data", rejection.errorData())));
@@ -732,8 +749,12 @@ public class PurchasePaymentService {
             var target=new ReplacementTarget();
             var pricing=pricing(owner, kind, payload, pricingAt, !frozenQuote.containsKey("trialOffsetBasis"),
                     !"ACCRUED_B90".equals(frozenQuote.get("trialOffsetBasis")), true, target, quotaHoldEnabled, null,
-                    frozenTrialPolicy(frozenQuote));
+                    frozenTrialPolicy(frozenQuote), false);
             if(!hash(pricing).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
+            if ("TRIAL_CONVERT".equals(kind) && frozenQuote.get("businessAmountUsdt") == null) {
+                // Legacy quotes without an exact amount rely on the revalidated original business pricing.
+                requireExternalTrialAmount(pricing.get("businessAmountUsdt"));
+            }
             ready(text(quote.get("payment_method")));
             if (!quotaHoldEnabled) {
                 checkPurchaseQuota(owner,kind,payload,pricing,target);
@@ -1128,7 +1149,7 @@ public class PurchasePaymentService {
                 trialClaimNo = null;
             }
             // Fulfilment checks the replacement source under the existing submission rules.
-            var pricing = pricing(owner, kind, payload, pricingAt, legacyTrialQuote, legacyTrialVersion, false, null, false, reservation, trialPolicy);
+            var pricing = pricing(owner, kind, payload, pricingAt, legacyTrialQuote, legacyTrialVersion, false, null, false, reservation, trialPolicy, false);
             if (!hash(pricing).equals(intent.get("pricing_hash"))) throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             if (reservation != null) {
                 if (!reservation.businessId().equals(reservationBusiness(kind, pricing))) throw PurchaseQuotaReservation.conflict();

@@ -36,6 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class TrialPurchaseOptions {
     public static final String WRITE_PERMISSION_NAME = "免费试用设置修改";
+    private static final BigDecimal CENT_USDT = new BigDecimal("0.01");
     private final TrialPurchaseOptionsMapper db;
     private final StorefrontProductReleasePolicy release;
     private final StorefrontPurchaseGatePolicy gatePolicy;
@@ -235,6 +236,10 @@ public class TrialPurchaseOptions {
 
     public static String amount(BigDecimal value) {
         return value == null ? null : value.setScale(6, RoundingMode.DOWN).toPlainString();
+    }
+
+    public static boolean isPositiveSubcent(BigDecimal value) {
+        return value.signum() > 0 && value.compareTo(CENT_USDT) < 0;
     }
 
     public static Map<String, Object> fields(Object... entries) {

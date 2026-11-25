@@ -47,7 +47,10 @@ public class OpsSupportAdminAvatarController {
         return ApiResult.ok(self.prepareDefault(key,request));
     }
     @GetMapping("/self/avatar-assets/{id}") @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<byte[]> selfPreview(@PathVariable String id){return image(self.preview(id));}
+    public ResponseEntity<?> selfPreview(@PathVariable String id, HttpServletRequest httpRequest) {
+        if (!SupportSelfAccountGuard.matches(httpRequest)) return SupportSelfAccountGuard.mismatchResponse();
+        return image(self.preview(id));
+    }
     @DeleteMapping("/self/avatar-assets/{id}") @PreAuthorize("isAuthenticated()")
     public ApiResult<Map<String,Object>> selfCancel(@PathVariable String id,
             @RequestHeader("Idempotency-Key") String key, HttpServletRequest httpRequest) {
@@ -55,7 +58,10 @@ public class OpsSupportAdminAvatarController {
         return ApiResult.ok(self.cancel(id,key));
     }
     @GetMapping("/self/avatar") @PreAuthorize("isAuthenticated()")
-    public ApiResult<Map<String,Object>> selfSnapshot(){return ApiResult.ok(self.snapshot());}
+    public ApiResult<Map<String,Object>> selfSnapshot(HttpServletRequest httpRequest) {
+        SupportSelfAccountGuard.requireMatch(httpRequest);
+        return ApiResult.ok(self.snapshot());
+    }
     @PatchMapping("/self/avatar") @PreAuthorize("isAuthenticated()")
     public ApiResult<Map<String,Object>> selfSave(@RequestHeader("Idempotency-Key") String key,
             @RequestBody SelfSave request, HttpServletRequest httpRequest) {
@@ -63,7 +69,10 @@ public class OpsSupportAdminAvatarController {
         return ApiResult.ok(self.save(key,request));
     }
     @GetMapping("/self/avatar/content") @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<byte[]> selfContent(){return image(self.content());}
+    public ResponseEntity<?> selfContent(HttpServletRequest httpRequest) {
+        if (!SupportSelfAccountGuard.matches(httpRequest)) return SupportSelfAccountGuard.mismatchResponse();
+        return image(self.content());
+    }
     @PostMapping(value="/avatar-assets",consumes=MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAuthority('platform_a1_write')")
     public ApiResult<Map<String,Object>> upload(@RequestParam String clientUploadId,@RequestHeader("Idempotency-Key") String key,@RequestPart MultipartFile file){return ApiResult.ok(service.upload(clientUploadId,key,file));}

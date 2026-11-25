@@ -162,10 +162,10 @@ public class AppTrialLifecycleService {
         var codes = new java.util.LinkedHashSet<String>();
         codes.add(original);
         codes.addAll(purchaseOptions.selected());
-        var originalMethods = purchasePayments.getObject().availableTrialPaymentMethods();
         var options = new java.util.ArrayList<Map<String, Object>>();
         for (String code : codes) {
             boolean isOriginal = original.equals(code);
+            boolean subcent = false;
             Product product = null;
             BigDecimal price = isOriginal ? row.priceUsdt() : null;
             Map<String, Object> quoteDetails = null;
@@ -182,6 +182,7 @@ public class AppTrialLifecycleService {
                     throw new BizException(409, "TRIAL_DAILY_YIELD_INVALID");
                 }
                 var quote = quote(row, policy, now, false, code, price, false);
+                subcent = TrialPurchaseOptions.isPositiveSubcent(quote.amountUsdt());
                 quoteDetails = decimalQuote(quote, price);
                 quoteVersion = quote.version();
                 if (reason == null) reason = purchaseOptions.stockOrConfigurationBlock(product);
@@ -196,12 +197,14 @@ public class AppTrialLifecycleService {
                 log.warn("Could not read trial purchase option for SKU {}", code, ex);
                 reason = "TRIAL_PRODUCT_QUOTE_UNAVAILABLE";
             }
+            var methods = isOriginal && !subcent
+                    ? purchasePayments.getObject().availableTrialPaymentMethods() : List.of("WALLET");
             var option = linked("productNo", code, "name", isOriginal ? row.deviceName() : product == null ? code : product.name(),
                     "imageUrl", trialOptionImage(code), "originalTrialProduct", isOriginal,
                     "productType", product == null ? (isOriginal ? "DEVICE" : null) : product.productType(),
                     "inventoryMode", product == null ? (isOriginal ? "FINITE" : null) : product.inventoryMode(),
                     "priceUsdt", TrialPurchaseOptions.amount(price),
-                    "paymentMethods", isOriginal ? originalMethods : List.of("WALLET"));
+                    "paymentMethods", methods);
             if (isOriginal) option.put("storePriceUsdt", product == null ? null : TrialPurchaseOptions.amount(product.priceUsdt()));
             if (quoteDetails != null) {
                 option.put("quote", quoteDetails);
