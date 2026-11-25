@@ -14,11 +14,13 @@ import ffdd.opsconsole.content.performanceexport.PerformanceExportFactSource.Typ
 import ffdd.opsconsole.content.performanceexport.PerformanceExportFactSource.Window;
 import ffdd.opsconsole.content.performanceexport.mapper.SupportPerformanceExportMapper;
 import ffdd.opsconsole.content.performanceexport.mapper.SupportPerformanceExportMapper.TaskRow;
+import ffdd.opsconsole.platform.application.AdminObjectDisplayNameService;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -63,6 +65,7 @@ public class SupportPerformanceExportService {
     static final int MAX_REASON_CHARS = 200;
     private static final int TOKEN_HOURS = 24;
     private static final int FILE_RETENTION_DAYS = 7;
+    private static final String COLUMN_LABELS_V2 = "v2:";
 
     private final SupportPerformanceExportMapper mapper;
     private final PerformanceExportFactSource facts;
@@ -77,6 +80,8 @@ public class SupportPerformanceExportService {
     private final PlatformTransactionManager transactions;
     private final ffdd.opsconsole.platform.application.A2RuntimePolicy reasonPolicy;
     private final ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper commandRecords;
+    private final AdminObjectDisplayNameService adminDisplayNames;
+    private final AdminOperatorRoleResolver adminRoles;
 
     public Map<String, Object> options() {
         Long actor = actorId();
@@ -514,13 +519,15 @@ public class SupportPerformanceExportService {
                 item.put("reasonCodes", append(reasons, blocker));
             }
             items.add(item);
-            seed.append("|").append(type).append(":").append(item.get("status")).append(":").append(item.get("reasonCodes"));
+            seed.append("|").append(type).append(":").append(item.get("status")).append(":")
+                    .append(item.get("reasonCodes")).append(":").append(write(item.get("columns")));
             if (table != null) {
                 seed.append(":").append(sha256(write(table)));
                 tables.add(new TableItem(type, table));
             }
         }
-        return new Plan(window, scope, sha256(seed.toString()), items, tables);
+        String version = COLUMN_LABELS_V2 + sha256(seed.toString()).substring(0, 64 - COLUMN_LABELS_V2.length());
+        return new Plan(window, scope, version, items, tables);
     }
 
     private Map<String, Object> item(Type type, Table table, boolean allowed, Window window, boolean readFailed) {
@@ -600,7 +607,7 @@ public class SupportPerformanceExportService {
 
     private void writeFrozenFile(TaskRow task, Table table, Long actor) {
         if (table == null) throw new BizException(503, "EXPORT_SOURCE_UNAVAILABLE");
-        String csv = csv(table);
+        String csv = csv(table, frozenColumnLabels(task, table.columns()));
         String fileName = "support-performance-" + task.taskType().toLowerCase(Locale.ROOT).replace('_', '-')
                 + "-" + task.requestId() + ".csv";
         if (mapper.markReady(task.id(), task.status(), csv, fileName, LocalDateTime.now()) != 1) {
@@ -611,8 +618,11 @@ public class SupportPerformanceExportService {
     }
 
     static String csv(Table table) {
+        return csv(table, columnLabels(table.columns()));
+    }
+
+    private static String csv(Table table, List<String> labels) {
         StringBuilder out = new StringBuilder("\uFEFF");
-        List<String> labels = columnLabels(table.columns());
         out.append(String.join(",", labels.stream().map(SupportPerformanceExportService::csvCell).toList())).append("\r\n");
         for (Map<String, String> row : table.rows()) {
             List<String> cells = new ArrayList<>(table.columns().size());
@@ -646,8 +656,28 @@ public class SupportPerformanceExportService {
         return labels;
     }
 
+    private static List<String> frozenColumnLabels(TaskRow task, List<String> columns) {
+        return task.previewVersion().startsWith(COLUMN_LABELS_V2)
+                ? columnLabels(columns)
+                : columns.stream().map(SupportPerformanceExportService::legacyLabel).toList();
+    }
+
     static String label(String column) {
+        return label(column.toLowerCase(Locale.ROOT), "未识别列");
+    }
+
+    private static String legacyLabel(String column) {
         String c = column.toLowerCase(Locale.ROOT);
+        if (c.startsWith("inflowbychannel.")) return "入金-" + c.substring(16);
+        if (c.startsWith("correctionbychannel.")) return "更正-" + c.substring(20);
+        if (c.startsWith("withdrawalbychannel.")) return "提现-" + c.substring(20);
+        if (c.startsWith("vndreference.")) return "VND-" + c.substring(13);
+        if (c.startsWith("references.")) return "参考-" + c.substring(11);
+        if ("walletdebitusdt".equals(c)) return c;
+        return label(c, c.startsWith("counts.") ? c.substring(7) : c);
+    }
+
+    private static String label(String c, String fallback) {
         if (c.startsWith("counts.")) return switch (c.substring(7)) {
             case "boundatcutoff" -> "截止在绑客户数";
             case "newlybound" -> "期间新绑客户数";
@@ -661,13 +691,8 @@ public class SupportPerformanceExportService {
             case "directinvitecustomers" -> "直接邀请客户数";
             case "withinrewardrangecustomers" -> "范围内客户数";
             case "beyondrewardrangecustomers" -> "超出范围客户数";
-            default -> c.substring(7);
+            default -> fallback;
         };
-        if (c.startsWith("inflowbychannel.")) return "入金-" + c.substring(16);
-        if (c.startsWith("correctionbychannel.")) return "更正-" + c.substring(20);
-        if (c.startsWith("withdrawalbychannel.")) return "提现-" + c.substring(20);
-        if (c.startsWith("vndreference.")) return "VND-" + c.substring(13);
-        if (c.startsWith("references.")) return "参考-" + c.substring(11);
         return switch (c) {
             case "agent" -> "客服";
             case "group" -> "事件组";
@@ -675,8 +700,36 @@ public class SupportPerformanceExportService {
             case "month" -> "月份";
             case "performanceamount" -> "业绩额(USDT)";
             case "inflowtotal" -> "入金合计(USDT)";
+            case "inflowbychannel.chain_topup" -> "入金 · 链上充值";
+            case "inflowbychannel.vn_bank_topup" -> "入金 · 越南银行充值";
+            case "inflowbychannel.chain_direct_purchase" -> "入金 · 链上直购";
+            case "inflowbychannel.vn_bank_direct_purchase" -> "入金 · 越南银行直购";
             case "withdrawaltotal" -> "提现合计(USDT)";
+            case "withdrawalbychannel.trc20.walletdebited" -> "提现 · TRC20 钱包扣款";
+            case "withdrawalbychannel.trc20.fee" -> "提现 · TRC20 手续费";
+            case "withdrawalbychannel.trc20.netreceived" -> "提现 · TRC20 实际到账";
+            case "withdrawalbychannel.bep20.walletdebited" -> "提现 · BEP20 钱包扣款";
+            case "withdrawalbychannel.bep20.fee" -> "提现 · BEP20 手续费";
+            case "withdrawalbychannel.bep20.netreceived" -> "提现 · BEP20 实际到账";
+            case "withdrawalbychannel.erc20.walletdebited" -> "提现 · ERC20 钱包扣款";
+            case "withdrawalbychannel.erc20.fee" -> "提现 · ERC20 手续费";
+            case "withdrawalbychannel.erc20.netreceived" -> "提现 · ERC20 实际到账";
+            case "withdrawalbychannel.vn_bank.walletdebited" -> "提现 · 越南银行钱包扣款";
+            case "withdrawalbychannel.vn_bank.fee" -> "提现 · 越南银行手续费";
+            case "withdrawalbychannel.vn_bank.netreceived" -> "提现 · 越南银行实际到账";
             case "correctiontotal" -> "本期更正(USDT)";
+            case "correctionbychannel.chain_topup" -> "更正 · 链上充值";
+            case "correctionbychannel.vn_bank_topup" -> "更正 · 越南银行充值";
+            case "correctionbychannel.chain_direct_purchase" -> "更正 · 链上直购";
+            case "correctionbychannel.vn_bank_direct_purchase" -> "更正 · 越南银行直购";
+            case "vndreference.banktopupreceived" -> "VND · 银行充值到账";
+            case "vndreference.bankdirectreceived" -> "VND · 银行直购到账";
+            case "vndreference.bankpayoutreceived" -> "VND · 银行提现到账";
+            case "vndreference.bankinflowcorrection" -> "VND · 银行入金更正";
+            case "references.devicepurchases" -> "参考 · 购机";
+            case "references.refunds" -> "参考 · 退款";
+            case "references.manualcredits" -> "参考 · 人工入账";
+            case "references.rewardscredited" -> "参考 · 奖励入账";
             case "customerno" -> "客户编码";
             case "maskednickname" -> "客户昵称";
             case "eventagent" -> "事件客服";
@@ -697,7 +750,7 @@ public class SupportPerformanceExportService {
             case "roundingadjustmentusdt" -> "进位调整(USDT)";
             case "totalpaidusdt" -> "总实付(USDT)";
             case "performancedeltausdt" -> "业绩变动(USDT)";
-            case "walletdebitedusdt" -> "钱包扣款(USDT)";
+            case "walletdebitusdt", "walletdebitedusdt" -> "钱包扣款(USDT)";
             case "withdrawalfeeusdt" -> "提现费(USDT)";
             case "channelfeeusdt" -> "通道费(USDT)";
             case "networkfeeusdt" -> "网络费(USDT)";
@@ -711,7 +764,7 @@ public class SupportPerformanceExportService {
             case "businesszone" -> "业务时区";
             case "coverage" -> "数据覆盖";
             case "missingsources" -> "缺失来源";
-            default -> c;
+            default -> fallback;
         };
     }
 
@@ -1035,9 +1088,9 @@ public class SupportPerformanceExportService {
             minimal.put("decisionReason", null);
             return minimal;
         }
-        Map<String, Object> out = new LinkedHashMap<>(taskView(task, actor));
+        Map<String, Object> out = identifiedTaskView(task, actor);
         out.put("requestReason", task.requestReason());
-        out.put("columns", columnLabels(readList(task.columnsJson())));
+        out.put("columns", frozenColumnLabels(task, readList(task.columnsJson())));
         out.put("coverage", readMap(task.coverageJson()));
         out.put("scopeSummary", scopeSummary(task));
         out.put("decisionReason", task.decisionReason());
@@ -1048,7 +1101,19 @@ public class SupportPerformanceExportService {
     private Map<String, Object> commandView(Long actor, TaskRow task) {
         int level = accessLevel(actor, task);
         if (level == ACCESS_NONE) throw new BizException(404, "EXPORT_TASK_NOT_FOUND");
-        return level == ACCESS_MINIMAL ? minimalView(task, actor) : taskView(task, actor);
+        return level == ACCESS_MINIMAL ? minimalView(task, actor) : identifiedTaskView(task, actor);
+    }
+
+    private Map<String, Object> identifiedTaskView(TaskRow task, Long actor) {
+        Map<String, Object> out = taskView(task, actor);
+        Long requester = task.requesterId();
+        Long reviewer = task.reviewerId();
+        Map<Long, String> names = adminDisplayNames.actorNamesByIds(
+                reviewer == null ? List.of(requester) : List.of(requester, reviewer));
+        out.put("requesterName", names.get(requester));
+        out.put("requesterRole", adminRoles.resolveForAdmin(requester));
+        out.put("reviewerName", reviewer == null ? null : names.get(reviewer));
+        return out;
     }
 
     private Map<String, Object> minimalView(TaskRow task, Long actor) {

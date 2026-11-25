@@ -287,6 +287,33 @@ public class AuditReplayBusinessPermissionGuard {
         return "d_cregis_deposit_policy".equals(operation) && grants.contains(requiredAuthority(command, operation));
     }
 
+    /** Checks permissions for the stored proposal without revalidating its historical business inputs. */
+    boolean hasMappedProposalGrant(AuditReplayCommand command, String domain, long actorId, Set<String> grants) {
+        String operation = text(command.op()).toLowerCase(Locale.ROOT);
+        if ("F".equals(domain) && "f_config_batch".equals(operation)) {
+            return fConfigBatchCommands(command.params()).stream()
+                    .allMatch(item -> hasMappedProposalGrant(item, domain, actorId, grants));
+        }
+        String required = requiredAuthority(command, operation);
+        if (required == null || !grants.contains(required)) return false;
+        if (isE4Refund(command)) return hasRefundMakerRole(actorId);
+        if (isVRankOverride(command)) return grants.contains("network_f1_read");
+        if ("E".equals(domain) && Set.of(HostingCenterService.OPERATION, "e6_onboarding_yield_sku").contains(operation)) {
+            return grants.contains("device_e1_read");
+        }
+        if ("E".equals(domain) && "e6_compute_config_batch".equals(operation)) {
+            var values = canonicalComputeBatchValues(command.params());
+            return values != null && (grants.contains("device_e6_flag_toggle")
+                    || values.keySet().stream().noneMatch(ComputeConfigRegistry::isFlagParamKey));
+        }
+        return true;
+    }
+
+    private boolean hasRefundMakerRole(Long actorId) {
+        return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
+                || permissions.getPermissionGrantRoles(actorId, E4_REFUND_AUTHORITY).contains("FINANCE_LEAD");
+    }
+
     public boolean canProposeH7(AuditReplayCommand command) {
         return H7VoucherDisposition.isOperation(command) && "H".equals(command.domain())
                 && hasAuthority(H7VoucherDisposition.AUTHORITY);
@@ -349,9 +376,7 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if (isE4Refund(command)) {
             Long actor = A2ReplayContext.authenticatedAdminId();
-            boolean authorizedRole = superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
-                    || permissions.getPermissionGrantRoles(actor, E4_REFUND_AUTHORITY).contains("FINANCE_LEAD");
-            return authorizedRole && permissions.getPermissionCodes(actor).contains(E4_REFUND_AUTHORITY)
+            return hasRefundMakerRole(actor) && permissions.getPermissionCodes(actor).contains(E4_REFUND_AUTHORITY)
                     ? ApiResult.ok() : ApiResult.fail(403, "E4_REFUND_MAKER_FORBIDDEN");
         }
         if (command != null && OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op())) {
@@ -796,16 +821,21 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     ApiResult<Void> validateApprovalRole(AuditReplayCommand command) {
-        if (requiresF2F4SuperAdmin(command)
+        if (requiresSuperAdminApproval(command)
                 && !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
             return ApiResult.fail(403, "FUND_APPROVAL_CHECKER_FORBIDDEN");
         }
         return ApiResult.ok();
     }
 
-    private boolean requiresF2F4SuperAdmin(AuditReplayCommand command) {
-        if (command == null || !"F".equalsIgnoreCase(text(command.domain()))) return false;
+    private boolean requiresSuperAdminApproval(AuditReplayCommand command) {
+        if (command == null) return false;
+        String domain = text(command.domain());
         String operation = text(command.op()).trim().toLowerCase(Locale.ROOT);
+        if ("H".equalsIgnoreCase(domain)) {
+            return "h8_referral_settlement".equals(operation) || "h8_referral_settlement_user".equals(operation);
+        }
+        if (!"F".equalsIgnoreCase(domain)) return false;
         return switch (operation) {
             case "f_unilevel_bootstrap", "f_seven_layer_activation", "f_direct_referral_policy",
                     "f4_pool_settle", "f4_leaderboard_period_payout" -> true;
@@ -814,7 +844,7 @@ public class AuditReplayBusinessPermissionGuard {
                 yield "F2".equals(source) || "F4".equals(source);
             }
             case "f_config_batch" -> fConfigBatchCommands(command.params()).stream()
-                    .anyMatch(this::requiresF2F4SuperAdmin);
+                    .anyMatch(this::requiresSuperAdminApproval);
             default -> false;
         };
     }

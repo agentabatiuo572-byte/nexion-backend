@@ -180,15 +180,8 @@ public class OpsAuditCenterService {
 
     @Transactional(readOnly = true)
     public ApiResult<AuditOperationTicket> proposalByIdempotencyKey(String key) {
-        long actorId;
-        boolean pageOnly = false;
-        try {
-            actorId = accessPolicy.requireOriginalKeyProposalReader();
-        } catch (BizException ex) {
-            if (ex.getCode() != 403) throw ex;
-            actorId = accessPolicy.requirePageProposalReader();
-            pageOnly = true;
-        }
+        var reader = accessPolicy.requireOriginalKeyProposalReader();
+        long actorId = reader.actorId();
         String operationId = auditLogService.findA2ProposalId(actorId, key);
         if (operationId == null) return ApiResult.fail(404, "A2_PROPOSAL_NOT_FOUND");
         AuditOperationTicketEntity ticket = ticketMapper.selectActiveByOperationId(operationId);
@@ -197,13 +190,13 @@ public class OpsAuditCenterService {
         if (!Long.valueOf(actorId).equals(ticketMakerId(ticket, command))) {
             return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
         }
-        boolean pageRead = accessPolicy.canReadPageProposal(command, actorId);
-        if (pageOnly && !pageRead) {
-            return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
-        }
+        boolean pageRead = accessPolicy.canReadPageProposal(command, reader.grants());
         boolean verifiedMakerPageRead = pageRead && (A4RegistryApproval.supports(command)
                 || AuditReplayBusinessPermissionGuard.isVRankOverride(command));
-        if (!verifiedMakerPageRead && !canReadOwnProposal(ticket, command, actorId)) {
+        boolean existingRead = reader.access() != A2AccessPolicy.OriginalKeyAccess.WRITE_ONLY
+                && (reader.access() != A2AccessPolicy.OriginalKeyAccess.BUSINESS_PAGE || pageRead)
+                && (verifiedMakerPageRead || canReadOwnProposal(ticket, command, actorId));
+        if (!existingRead && !accessPolicy.canRecoverOwnWriteProposal(ticket, command, reader)) {
             return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
         }
         return ApiResult.ok(toTicket(ticket, true));
@@ -211,7 +204,7 @@ public class OpsAuditCenterService {
 
     @Transactional(readOnly = true)
     public ApiResult<AuditOperationTicket> ownF3ProposalByOperationId(String operationId) {
-        long actorId = accessPolicy.requireOriginalKeyProposalReader();
+        long actorId = accessPolicy.requireF3ProposalReader();
         if (!StringUtils.hasText(operationId)) return ApiResult.fail(400, "operationId is required");
         String originalId = operationId.trim();
         var ticket = ticketMapper.selectActiveByOperationId(originalId);

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.auth.mapper.AdminMapper;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,11 +47,7 @@ public class AdminObjectDisplayNameService {
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public Map<Long, String> byIds(Collection<Long> ids) {
-        if (ids == null || ids.isEmpty()) return Map.of();
-        List<Long> normalized = ids.stream()
-                .filter(id -> id != null && id > 0)
-                .distinct()
-                .toList();
+        List<Long> normalized = positiveIds(ids);
         if (normalized.isEmpty()) return Map.of();
         try {
             Map<Long, String> names = new LinkedHashMap<>();
@@ -63,5 +60,31 @@ public class AdminObjectDisplayNameService {
         } catch (RuntimeException ignored) {
             return Map.of();
         }
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public Map<Long, String> actorNamesByIds(Collection<Long> ids) {
+        List<Long> normalized = positiveIds(ids);
+        if (normalized.isEmpty()) return Map.of();
+        try {
+            Map<Long, String> names = new LinkedHashMap<>();
+            for (AdminMapper.AdminIdIdentity row : adminMapper.findIdentitiesByIds(normalized)) {
+                String username = row.username() == null ? null : row.username().trim();
+                String displayName = StringUtils.hasText(row.displayName()) ? row.displayName().trim() : username;
+                if (StringUtils.hasText(displayName)) {
+                    names.put(row.id(), displayName.equals(username) ? AdminActorResolver.maskPhone(displayName) : displayName);
+                }
+            }
+            return names;
+        } catch (RuntimeException ignored) {
+            return Map.of();
+        }
+    }
+
+    private static List<Long> positiveIds(Collection<Long> ids) {
+        return ids == null ? List.of() : ids.stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
     }
 }

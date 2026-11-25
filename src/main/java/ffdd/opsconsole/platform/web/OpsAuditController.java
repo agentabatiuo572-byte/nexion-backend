@@ -179,22 +179,12 @@ public class OpsAuditController {
     }
 
     @GetMapping("/operations/proposals/by-idempotency-key")
-    @PreAuthorize("hasAnyAuthority('platform_a2_read','platform_a2_proposal_create','platform_a4_write','platform_a4_read','growth_h7_write','overview_b1_redline_write','overview_b5_threshold_write',"
+    @PreAuthorize("hasAnyAuthority('platform_a2_read','platform_a2_proposal_create','platform_a2_write','platform_a4_write','platform_a4_read','growth_h7_write','overview_b1_redline_write','overview_b5_threshold_write',"
             + "'device_e2_write','growth_h8_write','growth_h5_write','growth_h3_write','growth_h4_write','growth_h4_read','growth_h4_wheel_pool_write','network_f1_write','network_f3_write','network_f4_pool_fund','finprod_g3_curve_target_price_write',"
             + "'finprod_g3_curve_pump_prob_write','finprod_g3_override_price_write','finprod_g3_write','finprod_g4_dividend_rate_write','finprod_g4_write','finprod_g4_price_write',"
             + "'finprod_g4_royalty_write','finprod_g4_airdrop_pct_write','finprod_g4_emission_curve_write','finprod_g4_airdrop_lock_days_write','emergency_j4_playbook_execute')"
             + " || (hasAuthority('content_i7_write') && hasAuthority('content_i7_course_reward_adjust'))"
-            + " || (hasAuthority('content_i7_course_reward_adjust') && hasAnyAuthority('platform_a2_write','platform_a2_proposal_create'))"
-            + " || (hasAuthority('risk_k2_write') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))"
-            + " || (hasAuthority('risk_k1_cluster_release') && hasAnyAuthority('platform_a2_proposal_create','platform_a2_write'))"
-            + " || @auditReplayBusinessPermissionGuard.hasF5ProposalAuthority() || hasAuthority('network_f4_write')"
-            + " || (hasAuthority('platform_a2_write') && hasAnyAuthority('user_c2_session_revoke_all','user_c5_session_revoke_all'))"
-            + " || (hasAuthority('platform_a2_write') && hasAuthority('growth_h1_override_revoke'))"
-            + " || (hasAuthority('platform_a2_write') && hasAnyAuthority('network_f3_match_rate','network_f3_engine_pause'))"
-            + " || (hasAuthority('platform_a2_write') && hasAuthority('network_f1_read') && hasAuthority('network_f1_promote_user'))"
-            + " || (hasAuthority('platform_a2_write') && hasAuthority('device_e1_read') && hasAuthority('device_e1_write'))"
-            + " || (hasAuthority('emergency_j1_gate_resume') && hasAuthority('platform_a2_write'))"
-            + " || (hasAuthority('content_i3_cap_adjust') && hasAnyAuthority('platform_a2_write','platform_a2_proposal_create'))")
+            + " || @auditReplayBusinessPermissionGuard.hasF5ProposalAuthority() || hasAuthority('network_f4_write')")
     public ApiResult<AuditCenterOverview.AuditOperationTicket> proposalByIdempotencyKey(
             @RequestParam(name = "idempotencyKey", required = false) String idempotencyKey) {
         if (idempotencyKey == null) {
