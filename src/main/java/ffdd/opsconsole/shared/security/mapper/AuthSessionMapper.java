@@ -106,7 +106,7 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
 
     @Update("""
         UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,NOW()),
-          session_ended_reason='SECURITY_REVOKED',updated_at=NOW()
+          session_ended_reason='H5_REPLACED',updated_at=NOW()
         WHERE user_id=#{userId} AND session_group='H5' AND is_deleted=0
           AND session_ended_reason IS NULL
         """)
@@ -125,6 +125,40 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
     String LIVE_SESSION = "revoked_at IS NULL AND expires_at>NOW() "
             + "AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)";
     String RECENT_ROTATION = "rotation_redeemed_at>DATE_SUB(NOW(),INTERVAL 10 SECOND)";
+
+    @Select("""
+        SELECT a.user_id FROM nx_app_session_state a
+        JOIN nx_user u ON u.id=a.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=#{sandbox}
+        WHERE a.user_id>#{after}
+          AND EXISTS(SELECT 1 FROM nx_user_session WHERE user_id=a.user_id AND session_group='APP'
+            AND session_chain_id=a.session_chain_id AND app_session_version=a.app_session_version
+            AND installation_id=a.installation_id AND execution_supported=a.execution_supported
+            AND is_deleted=0 AND session_ended_reason IS NULL AND
+            """ + LIVE_SESSION + """
+          )
+          AND EXISTS(SELECT 1 FROM nx_user_session WHERE user_id=a.user_id AND session_group='H5'
+            AND is_deleted=0 AND session_ended_reason IS NULL AND
+            """ + LIVE_SESSION + """
+          )
+        ORDER BY a.user_id LIMIT 100
+        """)
+    List<Long> legacyDualSurfaceAccounts(@Param("after") long after, @Param("sandbox") boolean sandbox,
+            @Param("idleDays") int idleDays);
+
+    @Select("""
+        WITH live AS (
+          SELECT user_id,session_group,session_chain_id,login_attempt_id FROM nx_user_session
+          WHERE user_id=#{userId} AND is_deleted=0 AND session_ended_reason IS NULL AND
+          """ + LIVE_SESSION + " AND " + READ_FIXED_CONTEXT + """
+        )
+        SELECT live.session_group FROM live
+        JOIN nx_app_login_attempt attempt ON attempt.attempt_id=live.login_attempt_id AND attempt.user_id=live.user_id
+        JOIN nx_user_session original ON original.refresh_token_id=attempt.session_id
+          AND original.user_id=live.user_id AND original.session_chain_id=live.session_chain_id
+        GROUP BY live.session_group
+        ORDER BY MAX(original.id) DESC
+        """)
+    List<String> liveSurfacesByLogin(@Param("userId") long userId, @Param("idleDays") int idleDays);
 
     @Select("SELECT EXISTS(SELECT 1 FROM nx_user_session WHERE " + READ_SESSION_CONTEXT
             + " AND (" + LIVE_SESSION + " OR (" + RECENT_ROTATION + " AND rotated_to_id IS NOT NULL"

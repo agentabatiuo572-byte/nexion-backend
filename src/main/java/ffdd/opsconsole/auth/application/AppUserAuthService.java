@@ -689,8 +689,9 @@ public class AppUserAuthService {
             return ApiResult.fail(401, message);
         String reason = session.getSessionEndedReason();
         if (!"APP".equals(session.getSessionGroup()) && !"H5".equals(session.getSessionGroup())) reason = "REAUTH_REQUIRED";
-        else if (reason == null || !List.of("APP_REPLACED", "CURRENT_LOGOUT", "SECURITY_REVOKED", "SESSION_EXPIRED", "REAUTH_REQUIRED").contains(reason)
-                || ("APP_REPLACED".equals(reason) && !"APP".equals(session.getSessionGroup()))) reason = fallback;
+        else if (reason == null || !List.of("APP_REPLACED", "H5_REPLACED", "CURRENT_LOGOUT", "SECURITY_REVOKED", "SESSION_EXPIRED", "REAUTH_REQUIRED").contains(reason)
+                || ("APP_REPLACED".equals(reason) && !"APP".equals(session.getSessionGroup()))
+                || ("H5_REPLACED".equals(reason) && !"H5".equals(session.getSessionGroup()))) reason = fallback;
         return ApiResult.fail(401, message, UserLoginResponse.ended(reason));
     }
 

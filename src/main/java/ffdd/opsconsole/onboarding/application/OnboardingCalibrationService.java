@@ -424,7 +424,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         if (userDeviceId == null || userDeviceId <= 0) {
             throw new BizException(503, "ONBOARDING_PHONE_BIND_READBACK_FAILED");
         }
-        if (!scope.sandbox()) cancelReplacedPhoneTasks(userId, userDeviceId);
+        if (!scope.sandbox()) stopPhoneTasks(userId, userDeviceId);
         mapper.deactivateOtherPhoneDevices(userId, userDeviceId, scope.sourceEnvironment(), scope.runId());
         mapper.deferOtherPhoneCalibrations(userId, userDeviceId, scope.sourceEnvironment(), scope.runId());
         return userDeviceId;
@@ -481,7 +481,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         if (executionSupported && installationId.equals(binding.installationId())) {
             mapper.lockPhoneDevices(userId);
             mapper.restoreBoundPhoneRuntime(userId,binding.userDeviceId());
-        } else cancelReplacedPhoneTasks(userId,-1L);
+        } else stopPhoneTasks(userId, -1L);
     }
 
     @Override
@@ -494,19 +494,21 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
 
     @Override
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
-    public void releaseForH5Login(long userId) {
+    public void releaseForH5Login(long userId, boolean scheduledReconciliation) {
         if (!Integer.valueOf(0).equals(mapper.lockUserSandbox(userId))) return;
         var binding = mapper.phoneBinding(userId, "PRODUCTION", "");
         if (binding == null) return;
-        stopPhoneExecution(userId);
+        mapper.claimPhoneExecution(userId, "");
+        cancelReplacedPhoneTasks(userId, -1L, scheduledReconciliation);
         long phoneId = binding.userDeviceId();
         if (mapper.ownedPhoneInstance(userId, "PRODUCTION", "", phoneId) != null)
-            capacity.releaseBoundPhoneSlot(userId, phoneId);
+            capacity.releaseBoundPhoneSlot(userId, phoneId, scheduledReconciliation);
+        mapper.clearReplacedPhoneRuntime(userId, -1L);
     }
 
     private void stopPhoneExecution(long userId) {
         mapper.claimPhoneExecution(userId, "");
-        cancelReplacedPhoneTasks(userId, -1L);
+        stopPhoneTasks(userId, -1L);
     }
 
     /** Only the guarded current APP may call this; it never claims or stops another installation. */
@@ -626,7 +628,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         }
     }
 
-    private void cancelReplacedPhoneTasks(Long userId, Long keepUserDeviceId) {
+    private void cancelReplacedPhoneTasks(Long userId, Long keepUserDeviceId, boolean scheduledReconciliation) {
         mapper.lockPhoneDevices(userId);
         List<ReplacedPhoneTask> tasks = mapper.lockOtherPhoneTasks(userId, keepUserDeviceId);
         if (tasks == null) throw new BizException(503, "ONBOARDING_PHONE_TASK_READ_FAILED");
@@ -637,13 +639,23 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             Map<String, Object> fact = Map.of("userId", userId, "oldDeviceId", task.userDeviceId(),
                     "newDeviceId", keepUserDeviceId, "taskNo", task.taskNo(), "status", "CANCELLED",
                     "reason", "PHONE_REPLACED");
-            auditLogService.recordRequired(AuditLogWriteRequest.builder()
+            var audit = AuditLogWriteRequest.builder()
                     .action("TASK_ASSIGNMENT_PHONE_REPLACED").resourceType("COMPUTE_TASK")
                     .resourceId(task.taskNo()).bizNo(task.taskNo()).userId(userId)
-                    .actorType("USER").actorId(userId).result("SUCCESS").riskLevel("MEDIUM")
-                    .detail(fact).build());
+                    .result("SUCCESS").riskLevel("MEDIUM").detail(fact);
+            if (scheduledReconciliation) {
+                auditLogService.recordRequiredForTrustedActor(audit.actorType("SYSTEM").actorId(0L)
+                        .actorUsername("system").method("SCHEDULED")
+                        .path("/internal/auth/legacy-dual-session-reconciliation").build());
+            } else {
+                auditLogService.recordRequired(audit.actorType("USER").actorId(userId).build());
+            }
             outboxService.publish("COMPUTE_TASK", task.taskNo(), "TASK_ASSIGNMENT_PHONE_REPLACED", fact);
         }
+    }
+
+    private void stopPhoneTasks(long userId, long keepUserDeviceId) {
+        cancelReplacedPhoneTasks(userId, keepUserDeviceId, false);
         mapper.clearReplacedPhoneRuntime(userId, keepUserDeviceId);
     }
 

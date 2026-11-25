@@ -133,7 +133,7 @@ public class ComputeV2DeviceLifecycleService {
     /** Called under the account and device locks before the H5 sign-in can release the phone slot. */
     public void stopForH5Login(long userId, long deviceId, String instanceNo) {
         var runtimeToStop = lockAppReplacementRuntime(userId, deviceId, instanceNo, true);
-        if (runtimeToStop != null) cancelSimulatedForReplacement(runtimeToStop);
+        if (runtimeToStop != null) simulated.stopForH5Login(runtimeToStop);
     }
 
     private Optional<RuntimeView> ownedView(long user,long device) {

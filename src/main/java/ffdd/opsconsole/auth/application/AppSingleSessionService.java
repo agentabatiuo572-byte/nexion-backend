@@ -7,6 +7,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.JwtTokenProvider;
+import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
 import java.nio.charset.StandardCharsets;
@@ -14,11 +15,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -76,6 +79,7 @@ public class AppSingleSessionService {
         session.setIsDeleted(0);
         long previousVersion = 0;
         String previousInstallation = "";
+        int replacedH5Rows = 0;
         if (context.group() == AppSessionSurface.APP) {
             sessions.initializeAppState(userId);
             previousVersion = sessions.lockAppVersion(userId);
@@ -83,12 +87,12 @@ public class AppSingleSessionService {
             long version = Math.addExact(previousVersion, 1L);
             session.setAppSessionVersion(version);
             sessions.replaceAppSessions(userId);
-            sessions.replaceH5Sessions(userId);
+            replacedH5Rows = sessions.replaceH5Sessions(userId);
             if (sessions.advanceAppState(userId, version, session.getSessionChainId(), context.installationId(),
                     context.executionSupported()) != 1) throw new IllegalStateException("APP_SESSION_ADVANCE_FAILED");
         } else {
             sessions.replaceAppSessions(userId);
-            phone.releaseForH5Login(userId);
+            phone.releaseForH5Login(userId, false);
         }
         if (sessions.insert(session) != 1) throw new IllegalStateException("APP_SESSION_INSERT_FAILED");
         if (context.group() == AppSessionSurface.APP)
@@ -107,9 +111,41 @@ public class AppSingleSessionService {
             audit.recordRequired(AuditLogWriteRequest.builder().action("account.app_session_replaced")
                     .resourceType("USER_SESSION").resourceId(session.getSessionChainId()).userId(userId)
                     .actorType("USER").actorId(userId).result("SUCCESS").riskLevel("MEDIUM").detail(fact).build());
+            if (replacedH5Rows > 0) {
+                audit.recordRequired(AuditLogWriteRequest.builder().action("AUTH_H5_SESSION_REPLACED")
+                        .resourceType("USER_SESSION").resourceId(session.getSessionChainId()).userId(userId)
+                        .actorType("USER").actorId(userId).result("SUCCESS").riskLevel("MEDIUM")
+                        .detail(Map.of("replacedSessionRows", replacedH5Rows, "sessionEndedReason", "H5_REPLACED")).build());
+            }
             outbox.publish("USER_SECURITY", String.valueOf(userId), "account.app_session_replaced", fact);
         }
         return new Issued(session, raw, false, "ACTIVE");
+    }
+
+    public List<Long> legacyDualSurfaceAccounts(long after) {
+        return UserAuthEnvironment.resolve(environment)
+                .map(audience -> sessions.legacyDualSurfaceAccounts(after, audience == UserAuthEnvironment.SANDBOX, idleDays()))
+                .orElseGet(List::of);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void reconcileLegacyDualSurfaceAccount(long userId) {
+        if (sessions.lockAccount(userId) == null) return;
+        var user = users.findLoginUserForUpdate(userId);
+        if (user == null || !"ACTIVE".equals(user.getStatus()) || !Integer.valueOf(0).equals(user.getIsDeleted())
+                || UserAuthEnvironmentPolicy.evaluate(environment, user) != UserAuthEnvironmentPolicy.Decision.ALLOW) return;
+        var surfaces = sessions.liveSurfacesByLogin(userId, idleDays());
+        if (surfaces.size() < 2) return;
+
+        boolean keepApp = "APP".equals(surfaces.get(0));
+        int replacedRows = keepApp ? sessions.replaceH5Sessions(userId) : sessions.replaceAppSessions(userId);
+        if (!keepApp) phone.releaseForH5Login(userId, true);
+        audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder().action("AUTH_LEGACY_DUAL_SESSION_RECONCILED")
+                .resourceType("USER_SESSION").resourceId(Long.toString(userId)).userId(userId)
+                .actorType("SYSTEM").actorId(0L).actorUsername("system").result("SUCCESS").riskLevel("MEDIUM")
+                .method("SCHEDULED").path("/internal/auth/legacy-dual-session-reconciliation")
+                .detail(Map.of("retainedSurface", surfaces.get(0), "replacedSessionRows", replacedRows,
+                        "sessionEndedReason", keepApp ? "H5_REPLACED" : "APP_REPLACED")).build());
     }
 
     @Transactional(propagation = Propagation.MANDATORY)

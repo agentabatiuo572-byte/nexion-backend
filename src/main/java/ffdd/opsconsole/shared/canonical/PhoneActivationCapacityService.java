@@ -50,7 +50,7 @@ public class PhoneActivationCapacityService implements PhoneActivationCapacityCo
 
     @Override
     @Transactional(propagation = Propagation.MANDATORY)
-    public void releaseBoundPhoneSlot(long userId, long deviceId) {
+    public void releaseBoundPhoneSlot(long userId, long deviceId, boolean scheduledReconciliation) {
         var device = mapper.lockDeviceForUserCommand(deviceId);
         if (device == null || device.userId() != userId || device.activatedAt() == null || device.deactivatedAt() != null
                 || !"OWNED".equalsIgnoreCase(device.ownershipStatus())
@@ -68,8 +68,13 @@ public class PhoneActivationCapacityService implements PhoneActivationCapacityCo
                 attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), fact);
         audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
                 .action("USER_DEVICE_DEACTIVATED").resourceType("USER_DEVICE").resourceId(Long.toString(deviceId))
-                .bizNo(device.instanceNo()).userId(userId).actorId(userId).actorType("USER")
-                .actorUsername("user:" + userId).method("INTERNAL").path("/internal/auth/h5-phone-release")
-                .result("SUCCESS").riskLevel("MEDIUM").detail(Map.of("reason", "H5_LOGIN", "state", fact)).build());
+                .bizNo(device.instanceNo()).userId(userId)
+                .actorId(scheduledReconciliation ? 0L : userId)
+                .actorType(scheduledReconciliation ? "SYSTEM" : "USER")
+                .actorUsername(scheduledReconciliation ? "system" : "user:" + userId)
+                .method(scheduledReconciliation ? "SCHEDULED" : "INTERNAL").path("/internal/auth/h5-phone-release")
+                .result("SUCCESS").riskLevel("MEDIUM")
+                .detail(Map.of("reason", scheduledReconciliation ? "LEGACY_DUAL_SESSION_RECONCILED" : "H5_LOGIN", "state", fact))
+                .build());
     }
 }
