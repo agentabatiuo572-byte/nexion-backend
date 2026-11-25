@@ -35,6 +35,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -44,6 +45,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -161,8 +163,28 @@ public class AppTradeinService {
         }
 
         List<AppTradeinMapper.SourceDevice> candidates = mapper.listTradeinSourceCandidates(userId);
-        List<AppTradeinEligibilityResponse.Source> sources = candidates == null ? List.of()
-                : candidates.stream().map(source -> eligibilitySource(source, target, policy)).toList();
+        List<AppTradeinEligibilityResponse.Source> sources = List.of();
+        if (candidates != null && !candidates.isEmpty()) {
+            var outputByDevice = mapper.cumulativeTradeinOutputs(candidates.stream()
+                            .map(AppTradeinMapper.SourceDevice::id).toList()).stream()
+                    .collect(Collectors.toMap(AppTradeinMapper.DeviceOutput::deviceId,
+                            AppTradeinMapper.DeviceOutput::outputUsdt));
+            BigDecimal targetPrice = money(target.priceUsdt());
+            sources = candidates.stream()
+                    .map(source -> {
+                        var eligibility = eligibilitySource(source, target, policy);
+                        BigDecimal sourcePaid = money(source.actualPaidUsdt());
+                        BigDecimal discount = eligibility.eligible() && sourcePaid.signum() > 0
+                                ? tradeinCredit(policy, sourcePaid, targetPrice,
+                                        money(outputByDevice.get(source.id()))).discount()
+                                : null;
+                        return new RankedSource(eligibility, discount);
+                    })
+                    .sorted(Comparator.comparing(RankedSource::discount, Comparator.nullsLast(Comparator.reverseOrder()))
+                            .thenComparing(candidate -> candidate.source().sourceDeviceId()))
+                    .map(RankedSource::source)
+                    .toList();
+        }
         boolean eligible = sources.stream().anyMatch(AppTradeinEligibilityResponse.Source::eligible);
         return ApiResult.ok(eligibilityResponse(policy, eligible, eligible ? "ELIGIBLE" : "NO_ELIGIBLE_SOURCE",
                 target, targetProductNo, sources));
@@ -748,18 +770,13 @@ public class AppTradeinService {
             throw new BizException(409, "TRADEIN_HIGHER_PRICE_REQUIRED");
         }
         BigDecimal output = money(nz(mapper.cumulativeDeviceOutputUsdt(source.id())));
-        BigDecimal ratio = output.multiply(BigDecimal.valueOf(100))
-                .divide(sourcePaid, 6, RoundingMode.HALF_UP);
-        BigDecimal creditRate = creditRate(policy, ratio);
-        BigDecimal discount = sourcePaid.multiply(creditRate)
-                .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP)
-                .min(targetPrice);
-        BigDecimal payable = targetPrice.subtract(discount).setScale(6, RoundingMode.HALF_UP);
+        TradeinCredit credit = tradeinCredit(policy, sourcePaid, targetPrice, output);
+        BigDecimal payable = targetPrice.subtract(credit.discount()).setScale(6, RoundingMode.HALF_UP);
         BigDecimal wallet = money(nz(locked ? mapper.lockWalletBalanceUsdt(userId) : mapper.walletBalanceUsdt(userId)));
         BigDecimal shortfall = payable.subtract(wallet).max(BigDecimal.ZERO).setScale(6, RoundingMode.HALF_UP);
         AppTradeinQuoteResponse response = new AppTradeinQuoteResponse(
-                source.id(), source.productName(), target.id(), target.productNo(), target.name(), sourcePaid, output, ratio,
-                creditRate, discount, targetPrice, payable, wallet, shortfall,
+                source.id(), source.productName(), target.id(), target.productNo(), target.name(), sourcePaid, output,
+                credit.ratio(), credit.rate(), credit.discount(), targetPrice, payable, wallet, shortfall,
                 shortfall.signum() == 0, false, "nx_compute_receipt + source paid price + nx_compute_e3_config",
                 source.rowVersion(), source.activated() ? "ACTIVE" : "INACTIVE");
         return new Evaluation(source, target, response);
@@ -862,6 +879,21 @@ public class AppTradeinService {
                 bool(values.get("earlyAccessEnabled"), "E3_EARLY_ACCESS_ENABLED_INVALID"),
                 earlyAccessLeadDays);
     }
+
+    private TradeinCredit tradeinCredit(
+            TradeinPolicy policy, BigDecimal sourcePaid, BigDecimal targetPrice, BigDecimal output) {
+        BigDecimal ratio = output.multiply(BigDecimal.valueOf(100))
+                .divide(sourcePaid, 6, RoundingMode.HALF_UP);
+        BigDecimal rate = creditRate(policy, ratio);
+        BigDecimal discount = sourcePaid.multiply(rate)
+                .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP)
+                .min(targetPrice);
+        return new TradeinCredit(ratio, rate, discount);
+    }
+
+    private record TradeinCredit(BigDecimal ratio, BigDecimal rate, BigDecimal discount) { }
+
+    private record RankedSource(AppTradeinEligibilityResponse.Source source, BigDecimal discount) { }
 
     private BigDecimal creditRate(TradeinPolicy policy, BigDecimal ratio) {
         for (int i = 0; i < policy.cuts().size(); i++) {

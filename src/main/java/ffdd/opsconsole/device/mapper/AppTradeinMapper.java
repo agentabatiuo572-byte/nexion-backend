@@ -409,14 +409,32 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             """)
     TargetProduct lockTargetProduct(@Param("productId") Long productId, @Param("productNo") String productNo);
 
-    @Select("""
-            SELECT COALESCE(SUM(reward_usdt),0)
-             FROM nx_visible_compute_receipt
-             WHERE user_device_id=#{deviceId} AND is_deleted=0
+    String VISIBLE_TRADEIN_OUTPUT = """
+               AND is_deleted=0
                AND COALESCE(source_environment, 'PRODUCTION') = 'PRODUCTION'
                AND UPPER(earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
-            """)
+            """;
+
+    @Select("""
+            SELECT COALESCE(SUM(reward_usdt),0)
+              FROM nx_visible_compute_receipt
+             WHERE user_device_id=#{deviceId}
+            """ + VISIBLE_TRADEIN_OUTPUT)
     BigDecimal cumulativeDeviceOutputUsdt(@Param("deviceId") Long deviceId);
+
+    @Select("""
+            <script>
+            SELECT user_device_id AS deviceId, COALESCE(SUM(reward_usdt),0) AS outputUsdt
+              FROM nx_visible_compute_receipt
+             WHERE user_device_id IN
+               <foreach collection="deviceIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            """ + VISIBLE_TRADEIN_OUTPUT + """
+             GROUP BY user_device_id
+            </script>
+            """)
+    List<DeviceOutput> cumulativeTradeinOutputs(@Param("deviceIds") List<Long> deviceIds);
+
+    record DeviceOutput(Long deviceId, BigDecimal outputUsdt) { }
 
     @Select("SELECT usdt_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1")
     BigDecimal walletBalanceUsdt(@Param("userId") Long userId);
