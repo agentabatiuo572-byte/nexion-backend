@@ -181,6 +181,19 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                         @Param("requestHash") String requestHash,
                         @Param("expiresAt") java.time.LocalDateTime expiresAt);
 
+    @Update("""
+            UPDATE nx_admin_idempotency_record
+               SET status = 'PROCESSING', rollback_confirmed = 0, response_json = NULL,
+                   error_message = NULL, expires_at = #{expiresAt}, updated_at = NOW()
+             WHERE id = #{id} AND status = 'FAILED' AND is_deleted = 0
+               AND request_hash = #{requestHash}
+               AND response_json <=> CAST(#{previousResponse,jdbcType=VARCHAR} AS JSON)
+            """)
+    int resetSupportBulkCreateFailure(@Param("id") Long id,
+                                      @Param("requestHash") String requestHash,
+                                      @Param("expiresAt") java.time.LocalDateTime expiresAt,
+                                      @Param("previousResponse") String previousResponse);
+
     @Insert("""
             INSERT INTO nx_admin_operation_mutex (lock_key) VALUES (#{scopePrefix})
             ON DUPLICATE KEY UPDATE updated_at=updated_at

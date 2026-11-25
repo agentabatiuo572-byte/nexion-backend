@@ -14,7 +14,9 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.SupportBulkCreateRejection;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -33,6 +35,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 @ApplicationService
 @RequiredArgsConstructor
 public class SupportBulkService {
+    public static final String CREATE_COMMAND_SCOPE = SupportBulkCreateRejection.COMMAND_SCOPE;
+
     private final SupportBulkMapper mapper;
     private final SupportBindingMapper bindings;
     private final SupportOwnershipService ownership;
@@ -127,7 +131,7 @@ public class SupportBulkService {
 
     public ApiResult<Map<String,Object>> create(String key,SupportBulkRequest.Create request) {
         production.requireOpsWriteAllowed();validateCreate(key,request);Long actor=authenticatedActor();
-        String digest=hash(encode(request));String scope="M3_SUPPORT_BULK_CREATE:"+actor;
+        String digest=hash(encode(request));String scope=CREATE_COMMAND_SCOPE+":"+actor;
         var recovery=idempotency.recoveryResult(scope,key,digest,ApiResult.class);
         if(recovery.status()==AdminIdempotencyService.RecoveryStatus.MISMATCH) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
         Map<String,Object> prior=mapper.jobByCommand(actor,key.trim());
@@ -136,7 +140,13 @@ public class SupportBulkService {
             return ApiResult.ok(detail(text(prior,"id")));
         }
         if(recovery.status()==AdminIdempotencyService.RecoveryStatus.UNKNOWN) throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
-        ApiResult<?> receipt=idempotency.executeRetained(scope,key,digest,ApiResult.class,()-> {
+        ApiResult<?> receipt=idempotency.executeRetained(scope,key,digest,ApiResult.class,
+                () -> createClaimed(key.trim(), request, actor, digest));
+        return ApiResult.ok(detail(batchId(receipt)));
+    }
+
+    private ApiResult<Map<String,Object>> createClaimed(String key,SupportBulkRequest.Create request,Long actor,String digest) {
+        try {
             requireOwner(requireJob(mapper.job(request.selectionId())),actor);
             // Only creation locks the frozen collection; delivery transactions remain one customer each.
             var recipients=mapper.allRecipients(request.selectionId());
@@ -157,13 +167,14 @@ public class SupportBulkService {
                 String excluded=current==null?null:conversationExclusion(current);
                 if(excluded!=null) outcome(request.selectionId(),customer,"SKIPPED","KNOWN",null,no,excluded,false,0);
             }
-            if(mapper.queue(request.selectionId(),key.trim(),digest,encode(request),request.assetId())!=1)
+            if(mapper.queue(request.selectionId(),key,digest,encode(request),request.assetId())!=1)
                 throw conflict("SUPPORT_BULK_VERSION_CONFLICT");
             finishLocked(request.selectionId(),false);
             record("SUPPORT_BULK_CREATED",request.selectionId(),actor,key,request.reason());
             return ApiResult.ok(Map.of("batchId",request.selectionId()));
-        });
-        return ApiResult.ok(detail(batchId(receipt)));
+        } catch (BizException failure) {
+            throw SupportBulkCreateRejection.retain(actor, failure);
+        }
     }
 
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
@@ -235,12 +246,27 @@ public class SupportBulkService {
         return ApiResult.ok(detail(batchId(receipt)));
     }
 
-    /** Primary command recovery also resolves permanent creation facts after an UNKNOWN receipt. */
     @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public Map<String,Object> recover(String key) {
+        return recover(key, null);
+    }
+
+    /** Permanent creation facts take priority over the original command receipt. */
+    @Transactional(readOnly=true,isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public Map<String,Object> recover(String key, AdminIdempotencyRecordEntity receipt) {
         SupportBindingService.validateCommand(key,"recover bulk result");Long actor=authenticatedActor();reader(actor);
-        var job=mapper.jobByCommand(actor,key.trim());
-        return job==null?Map.of("status","UNKNOWN"):Map.of("status","SUCCEEDED","result",detail(text(job,"id")));
+        String commandKey = key.trim();
+        var job=mapper.jobByCommand(actor,commandKey);
+        if (job != null) return Map.of("status","SUCCEEDED","result",detail(text(job,"id")));
+
+        if (receipt != null && receipt.getScope().equals(CREATE_COMMAND_SCOPE + ":" + actor)
+                && commandKey.equals(receipt.getIdempotencyKey())) {
+            var rejection = SupportBulkCreateRejection.read(json, receipt);
+            if (rejection != null) {
+                return Map.of("status", "FAILED", "businessCode", rejection.code(), "failureCode", rejection.reason());
+            }
+        }
+        return Map.of("status", "UNKNOWN");
     }
 
     @Scheduled(fixedDelayString="${nexion.support.bulk.scan-delay-ms:1000}")

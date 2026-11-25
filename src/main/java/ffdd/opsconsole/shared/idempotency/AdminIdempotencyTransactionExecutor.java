@@ -325,6 +325,7 @@ public class AdminIdempotencyTransactionExecutor {
             LocalDateTime expiresAt,
             Class<T> responseType,
             AdminCommandOrigin origin) {
+        replaySupportBulkCreateRejection(record, requestHash);
         if (AdminCommandOrigin.g2ParameterKey(record.getScope()) != null && record.getOriginAdminId() != null) {
             if (origin == null || !Long.valueOf(origin.actorId()).equals(record.getOriginAdminId())) {
                 throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
@@ -385,12 +386,18 @@ public class AdminIdempotencyTransactionExecutor {
                         record.getScope(), record.getIdempotencyKey(), record.getOriginTargets())) > 0) {
             throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
         }
-        if (recordMapper.resetFailedById(record.getId(), requestHash, expiresAt) == 1) {
+        boolean bulkCreate = record.getScope().startsWith(SupportBulkCreateRejection.COMMAND_SCOPE + ":");
+        // A concurrent bulk retry may have replaced a legacy failure with a terminal rejection.
+        int reset = bulkCreate
+                ? recordMapper.resetSupportBulkCreateFailure(record.getId(), requestHash, expiresAt, record.getResponseJson())
+                : recordMapper.resetFailedById(record.getId(), requestHash, expiresAt);
+        if (reset == 1) {
             return Claim.claimed(record.getId());
         }
         // A lost retry CAS must reload outside the claim's REPEATABLE_READ snapshot.
-        AdminIdempotencyRecordEntity raced = expiryTransitionExecutor.loadActiveCommitted(
-                record.getScope(), record.getIdempotencyKey());
+        AdminIdempotencyRecordEntity raced = bulkCreate
+                ? expiryTransitionExecutor.loadCurrentCommitted(record.getScope(), record.getIdempotencyKey())
+                : expiryTransitionExecutor.loadActiveCommitted(record.getScope(), record.getIdempotencyKey());
         if (raced != null) {
             return Claim.replayed(replay(raced, requestHash, responseType, origin));
         }
@@ -413,6 +420,7 @@ public class AdminIdempotencyTransactionExecutor {
             return readJson(record.getResponseJson(), responseType);
         }
         if (STATUS_FAILED.equals(record.getStatus())) {
+            replaySupportBulkCreateRejection(record, requestHash);
             if (retainedD3ReserveRejection(record)) {
                 if (origin == null || origin.actorId() != record.getOriginAdminId()) {
                     throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
@@ -431,6 +439,13 @@ public class AdminIdempotencyTransactionExecutor {
             throw conflict("IDEMPOTENCY_INVESTIGATION_" + record.getStatus());
         }
         throw conflict("IDEMPOTENCY_REQUEST_IN_PROGRESS");
+    }
+
+    private void replaySupportBulkCreateRejection(AdminIdempotencyRecordEntity record, String requestHash) {
+        var rejection = SupportBulkCreateRejection.read(objectMapper, record);
+        if (rejection == null) return;
+        if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        throw new BizException(rejection.code(), rejection.reason());
     }
 
     private static boolean retainedD3ReserveRejection(AdminIdempotencyRecordEntity record) {
