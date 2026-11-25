@@ -67,9 +67,16 @@ public class WithdrawalConfigApproval {
     }
 
     public boolean canReadOwnProposal(AuditReplayCommand command, long adminId, Set<String> grants) {
+        if (!supports(command)) return false;
         Object maker = command.params() == null ? null : command.params().get(MAKER);
-        return maker instanceof Number && Long.toString(adminId).equals(maker.toString())
-                && canMakeProposal(command, grants::contains);
+        if (!(maker instanceof Number) || !Long.toString(adminId).equals(maker.toString())) return false;
+        try {
+            // D6 authorization has no field-specific grants, so it does not parse the stored values itself.
+            if (D6.equals(command.op())) request(command, null, FxQuoteUpdateRequest.class);
+            return canMakeProposal(command, grants::contains);
+        } catch (BizException invalid) {
+            return false;
+        }
     }
 
     private boolean canMakeProposal(AuditReplayCommand command, Predicate<String> authorized) {

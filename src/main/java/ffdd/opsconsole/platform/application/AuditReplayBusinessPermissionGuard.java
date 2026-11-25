@@ -78,6 +78,11 @@ public class AuditReplayBusinessPermissionGuard {
 
 
     static final String E4_REFUND_AUTHORITY = "device_e4_order_refund";
+    static final String DECISION_SUPER_ADMIN_REQUIRED = "A2_SUPER_ADMIN_APPROVAL_REQUIRED";
+    private static final String E1_WRITE_AUTHORITY = "device_e1_write";
+    private static final Set<String> E1_ORIGINAL_KEY_RECOVERY_OPERATIONS = Set.of(
+            "e1_phase_create", "e1_phase_patch", "e1_phase_archive", "e1_gate_create", "e1_gate_patch",
+            "e1_gate_archive", "e1_gate_field", "e1_bundle_discount", "e1_early_access_update");
     public static final Set<String> F5_ACTION_AUTHORITIES = Set.of(
             "network_f5_commission_freeze", "network_f5_commission_suspend", "network_f5_commission_release",
             "network_f5_commission_reverse", "network_f5_commission_reissue");
@@ -289,6 +294,13 @@ public class AuditReplayBusinessPermissionGuard {
 
     /** Checks permissions for the stored proposal without revalidating its historical business inputs. */
     boolean hasMappedProposalGrant(AuditReplayCommand command, String domain, long actorId, Set<String> grants) {
+        if (WithdrawalConfigApproval.supports(command)) {
+            return canReadOwnFinanceProposal(command, actorId, grants);
+        }
+        if ("E".equals(command.domain()) && command.op() != null
+                && E1_ORIGINAL_KEY_RECOVERY_OPERATIONS.contains(command.op())) {
+            return command.params() != null && !command.params().isEmpty() && grants.contains(E1_WRITE_AUTHORITY);
+        }
         String operation = text(command.op()).toLowerCase(Locale.ROOT);
         if ("F".equals(domain) && "f_config_batch".equals(operation)) {
             return fConfigBatchCommands(command.params()).stream()
@@ -820,15 +832,16 @@ public class AuditReplayBusinessPermissionGuard {
         return validateDecisionPermission(command, false);
     }
 
-    ApiResult<Void> validateApprovalRole(AuditReplayCommand command) {
-        if (requiresSuperAdminApproval(command)
-                && !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
-            return ApiResult.fail(403, "FUND_APPROVAL_CHECKER_FORBIDDEN");
+    ApiResult<Void> validateDecisionRole(AuditReplayCommand command) {
+        if (isVRankOverride(command)) {
+            return validateDecisionAuthority(requiredAuthority(command, command.op()));
         }
-        return ApiResult.ok();
+        if (superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) return ApiResult.ok();
+        return ApiResult.fail(403, hasFundCheckerError(command)
+                ? "FUND_APPROVAL_CHECKER_FORBIDDEN" : DECISION_SUPER_ADMIN_REQUIRED);
     }
 
-    private boolean requiresSuperAdminApproval(AuditReplayCommand command) {
+    private boolean hasFundCheckerError(AuditReplayCommand command) {
         if (command == null) return false;
         String domain = text(command.domain());
         String operation = text(command.op()).trim().toLowerCase(Locale.ROOT);
@@ -840,18 +853,32 @@ public class AuditReplayBusinessPermissionGuard {
         return switch (operation) {
             case "f_unilevel_bootstrap", "f_seven_layer_activation", "f_direct_referral_policy",
                     "f4_pool_settle", "f4_leaderboard_period_payout" -> true;
-            case "f_config", "f_ui_config", "f_unilevel_rule" -> {
-                String source = fSourceDomain(operation, value(command.params(), "key"));
-                yield "F2".equals(source) || "F4".equals(source);
-            }
-            case "f_config_batch" -> fConfigBatchCommands(command.params()).stream()
-                    .anyMatch(this::requiresSuperAdminApproval);
+            case "f_config", "f_ui_config", "f_unilevel_rule" ->
+                    hasFundConfigCheckerError(operation, value(command.params(), "key"));
+            case "f_config_batch" -> command.params() != null
+                    && command.params().get("changes") instanceof List<?> changes
+                    && changes.stream().anyMatch(item -> item instanceof Map<?, ?> change
+                            && hasFundConfigCheckerError("f_ui_config", value(change, "key")));
             default -> false;
         };
     }
 
+    private boolean hasFundConfigCheckerError(String operation, String key) {
+        String source = fSourceDomain(operation, key);
+        return "F2".equals(source) || "F4".equals(source);
+    }
+
     /** Actor, original command and authorization binding only; safe for the A2 read model. */
     ApiResult<Void> validateDecisionPermission(AuditReplayCommand command, boolean approving) {
+        var role = validateDecisionRole(command);
+        if (role.getCode() != 0 && !DECISION_SUPER_ADMIN_REQUIRED.equals(role.getMessage())) return role;
+        var business = validateBusinessDecisionPermission(command, approving, role.getCode() == 0);
+        // Keep the existing business-specific 403 when the actor also fails the shared decision rule.
+        return role.getCode() == 0 || business.getCode() == 403 ? business : role;
+    }
+
+    private ApiResult<Void> validateBusinessDecisionPermission(
+            AuditReplayCommand command, boolean approving, boolean roleAllowed) {
         if (HardwareQuotaApproval.supports(command)) {
             return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
                     && hasAuthority("platform_a2_operation_approve") && hasAuthority(HardwareQuotaApproval.AUTHORITY)
@@ -890,25 +917,25 @@ public class AuditReplayBusinessPermissionGuard {
             }
             return ApiResult.ok();
         }
-        if (!approving && !H7VoucherDisposition.isOperation(command)) return ApiResult.ok();
         if (command == null || command.op() == null)
-            return ApiResult.fail(403, "A2_BUSINESS_COMMAND_REQUIRED");
-        var approvalRole = validateApprovalRole(command);
-        if (approvalRole.getCode() != 0) return approvalRole;
+            return approving ? ApiResult.fail(403, "A2_BUSINESS_COMMAND_REQUIRED") : ApiResult.ok();
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
+        if (!approving) {
+            return roleAllowed || H7VoucherDisposition.isOperation(command)
+                    ? validateRejectionBusinessPermission(command, operation) : ApiResult.ok();
+        }
         if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation))
             return "E".equals(command.domain()) && hasAuthority("device_e5_write") && hasAuthority("platform_a2_operation_approve")
                     ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e5_write");
         if (isJ4Execution(command, operation)) {
             if (!hasAuthority("platform_a2_operation_approve") || !hasAuthority("emergency_j4_playbook_execute"))
                 return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:emergency_j4_playbook_execute");
-            return validateJ4SnapshotCurrent(command, false);
+            return roleAllowed ? validateJ4SnapshotCurrent(command, false) : ApiResult.ok();
         }
         boolean genesisParamApproval = "G".equalsIgnoreCase(text(command.domain())) && "g4_genesis_param".equals(operation);
         String authority = genesisParamApproval ? GenesisParamPermissions.forKey(value(command.params(), "paramKey"))
                 : approvalAuthority(command, operation);
-        if (authority != null) return hasAuthority("platform_a2_operation_approve") && hasAuthority(authority)
-                ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + authority);
+        if (authority != null) return validateDecisionAuthority(authority);
         if (genesisParamApproval) return ApiResult.fail(422, "G4_GENESIS_PARAM_KEY_INVALID");
         if (ffdd.opsconsole.market.application.OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op()))
             return ApiResult.fail(422, "RETIRED_FEATURE");
@@ -933,6 +960,37 @@ public class AuditReplayBusinessPermissionGuard {
         }
         return "H".equalsIgnoreCase(command.domain()) && "h2_trial_charge".equals(operation)
                 ? ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED") : ApiResult.ok();
+    }
+
+    private ApiResult<Void> validateRejectionBusinessPermission(AuditReplayCommand command, String operation) {
+        if (OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op())) return ApiResult.ok();
+        if ("F".equalsIgnoreCase(command.domain()) && "f_config_batch".equals(operation)) {
+            List<AuditReplayCommand> changes;
+            try {
+                changes = fConfigBatchCommands(command.params());
+            } catch (ffdd.opsconsole.shared.exception.BizException invalid) {
+                // A historical unusable command can still be dismissed without executing the batch.
+                return ApiResult.ok();
+            }
+            for (AuditReplayCommand change : changes) {
+                var permission = validateRejectionBusinessPermission(change, change.op());
+                if (permission.getCode() != 0) return permission;
+            }
+            return ApiResult.ok();
+        }
+        if ("E".equalsIgnoreCase(command.domain()) && "e2_phone_tier".equals(operation)) {
+            return validateE2PhoneTierPermission(command);
+        }
+        String authority = "G".equalsIgnoreCase(command.domain()) && "g4_genesis_param".equals(operation)
+                ? GenesisParamPermissions.forKey(value(command.params(), "paramKey")) : approvalAuthority(command, operation);
+        if (authority == null) authority = requiredAuthority(command, operation);
+        if (isUserSessionRevocation(command) && hasAuthority("user_c5_session_revoke_all")) return ApiResult.ok();
+        return authority == null ? ApiResult.ok() : validateDecisionAuthority(authority);
+    }
+
+    private ApiResult<Void> validateDecisionAuthority(String authority) {
+        return hasAuthority("platform_a2_operation_approve") && hasAuthority(authority)
+                ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + authority);
     }
 
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
@@ -2526,7 +2584,7 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "E" -> switch (operation) {
-                case HostingCenterService.OPERATION, "e1_sku_create", "e1_sku_update", "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy" -> "device_e1_write";
+                case HostingCenterService.OPERATION, "e1_sku_create", "e1_sku_update", "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy" -> E1_WRITE_AUTHORITY;
                 case "e2_task_create", "e2_task_update", "e2_task_price", "e2_task_status", "e2_task_delete" -> "device_e2_write";
                 case "e1_legacy_unknown_zero_credit_cancel" -> "device_e5_write";
                 case "e3_config", "e3_config_batch" -> "device_e3_write";

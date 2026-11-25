@@ -918,6 +918,7 @@ public class OpsAuditCenterService {
             int separator = operation.indexOf(':');
             String verb = separator < 0 ? operation : operation.substring(0, separator);
             boolean proposal = "PROPOSE".equals(verb);
+            boolean decision = "APPROVE".equals(verb) || "REJECT".equals(verb);
             boolean catalogProposal = proposal && request instanceof AuditOperationProposalRequest value
                     && G4CatalogApproval.supports(value.command());
             boolean catalogReceipt = catalogProposal;
@@ -937,10 +938,18 @@ public class OpsAuditCenterService {
                     var access = decisionAccess(ticket, makerId, actorId);
                     if (access.getCode() != 0) return ApiResult.fail(access.getCode(), access.getMessage());
                     if ("APPROVE".equals(verb) && replayBusinessPermissionGuard.f5ActionAuthority(command) != null) {
-                        if (makerId == null) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
-                        if (makerId.equals(actorId)) return ApiResult.fail(403, "A2_MAKER_CHECKER_REQUIRED");
+                        var makerCheck = decisionMakerCheck(makerId, actorId);
+                        if (makerCheck.getCode() != 0) return ApiResult.fail(makerCheck.getCode(), makerCheck.getMessage());
                         var permission = replayBusinessPermissionGuard.validateDecisionPermission(command, true);
                         if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());
+                    } else if (decision) {
+                        var role = replayBusinessPermissionGuard.validateDecisionRole(command);
+                        if (role.getCode() != 0) {
+                            var denial = STATUS_PENDING.equals(status(ticket.getStatus()))
+                                    ? decisionQualification(ticket, command, makerId, actorId, "APPROVE".equals(verb))
+                                    : role;
+                            if (denial.getCode() != 0) return ApiResult.fail(denial.getCode(), denial.getMessage());
+                        }
                     }
                 }
                 catalogReceipt = G4CatalogApproval.supports(command);
@@ -1115,13 +1124,16 @@ public class OpsAuditCenterService {
             }
             if (canReadOwnProposal(ticket, command, actorId)) return ApiResult.ok(toTicket(ticket, true));
         }
-        if (!"WITHDRAW".equals(verb) && !accessPolicy.canAccessTicket(ticket, makerId)
+        if ("APPROVE".equals(verb) || "REJECT".equals(verb)) {
+            var access = decisionAccess(ticket, makerId, actorId);
+            if (access.getCode() != 0) return ApiResult.fail(access.getCode(), access.getMessage());
+            var makerCheck = decisionMakerCheck(makerId, actorId);
+            if (makerCheck.getCode() != 0) return ApiResult.fail(makerCheck.getCode(), makerCheck.getMessage());
+            var role = replayBusinessPermissionGuard.validateDecisionRole(command);
+            if (role.getCode() != 0) return ApiResult.fail(role.getCode(), role.getMessage());
+        } else if (!"WITHDRAW".equals(verb) && !accessPolicy.canAccessTicket(ticket, makerId)
                 && !("PROPOSE".equals(verb) && accessPolicy.canAccessOwnBusinessProposal(command, actorId))) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
-        }
-        if ("APPROVE".equals(verb)) {
-            var role = replayBusinessPermissionGuard.validateApprovalRole(command);
-            if (role.getCode() != 0) return ApiResult.fail(role.getCode(), role.getMessage());
         }
         var metadata = ticketMetadata(ticket, command);
         return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
@@ -1137,22 +1149,36 @@ public class OpsAuditCenterService {
         return ApiResult.ok();
     }
 
+    private ApiResult<Void> decisionMakerCheck(Long makerId, Long actorId) {
+        if (makerId == null) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
+        return makerId.equals(actorId) ? ApiResult.fail(403, "A2_MAKER_CHECKER_REQUIRED") : ApiResult.ok();
+    }
+
     private ApiResult<Void> decisionQualification(AuditOperationTicketEntity ticket, AuditReplayCommand cmd,
             Long makerId, Long actorId, boolean approving) {
         try {
             var access = decisionAccess(ticket, makerId, actorId);
             if (access.getCode() != 0) return access;
             if (!STATUS_PENDING.equals(status(ticket.getStatus()))) return ApiResult.fail(409, "A2_OPERATION_ALREADY_TERMINAL");
-            if (makerId == null) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
-            if (makerId.equals(actorId)) return ApiResult.fail(403, "A2_MAKER_CHECKER_REQUIRED");
+            var makerCheck = decisionMakerCheck(makerId, actorId);
+            if (makerCheck.getCode() != 0) return makerCheck;
             if (approving) {
-                if (cmd == null) return ApiResult.fail(422, "COMMAND_REQUIRED");
+                if (cmd == null) {
+                    var role = replayBusinessPermissionGuard.validateDecisionRole(null);
+                    return role.getCode() != 0 ? role : ApiResult.fail(422, "COMMAND_REQUIRED");
+                }
                 var integrity = approvalIntegrity(ticket, cmd, actorId);
                 if (integrity.getCode() != 0) return integrity;
             }
             var permission = replayBusinessPermissionGuard.validateDecisionPermission(cmd, approving);
-            if (permission.getCode() != 0 || !approving) return permission;
-            return replayDispatcher.validateReplayPermission(cmd);
+            if (!approving) return permission;
+            if (permission.getCode() == 0) return replayDispatcher.validateReplayPermission(cmd);
+            if (AuditReplayBusinessPermissionGuard.DECISION_SUPER_ADMIN_REQUIRED.equals(permission.getMessage())
+                    && "A".equals(cmd.domain()) && cmd.op() != null && cmd.op().startsWith("a1_")) {
+                var accountPermission = replayDispatcher.validateReplayPermission(cmd);
+                if (accountPermission.getCode() == 403) return accountPermission;
+            }
+            return permission;
         } catch (BizException denied) {
             return ApiResult.fail(denied.getCode(), denied.getMessage());
         }
