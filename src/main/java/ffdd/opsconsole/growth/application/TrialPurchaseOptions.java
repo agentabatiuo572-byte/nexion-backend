@@ -75,7 +75,7 @@ public class TrialPurchaseOptions {
         }
         var requested = new LinkedHashSet<String>();
         for (String no : request.productNos()) {
-            if (no == null || !no.matches("[A-Za-z0-9._-]{2,64}") || !requested.add(no)) {
+            if (!validProductNo(no) || !requested.add(no)) {
                 throw new BizException(422, "TRIAL_OPTIONS_PRODUCT_INVALID");
             }
         }
@@ -115,6 +115,10 @@ public class TrialPurchaseOptions {
 
     public List<String> selected() {
         return selected(db.options());
+    }
+
+    static boolean validProductNo(String productNo) {
+        return productNo != null && productNo.matches("[A-Za-z0-9._-]{1,64}");
     }
 
     public boolean containsForPurchase(String productNo) {

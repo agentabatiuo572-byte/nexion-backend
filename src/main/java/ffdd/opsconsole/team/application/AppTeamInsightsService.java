@@ -445,7 +445,12 @@ public class AppTeamInsightsService {
 
     private Map<String, Object> commission(AppTeamInsightsMapper.CommissionRow row) {
         Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", "CM-" + row.id()); item.put("kind", kind(row.commissionType()));
+        String kind = kind(row.commissionType());
+        item.put("id", "CM-" + row.id()); item.put("kind", kind);
+        if (VRankSalaryService.KIND.equals(kind)) {
+            item.put("salaryMonth", row.salaryMonth());
+            item.put("salaryRank", row.salaryRank());
+        }
         item.put("sourceUserName", row.sourceUserName() == null || row.sourceUserName().isBlank() ? "System" : row.sourceUserName());
         item.put("layer", row.layerNo()); item.put("orderId", row.orderNo()); item.put("orderAmountUSD", row.orderAmountUsd());
         item.put("amountUSDT", zero(row.amountUsdt())); item.put("amountNEX", zero(row.amountNex()));

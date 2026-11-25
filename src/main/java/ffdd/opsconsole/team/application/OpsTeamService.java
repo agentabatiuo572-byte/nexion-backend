@@ -16,6 +16,8 @@ import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.domain.AuditReplayable;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.V8PromotionSnapshot;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.VRankBenefits;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
@@ -3958,6 +3960,24 @@ public class OpsTeamService implements AuditReplayable {
         return commissionRepository.vRankRewards(level).stream()
                 .map(this::normalizeRewardMap)
                 .toList();
+    }
+
+    public V8PromotionSnapshot snapshotV8Promotion(long userId) {
+        String originalRank = commissionRepository.currentMemberVRank(userId);
+        var v7 = vRankBenefits(commissionRepository.lockVRankPolicy("V7"));
+        var v8 = vRankBenefits(commissionRepository.lockVRankPolicy("V8"));
+        var rewards = commissionRepository.vRankRewardsForUpdate("V8").stream()
+                .map(this::normalizeRewardMap)
+                .toList();
+        return new V8PromotionSnapshot(originalRank, rewards, v7, v8);
+    }
+
+    private VRankBenefits vRankBenefits(Map<String, Object> policy) {
+        if (policy.isEmpty()) return null;
+        return new VRankBenefits(
+                decimalValue(policy.get("purchaseL1Rate"), BigDecimal.ZERO).stripTrailingZeros(),
+                decimalValue(policy.get("purchaseL2Rate"), BigDecimal.ZERO).stripTrailingZeros(),
+                decimalValue(policy.get(VRankSalaryService.POLICY_FIELD), BigDecimal.ZERO).stripTrailingZeros().toPlainString());
     }
 
     private Map<String, Object> normalizeRewardMap(Map<String, Object> raw) {

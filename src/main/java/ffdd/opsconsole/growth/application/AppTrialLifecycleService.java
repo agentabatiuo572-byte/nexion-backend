@@ -647,7 +647,7 @@ public class AppTrialLifecycleService {
             Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote, boolean legacyVersion,
             PurchaseQuotaReservation reservation, String paymentClaimNo, Map<String, String> frozenPolicy) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
-        if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
+        if (!TrialPurchaseOptions.validProductNo(productNo)) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
         if (!validExpectedAmount(expectedAmountUsdt)) {
             return ApiResult.fail(409, "TRIAL_AMOUNT_INVALID");
         }

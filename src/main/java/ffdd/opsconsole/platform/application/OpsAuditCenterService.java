@@ -26,6 +26,7 @@ import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationStats;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.AuditOperationTicket;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.FundEffect;
 import ffdd.opsconsole.platform.dto.AuditCenterOverview.RoleGrantsDiff;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.V8PromotionSnapshot;
 import ffdd.opsconsole.platform.dto.AuditMechanismParamUpdateRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationDecisionRequest;
 import ffdd.opsconsole.platform.dto.AuditOperationProposalRequest;
@@ -66,6 +67,7 @@ import ffdd.opsconsole.growth.application.H7VoucherDisposition;
 import ffdd.opsconsole.risk.application.K1RiskApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.SettlementResult;
+import ffdd.opsconsole.team.application.OpsTeamService;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.team.application.HardwareQuotaApproval;
 import ffdd.opsconsole.market.application.G2G7ParamApproval;
@@ -161,6 +163,8 @@ public class OpsAuditCenterService {
     private AdminObjectDisplayNameService adminObjectDisplayNames;
     @Autowired
     private ffdd.opsconsole.team.application.AmbassadorMaterialService ambassadorMaterials;
+    @Autowired
+    private OpsTeamService teams;
     private final TrustDisclosureRepository trustDisclosureRepository;
 
     public OpsAuditCenterService(PlatformConfigRepository configRepository, AuditLogService auditLogService,
@@ -522,6 +526,16 @@ public class OpsAuditCenterService {
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                if (isV8Promotion(command)) {
+                    var snapshot = teams.snapshotV8Promotion(Long.parseLong(target.id()));
+                    ticket.setObjectText("用户 " + target.id());
+                    ticket.setBeforeValue(snapshot.originalRank());
+                    ticket.setAfterValue("V8");
+                    sourceDomain = "F1";
+                    ticket.setSourceDomain(normalizeDomain(sourceDomain));
+                    // Only the server writes the review snapshot at the command root.
+                    stored.set(V8PromotionSnapshot.FIELD, objectMapper.valueToTree(snapshot));
+                }
                 var disclosureReview = replayBusinessPermissionGuard.freezeDisclosureReview(command);
                 if (disclosureReview != null) stored.set("disclosureReview", objectMapper.valueToTree(disclosureReview));
                 if (isHostingCenterCommand(command)) {
@@ -975,6 +989,9 @@ public class OpsAuditCenterService {
                         auditLogService.findA2ProposalId(actorId, idempotencyKey))) {
                     return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
                 }
+                if (proposal && recovery.response().v8PromotionSnapshot() != null) {
+                    return proposalByIdempotencyKey(idempotencyKey);
+                }
                 return ticketReceipt(recovery.response(), actorId, verb, operationId);
             }
             if (recovery.status() == AdminIdempotencyService.RecoveryStatus.UNKNOWN) {
@@ -1019,7 +1036,7 @@ public class OpsAuditCenterService {
                             AuditOperationTicket.class, originAuthority, originTargets, () -> requireSuccess(action.get()))
                     : idempotencyService.executeOwned(A2_COMMAND, idempotencyKey, requestHash,
                             AuditOperationTicket.class, actorId, originAuthority, originTargets, () -> requireSuccess(action.get()));
-            if (catalogProposal) {
+            if (catalogProposal || (proposal && receipt.v8PromotionSnapshot() != null)) {
                 return proposalByIdempotencyKey(idempotencyKey);
             }
             return ApiResult.ok(receipt);
@@ -1140,7 +1157,7 @@ public class OpsAuditCenterService {
                 metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate()),
                 decisionQualification(ticket, command, makerId, actorId, true),
                 decisionQualification(ticket, command, makerId, actorId, false), disclosureReview(ticket, command),
-                commissionReverseEvidence(command)));
+                commissionReverseEvidence(command), v8PromotionSnapshot(ticket, command)));
     }
 
     private ApiResult<Void> decisionAccess(AuditOperationTicketEntity ticket, Long makerId, Long actorId) {
@@ -1609,6 +1626,7 @@ public class OpsAuditCenterService {
             }
             stored.remove("avatarMakerAdminId");
             stored.remove(RoleGrantsDiff.FIELD);
+            stored.remove(V8PromotionSnapshot.FIELD);
             stored.remove(A4RegistryApproval.MAKER_FIELD);
             stored.remove("skuReview");
             stored.remove(HostingCenterService.REVIEW_FIELD);
@@ -1887,7 +1905,20 @@ public class OpsAuditCenterService {
                 approve.getCode() == 0 ? null : approve.getCode(), approve.getCode() == 0 ? null : approve.getMessage(),
                 reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage(),
                 objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command), disclosureReview(row, command),
-                commissionReverseEvidence(command));
+                commissionReverseEvidence(command), v8PromotionSnapshot(row, command));
+    }
+
+    private V8PromotionSnapshot v8PromotionSnapshot(AuditOperationTicketEntity row, AuditReplayCommand command) {
+        if (!isV8Promotion(command)) return null;
+        try {
+            var stored = objectMapper.reader()
+                    .with(com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                    .readTree(row.getCommandJson());
+            var snapshot = stored.get(V8PromotionSnapshot.FIELD);
+            return snapshot == null ? null : objectMapper.treeToValue(snapshot, V8PromotionSnapshot.class);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalidSnapshot) {
+            return null;
+        }
     }
 
     private AuditCenterOverview.CommissionReverseEvidence commissionReverseEvidence(AuditReplayCommand command) {

@@ -66,13 +66,16 @@ public record AuditCenterOverview(
             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
             com.fasterxml.jackson.databind.JsonNode disclosureReview,
             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-            CommissionReverseEvidence evidence) {
+            CommissionReverseEvidence evidence,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            V8PromotionSnapshot v8PromotionSnapshot) {
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
                                                        String orderNo, boolean retired, String displayedRoleGate,
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> approve,
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> reject,
                                                        com.fasterxml.jackson.databind.JsonNode authorizedDisclosureReview,
-                                                       CommissionReverseEvidence authorizedEvidence) {
+                                                       CommissionReverseEvidence authorizedEvidence,
+                                                       V8PromotionSnapshot authorizedV8PromotionSnapshot) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
                     type, amplifies, sos, ts, ownedByViewer, displayedRoleGate, reason, status, phoneCalibrationProposal,
                     coverageCheckOnApproval, code, effect, orderNo, retired, ruleTaskAction, ambassadorMaterialProposal,
@@ -82,11 +85,18 @@ public record AuditCenterOverview(
                     approve.getCode() == 0 ? null : approve.getMessage(),
                     reject.getCode() == 0 ? null : reject.getCode(),
                     reject.getCode() == 0 ? null : reject.getMessage(), objDisplayName, roleGrantsDiff,
-                    authorizedDisclosureReview, authorizedEvidence);
+                    authorizedDisclosureReview, authorizedEvidence, authorizedV8PromotionSnapshot);
         }
     }
 
     public record CommissionReverseEvidence(String type, String value) {}
+
+    public record V8PromotionSnapshot(String originalRank, List<Map<String, Object>> v8Rewards,
+                                     VRankBenefits v7, VRankBenefits v8) {
+        public static final String FIELD = "v8PromotionSnapshot";
+    }
+
+    public record VRankBenefits(BigDecimal purchaseL1Rate, BigDecimal purchaseL2Rate, String monthlySalaryUsdt) {}
 
     public record RoleGrantsDiff(
             List<String> permissionCodesAdded,
