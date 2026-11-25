@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.purchase;
 
+import com.zaxxer.hikari.HikariDataSource;
 import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,11 +23,16 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.math.*;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.*;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.support.JdbcUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -35,7 +41,7 @@ import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 import static ffdd.opsconsole.finance.purchase.PurchasePaymentPolicyService.money;
 
 /** Durable direct purchase intents. No wallet principal transaction belongs to this rail. */
-@Service @RequiredArgsConstructor
+@Service @RequiredArgsConstructor @Slf4j
 public class PurchasePaymentService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
@@ -83,6 +89,10 @@ public class PurchasePaymentService {
             "PAYMENT_TIME_UNVERIFIED", "PAYMENT_REFUNDED_REVIEW");
     private Instant now(){return clock.instant();}
     private static final String SELECT="SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?";
+    // Match the purchase command unique index's case- and accent-insensitive key comparison.
+    private static final String COMMAND_WEIGHT = "HEX(WEIGHT_STRING(CONVERT(? USING utf8mb4) COLLATE utf8mb4_0900_ai_ci))";
+    private static final String CREATE_LOCK = "SHA2(CONCAT(DATABASE(), ':purchase-intent:', ?, ':', "
+            + COMMAND_WEIGHT + ", ':', " + COMMAND_WEIGHT + "), 256)";
     /** 报价、建单、超时和订单找回共用。已交付的付款可以进入财务核对，仍属于已完成的购买。 */
     private static final String IN_PROGRESS="p.receipt_json IS NULL AND p.refund_receipt_json IS NULL AND p.status NOT IN ('DELIVERED','EXPIRED')";
 
@@ -509,16 +519,72 @@ public class PurchasePaymentService {
 
     public Map<String,Object> create(long owner,String key,String quoteId){
         if(key==null||key.isBlank()||key.length()>128)throw new BizException(422,"IDEMPOTENCY_KEY_REQUIRED");
+        var quote = db.one("SELECT kind FROM nx_purchase_payment_quote WHERE quote_id=? AND user_id=?", quoteId, owner);
+        if (quote == null) throw new BizException(404, "PURCHASE_PAYMENT_QUOTE_NOT_FOUND");
+        var reservation = reserveWithCreationLock(owner, text(quote.get("kind")), key, quoteId);
+        if (reservation.get("rejection") instanceof TrialPurchaseConflict rejection) throw rejection;
+        var intent = map(reservation.get("intent"));
+        if (Boolean.TRUE.equals(reservation.get("winner"))) submit(intent);
+        return get(owner, text(intent.get("intent_no")));
+    }
+
+    private Map<String, Object> reserveWithCreationLock(long owner, String kind, String key, String quoteId) {
+        var source = Objects.requireNonNull(((DataSourceTransactionManager) transactions).getDataSource());
+        // A session lock keeps the existing preflight and reservation transactions independent.
+        Connection connection = null;
+        try {
+            connection = source.getConnection();
+            if (creationLockCommand(connection, "SELECT GET_LOCK(" + CREATE_LOCK + ", 0)", owner, kind, key) == 0) {
+                throw new BizException(409, "PURCHASE_PAYMENT_INTENT_PROCESSING");
+            }
+            try {
+                return reserveIntent(owner, key, quoteId);
+            } finally {
+                try {
+                    if (creationLockCommand(connection, "SELECT RELEASE_LOCK(" + CREATE_LOCK + ")", owner, kind, key) != 1) {
+                        throw new SQLException("Purchase creation lock was lost");
+                    }
+                } catch (SQLException failure) {
+                    // The reservation or rejection may already be committed. Preserve its original outcome.
+                    if (source instanceof HikariDataSource pooled) pooled.evictConnection(connection);
+                    log.warn("Purchase creation lock release failed; discarded lock session");
+                }
+            }
+        } catch (SQLException failure) {
+            if (connection != null && source instanceof HikariDataSource pooled) pooled.evictConnection(connection);
+            throw new BizException(503, "PURCHASE_PAYMENT_CREATE_UNAVAILABLE");
+        } finally {
+            JdbcUtils.closeConnection(connection);
+        }
+    }
+
+    private int creationLockCommand(Connection connection, String statement, long owner, String kind, String key)
+            throws SQLException {
+        try (var command = connection.prepareStatement(statement)) {
+            command.setLong(1, owner);
+            command.setString(2, kind);
+            command.setString(3, key);
+            try (var row = command.executeQuery()) {
+                if (row.next()) {
+                    int value = row.getInt(1);
+                    if (!row.wasNull()) return value;
+                }
+                throw new SQLException("Purchase creation lock result is unavailable");
+            }
+        }
+    }
+
+    private Map<String, Object> reserveIntent(long owner, String key, String quoteId) {
         var preflight=writeTx(()->createPreflight(owner,key,quoteId));
         if (preflight.rejection() != null) throw preflight.rejection();
-        if(preflight.replay()!=null)return get(owner,text(preflight.replay().get("intent_no")));
+        if (preflight.replay() != null) return values("intent", preflight.replay(), "winner", false);
         var originalQuote=preflight.quote();
         boolean bsc=cregis(originalQuote.get("payment_method"));
         CregisNetwork network=bsc?network(originalQuote.get("payment_method")):null;
         ready(text(originalQuote.get("payment_method")));
         Map<String,Object> candidate=bsc?dedicatedAddress(network):null;
         // HDPay commits the immutable intent before create; BSC atomically dedicates an existing proven pool address.
-        var reservation=writeTx(()->{
+        return writeTx(()->{
             if(bsc)cregisGate(network,true,true);
             if ("ORDER_PAY".equals(originalQuote.get("kind"))) {
                 String orderNo = text(parse(originalQuote.get("payload_json")).get("orderNo"));
@@ -584,10 +650,6 @@ public class PurchasePaymentService {
             }
             return values("intent",db.one(SELECT,no),"winner",!bsc);
         });
-        if (reservation.get("rejection") instanceof TrialPurchaseConflict rejection) throw rejection;
-        var intent=map(reservation.get("intent"));String no=text(intent.get("intent_no"));
-        if(Boolean.TRUE.equals(reservation.get("winner")))submit(intent);
-        return get(owner,no);
     }
     private void submit(Map<String,Object> intent){
         String no=text(intent.get("intent_no"));String method=text(intent.get("payment_method"));
@@ -608,13 +670,26 @@ public class PurchasePaymentService {
         }
     }
     public Map<String,Object> lookup(long owner,String kind,String key){
-        var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,kind,key);
-        if (row == null && "TRIAL_CONVERT".equals(kind)) {
+        String intent = intentNoByCommand(owner, kind, key);
+        if (intent != null) return get(owner, intent);
+        var attempt = db.one("SELECT CAST(IS_USED_LOCK(" + CREATE_LOCK + ") IS NOT NULL AS UNSIGNED) held",
+                owner, kind, key);
+        // A creation that finished during the read may already have committed its result.
+        intent = intentNoByCommand(owner, kind, key);
+        if (intent != null) return get(owner, intent);
+        if ("TRIAL_CONVERT".equals(kind)) {
             var rejection = externalRejection(owner, key, null);
             if (rejection != null) throw rejection;
         }
-        if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");return get(owner,text(row.get("intent_no")));
+        if (number(attempt.get("held")) == 1) throw new BizException(409, "PURCHASE_PAYMENT_INTENT_PROCESSING");
+        throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");
     }
+
+    private String intentNoByCommand(long owner, String kind, String key) {
+        var row = db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?", owner, kind, key);
+        return row == null ? null : text(row.get("intent_no"));
+    }
+
     /**
      * 按本人订单号找回进行中的外部付款单:只读,不改任何付款单/订单状态,也不需要客户端留着原命令键。
      * 订单归属沿用 ORDER_PAY 报价分支的同一判据(他人订单与不存在的订单一样只有 404);

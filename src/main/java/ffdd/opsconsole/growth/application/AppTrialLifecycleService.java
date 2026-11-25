@@ -243,13 +243,47 @@ public class AppTrialLifecycleService {
 
     public record TrialQuotaSnapshot(LocalDate businessDate, Integer remaining) {}
 
+    public ApiResult<Map<String, Object>> command(Long userId, String kind, String key) {
+        if (userId == null || invalidUser(activeUser(userId, false))) throw new BizException(404, "USER_NOT_FOUND");
+        String operation = switch (kind) {
+            case "start" -> "TRIAL_START";
+            case "cancel" -> "TRIAL_CANCEL";
+            default -> throw new BizException(422, "TRIAL_COMMAND_KIND_INVALID");
+        };
+        String scope = trialScope(operation, userId);
+        String requestHash = idempotency.retainedRequestHash(scope, key);
+        var result = linked("kind", kind, "commandKey", key.trim(), "status", "NOT_SEEN");
+        if (requestHash == null) return ApiResult.ok(result);
+
+        var recovery = idempotency.recoveryResult(scope, key, requestHash, ApiResult.class);
+        if (recovery.status() == AdminIdempotencyService.RecoveryStatus.PROCESSING) {
+            result.put("status", "PROCESSING");
+        } else if (recovery.response() != null && recovery.response().getCode() == 0
+                && recovery.response().getData() instanceof Map<?, ?> data && data.get("claimNo") instanceof String claimNo) {
+            if ("cancel".equals(kind) && sha256("explicit").equals(requestHash)
+                    && legacyOpsCancellation(userId, key, recovery.response())) return ApiResult.ok(result);
+            result.put("status", "SUCCEEDED");
+            result.put("claimNo", claimNo);
+        } else if (recovery.response() != null && recovery.response().getCode() >= 400
+                && recovery.response().getCode() < 500 && StringUtils.hasText(recovery.response().getMessage())) {
+            result.put("status", "REJECTED");
+            result.put("code", recovery.response().getCode());
+            result.put("message", recovery.response().getMessage());
+        } else {
+            result.put("status", "INDETERMINATE");
+        }
+        return ApiResult.ok(result);
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> start(
             Long userId, Long paymentMethodId, String deviceName, String idempotencyKey) {
-        requireUser(userId);
         return once("TRIAL_START", userId, idempotencyKey,
                 linked("paymentMethodId", paymentMethodId, "deviceName", deviceName),
-                () -> startOnce(userId, paymentMethodId, deviceName, idempotencyKey));
+                () -> {
+                    requireUser(userId);
+                    return startOnce(userId, paymentMethodId, deviceName, idempotencyKey);
+                });
     }
 
     private ApiResult<Map<String, Object>> startOnce(
@@ -336,17 +370,26 @@ public class AppTrialLifecycleService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> cancel(Long userId, String reason, String idempotencyKey) {
-        requireUser(userId);
         String normalized = reason == null ? "" : reason.trim().toLowerCase(Locale.ROOT);
-        if (!List.of("unbind", "explicit").contains(normalized)) return ApiResult.fail(422, "TRIAL_CANCEL_REASON_INVALID");
-        return once("TRIAL_CANCEL", userId, idempotencyKey, normalized,
-                () -> cancelOnce(userId, normalized, false));
+        var result = once("TRIAL_CANCEL", userId, idempotencyKey, normalized,
+                () -> {
+                    requireUser(userId);
+                    return List.of("unbind", "explicit").contains(normalized) ? cancelOnce(userId, normalized, false)
+                            : ApiResult.fail(422, "TRIAL_CANCEL_REASON_INVALID");
+                });
+        return "explicit".equals(normalized) && legacyOpsCancellation(userId, idempotencyKey, result)
+                ? ApiResult.fail(409, "IDEMPOTENCY_KEY_CONFLICT") : result;
+    }
+
+    private boolean legacyOpsCancellation(Long userId, String key, ApiResult<?> result) {
+        return result.getCode() == 0 && result.getData() instanceof Map<?, ?> data
+                && data.get("claimNo") instanceof String claimNo && mapper.legacyOpsCancelled(userId, claimNo, key.trim());
     }
 
     @Transactional(rollbackFor = Exception.class)
     ApiResult<Map<String, Object>> cancelFromOps(Long userId, String idempotencyKey) {
         requireUser(userId);
-        return once("TRIAL_CANCEL", userId, idempotencyKey, "explicit",
+        return once("TRIAL_OPS_CANCEL", userId, idempotencyKey, "explicit",
                 () -> cancelOnce(userId, "explicit", true));
     }
 
@@ -1412,9 +1455,19 @@ public class AppTrialLifecycleService {
     private ApiResult<Map<String, Object>> once(
             String operation, Long userId, String key, Object request,
             Supplier<ApiResult<Map<String, Object>>> action) {
+        String scope = trialScope(operation, userId);
+        String hash = sha256(String.valueOf(request));
+        if ("TRIAL_START".equals(operation) || "TRIAL_CANCEL".equals(operation)) {
+            return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.executeRetained(
+                    scope, key, hash, ApiResult.class, (Supplier) action);
+        }
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
-                "APP:" + operation + ":USER:" + userId, key, sha256(String.valueOf(request)),
+                scope, key, hash,
                 ApiResult.class, (Supplier) action);
+    }
+
+    private String trialScope(String operation, Long userId) {
+        return "APP:" + operation + ":USER:" + userId;
     }
 
     private String sha256(String value) {

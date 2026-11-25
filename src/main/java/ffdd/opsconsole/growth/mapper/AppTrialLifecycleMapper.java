@@ -26,6 +26,25 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     Long activeUser(@Param("userId") Long userId);
 
     @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_audit_log
+             WHERE resource_type='TRIAL_SESSION' AND resource_id IN (#{claimNo}, CONCAT('trial-', #{claimNo}))
+               AND action='H2_TRIAL_SESSION_CANCELLED' AND actor_type='ADMIN'
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.userId')) AS UNSIGNED)=#{userId}
+               AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey')) COLLATE utf8mb4_0900_ai_ci=#{key}
+               AND is_deleted=0)
+              OR EXISTS(SELECT 1 FROM nx_audit_log_archive
+               WHERE content_sha256 IS NOT NULL
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='TRIAL_SESSION'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) IN (#{claimNo}, CONCAT('trial-', #{claimNo}))
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='H2_TRIAL_SESSION_CANCELLED'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.userId'))=CAST(#{userId} AS CHAR)
+                 AND JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.idempotencyKey'))
+                   COLLATE utf8mb4_0900_ai_ci=#{key})
+            """)
+    boolean legacyOpsCancelled(@Param("userId") Long userId, @Param("claimNo") String claimNo, @Param("key") String key);
+
+    @Select("""
             SELECT id FROM nx_user
              WHERE id=#{userId}
                AND REPLACE(TRIM(COALESCE(country_code,'')),'+','')=REPLACE(#{countryCode},'+','')

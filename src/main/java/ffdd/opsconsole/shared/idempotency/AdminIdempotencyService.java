@@ -193,12 +193,13 @@ public class AdminIdempotencyService {
                         // Replay only the exception's existing structured rejection payload.
                         businessResponse = ApiResult.fail(businessError.getCode(), businessError.getMessage(), errorData);
                     }
-                } else if (eventFailureReceiptScope(normalizedScope)) {
+                } else if (eventFailureReceiptScope(normalizedScope) || trialLifecycleReceiptScope(normalizedScope)) {
                     int code = businessError.getCode();
                     String reason = businessError.getMessage();
                     if (code >= 400 && code < 500 && reason != null && reason.matches("[A-Z][A-Z0-9_]{0,127}")) {
-                        // The original exception still rolls back the event action.
-                        businessResponse = ApiResult.fail(code, reason);
+                        // The original exception still rolls back the business action.
+                        businessResponse = ApiResult.fail(code, reason,
+                                trialLifecycleReceiptScope(normalizedScope) ? businessError.errorData() : null);
                     }
                 }
             }
@@ -222,6 +223,10 @@ public class AdminIdempotencyService {
 
     static boolean salaryClaimReceiptScope(String scope) {
         return scope.startsWith("APP:VRANK_SALARY:USER:");
+    }
+
+    static boolean trialLifecycleReceiptScope(String scope) {
+        return scope.startsWith("APP:TRIAL_START:USER:") || scope.startsWith("APP:TRIAL_CANCEL:USER:");
     }
 
     private String errorSummary(RuntimeException ex) {

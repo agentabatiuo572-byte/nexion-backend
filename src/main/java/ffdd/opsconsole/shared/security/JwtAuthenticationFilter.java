@@ -59,6 +59,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         boolean recordActivity = !("POST".equals(request.getMethod()) && (context + "/api/app/support/realtime-ticket").equals(path)
                 || "GET".equals(request.getMethod())
                 && ((context + "/ws/conversations").equals(path) || (context + "/api/orders/commands").equals(path)
+                || (context + "/api/app/purchase-payment-intents").equals(path)
+                || path.startsWith(context + "/api/trial/commands/")
                 || path.startsWith(context + "/api/team/rank/salary/claims/")));
         String token = resolveToken(request);
         if (token != null) {

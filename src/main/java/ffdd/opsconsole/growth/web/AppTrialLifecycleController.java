@@ -7,10 +7,12 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -23,6 +25,14 @@ public class AppTrialLifecycleController {
     public ApiResult<Map<String, Object>> state(Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? forbidden() : service.state(userId);
+    }
+
+    @GetMapping("/commands/{kind}")
+    public ApiResult<Map<String, Object>> command(@PathVariable String kind,
+                                                   @RequestParam(name = "commandKey", required = false) String commandKey,
+                                                   Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.command(userId, kind, commandKey);
     }
 
     @GetMapping("/purchase-options")

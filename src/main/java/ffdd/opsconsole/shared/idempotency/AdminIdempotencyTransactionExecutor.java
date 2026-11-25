@@ -69,7 +69,8 @@ public class AdminIdempotencyTransactionExecutor {
         var status = recoveryStatus(record, requestHash);
         boolean failed = status == AdminIdempotencyService.RecoveryStatus.FAILED;
         boolean hasRecordedFailure = failed && (AdminIdempotencyService.eventFailureReceiptScope(scope)
-                || AdminIdempotencyService.salaryClaimReceiptScope(scope))
+                || AdminIdempotencyService.salaryClaimReceiptScope(scope)
+                || AdminIdempotencyService.trialLifecycleReceiptScope(scope))
                 && StringUtils.hasText(record.getResponseJson());
         if (status != AdminIdempotencyService.RecoveryStatus.SUCCEEDED && !hasRecordedFailure) {
             return new AdminIdempotencyService.RecoveryResult<>(status, null);
@@ -322,11 +323,12 @@ public class AdminIdempotencyTransactionExecutor {
                 return Claim.replayed(readJson(record.getResponseJson(), responseType));
             }
         }
-        if ((conversationSendScope(record.getScope()) || AdminIdempotencyService.salaryClaimReceiptScope(record.getScope()))
+        if ((conversationSendScope(record.getScope()) || AdminIdempotencyService.salaryClaimReceiptScope(record.getScope())
+                || AdminIdempotencyService.trialLifecycleReceiptScope(record.getScope()))
                 && STATUS_FAILED.equals(record.getStatus())
                 && StringUtils.hasText(record.getResponseJson())) {
             if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
-            // Both operations retain the original rejection after the business transaction rolled back.
+            // Retain the original rejection after the business transaction rolled back.
             return Claim.replayed(readJson(record.getResponseJson(), responseType));
         }
         if ("A2_COMMAND".equals(record.getScope()) && STATUS_FAILED.equals(record.getStatus())) {
