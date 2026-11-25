@@ -189,7 +189,9 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
 
     @Select("""
             SELECT COUNT(*) FROM nx_admin_idempotency_record
-             WHERE is_deleted=0 AND origin_admin_id IS NOT NULL AND status IN ('UNKNOWN','PROCESSING','FAILED')
+             WHERE is_deleted=0 AND origin_admin_id IS NOT NULL
+               AND (status IN ('UNKNOWN','PROCESSING')
+                    OR (status='FAILED' AND (rollback_confirmed<>1 OR response_json IS NOT NULL)))
                AND REGEXP_LIKE(scope, #{scopePattern}, 'c')
                AND NOT (scope=#{scope} AND BINARY idempotency_key=BINARY #{key})
             """)

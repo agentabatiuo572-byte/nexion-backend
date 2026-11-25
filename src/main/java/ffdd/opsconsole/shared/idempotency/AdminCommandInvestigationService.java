@@ -356,8 +356,8 @@ public class AdminCommandInvestigationService {
     }
 
     private boolean provenNotExecuted(AdminIdempotencyRecordEntity original) {
+        if (original.getResponseJson() == null) return AdminIdempotencyRollbackEvidence.confirmed(original);
         if (!AdminCommandOrigin.localConfiguration(original.getScope())) return false;
-        if (original.getResponseJson() == null) return Integer.valueOf(1).equals(original.getRollbackConfirmed());
         try {
             var response = json.readTree(original.getResponseJson());
             int code = response.path("code").asInt(0);
@@ -1040,13 +1040,16 @@ public class AdminCommandInvestigationService {
     }
 
     private Receipt receipt(AdminIdempotencyRecordEntity original, AdminCommandInvestigationEntity latest) {
+        boolean rollbackConfirmed = AdminIdempotencyRollbackEvidence.confirmed(original);
+        boolean a3Failed = A3Content.forScope(original.getScope()) != null && "FAILED".equals(original.getStatus());
         boolean locked = Set.of("UNKNOWN", "PROCESSING").contains(original.getStatus())
-                || A3Content.forScope(original.getScope()) != null && "FAILED".equals(original.getStatus());
+                || a3Failed && !rollbackConfirmed;
+        boolean newOperationAllowed = "CONFIRMED_NOT_EXECUTED".equals(original.getStatus());
         return new Receipt(original.getId(), original.getScope(), original.getIdempotencyKey(), original.getRequestHash(),
                 original.getOriginMethod(), original.getOriginPath(), original.getOriginTarget(), original.getOriginTargets(), original.getOriginAdminId(),
-                original.getStatus(), locked, "CONFIRMED_NOT_EXECUTED".equals(original.getStatus()),
+                original.getStatus(), locked, newOperationAllowed,
                 businessCode(original.getResponseJson()), receiptState(original), batchSplit(original), latest,
-                original.getResponseJson() == null && provenNotExecuted(original), integrityRepair(original));
+                rollbackConfirmed, integrityRepair(original));
     }
 
     private IntegrityRepairReceipt integrityRepair(AdminIdempotencyRecordEntity original) {

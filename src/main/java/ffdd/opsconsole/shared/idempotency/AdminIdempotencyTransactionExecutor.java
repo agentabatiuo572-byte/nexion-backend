@@ -171,7 +171,8 @@ public class AdminIdempotencyTransactionExecutor {
                 && (STATUS_SUCCEEDED.equals(current.getStatus()) || STATUS_FAILED.equals(current.getStatus()))) {
             if (a3Content != null && STATUS_FAILED.equals(current.getStatus())) {
                 if (!requestHash.equals(current.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
-                throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
+                throw conflict(AdminIdempotencyRollbackEvidence.confirmed(current)
+                        ? "IDEMPOTENCY_PREVIOUS_REQUEST_FAILED" : "IDEMPOTENCY_RESULT_UNKNOWN");
             }
             // Never recycle a retained success; FAILED retries use a status CAS,
             // so a concurrent completion cannot be overwritten by an expiry reset.
@@ -363,6 +364,9 @@ public class AdminIdempotencyTransactionExecutor {
             return Claim.replayed(replay(record, requestHash, responseType, origin));
         }
         var a3Content = AdminCommandOrigin.A3Content.forScope(record.getScope());
+        if (a3Content != null && AdminIdempotencyRollbackEvidence.confirmed(record)) {
+            throw conflict("IDEMPOTENCY_PREVIOUS_REQUEST_FAILED");
+        }
         if (a3Content != null && origin != null) {
             requireA3ContentAvailable(a3Content, record.getScope(), record.getIdempotencyKey());
         }
