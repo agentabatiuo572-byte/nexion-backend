@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.application;
 
 import java.util.Objects;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade;
@@ -38,6 +39,7 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
             "capacity-replace", "capacity-keep");
     private static final String CHANGE_VERIFICATION_KIND = "change-verify";
     private static final String CHANGE_PROOF_INVALID = "PAYMENT_PASSWORD_CHANGE_PROOF_INVALID_OR_EXPIRED";
+    private static final String ATTEMPT_ALREADY_USED = "PAYMENT_PASSWORD_ATTEMPT_ALREADY_USED";
     private static final String ATTEMPT_NO_FORMAT = "[A-Za-z0-9:_-]{8,128}";
     private final PaymentPasswordMapper repo;
     private final ObjectMapper json;
@@ -87,6 +89,8 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
     public record ChangeVerification(String currentPassword, Long expectedCredentialVersion, String attemptNo) {
         @Override public String toString() { return "ChangeVerification[REDACTED]"; }
     }
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record ChangeVerificationReceipt(String proofHash) {}
     public record Reset(String resetProof, String newPassword, String confirmPassword,
                         Long expectedCredentialVersion) {
         @Override public String toString() { return "Reset[REDACTED]"; }
@@ -147,12 +151,43 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                 request.currentPassword(),request.expectedCredentialVersion(),request.attemptNo());
         return independent.execute(tx -> {
             ApiResult<State> verification=verify(userId,CHANGE_VERIFICATION_KIND,sessionHash,authorization);
-            if (verification.getCode()!=0) return verification;
+            boolean firstVerification=verification.getCode()==0;
+            if (!firstVerification && !ATTEMPT_ALREADY_USED.equals(verification.getMessage())) return verification;
+            State state=verification.getData();
+            long now=clock.millis();
+            String attemptNo=authorization.attemptNo();
+            long version=state.credentialVersion();
+            long expiresAt=now+600_000;
+            String priorProofHash=null;
+            if (!firstVerification) {
+                Map<String,Object> attempt=repo.attempt(userId,attemptNo);
+                if (!attemptNo.equals(attempt.get("attempt_no"))) return verification;
+                ChangeVerificationReceipt prior=decode(String.valueOf(attempt.get("state_json")),ChangeVerificationReceipt.class);
+                if (prior==null || prior.proofHash()==null) return verification;
+                if (state.lockedUntil()!=null) return ApiResult.fail(429,"PAYMENT_PASSWORD_LOCKED",state);
+                priorProofHash=prior.proofHash();
+                Long activeExpiry=repo.activeChangeProofExpiry(userId,sessionHash,priorProofHash,version,now);
+                if (activeExpiry==null) return verification;
+                Map<String,Object> credential=repo.credential(userId,true);
+                if (!pepperVersion.equals(credential.get("pepper_version")))
+                    return ApiResult.fail(503,"PAYMENT_PASSWORD_UNAVAILABLE",state);
+                if (!encoder.matches(secret(authorization.paymentPassword()),String.valueOf(credential.get("password_hash")))) {
+                    // Close recovery for this attempt while keeping its issued proof usable.
+                    repo.finishAttempt(userId,attemptNo,0,"{}");
+                    return verification;
+                }
+                expiresAt=activeExpiry;
+            }
+
             String proof=UUID.randomUUID().toString()+UUID.randomUUID();
-            Instant expiresAt=Instant.ofEpochMilli(clock.millis()).plusSeconds(600);
-            repo.writeChangeProof(userId,sessionHash,hash(proof),verification.getData().credentialVersion(),
-                    expiresAt.toEpochMilli());
-            return ApiResult.ok(Map.of("changeProof",proof,"expiresAt",expiresAt));
+            String proofHash=hash(proof);
+            if (firstVerification) {
+                repo.writeChangeProof(userId,sessionHash,proofHash,version,expiresAt);
+            } else if (repo.replaceChangeProof(userId,sessionHash,priorProofHash,proofHash,version,expiresAt,clock.millis())!=1) {
+                return verification;
+            }
+            repo.finishAttempt(userId,attemptNo,0,encode(new ChangeVerificationReceipt(proofHash)));
+            return ApiResult.ok(Map.of("changeProof",proof,"expiresAt",Instant.ofEpochMilli(expiresAt)));
         });
     }
 
@@ -342,7 +377,7 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
         if (prior!=null) {
             if (!binding.equals(prior.get("binding_hash"))) return ApiResult.fail(409,"PAYMENT_PASSWORD_ATTEMPT_CONFLICT",stateOf(userId,current));
             int code=((Number)prior.get("result_code")).intValue();
-            return code==0 ? ApiResult.fail(409,"PAYMENT_PASSWORD_ATTEMPT_ALREADY_USED",stateOf(userId,current))
+            return code==0 ? ApiResult.fail(409,ATTEMPT_ALREADY_USED,stateOf(userId,current))
                     : ApiResult.fail(code,code==429 ? "PAYMENT_PASSWORD_LOCKED" : String.valueOf(prior.get("result_message")),decode(String.valueOf(prior.get("state_json")),State.class));
         }
         State before=stateOf(userId,current);
@@ -374,7 +409,8 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
             after=stateOf(userId,repo.credential(userId,false));
             code=429; message="PAYMENT_PASSWORD_LOCKED";
         }
-        repo.finishAttempt(userId,authorization.attemptNo(),code,encode(after));
+        if (!correct || !CHANGE_VERIFICATION_KIND.equals(kind))
+            repo.finishAttempt(userId,authorization.attemptNo(),code,encode(after));
         return new ApiResult<>(code,message,after);
     }
 

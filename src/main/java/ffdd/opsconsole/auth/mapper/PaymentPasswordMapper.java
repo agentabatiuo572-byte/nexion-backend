@@ -79,6 +79,22 @@ public interface PaymentPasswordMapper {
     int writeChangeProof(@Param("userId") long userId,@Param("sessionHash") String sessionHash,
                          @Param("proofHash") String proofHash,@Param("version") long version,
                          @Param("expiresAt") long expiresAt);
+    @Select("""
+            SELECT expires_at FROM nx_payment_password_change_proof
+            WHERE user_id=#{userId} AND session_hash=#{sessionHash} AND proof_hash=#{proofHash}
+              AND credential_version=#{version} AND consumed_at IS NULL AND expires_at>#{now}
+            """)
+    Long activeChangeProofExpiry(@Param("userId") long userId,@Param("sessionHash") String sessionHash,
+                                 @Param("proofHash") String proofHash,@Param("version") long version,
+                                 @Param("now") long now);
+    @Update("""
+            UPDATE nx_payment_password_change_proof SET proof_hash=#{nextProofHash}
+            WHERE user_id=#{userId} AND session_hash=#{sessionHash} AND proof_hash=#{priorProofHash}
+              AND credential_version=#{version} AND consumed_at IS NULL AND expires_at=#{expiresAt} AND expires_at>#{now}
+            """)
+    int replaceChangeProof(@Param("userId") long userId,@Param("sessionHash") String sessionHash,
+                           @Param("priorProofHash") String priorProofHash,@Param("nextProofHash") String nextProofHash,
+                           @Param("version") long version,@Param("expiresAt") long expiresAt,@Param("now") long now);
     @Update("""
             UPDATE nx_payment_password_change_proof SET consumed_at=#{now}
             WHERE user_id=#{userId} AND session_hash=#{sessionHash} AND proof_hash=#{proofHash}
