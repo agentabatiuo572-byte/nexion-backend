@@ -158,8 +158,8 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
 
     @Override
     public <T> ApiResult<T> executeWithAdmission(Long userId, String kind, String key, Object summary,
-            Authorization authorization, Runnable admit, Supplier<ApiResult<T>> action) {
-        return command(userId, kind, key, summary, authorization, () -> null, admit, action);
+            Authorization authorization, Supplier<Runnable> prepareAdmission, Supplier<ApiResult<T>> action) {
+        return command(userId, kind, key, summary, authorization, () -> null, prepareAdmission, action);
     }
 
     private <T> ApiResult<T> command(long userId,String kind,String key,Object summary,
@@ -175,7 +175,7 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
     @SuppressWarnings("unchecked")
     private <T> ApiResult<T> command(long userId, String kind, String key, Object summary,
             Authorization authorization, Supplier<ApiResult<T>> existingSuccess,
-            Runnable admit, Supplier<ApiResult<T>> action) {
+            Supplier<Runnable> prepareAdmission, Supplier<ApiResult<T>> action) {
         requireKey(key);
         String digest=hash(String.valueOf(summary));
         independent.executeWithoutResult(tx -> {
@@ -201,21 +201,38 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                 repo.finishCommand(userId,kind,key,"SUCCEEDED",encode(existing),clock.millis());
                 return existing;
             }
-            requireAvailable();
+            if (prepareAdmission == null) requireAvailable();
             boolean needsVerification = !"setup".equals(kind) && !"reset".equals(kind);
             if (needsVerification) {
-                ApiResult<State> verification = independent.execute(v -> verify(userId, kind, key, authorization));
+                ApiResult<State> verification;
+                try {
+                    verification = independent.execute(v -> {
+                        Runnable accept = null;
+                        if (prepareAdmission != null) {
+                            // Keep the credential-to-buyer lock order used by purchase settlement.
+                            repo.credential(userId, true);
+                            accept = prepareAdmission.get();
+                            requireAvailable();
+                        }
+                        ApiResult<State> result = verify(userId, kind, key, authorization);
+                        // Admission outlives settlement rollback. Keep the buyer lock through PIN verification.
+                        if (accept != null && result.getCode() == 0) accept.run();
+                        return result;
+                    });
+                } catch (BizException rejection) {
+                    if (prepareAdmission == null || rejection.getCode() >= 500) throw rejection;
+                    return finish(userId, kind, key, null,
+                            ApiResult.fail(rejection.getCode(), rejection.getMessage(), (T) rejection.errorData()));
+                }
                 if (verification.getCode() != 0) return (ApiResult<T>) (ApiResult<?>) verification;
             }
             try {
                 if (needsVerification) {
-                    // Keep the admitted business identity visible even if the purchase transaction rolls back.
-                    if (admit != null) independent.executeWithoutResult(admission -> admit.run());
                     Map<String, Object> credential = repo.credential(userId, true);
                     if (PaymentPasswordMapper.number(credential, "credential_version") != authorization.credentialVersion()) {
                         ApiResult<T> conflict = (ApiResult<T>) (ApiResult<?>) ApiResult.fail(
                                 409, "PAYMENT_PASSWORD_VERSION_CONFLICT", stateOf(userId, credential));
-                        return admit == null ? conflict : finish(userId, kind, key, authorization, conflict);
+                        return prepareAdmission == null ? conflict : finish(userId, kind, key, authorization, conflict);
                     }
                 } else {
                     repo.credential(userId, true);
@@ -228,7 +245,8 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                 return finish(userId, kind, key, authorization, result);
             } catch (BizException rejection) {
                 return finish(userId, kind, key, authorization,
-                        ApiResult.fail(rejection.getCode(), rejection.getMessage(), admit == null ? null : (T) rejection.errorData()));
+                        ApiResult.fail(rejection.getCode(), rejection.getMessage(),
+                                prepareAdmission == null ? null : (T) rejection.errorData()));
             }
         });
     }

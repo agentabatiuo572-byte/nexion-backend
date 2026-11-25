@@ -281,7 +281,8 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
     @Select("""
         SELECT COUNT(*) FROM nx_user_device WHERE id=#{deviceId} AND user_id=#{ownerId} AND instance_no=#{instanceNo}
           AND pending_deactivate=0 AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
-          AND source_channel='ORDER' AND ownership_status='OWNED' AND activated_at IS NOT NULL AND deactivated_at IS NULL
+          AND source_channel IN ('ORDER','TRIAL') AND ownership_status='OWNED'
+          AND activated_at IS NOT NULL AND deactivated_at IS NULL
         """)
     int eligibleBinding(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo);
 

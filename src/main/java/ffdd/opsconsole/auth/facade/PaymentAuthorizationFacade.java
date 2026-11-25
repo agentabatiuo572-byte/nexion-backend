@@ -16,7 +16,7 @@ public interface PaymentAuthorizationFacade {
     <T> ApiResult<T> execute(Long userId, String kind, String commandKey, Object businessSummary,
                              Authorization authorization, Supplier<ApiResult<T>> action);
     <T> ApiResult<T> executeWithAdmission(Long userId, String kind, String commandKey, Object businessSummary,
-            Authorization authorization, Runnable admit, Supplier<ApiResult<T>> action);
+            Authorization authorization, Supplier<Runnable> prepareAdmission, Supplier<ApiResult<T>> action);
 
     default <T> ApiResult<T> execute(Long userId,String kind,String commandKey,Object businessSummary,
             Authorization authorization,Supplier<ApiResult<T>> existingSuccess,Supplier<ApiResult<T>> action) {

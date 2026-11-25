@@ -1,5 +1,6 @@
 package ffdd.opsconsole.growth.mapper;
 
+import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import java.math.BigDecimal;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -12,7 +13,8 @@ public interface TrialPurchaseOptionsMapper {
             SELECT p.id,p.product_no productNo,p.name,p.product_type productType,p.inventory_mode inventoryMode,
                    p.price_usdt priceUsdt,p.stock,p.status,p.store_visible storeVisible,p.unlock_phase unlockPhase,
                    p.gpu_model gpuModel,p.vram_total_gb vramTotalGb,s.power_text power,
-                   p.estimated_daily_usdt dailyUsdt,p.daily_nex dailyNex
+            """ + StorefrontProductPublishGate.BLOCK_REASON_SQL + """
+             AS publishBlock
               FROM nx_product p LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0
             """;
@@ -70,5 +72,5 @@ public interface TrialPurchaseOptionsMapper {
     record Command(long actorId, String requestJson, String receiptJson) {}
     record Product(long id, String productNo, String name, String productType, String inventoryMode,
                    BigDecimal priceUsdt, Integer stock, String status, Boolean storeVisible, String unlockPhase,
-                   String gpuModel, Integer vramTotalGb, String power, BigDecimal dailyUsdt, BigDecimal dailyNex) {}
+                   String gpuModel, Integer vramTotalGb, String power, String publishBlock) {}
 }

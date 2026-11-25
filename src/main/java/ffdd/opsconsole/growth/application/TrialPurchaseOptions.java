@@ -130,11 +130,12 @@ public class TrialPurchaseOptions {
     }
 
     public String listingBlock(Product product) {
-        if (product == null || Boolean.FALSE.equals(product.storeVisible())
+        if (product == null || !Boolean.TRUE.equals(product.storeVisible())
                 || product.status() == null || !Set.of("ACTIVE", "ON_SALE").contains(product.status().toUpperCase(Locale.ROOT))) {
             return "PRODUCT_NOT_AVAILABLE";
         }
         if (product.priceUsdt() == null || product.priceUsdt().signum() <= 0) return "PRODUCT_PRICE_INVALID";
+        if (product.publishBlock() != null) return product.publishBlock();
         var decision = release.evaluate(product.productNo(), product.unlockPhase());
         return decision.available() ? null : decision.reason();
     }

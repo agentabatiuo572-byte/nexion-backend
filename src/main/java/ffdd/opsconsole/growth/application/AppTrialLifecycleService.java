@@ -172,9 +172,7 @@ public class AppTrialLifecycleService {
                 reason = isOriginal ? purchaseOptions.listingBlock(product) : purchaseOptions.otherListingBlock(product);
                 if (!isOriginal && reason != null) continue;
                 if (positiveOrNull(price) == null || positiveOrNull(row.dailyUsdt()) == null
-                        || positiveOrNull(row.dailyNex()) == null || (product != null && !"SHARE".equalsIgnoreCase(product.productType())
-                        && (positiveOrNull(product.dailyUsdt()) == null
-                        || positiveOrNull(product.dailyNex()) == null))) {
+                        || positiveOrNull(row.dailyNex()) == null) {
                     throw new BizException(409, "TRIAL_DAILY_YIELD_INVALID");
                 }
                 var quote = quote(row, policy, now, false, code, price, false);
@@ -396,10 +394,11 @@ public class AppTrialLifecycleService {
     public void requireNoOriginalPurchase(long userId, boolean externalEntry) {
         TrialRow row = mapper.trial(userId);
         var original = originalPurchase(row);
-        if (original == null) return;
         // Preserve the existing balance exception for non-late review reasons.
-        if (!externalEntry && "EXTERNAL".equals(original.get("kind")) && !externalPaymentHoldsClaim(row)) return;
-        throw originalPurchaseConflict(original, externalEntry);
+        if (!externalEntry && original != null && "EXTERNAL".equals(original.get("kind")) && !externalPaymentHoldsClaim(row)) {
+            original = purchaseOptions.balance(userId, row.claimNo());
+        }
+        if (original != null) throw originalPurchaseConflict(original, externalEntry);
     }
 
     private TrialPurchaseConflict originalPurchaseConflict(Map<String, Object> purchase, boolean externalEntry) {
@@ -408,24 +407,24 @@ public class AppTrialLifecycleService {
         return new TrialPurchaseConflict(code, purchase);
     }
 
-    private void admitBalance(Long userId, String productNo, BigDecimal amount, String version, String key) {
+    private Runnable prepareBalanceAdmission(Long userId, String productNo, BigDecimal amount, String version, String key) {
         requireUser(userId);
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
         String admittedClaim = purchaseOptions.balanceClaim(userId, key);
         if (admittedClaim != null && !row.claimNo().equals(admittedClaim)) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
-        if (admittedClaim != null) return;
-        var pending = purchaseOptions.balance(userId, row.claimNo());
+        if (admittedClaim != null) return () -> {};
         requireNoOriginalPurchase(userId, false);
-        if (pending != null) throw originalPurchaseConflict(pending, false);
         if (!withinConversionDeadline(conversionDeadline(row), businessNow())) {
             throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
         }
-        var device = purchaseOptions.device(productNo);
-        device.putAll(linked("kind", "BALANCE", "claimNo", row.claimNo(), "commandKey", key, "status", "PROCESSING",
-                "paymentMethod", "WALLET", "expectedAmountUsdt", amount == null ? null : amount.toPlainString(),
-                "quoteVersion", version));
-        purchaseOptions.acceptBalance(userId, row.claimNo(), key, device);
+        return () -> {
+            var device = purchaseOptions.device(productNo);
+            device.putAll(linked("kind", "BALANCE", "claimNo", row.claimNo(), "commandKey", key, "status", "PROCESSING",
+                    "paymentMethod", "WALLET", "expectedAmountUsdt", amount == null ? null : amount.toPlainString(),
+                    "quoteVersion", version));
+            purchaseOptions.acceptBalance(userId, row.claimNo(), key, device);
+        };
     }
 
     private ApiResult<Map<String, Object>> cancelClaim(Long userId, TrialRow row, String reason) {
@@ -512,7 +511,8 @@ public class AppTrialLifecycleService {
         if (confirmedQuote != null) request.put("quoteVersion", confirmedQuote);
         if (paymentAuthorization==null) return ApiResult.fail(503,"PAYMENT_PASSWORD_UNAVAILABLE");
         return paymentAuthorization.executeWithAdmission(userId, "trial-convert", idempotencyKey, request, authorization,
-                () -> admitBalance(userId, canonicalTrialProductId(normalized), expectedAmountUsdt, confirmedQuote, idempotencyKey),
+                () -> prepareBalanceAdmission(userId, canonicalTrialProductId(normalized), expectedAmountUsdt,
+                        confirmedQuote, idempotencyKey),
                 () -> {
                     testCloudAdmission.lock();
                     requireUser(userId);
@@ -612,9 +612,6 @@ public class AppTrialLifecycleService {
         String reason = purchaseOptions.listingBlock(product);
         if (reason == null) reason = purchaseOptions.stockOrConfigurationBlock(product);
         if (reason != null) throw new BizException(409, reason);
-        if (positiveOrNull(product.dailyUsdt()) == null || positiveOrNull(product.dailyNex()) == null) {
-            throw new BizException(409, "TRIAL_DAILY_YIELD_INVALID");
-        }
     }
 
     public void checkExternalPaymentQuota(Long owner, String requestedProductNo, LocalDateTime occurredAtUtc) {
@@ -674,25 +671,16 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
-        ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper.GateQuota gate = null;
-        if (original) {
-            if (!availablePhysicalTrialProduct(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
-            if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
-        } else {
-            var selected = purchaseOptions.product(canonicalRequested);
-            String reason = purchaseOptions.otherListingBlock(selected);
-            if (reason == null) reason = purchaseOptions.stockOrConfigurationBlock(selected);
-            if (reason != null || product == null) {
-                return ApiResult.fail(409, reason == null ? "PRODUCT_NOT_AVAILABLE" : reason);
-            }
-            gate = purchaseOptions.checkGate(userId, product.productNo(), true);
+        var selected = purchaseOptions.product(canonicalRequested);
+        String reason = original ? purchaseOptions.listingBlock(selected) : purchaseOptions.otherListingBlock(selected);
+        if (reason == null) reason = purchaseOptions.stockOrConfigurationBlock(selected);
+        if (reason != null) return ApiResult.fail(409, reason);
+        if (product == null || (original && !availablePhysicalTrialProduct(product))) {
+            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
-        // Keep the claim's promised trial accrual, but require a valid current
-        // product yield before any purchase or reward side effect.
+        var gate = original ? null : purchaseOptions.checkGate(userId, product.productNo(), true);
         boolean share = "SHARE".equalsIgnoreCase(product.productType());
-        if ((!share && (positiveOrNull(productDailyUsdt(product)) == null || positiveOrNull(product.dailyNex()) == null))
-                || positiveOrNull(row.dailyUsdt()) == null
-                || positiveOrNull(row.dailyNex()) == null) {
+        if (positiveOrNull(row.dailyUsdt()) == null || positiveOrNull(row.dailyNex()) == null) {
             return ApiResult.fail(409, "TRIAL_DAILY_YIELD_INVALID");
         }
         if (!withinPhysicalSlotCapacity(userId, product, true)) {
@@ -732,7 +720,8 @@ public class AppTrialLifecycleService {
         if (VerifiedPurchasePayment.active()) VerifiedPurchasePayment.require(userId,amount);
         if (!VerifiedPurchasePayment.active() && wallet.usdt().compareTo(amount) < 0) return ApiResult.fail(409, "TRIAL_WALLET_INSUFFICIENT");
         if (!VerifiedPurchasePayment.active()) paymentAttribution.beforeCash(prepared);
-        if (!VerifiedPurchasePayment.active() && amount.signum() > 0 && mapper.settleWallet(userId, amount, BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
+        // Zero-value conversions still need the wallet journal observation used by the fund receipt.
+        if (!VerifiedPurchasePayment.active() && mapper.settleWallet(userId, amount, BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
             throw new BizException(409, "TRIAL_WALLET_CONFLICT");
         }
         if (quote.remainderUsdt().signum() > 0) {
