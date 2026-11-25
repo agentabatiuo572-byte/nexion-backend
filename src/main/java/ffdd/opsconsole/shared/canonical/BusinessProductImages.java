@@ -20,7 +20,19 @@ public class BusinessProductImages {
     private final AppTradeinMapper mapper;
     private final StorefrontSkuImageService images;
 
+    public record Artwork(String sku, String assetId, String objectKey) {}
+
     public Map<String, String> urls(Collection<String> skuCodes) {
+        var signed = new HashMap<Artwork, String>();
+        var result = new HashMap<String, String>();
+        artwork(skuCodes).forEach((sku, source) -> {
+            String url = signed.computeIfAbsent(source, this::url);
+            if (url != null) result.put(sku, url);
+        });
+        return result;
+    }
+
+    public Map<String, Artwork> artwork(Collection<String> skuCodes) {
         var requested = new LinkedHashSet<>(skuCodes);
         requested.removeIf(code -> code == null || code.isBlank());
         if (requested.isEmpty()) return Collections.emptyMap();
@@ -33,8 +45,7 @@ public class BusinessProductImages {
             log.warn("Product artwork lookup unavailable", ex);
             return Collections.emptyMap();
         }
-        var result = new HashMap<String, String>();
-        var signed = new HashMap<String, String>();
+        var result = new HashMap<String, Artwork>();
         for (String sku : requested) {
             var row = rows.get(sku);
             if (row == null) continue;
@@ -43,17 +54,18 @@ public class BusinessProductImages {
             }
             if (row == null || !ManagedSkuMediaIdentity.isApprovedImageObjectKey(row.objectKey())
                     || !ManagedSkuMediaIdentity.isCanonicalPair(row.assetId(), row.objectKey())) continue;
-            var source = row;
-            try {
-                result.put(sku, signed.computeIfAbsent(source.sku(),
-                        key -> images.issueBusinessUrl(key, source.assetId(), source.objectKey())));
-            } catch (IllegalStateException ex) {
-                log.warn("Product image signing unavailable", ex);
-                return result;
-            } catch (IllegalArgumentException ex) {
-                log.warn("Could not issue product image for SKU {}", source.sku());
-            }
+            result.put(sku, new Artwork(row.sku(), row.assetId(), row.objectKey()));
         }
         return result;
+    }
+
+    public String url(Artwork artwork) {
+        if (artwork == null) return null;
+        try {
+            return images.issueBusinessUrl(artwork.sku(), artwork.assetId(), artwork.objectKey());
+        } catch (IllegalStateException | IllegalArgumentException ex) {
+            log.warn("Could not issue product image for SKU {}", artwork.sku(), ex);
+            return null;
+        }
     }
 }

@@ -83,6 +83,13 @@ public class GlobalExceptionHandler {
         return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
     }
 
+    @ExceptionHandler(ffdd.opsconsole.growth.application.TrialPurchaseConflict.class)
+    public ApiResult<Map<String, Object>> handleTrialPurchaseConflict(
+            ffdd.opsconsole.growth.application.TrialPurchaseConflict ex, HttpServletResponse response) {
+        response.setStatus(ex.getCode());
+        return ApiResult.fail(ex.getCode(), ex.getMessage(), ex.errorData());
+    }
+
     @ExceptionHandler(BizException.class)
     public ApiResult<Void> handleBiz(BizException ex, HttpServletResponse response) {
         response.setStatus(normalizeHttpStatus(ex.getCode()));

@@ -115,6 +115,13 @@ public class OpsGrowthController {
         return result;
     }
 
+    @org.springframework.web.bind.annotation.PutMapping("/trials/purchase-options")
+    @PreAuthorize("hasAuthority('growth_h2_write')")
+    public ApiResult<Map<String, Object>> replaceTrialPurchaseOptions(
+            @RequestBody ffdd.opsconsole.growth.application.TrialPurchaseOptions.ReplaceRequest request) {
+        return growthService.replaceTrialPurchaseOptions(request);
+    }
+
     @PatchMapping("/trials/params/{paramKey}")
     @PreAuthorize("hasAuthority('growth_h2_write')")
     public ApiResult<Map<String, Object>> updateTrialParam(

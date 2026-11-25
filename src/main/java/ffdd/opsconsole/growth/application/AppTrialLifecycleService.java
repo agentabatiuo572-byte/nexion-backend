@@ -66,6 +66,9 @@ public class AppTrialLifecycleService {
     @org.springframework.beans.factory.annotation.Autowired
     private ffdd.opsconsole.shared.canonical.BusinessProductImages productImages;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private TrialPurchaseOptions purchaseOptions;
+
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
 
     // Compatibility constructor for existing isolated domain tests; runtime uses the full constructor.
@@ -123,7 +126,87 @@ public class AppTrialLifecycleService {
         }
         LocalDateTime now = businessNow();
         Map<String, String> policy = policyMap(false, BusinessCalendar.legacy().dateAtStorage(now));
-        return withProductImage(ApiResult.ok(project(userId, mapper.trial(userId), policy, now, false)));
+        TrialRow row = mapper.trial(userId);
+        Map<String, Object> state = project(userId, row, policy, now, false);
+        if (row != null && purchaseOptions != null) {
+            state.put("originalPurchase", originalPurchase(row));
+            if (state.get("conversionOrderNo") instanceof String orderNo) {
+                var device = mapper.purchasedDevice(orderNo, userId, row.userDeviceId());
+                if (device != null) device.put("imageUrl", purchaseOptions.image((String) device.get("productNo")));
+                state.put("purchasedDevice", device);
+            }
+        }
+        return withProductImage(ApiResult.ok(state));
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> purchaseOptions(Long userId) {
+        if (userId == null || invalidUser(activeUser(userId, false))) return ApiResult.fail(404, "USER_NOT_FOUND");
+        TrialRow row = mapper.trial(userId);
+        var now = businessNow();
+        if (row == null || !active(row.status()) || !withinConversionDeadline(conversionDeadline(row), now)) {
+            return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
+        }
+        var policy = policyMap();
+        String original = trialProductCode(policy, row);
+        if (original == null) return ApiResult.fail(409, "TRIAL_PRODUCT_REQUIRED");
+        var codes = new java.util.LinkedHashSet<String>();
+        codes.add(original);
+        codes.addAll(purchaseOptions.selected());
+        var images = productImages.urls(codes);
+        var options = new java.util.ArrayList<Map<String, Object>>();
+        for (String code : codes) {
+            boolean isOriginal = original.equals(code);
+            var product = purchaseOptions.product(code);
+            if (!isOriginal && product == null) continue;
+            BigDecimal price = isOriginal ? row.priceUsdt() : product.priceUsdt();
+            var option = linked("productNo", code, "name", isOriginal ? row.deviceName() : product.name(),
+                    "imageUrl", images.get(code), "originalTrialProduct", isOriginal,
+                    "productType", product == null ? "DEVICE" : product.productType(),
+                    "inventoryMode", product == null ? "FINITE" : product.inventoryMode(),
+                    "priceUsdt", TrialPurchaseOptions.amount(price),
+                    "paymentMethods", isOriginal ? List.of("WALLET", "CREGIS_USDT_BSC", "HDPAY_BANK") : List.of("WALLET"));
+            if (isOriginal) option.put("storePriceUsdt", product == null ? null : TrialPurchaseOptions.amount(product.priceUsdt()));
+            String reason;
+            try {
+                reason = isOriginal ? purchaseOptions.listingBlock(product) : purchaseOptions.otherListingBlock(product);
+                if (!isOriginal && reason != null) continue;
+                if (positiveOrNull(price) == null || positiveOrNull(row.dailyUsdt()) == null
+                        || positiveOrNull(row.dailyNex()) == null || (product != null && !"SHARE".equalsIgnoreCase(product.productType())
+                        && (positiveOrNull(product.dailyUsdt()) == null
+                        || positiveOrNull(product.dailyNex()) == null))) {
+                    throw new BizException(409, "TRIAL_DAILY_YIELD_INVALID");
+                }
+                var quote = quote(row, policy, now, false, code, price, false);
+                option.put("quote", decimalQuote(quote, price));
+                option.put("quoteVersion", quote.version());
+                if (reason == null) reason = purchaseOptions.stockOrConfigurationBlock(product);
+                if (reason == null && !trialGateEnabled()) reason = "TRIAL_KILL_SWITCH_DISABLED";
+                if (reason == null) {
+                    if (!isOriginal) purchaseOptions.checkGate(userId, code, false);
+                    HardwareQuotaPurchaseGuard.check(mapper, userId, code, 1, utcNow());
+                }
+            } catch (BizException ex) {
+                reason = ex.getMessage();
+            } catch (org.springframework.dao.DataAccessException | IllegalArgumentException ex) {
+                reason = "TRIAL_PRODUCT_QUOTE_UNAVAILABLE";
+            }
+            option.put("canPurchase", reason == null);
+            option.put("unavailableReason", reason);
+            options.add(option);
+        }
+        return ApiResult.ok(linked("claimNo", row.claimNo(), "serverTime", now.atZone(BUSINESS_ZONE).toOffsetDateTime().toString(),
+                "options", options));
+    }
+
+    private LocalDateTime utcNow() {
+        return LocalDateTime.ofInstant(clock.instant(), java.time.ZoneOffset.UTC);
+    }
+
+    private Map<String, Object> decimalQuote(Quote quote, BigDecimal price) {
+        var view = quoteView(quote, price);
+        view.replaceAll((key, value) -> value instanceof BigDecimal amount ? TrialPurchaseOptions.amount(amount) : value);
+        return view;
     }
 
     /** Enrich the HTTP view only. A replay retains its original SKU and gets a newly signed image. */
@@ -273,6 +356,10 @@ public class AppTrialLifecycleService {
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CANCELLABLE");
         if (!opsOverride && externalPaymentHoldsClaim(row)) throw new BizException(409, EXTERNAL_PAYMENT_IN_PROGRESS);
+        if (!opsOverride && purchaseOptions != null) {
+            var pending = purchaseOptions.balance(userId, row.claimNo());
+            if (pending != null) throw originalPurchaseConflict(pending, false);
+        }
         return cancelClaim(userId, row, reason);
     }
 
@@ -283,6 +370,62 @@ public class AppTrialLifecycleService {
         return mapper.openTrialExternalPayments(row.userId()).stream().anyMatch(payment ->
                 claim.matches(payment.claimNo(), payment.pricingAsOf())
                         && PurchasePaymentService.openPaymentHoldsTrial(payment.paymentMethod(), payment.deadline(), payment.reason(), now));
+    }
+
+    private Map<String, Object> originalPurchase(TrialRow row) {
+        if (row == null || !active(row.status())) return null;
+        var claim = new ExternalPaymentClaim(row.claimNo(), row.claimedAt().atZone(BUSINESS_ZONE).toInstant());
+        for (var payment : mapper.openTrialExternalPayments(row.userId())) {
+            if (!claim.matches(payment.claimNo(), payment.pricingAsOf())
+                    || PurchasePaymentService.lateTrialPaymentCanReselect(payment.paymentMethod(), payment.deadline(),
+                            payment.providerDeadline(), payment.reason(), payment.status(), payment.paidAt(),
+                            payment.confirmedAt(), clock.instant())) {
+                continue;
+            }
+            return linked("kind", "EXTERNAL", "claimNo", row.claimNo(), "intentNo", payment.intentNo(),
+                    "productNo", payment.productNo(), "name", payment.deviceName() == null ? row.deviceName() : payment.deviceName(),
+                    "imageUrl", payment.imageSku() == null ? purchaseOptions.image(payment.productNo()) :
+                            purchaseOptions.snapshotImage(payment.imageSku(), payment.imageAssetId(), payment.imageObjectKey()),
+                    "paymentMethod", payment.paymentMethod(), "expectedAmountUsdt", payment.confirmedAmount(),
+                    "deadlineAt", PurchasePaymentService.effectivePaymentDeadline(payment.deadline(), payment.providerDeadline()).toString(),
+                    "status", payment.status());
+        }
+        return purchaseOptions.balance(row.userId(), row.claimNo());
+    }
+
+    public void requireNoOriginalPurchase(long userId, boolean externalEntry) {
+        TrialRow row = mapper.trial(userId);
+        var original = originalPurchase(row);
+        if (original == null) return;
+        // Preserve the existing balance exception for non-late review reasons.
+        if (!externalEntry && "EXTERNAL".equals(original.get("kind")) && !externalPaymentHoldsClaim(row)) return;
+        throw originalPurchaseConflict(original, externalEntry);
+    }
+
+    private TrialPurchaseConflict originalPurchaseConflict(Map<String, Object> purchase, boolean externalEntry) {
+        String code = "BALANCE".equals(purchase.get("kind")) ? "TRIAL_BALANCE_SUBMISSION_IN_PROGRESS"
+                : externalEntry ? "PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED" : EXTERNAL_PAYMENT_IN_PROGRESS;
+        return new TrialPurchaseConflict(code, purchase);
+    }
+
+    private void admitBalance(Long userId, String productNo, BigDecimal amount, String version, String key) {
+        requireUser(userId);
+        TrialRow row = mapper.lockTrial(userId);
+        if (row == null || !active(row.status())) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        String admittedClaim = purchaseOptions.balanceClaim(userId, key);
+        if (admittedClaim != null && !row.claimNo().equals(admittedClaim)) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        if (admittedClaim != null) return;
+        var pending = purchaseOptions.balance(userId, row.claimNo());
+        requireNoOriginalPurchase(userId, false);
+        if (pending != null) throw originalPurchaseConflict(pending, false);
+        if (!withinConversionDeadline(conversionDeadline(row), businessNow())) {
+            throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        }
+        var device = purchaseOptions.device(productNo);
+        device.putAll(linked("kind", "BALANCE", "claimNo", row.claimNo(), "commandKey", key, "status", "PROCESSING",
+                "paymentMethod", "WALLET", "expectedAmountUsdt", amount == null ? null : amount.toPlainString(),
+                "quoteVersion", version));
+        purchaseOptions.acceptBalance(userId, row.claimNo(), key, device);
     }
 
     private ApiResult<Map<String, Object>> cancelClaim(Long userId, TrialRow row, String reason) {
@@ -311,6 +454,10 @@ public class AppTrialLifecycleService {
         TrialRow row = mapper.lockTrial(userId);
         if (row == null) return ApiResult.fail(409, "TRIAL_NOT_EXTENDABLE");
         if (active(row.status()) && externalPaymentHoldsClaim(row)) throw new BizException(409, EXTERNAL_PAYMENT_IN_PROGRESS);
+        if (active(row.status()) && purchaseOptions != null) {
+            var pending = purchaseOptions.balance(userId, row.claimNo());
+            if (pending != null) throw originalPurchaseConflict(pending, false);
+        }
         LocalDateTime now = businessNow();
         if ("ACTIVE".equals(normalize(row.status())) && !row.expiresAt().isAfter(now)) {
             if (mapper.enterGrace(row.id(), row.version(), now) != 1) throw new BizException(409, "TRIAL_GRACE_CONFLICT");
@@ -364,31 +511,33 @@ public class AppTrialLifecycleService {
         Map<String, Object> request = linked("productNo", normalized, "expectedAmountUsdt", expectedAmountUsdt);
         if (confirmedQuote != null) request.put("quoteVersion", confirmedQuote);
         if (paymentAuthorization==null) return ApiResult.fail(503,"PAYMENT_PASSWORD_UNAVAILABLE");
-        return paymentAuthorization.execute(userId,"trial-convert",idempotencyKey,request,authorization,
+        return paymentAuthorization.executeWithAdmission(userId, "trial-convert", idempotencyKey, request, authorization,
+                () -> admitBalance(userId, canonicalTrialProductId(normalized), expectedAmountUsdt, confirmedQuote, idempotencyKey),
                 () -> {
                     testCloudAdmission.lock();
                     requireUser(userId);
-                    // The PIN command already replayed retained success. Its transaction reads the current intent state.
-                    TrialRow row = mapper.lockTrial(userId);
-                    if (row != null && active(row.status()) && withinConversionDeadline(conversionDeadline(row), businessNow())
-                            && externalPaymentHoldsClaim(row)) {
-                        return ApiResult.fail(409, EXTERNAL_PAYMENT_IN_PROGRESS);
-                    }
-                    return once("TRIAL_CONVERT:PRODUCTION",userId,idempotencyKey,request,
-                            () -> convertOnce(userId,normalized,expectedAmountUsdt,confirmedQuote,false,null,null));
+                    return convertOnce(userId, normalized, expectedAmountUsdt, confirmedQuote, false, false, null,
+                            purchaseOptions.balanceClaim(userId, idempotencyKey), Map.of());
                 });
     }
 
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version) {
-        return settleVerifiedExternal(owner,product,expected,version,false,null,null);
+        return settleVerifiedExternal(owner, product, expected, version, false, true, null, null, Map.of());
     }
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner,String product,BigDecimal expected,String version,boolean legacyQuote,
                                                                PurchaseQuotaReservation reservation,String claimNo) {
+        return settleVerifiedExternal(owner, product, expected, version, legacyQuote, true, reservation, claimNo, Map.of());
+    }
+
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
+    public ApiResult<Map<String,Object>> settleVerifiedExternal(Long owner, String product, BigDecimal expected, String version,
+            boolean legacyQuote, boolean legacyVersion, PurchaseQuotaReservation reservation, String claimNo,
+            Map<String, String> frozenPolicy) {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
         testCloudAdmission.lock();
-        requireUser(owner); return convertOnce(owner,product,expected,StringUtils.hasText(version)?version:null,legacyQuote,reservation,claimNo);
+        requireUser(owner); return convertOnce(owner,product,expected,StringUtils.hasText(version)?version:null,legacyQuote,legacyVersion,reservation,claimNo,frozenPolicy);
     }
     @Transactional(readOnly=true)
     public ApiResult<Map<String,Object>> externalPaymentPricing(Long owner,Instant pricingInstant) {
@@ -396,16 +545,42 @@ public class AppTrialLifecycleService {
     }
     @Transactional(readOnly=true)
     public ApiResult<Map<String,Object>> externalPaymentPricing(Long owner,Instant pricingInstant,boolean legacyQuote) {
+        return externalPaymentPricing(owner, pricingInstant, legacyQuote, true, Map.of());
+    }
+    @Transactional(readOnly=true)
+    public ApiResult<Map<String,Object>> externalPaymentPricing(Long owner, Instant pricingInstant,
+            boolean legacyQuote, boolean legacyVersion, Map<String, String> frozenPolicy) {
         if(owner==null||invalidUser(activeUser(owner,false)))return ApiResult.fail(404,"USER_NOT_FOUND");
         TrialRow row=mapper.trial(owner);
         if(row==null||!active(row.status()))return ApiResult.fail(409,"TRIAL_NOT_CONVERTIBLE");
         LocalDateTime pricingAt=LocalDateTime.ofInstant(pricingInstant,BUSINESS_ZONE);
-        var frozen=quoteView(quote(row,policyMap(),pricingAt,legacyQuote),row.priceUsdt());
+        var livePolicy = policyMap();
+        var policy = frozenPolicy.isEmpty() ? livePolicy : frozenPolicy;
+        String productNo = trialProductCode(livePolicy, row);
+        var frozen = quoteView(quote(row, policy, pricingAt, legacyQuote, productNo,
+                row.priceUsdt(), legacyVersion), row.priceUsdt());
         // Entering grace is the single automatic revision between the original term and grace.
         long pricingVersion="GRACE".equals(normalize(row.status())) && pricingAt.isBefore(row.expiresAt())
                 ? row.version()-1 : row.version();
         frozen.put("sourceVersion",pricingVersion);frozen.put("claimNo",row.claimNo());
+        if (!legacyVersion) {
+            frozen.put("productNo", productNo);
+            frozen.put("trialPricingPolicy", Map.of("discountRate", decimal(policy, "discountRate", "15").toPlainString(),
+                    "discountCapUSD", decimal(policy, "discountCapUSD", "50").toPlainString(),
+                    EARLY_DISCOUNT_KEY, earlyPurchaseDiscount(policy).toPlainString()));
+        }
         return ApiResult.ok(frozen);
+    }
+
+    public Map<String, Object> externalDeviceSnapshot(Long owner, String productNo) {
+        TrialRow row = mapper.trial(owner);
+        String code = externalPaymentProduct(row, productNo);
+        var product = purchaseOptions.product(code);
+        var snapshot = linked("trialDeviceName", product == null ? row.deviceName() : product.name());
+        var artwork = purchaseOptions.artwork(code);
+        if (artwork != null) snapshot.putAll(linked("trialImageSku", artwork.sku(),
+                "trialImageAssetId", artwork.assetId(), "trialImageObjectKey", artwork.objectKey()));
+        return snapshot;
     }
 
     public ExternalPaymentClaim currentExternalPaymentClaim(Long owner) {
@@ -431,6 +606,17 @@ public class AppTrialLifecycleService {
         return deadline.atZone(BUSINESS_ZONE).toInstant();
     }
 
+    public void requireExternalPaymentProduct(Long owner, String productNo) {
+        String code = externalPaymentProduct(mapper.trial(owner), productNo);
+        var product = purchaseOptions.product(code);
+        String reason = purchaseOptions.listingBlock(product);
+        if (reason == null) reason = purchaseOptions.stockOrConfigurationBlock(product);
+        if (reason != null) throw new BizException(409, reason);
+        if (positiveOrNull(product.dailyUsdt()) == null || positiveOrNull(product.dailyNex()) == null) {
+            throw new BizException(409, "TRIAL_DAILY_YIELD_INVALID");
+        }
+    }
+
     public void checkExternalPaymentQuota(Long owner, String requestedProductNo, LocalDateTime occurredAtUtc) {
         HardwareQuotaPurchaseGuard.check(mapper, owner, externalPaymentProduct(mapper.trial(owner), requestedProductNo),
                 1, occurredAtUtc);
@@ -440,6 +626,7 @@ public class AppTrialLifecycleService {
         String configured = externalPaymentProduct(mapper.lockTrial(owner), requestedProductNo);
         var product = mapper.lockConversionProduct(configured);
         if (!availablePhysicalTrialProduct(product)) throw new BizException(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+        requireExternalPaymentProduct(owner, requestedProductNo);
         return product;
     }
 
@@ -455,13 +642,13 @@ public class AppTrialLifecycleService {
             throw new BizException(422, "TRIAL_PRODUCT_REQUIRED");
         }
         if (!canonicalTrialProductId(originalProductNo).equals(canonicalTrialProductId(requestedProductNo))) {
-            throw new BizException(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
+            throw new BizException(409, "TRIAL_EXTERNAL_PAYMENT_METHOD_UNSUPPORTED");
         }
     }
 
     private ApiResult<Map<String, Object>> convertOnce(
-            Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote,
-            PurchaseQuotaReservation reservation, String paymentClaimNo) {
+            Long userId, String productNo, BigDecimal expectedAmountUsdt, String confirmedQuote, boolean legacyQuote, boolean legacyVersion,
+            PurchaseQuotaReservation reservation, String paymentClaimNo, Map<String, String> frozenPolicy) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         if (!productNo.matches("[A-Za-z0-9._-]{2,64}")) return ApiResult.fail(422, "TRIAL_PRODUCT_REQUIRED");
         if (!validExpectedAmount(expectedAmountUsdt)) {
@@ -475,7 +662,9 @@ public class AppTrialLifecycleService {
         if (paymentClaimNo != null && !paymentClaimNo.equals(row.claimNo())) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         String configured = trialProductCode(policy, row);
         String canonicalRequested = canonicalTrialProductId(productNo);
-        if (configured == null || !canonicalRequested.equals(configured)) {
+        boolean original = canonicalRequested.equals(configured);
+        if (configured == null || (!original && (VerifiedPurchasePayment.active()
+                || !purchaseOptions.containsForPurchase(canonicalRequested)))) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         }
         LocalDateTime now = businessNow();
@@ -485,14 +674,23 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
-        if (!availablePhysicalTrialProduct(product)) {
-            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+        ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper.GateQuota gate = null;
+        if (original) {
+            if (!availablePhysicalTrialProduct(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
+            if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
+        } else {
+            var selected = purchaseOptions.product(canonicalRequested);
+            String reason = purchaseOptions.otherListingBlock(selected);
+            if (reason == null) reason = purchaseOptions.stockOrConfigurationBlock(selected);
+            if (reason != null || product == null) {
+                return ApiResult.fail(409, reason == null ? "PRODUCT_NOT_AVAILABLE" : reason);
+            }
+            gate = purchaseOptions.checkGate(userId, product.productNo(), true);
         }
-        if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
         // Keep the claim's promised trial accrual, but require a valid current
         // product yield before any purchase or reward side effect.
-        if (positiveOrNull(productDailyUsdt(product)) == null
-                || positiveOrNull(product.dailyNex()) == null
+        boolean share = "SHARE".equalsIgnoreCase(product.productType());
+        if ((!share && (positiveOrNull(productDailyUsdt(product)) == null || positiveOrNull(product.dailyNex()) == null))
                 || positiveOrNull(row.dailyUsdt()) == null
                 || positiveOrNull(row.dailyNex()) == null) {
             return ApiResult.fail(409, "TRIAL_DAILY_YIELD_INVALID");
@@ -500,27 +698,28 @@ public class AppTrialLifecycleService {
         if (!withinPhysicalSlotCapacity(userId, product, true)) {
             return ApiResult.fail(409, "CAPACITY_REPLACEMENT_REQUIRED");
         }
-        BigDecimal subtotal = row.priceUsdt();
+        BigDecimal subtotal = original ? row.priceUsdt() : product.priceUsdt();
         if (subtotal == null || subtotal.signum() <= 0) {
             throw new BizException(409, "TRIAL_PRICE_SNAPSHOT_INVALID");
         }
-        Quote quote = quote(row, policy, VerifiedPurchasePayment.active()
-                ? LocalDateTime.ofInstant(VerifiedPurchasePayment.pricingInstant(),BUSINESS_ZONE) : now, legacyQuote);
+        Quote quote = quote(row, frozenPolicy.isEmpty() ? policy : frozenPolicy, VerifiedPurchasePayment.active()
+                ? LocalDateTime.ofInstant(VerifiedPurchasePayment.pricingInstant(),BUSINESS_ZONE) : now, legacyQuote,
+                product.productNo(), subtotal, legacyVersion);
         Settlement settlement = quote.accrued();
         BigDecimal promoDiscount = quote.promoDiscountUsdt();
         BigDecimal discount = quote.discountUsdt();
         BigDecimal amount = quote.amountUsdt();
+        if ((!legacyVersion || confirmedQuote != null) && !quote.version().equals(confirmedQuote)) {
+            return ApiResult.fail(409, "TRIAL_QUOTE_CHANGED", linked("claimNo", row.claimNo(),
+                    "productNo", product.productNo(), "quoteVersion", quote.version(), "quote", decimalQuote(quote, subtotal)));
+        }
         // The App confirms a two-decimal USDT quote. Reject only when the
         // canonical two-decimal amount increased; a later/larger trial offset
         // may safely reduce what the user owes.
         if (amount.setScale(2, RoundingMode.HALF_UP)
                 .compareTo(expectedAmountUsdt.setScale(2, RoundingMode.UNNECESSARY)) > 0) {
-            return ApiResult.fail(409, "TRIAL_AMOUNT_MISMATCH");
-        }
-        // A confirmed early quote that is no longer offered (term ended, policy changed) is
-        // never swapped silently for another rule, even when the amount happens to match.
-        if (confirmedQuote != null && !confirmedQuote.equals(quote.version())) {
-            return ApiResult.fail(409, "TRIAL_QUOTE_CHANGED");
+            return ApiResult.fail(409, "TRIAL_AMOUNT_MISMATCH", linked("claimNo", row.claimNo(),
+                    "productNo", product.productNo(), "quoteVersion", quote.version(), "quote", decimalQuote(quote, subtotal)));
         }
         String hostingCenter = hostingCenters.requirePool().assign("trial:" + row.claimNo());
         testCloudAdmission.requireCapacity(1);
@@ -533,7 +732,7 @@ public class AppTrialLifecycleService {
         if (VerifiedPurchasePayment.active()) VerifiedPurchasePayment.require(userId,amount);
         if (!VerifiedPurchasePayment.active() && wallet.usdt().compareTo(amount) < 0) return ApiResult.fail(409, "TRIAL_WALLET_INSUFFICIENT");
         if (!VerifiedPurchasePayment.active()) paymentAttribution.beforeCash(prepared);
-        if (!VerifiedPurchasePayment.active() && mapper.settleWallet(userId, amount, BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
+        if (!VerifiedPurchasePayment.active() && amount.signum() > 0 && mapper.settleWallet(userId, amount, BigDecimal.ZERO, BigDecimal.ZERO) != 1) {
             throw new BizException(409, "TRIAL_WALLET_CONFLICT");
         }
         if (quote.remainderUsdt().signum() > 0) {
@@ -565,12 +764,13 @@ public class AppTrialLifecycleService {
                         subtotal) != 1) {
             throw new BizException(409, "TRIAL_CONVERSION_ORDER_CONFLICT");
         }
+        if (gate != null) purchaseOptions.consumeGate(gate, orderNo, product.id());
         String instanceNo = "TRIAL-DEV-" + UUID.randomUUID().toString().replace("-", "")
                 .substring(0, 20).toUpperCase(Locale.ROOT);
         if (hardwareQuota != null) HardwareQuotaPurchaseGuard.record(mapper, hardwareQuota, userId, orderNo);
         if (mapper.insertPurchasedDevice(userId, orderNo, product.id(), product.productNo(), product.tier(),
-                "SHARE".equalsIgnoreCase(product.productType()) ? "CLOUD_SHARE" : normalize(product.productType()),
-                instanceNo, row.deviceName(), subtotal, hostingCenter) != 1) {
+                normalize(product.productType()),
+                instanceNo, product.name(), subtotal, hostingCenter) != 1) {
             throw new BizException(409, "TRIAL_DEVICE_CREATE_CONFLICT");
         }
         Long deviceId = mapper.deviceIdByInstanceNo(instanceNo);
@@ -607,6 +807,10 @@ public class AppTrialLifecycleService {
         record("H2_TRIAL_CONVERTED", row.claimNo(), userId, detail);
         if (!VerifiedPurchasePayment.active()) paymentAttribution.record(prepared);
         if (!VerifiedPurchasePayment.active()) detail.put("paidTotalUsdt",amount.setScale(2,RoundingMode.HALF_UP).toPlainString());
+        detail.put("claimNo", row.claimNo());
+        detail.put("purchasedDevice", linked("productNo", product.productNo(), "name", product.name(),
+                "productType", product.productType(), "imageUrl", purchaseOptions.image(product.productNo())));
+        detail.put("settlement", decimalQuote(quote, subtotal));
         return ApiResult.ok(detail);
     }
 
@@ -686,7 +890,8 @@ public class AppTrialLifecycleService {
      * early-conversion reward. Grace/extension never add days or the fixed discount. Claims without a
      * complete snapshot keep the accrued rule instead of inventing zero-valued rewards.
      */
-    private Quote quote(TrialRow row, Map<String, String> policy, LocalDateTime now, boolean legacyQuote) {
+    private Quote quote(TrialRow row, Map<String, String> policy, LocalDateTime now, boolean legacyQuote,
+            String productNo, BigDecimal subtotal, boolean legacyVersion) {
         Settlement accrued = settlement(row, policy, false, now);
         BigDecimal configured = earlyPurchaseDiscount(policy);
         boolean early = configured.signum() > 0 && fullTermSnapshot(row) && inOriginalTerm(row, now);
@@ -697,7 +902,6 @@ public class AppTrialLifecycleService {
             settledUsdt = row.dailyUsdt().multiply(days).setScale(6, RoundingMode.DOWN).max(settledUsdt);
             settledNex = row.dailyNex().multiply(days).setScale(6, RoundingMode.DOWN).max(settledNex);
         }
-        BigDecimal subtotal = row.priceUsdt();
         BigDecimal promo = conversionPromoDiscount(subtotal, policy);
         // Previously issued external payment quotes retain the exact discount and reward they froze.
         BigDecimal offset = legacyQuote && row.offsetCapUsdt()!=null ? settledUsdt.min(row.offsetCapUsdt()) :
@@ -713,7 +917,12 @@ public class AppTrialLifecycleService {
         String policyName = early ? FULL_TERM_POLICY : ACCRUED_POLICY;
         // Confirm the claim and pricing rule. Accrual alone can only improve the confirmed price.
         String version = policyName;
-        if (early) {
+        if (!legacyVersion) {
+            String basis = String.join("|", row.claimNo(), productNo, TrialPurchaseOptions.amount(subtotal),
+                    String.valueOf(row.offsetCapUsdt()), conversionPromoRate(policy).stripTrailingZeros().toPlainString(),
+                    decimal(policy, "discountCapUSD", "50").stripTrailingZeros().toPlainString(), promo.toPlainString(), configured.toPlainString());
+            version += ":" + sha256(basis).substring(0, 24);
+        } else if (early) {
             String basis = legacyQuote ? String.join("|",row.claimNo(),settledUsdt.toPlainString(),settledNex.toPlainString(),
                     promo.toPlainString(),earlyDiscount.toPlainString(),amount.toPlainString())
                     : String.join("|","ACCRUED_OFFSET",row.claimNo(),settledUsdt.toPlainString(),settledNex.toPlainString(),
@@ -864,7 +1073,7 @@ public class AppTrialLifecycleService {
         result.put("remainderUsdt", preview == null ? safe(row.remainderUsdt()) : preview.remainderUsdt());
         result.put("priceUsdt", row.priceUsdt());
         if (preview != null && row.priceUsdt() != null && row.priceUsdt().signum() > 0) {
-            Quote current = quote(row, policy, now, false);
+            Quote current = quote(row, policy, now, false, configuredProductCode, row.priceUsdt(), false);
             Map<String,Object> purchaseQuote = quoteView(current, row.priceUsdt());
             purchaseQuote.put("trialOffsetCapUSD",row.offsetCapUsdt()==null?null:row.offsetCapUsdt().stripTrailingZeros().toPlainString());
             result.put("offsetUsdt",current.offsetUsdt());

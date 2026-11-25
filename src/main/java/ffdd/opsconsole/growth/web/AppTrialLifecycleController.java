@@ -25,6 +25,12 @@ public class AppTrialLifecycleController {
         return userId == null ? forbidden() : service.state(userId);
     }
 
+    @GetMapping("/purchase-options")
+    public ApiResult<Map<String, Object>> purchaseOptions(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.purchaseOptions(userId);
+    }
+
     @PostMapping("/start")
     public ApiResult<Map<String, Object>> start(
             @RequestBody(required = false) StartRequest request,

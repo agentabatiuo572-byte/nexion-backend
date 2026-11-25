@@ -40,6 +40,12 @@ public interface PaymentPasswordMapper {
     int finishAttempt(@Param("userId") long userId,@Param("attempt") String attempt,@Param("code") int code,@Param("state") String state);
     @Update("UPDATE nx_payment_password_attempt SET result_message='BUSINESS_REJECTED' WHERE user_id=#{userId} AND attempt_no=#{attempt} AND result_code=0")
     int rejectBusiness(@Param("userId") long userId,@Param("attempt") String attempt);
+    @Select("SELECT claim_no FROM nx_trial_balance_submission WHERE user_id=#{userId} AND command_key=#{key}")
+    String trialBalanceClaim(@Param("userId") long userId, @Param("key") String key);
+
+    @Select("SELECT claim_no FROM nx_trial_claim WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1")
+    java.util.Optional<String> currentTrialClaim(@Param("userId") long userId);
+
     @Select("SELECT kind FROM nx_payment_command WHERE user_id=#{userId} AND command_key=#{key} AND kind IN ('setup','change','reset') ORDER BY created_at DESC LIMIT 1")
     Map<String,Object> securityCommand(@Param("userId") long userId,@Param("key") String key);
     @Insert("INSERT INTO nx_verified_phone(user_id,phone_hash,verified_at) VALUES(#{userId},#{phoneHash},#{now}) ON DUPLICATE KEY UPDATE phone_hash=VALUES(phone_hash),verified_at=VALUES(verified_at)")

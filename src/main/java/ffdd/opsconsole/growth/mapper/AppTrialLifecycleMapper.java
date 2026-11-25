@@ -94,15 +94,34 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Select("""
             SELECT JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialClaimNo')) claimNo,
                    JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.pricingAsOf')) pricingAsOf,
-                   payment_method paymentMethod, expires_at deadline, reason
+                   payment_method paymentMethod, expires_at deadline, provider_expires_at providerDeadline, reason, status,
+                   intent_no intentNo,paid_at paidAt,confirmed_at confirmedAt,
+                   JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.productNo')) productNo,
+                   JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.expectedAmountUsdt')) confirmedAmount,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialDeviceName')) deviceName,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialImageSku')) imageSku,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialImageAssetId')) imageAssetId,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialImageObjectKey')) imageObjectKey
               FROM nx_purchase_payment_intent
              WHERE user_id=#{userId} AND kind='TRIAL_CONVERT'
                AND receipt_json IS NULL AND refund_receipt_json IS NULL
-               AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT','FUNDS_CONFIRMED','MANUAL_REVIEW')
+               AND (status NOT IN ('DELIVERED','EXPIRED') OR (status='EXPIRED' AND reconciliation_status='QUERY_UNKNOWN'))
+             ORDER BY created_at DESC,intent_no DESC
             """)
     List<TrialExternalPayment> openTrialExternalPayments(@Param("userId") Long userId);
 
-    record TrialExternalPayment(String claimNo, String pricingAsOf, String paymentMethod, Instant deadline, String reason) { }
+    record TrialExternalPayment(String claimNo, String pricingAsOf, String paymentMethod, Instant deadline,
+                                Instant providerDeadline, String reason, String status, String intentNo, Instant paidAt, Instant confirmedAt,
+                                String productNo, String confirmedAmount, String deviceName, String imageSku,
+                                String imageAssetId, String imageObjectKey) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public TrialExternalPayment {}
+
+        public TrialExternalPayment(String claimNo, String pricingAsOf, String paymentMethod, Instant deadline, String reason) {
+            this(claimNo, pricingAsOf, paymentMethod, deadline, null, reason, null, null,
+                    null, null, null, null, null, null, null, null);
+        }
+    }
 
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
@@ -418,16 +437,18 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,created_at,updated_at,is_deleted,
                gpu_model,vram_total_gb,dc_location)
             SELECT #{userId},#{sourceOrderNo},p.id,p.product_no,#{productTier},p.series_code,#{instanceNo},#{deviceName},
-               #{deviceType},1,CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
-               #{priceUsdt},'OWNED','TRIAL','ACTIVE',0,p.estimated_daily_usdt,p.daily_nex,NOW(),NOW(),NOW(),NOW(),0,
-               p.gpu_model,p.vram_total_gb,#{hostingCenter}
+               #{deviceType},GREATEST(COALESCE(p.generation,1),1),
+               CASE WHEN UPPER(p.product_type)='SHARE' THEN 0
+                    ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
+               #{priceUsdt},'OWNED','TRIAL','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
+               GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),NOW(),NOW(),NOW(),NOW(),0,
+               COALESCE(p.gpu_model,''),COALESCE(p.vram_total_gb,0),#{hostingCenter}
               FROM nx_product p
-              JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.id=#{productId} AND p.product_no=#{productCode} AND p.is_deleted=0
-               AND p.estimated_daily_usdt>0 AND p.daily_nex>0
-               AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0
+               AND (UPPER(p.product_type)='SHARE' OR (p.estimated_daily_usdt>0 AND p.daily_nex>0 AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0
                AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
-               AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6))>0
+               AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6))>0))
             """)
     int insertPurchasedDevice(
             @Param("userId") Long userId,
@@ -439,6 +460,16 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             @Param("instanceNo") String instanceNo,
             @Param("deviceName") String deviceName,
             @Param("priceUsdt") BigDecimal priceUsdt, @Param("hostingCenter") String hostingCenter);
+
+    @Select("""
+            SELECT i.product_no productNo,i.product_name name,d.device_type productType
+              FROM nx_order o JOIN nx_order_item i ON i.order_no=o.order_no AND i.is_deleted=0
+              LEFT JOIN nx_user_device d ON d.id=#{deviceId} AND d.user_id=o.user_id
+             WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.order_type='TRIAL_CONVERT'
+             LIMIT 1
+            """)
+    java.util.Map<String, Object> purchasedDevice(@Param("orderNo") String orderNo, @Param("userId") Long userId,
+                                                  @Param("deviceId") Long deviceId);
 
     @Select("SELECT id FROM nx_user_device WHERE instance_no=#{instanceNo} AND is_deleted=0 LIMIT 1")
     Long deviceIdByInstanceNo(@Param("instanceNo") String instanceNo);

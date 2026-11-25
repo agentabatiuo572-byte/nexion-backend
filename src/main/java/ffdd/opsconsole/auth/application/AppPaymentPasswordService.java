@@ -156,14 +156,26 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
         return command(userId,kind,key,summary,authorization,existingSuccess,action);
     }
 
+    @Override
+    public <T> ApiResult<T> executeWithAdmission(Long userId, String kind, String key, Object summary,
+            Authorization authorization, Runnable admit, Supplier<ApiResult<T>> action) {
+        return command(userId, kind, key, summary, authorization, () -> null, admit, action);
+    }
+
     private <T> ApiResult<T> command(long userId,String kind,String key,Object summary,
                                     Authorization authorization,Supplier<ApiResult<T>> action) {
         return command(userId,kind,key,summary,authorization,() -> null,action);
     }
 
+    private <T> ApiResult<T> command(long userId, String kind, String key, Object summary,
+            Authorization authorization, Supplier<ApiResult<T>> existingSuccess, Supplier<ApiResult<T>> action) {
+        return command(userId, kind, key, summary, authorization, existingSuccess, null, action);
+    }
+
     @SuppressWarnings("unchecked")
-    private <T> ApiResult<T> command(long userId,String kind,String key,Object summary,
-                                    Authorization authorization,Supplier<ApiResult<T>> existingSuccess,Supplier<ApiResult<T>> action) {
+    private <T> ApiResult<T> command(long userId, String kind, String key, Object summary,
+            Authorization authorization, Supplier<ApiResult<T>> existingSuccess,
+            Runnable admit, Supplier<ApiResult<T>> action) {
         requireKey(key);
         String digest=hash(String.valueOf(summary));
         independent.executeWithoutResult(tx -> {
@@ -190,28 +202,43 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                 return existing;
             }
             requireAvailable();
-            if (!"setup".equals(kind) && !"reset".equals(kind)) {
-                ApiResult<State> verification=independent.execute(v -> verify(userId,kind,key,authorization));
-                if (verification.getCode()!=0) return (ApiResult<T>)(ApiResult<?>)verification;
-                Map<String,Object> credential=repo.credential(userId,true);
-                if (PaymentPasswordMapper.number(credential,"credential_version")!=authorization.credentialVersion())
-                    return (ApiResult<T>)(ApiResult<?>)ApiResult.fail(409,"PAYMENT_PASSWORD_VERSION_CONFLICT",stateOf(userId,credential));
-            } else repo.credential(userId,true);
-            ApiResult<T> result;
+            boolean needsVerification = !"setup".equals(kind) && !"reset".equals(kind);
+            if (needsVerification) {
+                ApiResult<State> verification = independent.execute(v -> verify(userId, kind, key, authorization));
+                if (verification.getCode() != 0) return (ApiResult<T>) (ApiResult<?>) verification;
+            }
             try {
-                result=nested.execute(savepoint -> {
+                if (needsVerification) {
+                    // Keep the admitted business identity visible even if the purchase transaction rolls back.
+                    if (admit != null) independent.executeWithoutResult(admission -> admit.run());
+                    Map<String, Object> credential = repo.credential(userId, true);
+                    if (PaymentPasswordMapper.number(credential, "credential_version") != authorization.credentialVersion()) {
+                        ApiResult<T> conflict = (ApiResult<T>) (ApiResult<?>) ApiResult.fail(
+                                409, "PAYMENT_PASSWORD_VERSION_CONFLICT", stateOf(userId, credential));
+                        return admit == null ? conflict : finish(userId, kind, key, authorization, conflict);
+                    }
+                } else {
+                    repo.credential(userId, true);
+                }
+                ApiResult<T> result = nested.execute(savepoint -> {
                     ApiResult<T> response=action.get();
                     if (response.getCode()!=0) savepoint.setRollbackOnly();
                     return response;
                 });
+                return finish(userId, kind, key, authorization, result);
             } catch (BizException rejection) {
-                result=ApiResult.fail(rejection.getCode(),rejection.getMessage());
+                return finish(userId, kind, key, authorization,
+                        ApiResult.fail(rejection.getCode(), rejection.getMessage(), admit == null ? null : (T) rejection.errorData()));
             }
-            if (result.getCode()!=0 && authorization!=null && authorization.attemptNo()!=null)
-                repo.rejectBusiness(userId,authorization.attemptNo());
-            repo.finishCommand(userId,kind,key,result.getCode()==0 ? "SUCCEEDED" : "REJECTED",encode(result),clock.millis());
-            return result;
         });
+    }
+
+    private <T> ApiResult<T> finish(long userId, String kind, String key, Authorization authorization, ApiResult<T> result) {
+        if (result.getCode() != 0 && authorization != null && authorization.attemptNo() != null) {
+            repo.rejectBusiness(userId, authorization.attemptNo());
+        }
+        repo.finishCommand(userId, kind, key, result.getCode() == 0 ? "SUCCEEDED" : "REJECTED", encode(result), clock.millis());
+        return result;
     }
 
     private ApiResult<State> verify(long userId,String kind,String key,Authorization authorization) {
@@ -287,17 +314,32 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                             return Map.of("kind",kind,"commandKey",key,"status","INDETERMINATE","canResumeSameKey",false);
                     }
                 }
-                if (row==null || "READY".equals(row.get("status")))
+                if (row==null || "READY".equals(row.get("status"))) {
+                    if ("trial-convert".equals(kind)) {
+                        String claim = repo.trialBalanceClaim(userId, key);
+                        return Map.of("kind", kind, "commandKey", key, "status", claim == null ? "NOT_SEEN" : "PROCESSING",
+                                "canResumeSameKey", true, "paymentMethod", "WALLET",
+                                "claimNo", claim == null ? repo.currentTrialClaim(userId).orElse("") : claim);
+                    }
                     return Map.of("kind",kind,"commandKey",key,"status","NOT_SEEN","canResumeSameKey",true);
+                }
                 ApiResult<?> response=decode(String.valueOf(row.get("response_json")),ApiResult.class);
                 Map<String,Object> result=new LinkedHashMap<>();
                 result.put("kind",kind); result.put("commandKey",key); result.put("status",row.get("status"));
                 result.put("canResumeSameKey",false); result.put("code",response.getCode());
+                if ("trial-convert".equals(kind)) {
+                    result.put("claimNo", repo.trialBalanceClaim(userId, key));
+                    result.put("paymentMethod", "WALLET");
+                }
                 result.put("message",response.getMessage()); result.put("receipt",response.getData());
                 if (response.getData() instanceof Map<?,?> data && data.containsKey("state")) result.put("state",data.get("state"));
                 return result;
             });
         } catch (PessimisticLockingFailureException busy) {
+            if ("trial-convert".equals(kind)) {
+                return Map.of("kind", kind, "commandKey", key, "status", "PROCESSING", "canResumeSameKey", false,
+                        "paymentMethod", "WALLET", "claimNo", java.util.Objects.toString(repo.trialBalanceClaim(userId, key), ""));
+            }
             return Map.of("kind",kind,"commandKey",key,"status","PROCESSING","canResumeSameKey",false);
         } catch (ReceiptInvalidException invalid) {
             return Map.of("kind",kind,"commandKey",key,"status","INDETERMINATE","canResumeSameKey",false);

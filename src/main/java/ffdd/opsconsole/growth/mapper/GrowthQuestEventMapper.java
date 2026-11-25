@@ -362,6 +362,25 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                      ' UVT'
                    ) AS shadow,
                    claim_no AS cardTok,
+                   CASE WHEN quota_snapshot LIKE '%productCode=%' THEN
+                     REPLACE(SUBSTRING_INDEX(SUBSTRING_INDEX(quota_snapshot,'productCode=',-1),',',1),
+                             'device-trial-standard','stellarbox-s1')
+                   END AS trialProductNo,
+                   device_name AS trialProductName,
+                   (SELECT i.product_no FROM nx_user_device d
+                     JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=nx_trial_claim.user_id
+                     JOIN nx_order_item i ON i.order_no=o.order_no AND i.is_deleted=0
+                    WHERE d.id=nx_trial_claim.user_device_id AND o.order_type='TRIAL_CONVERT'
+                      AND UPPER(nx_trial_claim.status)='REDEEMED' LIMIT 1) AS purchasedProductNo,
+                   (SELECT i.product_name FROM nx_user_device d
+                     JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=nx_trial_claim.user_id
+                     JOIN nx_order_item i ON i.order_no=o.order_no AND i.is_deleted=0
+                    WHERE d.id=nx_trial_claim.user_device_id AND o.order_type='TRIAL_CONVERT'
+                      AND UPPER(nx_trial_claim.status)='REDEEMED' LIMIT 1) AS purchasedProductName,
+                   (UPPER(status) IN ('CLAIMED','ACTIVE','GRACE','EXTENDED') AND NOW() <
+                       CASE WHEN UPPER(status)='EXTENDED' THEN expires_at
+                            ELSE DATE_ADD(expires_at, INTERVAL COALESCE(grace_days_snapshot,7) DAY)
+                        END) AS canConvert,
                    claimed_at AS claimedAt,
                    expires_at AS expiresAt,
                    cooldown_until AS cooldownUntil

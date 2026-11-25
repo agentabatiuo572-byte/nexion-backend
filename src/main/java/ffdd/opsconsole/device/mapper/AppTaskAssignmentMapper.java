@@ -925,8 +925,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
               JOIN nx_product p ON p.id=d.product_id AND p.product_no=d.product_code
              WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
                AND d.source_environment='PRODUCTION' AND d.run_id=''
-               AND d.source_channel='ORDER' AND UPPER(d.ownership_status)='OWNED'
-               AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
+               AND (d.source_channel='ORDER' OR (d.source_channel='TRIAL' AND o.order_type='TRIAL_CONVERT'))
+               AND UPPER(d.ownership_status)='OWNED' AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
                AND UPPER(d.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING')
                AND d.series_code='CLOUD_SHARE' AND UPPER(d.device_type) IN ('SHARE','CLOUD_SHARE')
                AND o.is_deleted=0 AND o.payment_status='PAID'
@@ -938,7 +938,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                AND (SELECT COUNT(1) FROM nx_user_device owned
                      WHERE owned.source_order_no=o.order_no AND owned.user_id=d.user_id
                        AND owned.product_id=d.product_id AND owned.is_deleted=0
-                       AND owned.source_channel='ORDER' AND owned.source_environment='PRODUCTION'
+                       AND owned.source_channel=d.source_channel AND owned.source_environment='PRODUCTION'
                        AND UPPER(owned.ownership_status)='OWNED'
                        AND owned.activated_at IS NOT NULL AND owned.deactivated_at IS NULL
                        AND UPPER(owned.status) IN ('ACTIVE','ONLINE','BUSY','RUNNING'))
@@ -961,7 +961,8 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
               JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id AND o.is_deleted=0
              WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.product_code=#{productCode}
                AND d.is_deleted=0 AND d.source_environment='PRODUCTION' AND d.run_id=''
-               AND d.source_channel IN ('ORDER','TRADE_IN') AND d.daily_nex>0
+               AND (d.source_channel IN ('ORDER','TRADE_IN')
+                    OR (d.source_channel='TRIAL' AND o.order_type='TRIAL_CONVERT')) AND d.daily_nex>0
                AND d.activated_at<=#{completedAt} AND o.paid_at<=#{completedAt}
                AND (o.product_id=d.product_id OR (o.order_type='BUNDLE' AND EXISTS (
                    SELECT 1 FROM nx_order_item oi WHERE oi.order_no=o.order_no

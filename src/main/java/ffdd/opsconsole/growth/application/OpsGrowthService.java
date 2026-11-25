@@ -599,6 +599,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return trials(requestedPageNum, requestedPageSize, true);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private TrialPurchaseOptions trialPurchaseOptions;
+
+    public ApiResult<Map<String, Object>> replaceTrialPurchaseOptions(TrialPurchaseOptions.ReplaceRequest request) {
+        return trialPurchaseOptions.replace(request);
+    }
+
     private ApiResult<Map<String, Object>> trials(int requestedPageNum, int requestedPageSize, boolean includePendingApproval) {
         int pageNum = Math.max(1, requestedPageNum);
         int pageSize = Math.max(1, Math.min(requestedPageSize, 100));
@@ -610,6 +617,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         response.put("modelA", trialModelA());
         response.put("params", trialParams(trialProducts));
         response.put("trialProducts", trialProducts);
+        if (trialPurchaseOptions != null) {
+            String target = canonicalTrialProductId(trialParamCurrentValue("trialProductId", ""));
+            response.putAll(trialPurchaseOptions.adminView(target));
+        }
         response.put("gates", trialGates());
         response.put("states", trialStates());
         var sessions = trialSessions(pageNum, pageSize);

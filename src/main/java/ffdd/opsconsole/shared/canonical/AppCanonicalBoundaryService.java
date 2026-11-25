@@ -1474,7 +1474,7 @@ public class AppCanonicalBoundaryService {
                 decision.allowed() ? "ELIGIBLE" : decision.code());
     }
 
-    static String storefrontConfigurationBlock(
+    public static String storefrontConfigurationBlock(
             String productType, String inventoryMode, String gpuModel, Integer vramTotalGb,
             String power) {
         String type = StringUtils.hasText(productType) ? productType.trim().toUpperCase(Locale.ROOT) : "";
