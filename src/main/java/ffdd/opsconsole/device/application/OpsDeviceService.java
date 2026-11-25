@@ -400,6 +400,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @Transactional
     public ApiResult<DeviceSkuView> createSku(String idempotencyKey, DeviceSkuUpsertRequest request) {
         String scope = "E1_SKU_CREATE";
+        if (request != null) request.validateStoreDisplayControls();
         SkuWriteReplay replay = skuWriteReplay(scope, idempotencyKey, "", request, null);
         if (replay.response() != null) {
             return replay.response();
@@ -444,7 +445,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
         }
         var classes=simulationPolicies.writePools(skuId,writeRequest.allowedPoolCodes(),List.of());
-        if((!classes.isEmpty() || writeRequest.monthlyTargetUsdt()!=null) && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
+        if ((!classes.isEmpty() || writeRequest.monthlyTargetUsdt() != null
+                || storeDisplayControlsChanged(writeRequest, 0, true)) && !A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         simulationPolicies.validateProductScope(skuId,writeRequest.seriesCode(),classes,false,writeRequest.monthlyTargetUsdt(),writeRequest.monthlyTargetBandPct(),"on".equals(writeRequest.status()),Boolean.TRUE.equals(writeRequest.clearMonthlyTarget()));
         LocalDateTime changedAt = LocalDateTime.now(clock);
         DeviceSkuView created = catalogRepository.createSku(skuId, writeRequest, changedAt);
@@ -469,6 +473,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     public ApiResult<DeviceSkuView> updateSku(
             String skuId, String expectedUpdatedAt, String idempotencyKey, DeviceSkuUpsertRequest request) {
         String scope = "E1_SKU_UPDATE";
+        if (request != null) request.validateStoreDisplayControls();
         SkuRevision revision = parseSkuRevision(expectedUpdatedAt);
         String revisionText = revision.value() == null ? expectedUpdatedAt : revision.value().toString();
         SkuWriteReplay replay = skuWriteReplay(scope, idempotencyKey, skuId, request, revisionText);
@@ -540,7 +545,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 ||!sameAmount(before.monthlyTargetBandPct(),effectiveWriteRequest.monthlyTargetBandPct());
         boolean seriesChanged = !Objects.equals(before.seriesCode(), effectiveWriteRequest.seriesCode());
         if (seriesChanged && before.seriesLocked()) return ApiResult.fail(409, "SKU_SERIES_LOCKED");
-        if((scopeChanged || newlyListed || targetChanged || seriesChanged) && !A2ReplayContext.isReplaying())return ApiResult.fail(409,"A2_CONFIRMATION_REQUIRED");
+        if ((scopeChanged || newlyListed || targetChanged || seriesChanged || storeDisplayControlsChanged(
+                effectiveWriteRequest, before.displaySoldBase(), before.liveActivityVisible())) && !A2ReplayContext.isReplaying()) {
+            return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
+        }
         if (!"on".equals(before.status()) && "on".equals(nextStatus)) {
             ApiResult<DeviceSkuView> publishGuard = requireE1SkuPublishable(normalized, effectiveWriteRequest);
             if (publishGuard != null) {
@@ -2070,6 +2078,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         response.put("domain", "E1");
         response.put("skuReviewContractVersion", 1);
         response.put("taskClassPolicySupported", true);
+        response.put("storeDisplayControlsSupported", true);
         response.put("phaseOrder", phaseOrder);
         response.put("phases", phases.stream()
                 .map(phase -> new DevicePhaseView(
@@ -3927,6 +3936,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return skuRequestWithPhaseId(request, runtimeSold, unlockPhase);
     }
 
+    private static boolean storeDisplayControlsChanged(DeviceSkuUpsertRequest request, int base, boolean visible) {
+        Integer proposedBase = request.proposedDisplaySoldBase();
+        Boolean proposedVisibility = request.proposedLiveActivityVisible();
+        return (proposedBase != null && proposedBase != base)
+                || (proposedVisibility != null && proposedVisibility != visible);
+    }
+
     private DeviceSkuUpsertRequest skuRequestWithPhaseId(
             DeviceSkuUpsertRequest request, Long runtimeSold, String unlockPhase) {
         ProductInventoryMode inventoryMode = inventoryMode(request.inventoryMode());
@@ -3975,7 +3991,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.reason(),
                 operator(request.operator()),
                 inventoryMode.name(),
-                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode(), request.taglineTranslations());
+                request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode(), request.taglineTranslations(),
+                request.displaySoldBase(), request.liveActivityVisible());
     }
 
     private DeviceSkuUpsertRequest withTrialEligible(DeviceSkuUpsertRequest request, boolean trialEligible) {
@@ -3990,7 +4007,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.lifecycle(), request.supersededBy(), request.tradeinDiscount(), request.unlockPhase(),
                 request.purchaseGate(), request.imageAssetId(), request.imageObjectKey(), request.imagePreviewUrl(),
                 request.tag(), request.status(), request.reason(), request.operator(), request.inventoryMode(),
-                trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode(), request.taglineTranslations());
+                trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode(), request.taglineTranslations(),
+                request.displaySoldBase(), request.liveActivityVisible());
     }
 
     private ProductInventoryMode inventoryMode(String raw) {
@@ -5694,7 +5712,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private boolean matchesLegacySkuHash(String scope, String skuId, DeviceSkuUpsertRequest request,
             String revision, AdminIdempotencyService.ActiveRequest active) {
-        if (request == null || inventoryMode(request.inventoryMode()) == null) return false;
+        if (request == null || request.displaySoldBase() != null || request.liveActivityVisible() != null
+                || inventoryMode(request.inventoryMode()) == null) return false;
         boolean share = "Share".equals(normalizeExact(request.tier()));
         String phase = share ? "" : normalizeText(request.unlockPhase());
         if (matchesLegacySkuHash(scope, skuId, request, revision, phase, active.requestHash())) return true;
@@ -5708,17 +5727,22 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private boolean matchesLegacySkuHash(String scope, String skuId, DeviceSkuUpsertRequest request,
             String revision, String phaseId, String storedHash) {
         DeviceSkuUpsertRequest normalized = skuRequestWithPhaseId(request, 0L, phaseId);
+        // Restore the tail of the old record representation for pre-JSON fingerprints.
+        String suffix = normalized.taglineTranslations() == null ? ", taglineTranslations=null" : "";
+        suffix += ", displaySoldBase=null, liveActivityVisible=null]";
+        String legacy = normalized.toString();
+        legacy = legacy.substring(0, legacy.length() - suffix.length()) + "]";
         if (revision == null) {
             return storedHash.equals(e1RequestHashStructured(scope, skuId, normalized))
-                    || storedHash.equals(e1RequestHash(scope, skuId, normalized));
+                    || storedHash.equals(e1Hash(scope, skuId, legacy));
         }
         var fingerprint = detail("expectedUpdatedAt", revision, "request", normalized);
         // Earlier edit hashes used Map.of, which could emit either order.
         var reverse = detail("request", normalized, "expectedUpdatedAt", revision);
         return storedHash.equals(e1RequestHashStructured(scope, skuId, fingerprint))
-                || storedHash.equals(e1RequestHash(scope, skuId, fingerprint))
+                || storedHash.equals(e1Hash(scope, skuId, detail("expectedUpdatedAt", revision, "request", legacy).toString()))
                 || storedHash.equals(e1RequestHashStructured(scope, skuId, reverse))
-                || storedHash.equals(e1RequestHash(scope, skuId, reverse));
+                || storedHash.equals(e1Hash(scope, skuId, detail("request", legacy, "expectedUpdatedAt", revision).toString()));
     }
 
     /** Chooses the legacy hash when a receipt for that key already exists, otherwise uses a structured JSON hash. */
@@ -5756,11 +5780,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (request instanceof E2TaskPricingUpdateRequest pricing && pricing.expectedRevision() == null) {
             // The existing PUT receipt must remain recoverable when older clients omit the new revision.
             payload = payload.substring(0, payload.length() - ", expectedRevision=null]".length()) + "]";
-        }
-        if (containsSkuWithNullTranslations(request)) {
-            // Older E1 requests have no such field; keep the original Map order
-            // and old DTO string, removing only this field from the compatibility payload.
-            payload = payload.replace(", taglineTranslations=null]", "]");
         }
         return e1Hash(scope, resourceId, payload);
     }
@@ -6129,6 +6148,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Object> params = command.params();
         boolean create = "e1_sku_create".equals(command.op());
         DeviceSkuUpsertRequest input = buildSkuUpsertRequest(params, null, null);
+        input.validateStoreDisplayControls();
         requireSkuDisplayText(input);
         requireSkuTaglineTranslations(input.taglineTranslations());
         String skuId = create ? normalizeSkuId(input.skuId(), input.name()) : hardwarePolicyTarget(input.skuId());
@@ -6242,12 +6262,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 str(p, "unlockPhase"), buildPurchaseGate(p), str(p, "imageAssetId"),
                 str(p, "imageObjectKey"), str(p, "imagePreviewUrl"), str(p, "tag"),
                 str(p, "status"), reason, operator, str(p, "inventoryMode"),
-                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"), poolCodesParam(p),decimal(p,"monthlyTargetUsdt"),decimal(p,"monthlyTargetBandPct"),boolVal(p,"clearMonthlyTarget"),str(p,"seriesCode"),taglineTranslationsParam(p));
+                boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"), poolCodesParam(p),decimal(p,"monthlyTargetUsdt"),decimal(p,"monthlyTargetBandPct"),boolVal(p,"clearMonthlyTarget"),str(p,"seriesCode"),
+                skuJsonParam(p, "taglineTranslations"), skuJsonParam(p, "displaySoldBase"), skuJsonParam(p, "liveActivityVisible"));
     }
 
-    private static JsonNode taglineTranslationsParam(Map<String,Object> params) {
-        if(!params.containsKey("taglineTranslations")) return null;
-        return E1_AUDIT_JSON.valueToTree(params.get("taglineTranslations"));
+    private static JsonNode skuJsonParam(Map<String, Object> params, String key) {
+        return params.containsKey(key) ? E1_AUDIT_JSON.valueToTree(params.get(key)) : null;
     }
 
     private static List<String> poolCodesParam(Map<String,Object> params) {

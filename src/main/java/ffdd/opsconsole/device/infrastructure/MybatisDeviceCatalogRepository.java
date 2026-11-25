@@ -730,7 +730,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 row.monthlyTargetUsdt()==null?null:ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.daily(row.monthlyTargetUsdt()),
                 row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMin(),
                 row.monthlyTargetUsdt()==null||!"Share".equals(row.tier())?null:row.shareYieldMax(), row.seriesCode(), row.seriesLocked(), held, remaining,
-                StringUtils.hasText(taglineTranslationsJson) ? ProductTaglines.read(taglineTranslationsJson) : null).withTaskPolicy(simulationPolicies.productView(row.skuId()));
+                StringUtils.hasText(taglineTranslationsJson) ? ProductTaglines.read(taglineTranslationsJson) : null,
+                row.displaySoldBase(), row.liveActivityVisible()).withTaskPolicy(simulationPolicies.productView(row.skuId()));
     }
 
     private DeviceCatalogMapper.SkuWrite skuWrite(String skuId, DeviceSkuUpsertRequest request,
@@ -784,7 +785,8 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
                 Boolean.TRUE.equals(request.trialEligible()),
                 createdAt,
                 updatedAt, blankToNull(request.specDocumentTitle()), blankToNull(request.specDocumentUrl()),
-                request.computePoints(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.seriesCode());
+                request.computePoints(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.seriesCode(),
+                request.proposedDisplaySoldBase(), request.proposedLiveActivityVisible());
     }
 
     private BigDecimal firstDecimal(String value) {

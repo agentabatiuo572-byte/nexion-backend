@@ -1,6 +1,9 @@
 package ffdd.opsconsole.device.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.JsonNode;
 import ffdd.opsconsole.device.domain.DevicePurchaseGateView;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.util.List;
 
@@ -50,8 +53,9 @@ public record DeviceSkuUpsertRequest(
         String operator,
         String inventoryMode,
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, Boolean clearMonthlyTarget, String seriesCode,
-        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-        com.fasterxml.jackson.databind.JsonNode taglineTranslations) {
+        @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode taglineTranslations,
+        @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode displaySoldBase,
+        @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode liveActivityVisible) {
     public DeviceSkuUpsertRequest(
         String skuId,
         String name,
@@ -98,13 +102,32 @@ public record DeviceSkuUpsertRequest(
         String operator,
         String inventoryMode,
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, Boolean clearMonthlyTarget) {
-        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, reason, operator, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl, computePoints, allowedPoolCodes, monthlyTargetUsdt, monthlyTargetBandPct, clearMonthlyTarget, null, null);
+        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, reason, operator, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl, computePoints, allowedPoolCodes, monthlyTargetUsdt, monthlyTargetBandPct, clearMonthlyTarget, null, null, null, null);
     }
 
     @com.fasterxml.jackson.annotation.JsonAnySetter
     public void rejectRetiredScope(String key,Object value) {
         if(java.util.Set.of("allowedTaskClasses","allowedTaskTypeIds").contains(key))
             throw new ffdd.opsconsole.shared.exception.BizException(422,"TASK_POOL_FORMAT_RETIRED");
+    }
+
+    public void validateStoreDisplayControls() {
+        // A missing property is Java null. Explicit JSON null is a NullNode.
+        if (displaySoldBase != null && (!displaySoldBase.isIntegralNumber() || !displaySoldBase.canConvertToInt()
+                || displaySoldBase.intValue() < 0 || displaySoldBase.intValue() > 9_999_999)) {
+            throw new BizException(422, "SKU_DISPLAY_SOLD_BASE_INVALID");
+        }
+        if (liveActivityVisible != null && !liveActivityVisible.isBoolean()) {
+            throw new BizException(422, "SKU_LIVE_ACTIVITY_VISIBLE_INVALID");
+        }
+    }
+
+    public Integer proposedDisplaySoldBase() {
+        return displaySoldBase == null ? null : displaySoldBase.intValue();
+    }
+
+    public Boolean proposedLiveActivityVisible() {
+        return liveActivityVisible == null ? null : liveActivityVisible.booleanValue();
     }
 
     public DeviceSkuUpsertRequest withMonthlyTarget(BigDecimal target, BigDecimal band, String series) {
@@ -159,6 +182,6 @@ public record DeviceSkuUpsertRequest(
                 allowedPoolCodes,
                 target,
                 band,
-                clearMonthlyTarget, series, taglineTranslations);
+                clearMonthlyTarget, series, taglineTranslations, displaySoldBase, liveActivityVisible);
     }
 }

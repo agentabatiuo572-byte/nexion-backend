@@ -4,6 +4,7 @@ import ffdd.opsconsole.commerce.mapper.AppStorefrontActivityMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.canonical.StorefrontDisplaySales;
 import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.nio.charset.StandardCharsets;
@@ -136,7 +137,8 @@ public class AppStorefrontActivityService {
             source = "nx_product/nx_order/nx_order_item";
             sourceEnvironment = "PRODUCTION";
         }
-        if (product.soldCount() < 0 || cumulativeSales == null || cumulativeSales < 0
+        Long sold = StorefrontDisplaySales.total(product.soldCount(), product.displaySoldBase());
+        if (sold == null || cumulativeSales == null || cumulativeSales < 0
                 || windowSales == null || windowSales < 0) {
             return ApiResult.fail(503, "STOREFRONT_SOCIAL_PROOF_UNAVAILABLE");
         }
@@ -149,17 +151,17 @@ public class AppStorefrontActivityService {
         response.put("cumulativeSales", cumulativeSales);
         response.put("windowDays", windowDays);
         response.put("windowSales", windowSales);
-        response.put("liveActivity", liveActivity(product.productNo(), product.soldCount(), now.toEpochMilli()));
+        response.put("liveActivity", liveActivity(product.productNo(), sold, now.toEpochMilli()));
         return ApiResult.ok(response);
     }
 
-    private static Map<String, Number> liveActivity(String productNo, int sold, long nowMillis) {
+    private static Map<String, Number> liveActivity(String productNo, long sold, long nowMillis) {
         double daily = 1.2 * Math.sqrt(sold);
         double saleProbability = daily / 1_440;
         long minute = Math.floorDiv(nowMillis, 60_000);
         String saleKey = productNo + ":sale:";
-        int sales24h = 0;
-        int sales30m = 0;
+        long sales24h = 0;
+        long sales30m = 0;
         for (long m = minute - 1_439; m <= minute; m++) {
             if (noise(saleKey + m) < saleProbability) {
                 sales24h++;

@@ -90,7 +90,12 @@ public class AppProductCatalogService {
             List<Map<String, Object>> products = new ArrayList<>();
             LocalDateTime revision = null;
             for (AppTradeinMapper.CatalogTargetProduct target : targets) {
-                var item=product(target, releases.get(target.productNo()), taglineTranslations.get(target.productNo()), locale);
+                Long sold = StorefrontDisplaySales.total(target.sold(), target.displaySoldBase());
+                if (target.liveActivityVisible() == null) {
+                    return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
+                }
+                var item=product(target, sold, releases.get(target.productNo()), taglineTranslations.get(target.productNo()), locale);
+                item.put("liveActivityVisible", target.liveActivityVisible());
                 item.put("taskLevels",taskLevels.get(target.productNo()));
                 products.add(item);
                 if (target.updatedAt() != null && (revision == null || target.updatedAt().isAfter(revision))) {
@@ -187,11 +192,12 @@ public class AppProductCatalogService {
                 target.phoneDailyEarn(), target.phoneDailyEarnNex(), target.featuresJson(),
                 target.aiImageGenPerMin(), target.aiLlmTokensPerSec(), target.aiVideoMinPerHour(), target.aiFineTuneMins(), target.aiUnlocks(),
                 target.purchaseGateJson(), null, null, target.inventoryMode(), null, null, target.computePoints(),target.monthlyTargetUsdt(),target.monthlyTargetBandPct()),
-                productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()), taglineTranslationsJson, locale);
+                target.sold(), productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()), taglineTranslationsJson, locale);
     }
 
     private Map<String, Object> product(
             AppTradeinMapper.CatalogTargetProduct target,
+            Number sold,
             StorefrontProductReleasePolicy.Decision release,
             String taglineTranslationsJson,
             String locale) {
@@ -212,8 +218,8 @@ public class AppProductCatalogService {
                 || target.dailyNex().signum() < 0
                 || target.computePoints() == null
                 || target.computePoints() < 0
-                || target.sold() == null
-                || target.sold() < 0) {
+                || sold == null
+                || sold.longValue() < 0) {
             throw new IllegalArgumentException("invalid purchasable product catalog row");
         }
         Map<String, Object> item = new LinkedHashMap<>();
@@ -264,7 +270,7 @@ public class AppProductCatalogService {
         item.put("shareYieldMax", shareYieldAvailable ? shareYield.maxPct() : null);
         item.put("price", target.priceUsdt());
         item.put("computePoints", target.computePoints());
-        item.put("sold", target.sold());
+        item.put("sold", sold);
         item.put("imageUrl", approvedProductImageUrl(target));
         item.put("videoUrl", approvedProductVideoUrl(target));
         item.put("productType", productType);

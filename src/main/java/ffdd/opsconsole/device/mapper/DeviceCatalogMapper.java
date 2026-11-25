@@ -120,7 +120,9 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """ + SERIES_LOCKED + """
              AS seriesLocked,
             """ + HELD + """
-             AS purchaseQuotaHeld
+             AS purchaseQuotaHeld,
+            p.display_sold_base AS displaySoldBase,
+            p.live_activity_visible AS liveActivityVisible
             """;
 
     String TASK_COLUMNS = """
@@ -1016,7 +1018,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             INSERT INTO nx_product (
               product_no,name,product_type,tier,series_code,status,price_usdt,compute_points,hashrate,estimated_daily_usdt,daily_nex,monthly_target_usdt,monthly_target_band_pct,stock,inventory_mode,trial_eligible,
               badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
-              share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,
+              share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,display_sold_base,live_activity_visible,
               created_at,updated_at,is_deleted
             ) VALUES (
               #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},#{sku.seriesCode},
@@ -1025,6 +1027,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,0,
               COALESCE(#{sku.generation},1),#{sku.gpu},#{sku.canonicalVramGb},#{sku.shareYieldMin},#{sku.shareYieldMax},
               #{sku.supersededBy},CAST(#{sku.unlockPhaseId} AS CHAR),0,
+              COALESCE(#{sku.displaySoldBase},0),COALESCE(#{sku.liveActivityVisible},1),
               #{sku.createdAt},#{sku.updatedAt},0
             )
             """)
@@ -1062,8 +1065,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                       THEN CAST(purchase_gate_json AS JSON) <=> CAST(VALUES(purchase_gate_json) AS JSON)
                     ELSE purchase_gate_json <=> VALUES(purchase_gate_json)
                   END THEN purchase_gate_generation ELSE purchase_gate_generation+1 END,
-              purchase_gate_json=VALUES(purchase_gate_json),image_asset_id=VALUES(image_asset_id),image_object_key=VALUES(image_object_key),
-              image_preview_url=VALUES(image_preview_url),tag=VALUES(tag),status=VALUES(status),updated_at=VALUES(updated_at),is_deleted=0
+              purchase_gate_json=VALUES(purchase_gate_json),
+              image_preview_url=CASE
+                WHEN (#{sku.displaySoldBase} IS NOT NULL OR #{sku.liveActivityVisible} IS NOT NULL)
+                     AND (image_asset_id <=> VALUES(image_asset_id)) AND (image_object_key <=> VALUES(image_object_key))
+                  THEN image_preview_url
+                ELSE VALUES(image_preview_url) END,
+              image_asset_id=VALUES(image_asset_id),image_object_key=VALUES(image_object_key),
+              tag=VALUES(tag),status=VALUES(status),updated_at=VALUES(updated_at),is_deleted=0
             """)
     int upsertSkuMetadata(@Param("sku") SkuWrite sku);
 
@@ -1078,6 +1087,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    gpu_model=#{sku.gpu},vram_total_gb=#{sku.canonicalVramGb},share_yield_min=#{sku.shareYieldMin},
                    share_yield_max=#{sku.shareYieldMax},superseded_by_product_no=#{sku.supersededBy},
                    unlock_phase=CAST(#{sku.unlockPhaseId} AS CHAR),
+                   display_sold_base=COALESCE(#{sku.displaySoldBase},p.display_sold_base),
+                   live_activity_visible=COALESCE(#{sku.liveActivityVisible},p.live_activity_visible),
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE product_no=#{sku.skuId} AND is_deleted=0 AND updated_at=#{expectedUpdatedAt}
                AND (p.series_code <=> #{sku.seriesCode} OR NOT """ + SERIES_LOCKED + """
@@ -1990,7 +2001,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean publishBlocked,
             String publishBlockReason,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode, boolean seriesLocked, long purchaseQuotaHeld) {
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode, boolean seriesLocked, long purchaseQuotaHeld,
+            int displaySoldBase, boolean liveActivityVisible) {
     public SkuRow(
             String skuId,
             String name,
@@ -2040,7 +2052,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String publishBlockReason,
             LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
-        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,false,0L);
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,false,0L,0,true);
     }
 
     /** Callers that do not set computePoints leave it unset. */
@@ -2151,7 +2163,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String inventoryMode,
             Boolean trialEligible,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode) {
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode,
+            Integer displaySoldBase, Boolean liveActivityVisible) {
     public SkuWrite(
             String skuId,
             String name,
@@ -2201,7 +2214,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean trialEligible,
             LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
-        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhaseId,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,canonicalHashrate,canonicalVramGb,canonicalStock,inventoryMode,trialEligible,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null);
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhaseId,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,canonicalHashrate,canonicalVramGb,canonicalStock,inventoryMode,trialEligible,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,null,null);
     }
 
     /** Callers that do not set computePoints leave it unset. */

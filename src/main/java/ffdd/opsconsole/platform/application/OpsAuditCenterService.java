@@ -600,15 +600,22 @@ public class OpsAuditCenterService {
                     after.remove(List.of("reason", "operator", "imagePreviewUrl"));
                     after.set("allowedPoolCodes",objectMapper.valueToTree(review.classes()));
                     after.put("skuId", review.skuId());
+                    int currentBase = review.before() == null ? 0 : review.before().displaySoldBase();
+                    boolean currentVisibility = review.before() == null || review.before().liveActivityVisible();
+                    after.put("displaySoldBase", Objects.requireNonNullElse(review.after().proposedDisplaySoldBase(), currentBase));
+                    after.put("liveActivityVisible", Objects.requireNonNullElse(review.after().proposedLiveActivityVisible(), currentVisibility));
                     com.fasterxml.jackson.databind.node.ObjectNode before = objectMapper.createObjectNode();
                     if (review.before() != null) {
                         com.fasterxml.jackson.databind.JsonNode current = objectMapper.valueToTree(review.before());
                         after.fieldNames().forEachRemaining(key -> before.set(key, current.path(key)));
                     }
+                    before.put("displaySoldBase", currentBase);
+                    before.put("liveActivityVisible", currentVisibility);
                     ticket.setSourceDomain("E1");
                     ticket.setOperationType(review.amplifies()?"fund":"param");
                     ticket.setAmplifies(review.amplifies()?1:0);
                     var metadata = stored.putObject("skuReview");
+                    metadata.put("storeDisplayControlsReviewed", true);
                     metadata.put("before", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(before));
                     metadata.put("after", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(after));
                 }
@@ -1640,7 +1647,7 @@ public class OpsAuditCenterService {
             stored.remove(RoleGrantsDiff.FIELD);
             stored.remove(V8PromotionSnapshot.FIELD);
             stored.remove(A4RegistryApproval.MAKER_FIELD);
-            stored.remove("skuReview");
+            var skuReview = stored.remove("skuReview");
             stored.remove(HostingCenterService.REVIEW_FIELD);
             stored.remove("ambassadorPolicyReview");
             var version=stored.remove("ruleStatusReviewVersion");
@@ -1651,6 +1658,13 @@ public class OpsAuditCenterService {
             }
             var courseRewardReview = stored.remove(CourseRewardReview.PARAM);
             AuditReplayCommand command = objectMapper.treeToValue(stored, AuditReplayCommand.class);
+            // Old SKU tickets kept unknown request parameters without presenting them for approval.
+            if (isSkuReviewCommand(command) && command.params() != null
+                    && (skuReview == null || !com.fasterxml.jackson.databind.node.BooleanNode.TRUE.equals(
+                            skuReview.path("storeDisplayControlsReviewed")))) {
+                command.params().remove("displaySoldBase");
+                command.params().remove("liveActivityVisible");
+            }
             if (OpsI18nLearningService.isCourseRewardAdjustment(command) && command.params() != null) {
                 command.params().remove(CourseRewardReview.PARAM);
                 if (courseRewardReview != null) {
