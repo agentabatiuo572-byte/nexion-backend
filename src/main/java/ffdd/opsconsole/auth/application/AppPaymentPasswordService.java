@@ -278,6 +278,8 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
             Supplier<Runnable> prepareAdmission, Supplier<ApiResult<T>> action) {
         requireKey(key);
         String digest=hash(String.valueOf(summary));
+        String requestedTrialProductNo = "trial-convert".equals(kind) && summary instanceof Map<?, ?> request
+                ? trialProductNo(request.get("productNo")) : null;
         boolean proofChange="change".equals(kind) && authorization==null;
         independent.executeWithoutResult(tx -> {
             String legacyScope=legacyScope(userId,kind);
@@ -296,7 +298,7 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
         return transaction.execute(tx -> {
             Map<String,Object> row=repo.command(userId,kind,key,false);
             if (!digest.equals(row.get("request_hash"))) throw new BizException(409,"PAYMENT_COMMAND_INPUT_CHANGED");
-            if (row.get("response_json")!=null) return (ApiResult<T>)decode(String.valueOf(row.get("response_json")),ApiResult.class);
+            if (row.get("response_json")!=null) return (ApiResult<T>) readCommandReceipt(userId, kind, key, row.get("response_json"));
             ApiResult<T> existing=existingSuccess.get();
             if (existing!=null && existing.getCode()==0) {
                 repo.finishCommand(userId,kind,key,"SUCCEEDED",encode(existing),clock.millis());
@@ -322,7 +324,7 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                     });
                 } catch (BizException rejection) {
                     if (prepareAdmission == null || rejection.getCode() >= 500) throw rejection;
-                    return finish(userId, kind, key, null,
+                    return finish(userId, kind, key, null, requestedTrialProductNo,
                             ApiResult.fail(rejection.getCode(), rejection.getMessage(), (T) rejection.errorData()));
                 }
                 if (verification.getCode() != 0) return (ApiResult<T>) (ApiResult<?>) verification;
@@ -333,7 +335,8 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                     if (PaymentPasswordMapper.number(credential, "credential_version") != authorization.credentialVersion()) {
                         ApiResult<T> conflict = (ApiResult<T>) (ApiResult<?>) ApiResult.fail(
                                 409, "PAYMENT_PASSWORD_VERSION_CONFLICT", stateOf(userId, credential));
-                        return prepareAdmission == null ? conflict : finish(userId, kind, key, authorization, conflict);
+                        return prepareAdmission == null ? conflict
+                                : finish(userId, kind, key, authorization, requestedTrialProductNo, conflict);
                     }
                 } else {
                     repo.credential(userId, true);
@@ -343,21 +346,73 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                     if (response.getCode()!=0) savepoint.setRollbackOnly();
                     return response;
                 });
-                return finish(userId, kind, key, authorization, result);
+                return finish(userId, kind, key, authorization, requestedTrialProductNo, result);
             } catch (BizException rejection) {
-                return finish(userId, kind, key, authorization,
+                return finish(userId, kind, key, authorization, requestedTrialProductNo,
                         ApiResult.fail(rejection.getCode(), rejection.getMessage(),
                                 prepareAdmission == null ? null : (T) rejection.errorData()));
             }
         });
     }
 
-    private <T> ApiResult<T> finish(long userId, String kind, String key, Authorization authorization, ApiResult<T> result) {
+    @SuppressWarnings("unchecked")
+    private <T> ApiResult<T> finish(long userId, String kind, String key, Authorization authorization,
+                                   String requestedTrialProductNo, ApiResult<T> result) {
         if (result.getCode() != 0 && authorization != null && authorization.attemptNo() != null) {
             repo.rejectBusiness(userId, authorization.attemptNo());
         }
+        if ("trial-convert".equals(kind)) {
+            result = (ApiResult<T>) trialBalanceReceipt(userId, key, result, requestedTrialProductNo);
+        }
         repo.finishCommand(userId, kind, key, result.getCode() == 0 ? "SUCCEEDED" : "REJECTED", encode(result), clock.millis());
         return result;
+    }
+
+    private ApiResult<?> readCommandReceipt(long userId, String kind, String key, Object receiptJson) {
+        ApiResult<?> receipt = decode(String.valueOf(receiptJson), ApiResult.class);
+        return "trial-convert".equals(kind) ? trialBalanceReceipt(userId, key, receipt, null) : receipt;
+    }
+
+    @SuppressWarnings("unchecked")
+    private ApiResult<?> trialBalanceReceipt(long userId, String key, ApiResult<?> receipt, String requestedProductNo) {
+        Object payload = receipt.getData();
+        if (payload != null && !(payload instanceof Map<?, ?>) && !(payload instanceof State)) return receipt;
+        Map<String, Object> data = payload instanceof Map<?, ?> fields
+                ? new LinkedHashMap<>((Map<String, Object>) fields) : new LinkedHashMap<>();
+        String productField = trialBalanceProductField(receipt);
+        if (data.get("claimNo") != null && trialProductNo(data.get(productField)) != null) return receipt;
+
+        var snapshot = repo.trialBalanceSubmission(userId, key);
+        if (snapshot != null) data.putIfAbsent("claimNo", snapshot.claimNo());
+        if (trialProductNo(data.get(productField)) == null) {
+            String productNo = snapshot == null ? null : trialProductNo(snapshot.productNo());
+            if (productNo == null) productNo = requestedProductNo;
+            if (productNo != null) data.put(productField, productNo);
+        }
+        if (data.isEmpty()) return receipt;
+
+        if (payload instanceof State state) data.putAll(json.convertValue(state, Map.class));
+        return new ApiResult<>(receipt.getCode(), receipt.getMessage(), data);
+    }
+
+    private static String trialBalanceProductField(ApiResult<?> receipt) {
+        // These responses already carry the blocking purchase, including its own productNo.
+        return "TRIAL_BALANCE_SUBMISSION_IN_PROGRESS".equals(receipt.getMessage())
+                || "TRIAL_EXTERNAL_PAYMENT_IN_PROGRESS".equals(receipt.getMessage())
+                ? "requestedProductNo" : "productNo";
+    }
+
+    private static String trialProductNo(Object value) {
+        return value instanceof String productNo && productNo.matches("[A-Za-z0-9._-]{1,64}") ? productNo : null;
+    }
+
+    private void putTrialBalanceIdentity(Map<String, Object> result, String kind, ApiResult<?> receipt) {
+        if (!"trial-convert".equals(kind)) return;
+        Map<?, ?> data = receipt.getData() instanceof Map<?, ?> fields ? fields : Map.of();
+        result.put("claimNo", data.get("claimNo"));
+        result.put("paymentMethod", "WALLET");
+        String productNo = trialProductNo(data.get(trialBalanceProductField(receipt)));
+        if (productNo != null) result.put("productNo", productNo);
     }
 
     private ApiResult<State> verify(long userId,String kind,String key,Authorization authorization) {
@@ -427,12 +482,13 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                     if (legacy!=null) {
                         String legacyStatus=String.valueOf(legacy.get("status"));
                         if ("SUCCEEDED".equals(legacyStatus) && legacy.get("response_json")!=null) {
-                            ApiResult<?> receipt=decode(String.valueOf(legacy.get("response_json")),ApiResult.class);
+                            ApiResult<?> receipt = readCommandReceipt(userId, kind, key, legacy.get("response_json"));
                             Map<String,Object> result=new LinkedHashMap<>();
                             result.put("kind",kind); result.put("commandKey",key);
                             result.put("status",receipt.getCode()==0 ? "SUCCEEDED" : "REJECTED");
                             result.put("canResumeSameKey",false); result.put("receipt",receipt.getData());
                             result.put("message",receipt.getMessage()); result.put("code",receipt.getCode());
+                            putTrialBalanceIdentity(result, kind, receipt);
                             return result;
                         }
                         if (Set.of("UNKNOWN","PROCESSING").contains(legacyStatus))
@@ -450,14 +506,11 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                     }
                     return Map.of("kind",kind,"commandKey",key,"status","NOT_SEEN","canResumeSameKey",true);
                 }
-                ApiResult<?> response=decode(String.valueOf(row.get("response_json")),ApiResult.class);
+                ApiResult<?> response = readCommandReceipt(userId, kind, key, row.get("response_json"));
                 Map<String,Object> result=new LinkedHashMap<>();
                 result.put("kind",kind); result.put("commandKey",key); result.put("status",row.get("status"));
                 result.put("canResumeSameKey",false); result.put("code",response.getCode());
-                if ("trial-convert".equals(kind)) {
-                    result.put("claimNo", repo.trialBalanceClaim(userId, key));
-                    result.put("paymentMethod", "WALLET");
-                }
+                putTrialBalanceIdentity(result, kind, response);
                 result.put("message",response.getMessage()); result.put("receipt",response.getData());
                 if (response.getData() instanceof Map<?,?> data && data.containsKey("state")) result.put("state",data.get("state"));
                 return result;

@@ -486,13 +486,15 @@ public class AppTrialLifecycleService {
     private Runnable prepareBalanceAdmission(Long userId, String productNo, BigDecimal amount, String version, String key) {
         requireUser(userId);
         TrialRow row = mapper.lockTrial(userId);
-        if (row == null || !active(row.status())) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
         String admittedClaim = purchaseOptions.balanceClaim(userId, key);
-        if (admittedClaim != null && !row.claimNo().equals(admittedClaim)) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        if (row == null || !active(row.status()) || (admittedClaim != null && !row.claimNo().equals(admittedClaim))) {
+            String claimNo = admittedClaim == null && row != null ? row.claimNo() : admittedClaim;
+            throw new TrialPurchaseConflict("TRIAL_NOT_CONVERTIBLE", linked("claimNo", claimNo));
+        }
         if (admittedClaim != null) return () -> {};
         requireNoOriginalPurchase(row, false);
         if (!withinConversionDeadline(conversionDeadline(row), businessNow())) {
-            throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+            throw new TrialPurchaseConflict("TRIAL_NOT_CONVERTIBLE", linked("claimNo", row.claimNo()));
         }
         return () -> {
             var device = purchaseOptions.device(productNo);

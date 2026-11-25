@@ -43,6 +43,16 @@ public interface PaymentPasswordMapper {
     @Select("SELECT claim_no FROM nx_trial_balance_submission WHERE user_id=#{userId} AND command_key=#{key}")
     String trialBalanceClaim(@Param("userId") long userId, @Param("key") String key);
 
+    @Select("""
+            SELECT claim_no AS claimNo,
+                   CASE WHEN JSON_TYPE(JSON_EXTRACT(snapshot_json,'$.productNo')) = 'STRING'
+                        THEN JSON_UNQUOTE(JSON_EXTRACT(snapshot_json,'$.productNo')) END AS productNo
+              FROM nx_trial_balance_submission WHERE user_id=#{userId} AND command_key=#{key}
+            """)
+    TrialBalanceSubmission trialBalanceSubmission(@Param("userId") long userId, @Param("key") String key);
+
+    record TrialBalanceSubmission(String claimNo, String productNo) {}
+
     @Select("SELECT claim_no FROM nx_trial_claim WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1")
     java.util.Optional<String> currentTrialClaim(@Param("userId") long userId);
 
