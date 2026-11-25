@@ -110,6 +110,7 @@ public class AppTrialLifecycleService {
     /** FEAT-TRIAL05: converting inside the original term settles the full claimed term plus a fixed discount. */
     public static final String FULL_TERM_POLICY = "FULL_TERM_ON_CONVERSION";
     public static final String ACCRUED_POLICY = "ACCRUED_ON_CONVERSION";
+    public static final String ORDER_TRIAL_DEVICE_REQUIRES_CONVERSION = "ORDER_TRIAL_DEVICE_REQUIRES_CONVERSION";
     private static final String EARLY_DISCOUNT_KEY = "earlyPurchaseDiscountUSD";
 
     @lombok.NonNull
@@ -395,15 +396,17 @@ public class AppTrialLifecycleService {
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
-    public ApiResult<Map<String, Object>> cancel(Long userId, String reason, String idempotencyKey) {
+    public ApiResult<Map<String, Object>> cancel(Long userId, String reason, String claimNo, String idempotencyKey) {
         String normalized = reason == null ? "" : reason.trim().toLowerCase(Locale.ROOT);
-        var result = once("TRIAL_CANCEL", userId, idempotencyKey, normalized,
+        // Preserve the request hash for cancellation keys created before claim binding.
+        Object request = claimNo == null ? normalized : linked("reason", normalized, "claimNo", claimNo);
+        var result = once("TRIAL_CANCEL", userId, idempotencyKey, request,
                 () -> {
                     requireUser(userId);
-                    return List.of("unbind", "explicit").contains(normalized) ? cancelOnce(userId, normalized, false)
+                    return List.of("unbind", "explicit").contains(normalized) ? cancelOnce(userId, normalized, claimNo, false)
                             : ApiResult.fail(422, "TRIAL_CANCEL_REASON_INVALID");
                 });
-        return "explicit".equals(normalized) && legacyOpsCancellation(userId, idempotencyKey, result)
+        return claimNo == null && "explicit".equals(normalized) && legacyOpsCancellation(userId, idempotencyKey, result)
                 ? ApiResult.fail(409, "IDEMPOTENCY_KEY_CONFLICT") : result;
     }
 
@@ -416,11 +419,14 @@ public class AppTrialLifecycleService {
     ApiResult<Map<String, Object>> cancelFromOps(Long userId, String idempotencyKey) {
         requireUser(userId);
         return once("TRIAL_OPS_CANCEL", userId, idempotencyKey, "explicit",
-                () -> cancelOnce(userId, "explicit", true));
+                () -> cancelOnce(userId, "explicit", null, true));
     }
 
-    private ApiResult<Map<String, Object>> cancelOnce(Long userId, String reason, boolean opsOverride) {
+    private ApiResult<Map<String, Object>> cancelOnce(Long userId, String reason, String claimNo, boolean opsOverride) {
         TrialRow row = mapper.lockTrial(userId);
+        if (claimNo != null && (row == null || !claimNo.equals(row.claimNo()))) {
+            return ApiResult.fail(409, "TRIAL_CLAIM_MISMATCH");
+        }
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CANCELLABLE");
         if (!opsOverride) requireNoOriginalPurchase(row, false);
         return cancelClaim(userId, row, reason);
@@ -678,6 +684,17 @@ public class AppTrialLifecycleService {
             throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
         }
         return deadline.atZone(BUSINESS_ZONE).toInstant();
+    }
+
+    /** The ordinary purchase transaction holds the buyer lock used by trial start and close. */
+    public boolean requiresOrdinaryOrderConversion(long userId, String productNo) {
+        TrialRow row = mapper.trial(userId);
+        if (row == null || !active(row.status()) || !withinConversionDeadline(conversionDeadline(row), businessNow())) {
+            return false;
+        }
+        String pinned = pinnedTrialProductCode(row);
+        String originalProductNo = pinned == null ? trialProductCode(configuredPolicyMap()) : pinned;
+        return canonicalTrialProductId(productNo).equalsIgnoreCase(originalProductNo);
     }
 
     public void requireExternalPaymentProduct(Long owner, String productNo) {
@@ -1283,11 +1300,14 @@ public class AppTrialLifecycleService {
     }
 
     private String trialProductCode(Map<String, String> policy, TrialRow row) {
-        if (row != null && !restartable(normalize(row.status()))) {
-            String pinned = canonicalTrialProductId(snapshotValue(row.quotaSnapshot(), "productCode"));
-            if (pinned.matches("[A-Za-z0-9._-]{2,64}")) return pinned;
-        }
-        return trialProductCode(policy);
+        String pinned = pinnedTrialProductCode(row);
+        return pinned == null ? trialProductCode(policy) : pinned;
+    }
+
+    private String pinnedTrialProductCode(TrialRow row) {
+        if (row == null || restartable(row.status())) return null;
+        String pinned = canonicalTrialProductId(snapshotValue(row.quotaSnapshot(), "productCode"));
+        return pinned.matches("[A-Za-z0-9._-]{2,64}") ? pinned : null;
     }
 
     private String snapshotValue(String snapshot, String key) {

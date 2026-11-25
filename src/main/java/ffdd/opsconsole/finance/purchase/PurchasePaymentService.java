@@ -238,7 +238,10 @@ public class PurchasePaymentService {
             Instant pricingAt=now();
             var target=new ReplacementTarget();
             var pricing=pricing(owner,kind,payload,pricingAt,false,false,true,target,false,null,Map.of());
-            if("ORDER_PAY".equals(kind))payload.put("orderNo",pricing.get("orderNo"));
+            if ("ORDER_PAY".equals(kind)) {
+                payload.put("orderNo", pricing.get("orderNo"));
+                requireOrdinaryOrderPayment(owner, payload);
+            }
             if ("TRIAL_CONVERT".equals(kind)) trials.requireExternalPaymentProduct(owner, text(payload.get("productNo")));
             ready(method);
             BigDecimal subtotal=money(pricing.get("subtotalUsdt"));
@@ -561,10 +564,18 @@ public class PurchasePaymentService {
 
     private record CreatePreflight(Map<String,Object> quote, Map<String,Object> replay, TrialPurchaseConflict rejection) { }
 
+    private void requireOrdinaryOrderPayment(long owner, Map<String, Object> payload) {
+        if (orders.requiresTrialConversionForPendingOrder(owner, text(payload.get("orderNo")))) {
+            throw new BizException(409, AppTrialLifecycleService.ORDER_TRIAL_DEVICE_REQUIRES_CONVERSION);
+        }
+    }
+
     private CreatePreflight createPreflight(long owner, String key, String quoteId) {
         var originalQuote=db.one("SELECT * FROM nx_purchase_payment_quote WHERE quote_id=? AND user_id=?",quoteId,owner);
         if(originalQuote==null)throw new BizException(404,"PURCHASE_PAYMENT_QUOTE_NOT_FOUND");
-        boolean trial = "TRIAL_CONVERT".equals(originalQuote.get("kind"));
+        String kind = text(originalQuote.get("kind"));
+        boolean trial = "TRIAL_CONVERT".equals(kind);
+        boolean order = "ORDER_PAY".equals(kind);
         if (trial) user(owner, true);
         var existing=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,originalQuote.get("kind"),key);
         if(existing!=null){
@@ -575,12 +586,15 @@ public class PurchasePaymentService {
             var prior = externalRejection(owner, key, quoteId);
             if (prior != null) return new CreatePreflight(originalQuote, null, prior);
         }
+        if (order) user(owner, true);
         // New replacement quotes are retired. The owner's original stored quote
         // can still proceed through the existing one-use, expiry and pricing checks.
-        requireNoActiveIntent(owner, text(originalQuote.get("kind")), parse(originalQuote.get("payload_json")),
+        var payload = parse(originalQuote.get("payload_json"));
+        requireNoActiveIntent(owner, kind, payload,
                 parse(originalQuote.get("quote_json")));
         requireUnusedQuote(quoteId);
-        requireDirectMethod(text(originalQuote.get("kind")), text(originalQuote.get("payment_method")));
+        requireDirectMethod(kind, text(originalQuote.get("payment_method")));
+        if (order) requireOrdinaryOrderPayment(owner, payload);
         return new CreatePreflight(originalQuote, null, trial ? checkTrialConfirmation(owner, key, originalQuote) : null);
     }
 
@@ -697,6 +711,7 @@ public class PurchasePaymentService {
             }
             requireNoActiveIntent(owner, kind, payload, frozenQuote);
             requireUnusedQuote(quoteId);
+            if ("ORDER_PAY".equals(kind)) requireOrdinaryOrderPayment(owner, payload);
             if ("TRIAL_CONVERT".equals(kind)) {
                 var rejection = checkTrialConfirmation(owner, key, quote);
                 if (rejection != null) return values("rejection", rejection);

@@ -35,6 +35,7 @@ public class PromotionOrderService {
     public record CreationPlan(String quoteId,Long buyerId,List<Long> participantIds,List<String> productNos,
                                Instant endsAt,Map<String,Object> snapshot) {
         public BigDecimal price(String field){return amount(map(snapshot.get("public")).get(field));}
+        public boolean hasActivity() { return !text(map(snapshot.get("public")).get("activityId")).isEmpty(); }
     }
 
     public record CreateQuote(String id, Instant expiresAt, Map<String,Object> snapshot,

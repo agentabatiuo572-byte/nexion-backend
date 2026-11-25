@@ -58,8 +58,9 @@ public class AppTrialLifecycleController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
+        CancelRequest body = request == null ? new CancelRequest(null, null) : request;
         return userId == null ? forbidden()
-                : service.withProductImage(service.cancel(userId, request == null ? null : request.reason(), idempotencyKey));
+                : service.withProductImage(service.cancel(userId, body.reason(), body.claimNo(), idempotencyKey));
     }
 
     @PostMapping("/extension")
@@ -112,7 +113,7 @@ public class AppTrialLifecycleController {
     public record StartRequest(Long paymentMethodId, String deviceName) {
     }
 
-    public record CancelRequest(String reason) {
+    public record CancelRequest(String reason, String claimNo) {
     }
 
     public record ConvertRequest(String productNo, BigDecimal expectedAmountUsdt, String quoteVersion,

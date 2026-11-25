@@ -11,6 +11,7 @@ import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
+import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
 import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -50,6 +51,8 @@ import org.springframework.util.StringUtils;
 public class AppOrderCommandService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
+    @Autowired
+    private AppTrialLifecycleService trialLifecycle;
 
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
@@ -368,6 +371,9 @@ public class AppOrderCommandService {
         if (!external && mapper.countExpiredPayableOrder(orderNo, userId, pendingOrderTtlMinutes) > 0) {
             return ApiResult.fail(409, "ORDER_PAYMENT_EXPIRED");
         }
+        if (!external && order.quantity() == 1 && requiresTrialConversionForPendingOrder(userId, orderNo)) {
+            return ApiResult.fail(409, AppTrialLifecycleService.ORDER_TRIAL_DEVICE_REQUIRES_CONVERSION);
+        }
         if (promotions != null) promotions.beforePay(userId, orderNo);
         // A pending order preserves its price, never an authority
         // to bypass the current E1 sale state or a platform-wide maintenance stop.
@@ -545,6 +551,13 @@ public class AppOrderCommandService {
                 .detail(auditDetail).build());
         if (!fullyDiscounted && !external) paymentAttribution.record(prepared);
         return developmentPaymentReceipt(order, paymentNo, activationStatus, balanceAfter, paymentRail, false);
+    }
+
+    /** Called under the buyer lock for new wallet or external payment admission only. */
+    public boolean requiresTrialConversionForPendingOrder(long userId, String orderNo) {
+        if (trialLifecycle == null) return false;
+        String productNo = mapper.findPendingOrdinarySingleProduct(userId, orderNo);
+        return productNo != null && trialLifecycle.requiresOrdinaryOrderConversion(userId, productNo);
     }
 
     public void checkExternalPaymentQuota(Long userId, String orderNo, LocalDateTime occurredAtUtc) {

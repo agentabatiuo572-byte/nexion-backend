@@ -410,6 +410,27 @@ public interface AppOrderCommandMapper extends BaseMapper<Object>, HardwareQuota
             """)
     DevelopmentPayOrder lockDevelopmentPayOrder(@Param("orderNo") String orderNo);
 
+    /** A base price quote may have a receipt even when no activity was matched. */
+    @Select("""
+            SELECT COALESCE(NULLIF((SELECT i.product_no FROM nx_order_item i
+                       WHERE i.order_no=o.order_no AND i.product_id=o.product_id AND i.is_deleted=0
+                       ORDER BY i.sort_order,i.id LIMIT 1), ''), p.product_no)
+              FROM nx_order o
+              LEFT JOIN nx_product p ON p.id=o.product_id
+             WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.is_deleted=0
+               AND COALESCE(NULLIF(UPPER(TRIM(o.order_type)),''),'SINGLE')='SINGLE' AND o.quantity=1
+               AND o.payment_status='PENDING' AND o.order_status='PENDING_PAYMENT'
+               AND o.activation_status='WAITING_PAYMENT'
+               AND NOT EXISTS (SELECT 1 FROM nx_growth_voucher_grant v
+                                WHERE v.user_id=o.user_id AND v.used_order_no=o.order_no AND v.is_deleted=0)
+               AND NOT EXISTS (SELECT 1 FROM nx_promotion_order_receipt r
+                                JOIN nx_promotion_quote q ON q.quote_id=r.quote_id
+                                WHERE r.order_no=o.order_no AND r.buyer_id=o.user_id
+                                  AND JSON_TYPE(JSON_EXTRACT(q.quote_json,'$.public.activityId'))='STRING'
+                                  AND JSON_UNQUOTE(JSON_EXTRACT(q.quote_json,'$.public.activityId'))<>'')
+            """)
+    String findPendingOrdinarySingleProduct(@Param("userId") long userId, @Param("orderNo") String orderNo);
+
     @Update("""
             UPDATE nx_order SET user_hidden_at=COALESCE(user_hidden_at,NOW(6))
              WHERE order_no=#{orderNo} AND user_id=#{userId} AND is_deleted=0

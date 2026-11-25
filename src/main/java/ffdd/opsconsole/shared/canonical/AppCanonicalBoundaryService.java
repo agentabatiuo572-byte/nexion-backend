@@ -7,6 +7,7 @@ import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher.UserAttribution;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher.VoucherRedemption;
+import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
 import ffdd.opsconsole.growth.facade.GrowthRhythmFacade;
 import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
@@ -69,6 +70,8 @@ public class AppCanonicalBoundaryService {
     private DeviceSlotReplacementMapper slotReplacements;
     @Autowired
     private DeviceSlotReplacementCompletion slotReplacementCompletion;
+    @Autowired
+    private AppTrialLifecycleService trialLifecycle;
 
     private static final ZoneId SERVER_ZONE = StorageTime.ZONE;
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -1679,6 +1682,11 @@ public class AppCanonicalBoundaryService {
         CanonicalStateMapper.ProductStock product = mapper.lockProduct(validProductId ? productId : null, normalizedProductNo);
         if (product == null || product.priceUsdt() == null || product.priceUsdt().signum() <= 0) {
             return ApiResult.fail(409, "PRODUCT_NOT_AVAILABLE");
+        }
+        if (trialLifecycle != null && qty == 1 && !StringUtils.hasText(voucherId)
+                && (promotionPlan == null || !promotionPlan.hasActivity())
+                && trialLifecycle.requiresOrdinaryOrderConversion(userId, product.productNo())) {
+            return ApiResult.fail(409, AppTrialLifecycleService.ORDER_TRIAL_DEVICE_REQUIRES_CONVERSION);
         }
         String configurationBlock = storefrontConfigurationBlock(
                 product.productType(), product.inventoryMode(), product.gpuModel(), product.vramTotalGb(),
