@@ -9,6 +9,9 @@ import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.application.OpsI18nLearningService.CourseRewardReview;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
@@ -112,6 +115,7 @@ public class OpsAuditCenterService {
     private static final String A2_OPERATION_EXECUTED = "A2_OPERATION_EXECUTED";
     private static final String F5_COMMISSION_SUSPENSION = "f5_commission_suspension";
     private static final String E4_ORDER_REFUND = "e4_order_refund";
+    private static final String WITHDRAWAL_CONFIG_CHANGES = "withdrawalConfigChanges";
     private static final String EXECUTED_DECISION_REASON = "即时执行·已生效(单人确认)";
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_APPROVED, STATUS_REJECTED, "withdrawn", "expired");
     private static final Set<String> A1_ACCOUNT_OBJECT_OPS = Set.of(
@@ -522,6 +526,9 @@ public class OpsAuditCenterService {
         if (command != null) {
             try {
                 com.fasterxml.jackson.databind.node.ObjectNode stored = objectMapper.valueToTree(command);
+                if (descriptor != null && descriptor.withdrawalConfigChanges() != null) {
+                    stored.set(WITHDRAWAL_CONFIG_CHANGES, descriptor.withdrawalConfigChanges());
+                }
                 if (isV8Promotion(command)) {
                     var snapshot = teams.snapshotV8Promotion(Long.parseLong(target.id()));
                     ticket.setObjectText("用户 " + target.id());
@@ -1174,7 +1181,8 @@ public class OpsAuditCenterService {
                 metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate(), command),
                 decisionQualification(ticket, command, makerId, actorId, true),
                 decisionQualification(ticket, command, makerId, actorId, false), disclosureReview(ticket, command),
-                commissionReverseEvidence(command), v8PromotionSnapshot(ticket, command)));
+                commissionReverseEvidence(command), v8PromotionSnapshot(ticket, command),
+                withdrawalConfigChanges(ticket, command)));
     }
 
     private ApiResult<Void> decisionAccess(AuditOperationTicketEntity ticket, Long makerId, Long actorId) {
@@ -1644,6 +1652,7 @@ public class OpsAuditCenterService {
             stored.remove("avatarMakerAdminId");
             stored.remove(RoleGrantsDiff.FIELD);
             stored.remove(V8PromotionSnapshot.FIELD);
+            stored.remove(WITHDRAWAL_CONFIG_CHANGES);
             stored.remove(A4RegistryApproval.MAKER_FIELD);
             var skuReview = stored.remove("skuReview");
             stored.remove(HostingCenterService.REVIEW_FIELD);
@@ -1929,7 +1938,19 @@ public class OpsAuditCenterService {
                 approve.getCode() == 0 ? null : approve.getCode(), approve.getCode() == 0 ? null : approve.getMessage(),
                 reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage(),
                 objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command), disclosureReview(row, command),
-                commissionReverseEvidence(command), v8PromotionSnapshot(row, command));
+                commissionReverseEvidence(command), v8PromotionSnapshot(row, command), withdrawalConfigChanges(row, command));
+    }
+
+    private JsonNode withdrawalConfigChanges(AuditOperationTicketEntity row, AuditReplayCommand command) {
+        if (!WithdrawalConfigApproval.supports(command) || "D6".equals(WithdrawalConfigApproval.source(command))) return null;
+        try {
+            var stored = objectMapper.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                    .readTree(row.getCommandJson());
+            var changes = stored.path(WITHDRAWAL_CONFIG_CHANGES);
+            return changes.isArray() && !changes.isEmpty() ? changes : null;
+        } catch (JsonProcessingException invalidSnapshot) {
+            return null;
+        }
     }
 
     private V8PromotionSnapshot v8PromotionSnapshot(AuditOperationTicketEntity row, AuditReplayCommand command) {

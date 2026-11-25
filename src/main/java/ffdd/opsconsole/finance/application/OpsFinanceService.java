@@ -58,6 +58,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -420,23 +421,41 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         Map<String, String> before = new LinkedHashMap<>();
         Map<String, String> after = new LinkedHashMap<>();
+        List<Map<String, Object>> changes = new ArrayList<>();
         for (String field : changedFields.stream().sorted().toList()) {
-            switch (field) {
-                case "networkConfirmFeeUsd" -> {
-                    before.put(field, d5NetworkSummary(d5NetworkFees(change.before())));
-                    after.put(field, d5NetworkSummary(request.getNetworkConfirmFeeUsd()));
-                }
-                case "networkEnabled" -> {
-                    before.put(field, d5NetworkSummary(change.beforeNetworkEnabled()));
-                    after.put(field, d5NetworkSummary(request.getNetworkEnabled()));
-                }
-                default -> {
-                    before.put(field, d5SummaryValue(change.before().get(field)));
-                    after.put(field, d5SummaryValue(requestedWithdrawalLimitValue(field, request)));
-                }
+            if ("networkConfirmFeeUsd".equals(field)) {
+                var original = d5NetworkFees(change.before());
+                var proposed = request.getNetworkConfirmFeeUsd();
+                before.put(field, d5NetworkSummary(original));
+                after.put(field, d5NetworkSummary(proposed));
+                changes.add(Map.of("field", field, "before", original, "after", proposed, "unit", "USD"));
+            } else if ("networkEnabled".equals(field)) {
+                var original = change.beforeNetworkEnabled();
+                var proposed = request.getNetworkEnabled();
+                before.put(field, d5NetworkSummary(original));
+                after.put(field, d5NetworkSummary(proposed));
+                changes.add(Map.of("field", field, "before", original, "after", proposed, "unit", "boolean"));
+            } else {
+                BigDecimal original = change.before().get(field);
+                BigDecimal proposed = requestedWithdrawalLimitValue(field, request);
+                before.put(field, d5SummaryValue(original));
+                after.put(field, d5SummaryValue(proposed));
+                String unit = switch (field) {
+                    case "dailyLimitCount" -> "count";
+                    case "balanceMaxRatio", "networkFeeRatio" -> "ratio";
+                    case "minUsdt", "networkFeeMin", "networkFeeMax" -> "USDT";
+                    case "nexFeeOffsetRate" -> "USDT/UVT";
+                    case "smallAmountThresholdUsd" -> "USD";
+                    case "payoutSlaHours", PayoutAddressProtection.EFFECTIVE_DELAY_FIELD -> "hours";
+                    case PayoutAddressProtection.CHANGE_COOLDOWN_FIELD -> "days";
+                    default -> throw new IllegalArgumentException("Unsupported D5 field");
+                };
+                boolean integer = "count".equals(unit) || "hours".equals(unit) || "days".equals(unit);
+                changes.add(Map.of("field", field, "before", integer ? original.intValueExact() : original,
+                        "after", integer ? proposed.intValueExact() : proposed, "unit", unit));
             }
         }
-        return ApiResult.ok(Map.of("before", before.toString(), "after", after.toString()));
+        return ApiResult.ok(Map.of("before", before.toString(), "after", after.toString(), "changes", changes));
     }
 
     @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)

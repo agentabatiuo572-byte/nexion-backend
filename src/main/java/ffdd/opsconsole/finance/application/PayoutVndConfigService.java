@@ -16,7 +16,9 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
@@ -97,9 +99,23 @@ public class PayoutVndConfigService {
             if (!amplifies) return ApiResult.fail(422, "D7_PAYOUT_VND_CONFIG_NOT_AMPLIFYING");
             if (!coverageHealthy()) return ApiResult.fail(409, "D7_TREASURY_COVERAGE_BLOCKED");
             if (mode == UpdateMode.PREVIEW) {
+                boolean forced = Boolean.TRUE.equals(request.forceInverted());
+                List<Map<String, Object>> changes = new ArrayList<>();
+                for (String field : operationalKeys()) {
+                    if (decimal(current.values().get(field)).compareTo(decimal(next.get(field))) == 0) continue;
+                    String unit = switch (field) {
+                        case "sellSpreadPct", "requoteTolerancePct", "feeRatePct" -> "%";
+                        case "quoteTtlMinWithdraw" -> "minutes";
+                        default -> "USD";
+                    };
+                    changes.add(Map.of("field", field, "before", current.values().get(field),
+                            "after", next.get(field), "unit", unit));
+                }
+                if (forced) changes.add(Map.of("field", "forceInverted", "before", false, "after", true, "unit", "boolean"));
                 return ApiResult.ok(Map.of(
                         "before", previewValues(current.version(), current.values(), false),
-                        "after", previewValues(current.version() + 1L, next, Boolean.TRUE.equals(request.forceInverted()))));
+                        "after", previewValues(current.version() + 1L, next, forced),
+                        "changes", changes));
             }
         }
         return persist(current, next, request, mode == UpdateMode.REPLAY ? A2ReplayContext.operationId() : null);

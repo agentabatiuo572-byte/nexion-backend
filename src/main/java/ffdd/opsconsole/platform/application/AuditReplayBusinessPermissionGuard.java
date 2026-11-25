@@ -1,5 +1,6 @@
 package ffdd.opsconsole.platform.application;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 
@@ -260,7 +261,15 @@ public class AuditReplayBusinessPermissionGuard {
             boolean amplifies,
             AuditLockTarget target,
             TeamFundApproval.Review teamReview,
-            G3MarketApproval.Review marketReview) {
+            G3MarketApproval.Review marketReview,
+            JsonNode withdrawalConfigChanges) {
+        public DelegatedProposalDescriptor(
+                String action, String objectId, String beforeValue, String afterValue,
+                String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target,
+                TeamFundApproval.Review teamReview, G3MarketApproval.Review marketReview) {
+            this(action, objectId, beforeValue, afterValue, sourceDomain, operationType, amplifies,
+                    target, teamReview, marketReview, null);
+        }
         public DelegatedProposalDescriptor(
                 String action, String objectId, String beforeValue, String afterValue,
                 String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target,
@@ -1603,12 +1612,12 @@ public class AuditReplayBusinessPermissionGuard {
                     || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             }
-            ApiResult<Map<String, Object>> preview = withdrawalConfigApproval.preview(command, request.reason());
+            var preview = withdrawalConfigApproval.preview(command, request.reason());
             if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
             var values = preview.getData();
             return ApiResult.ok(new DelegatedProposalDescriptor(
                     "D5".equals(source) ? "放宽提现参数" : "D6".equals(source) ? "调整敏感汇率" : "放宽越南盾提现参数", target.id(),
-                    (String) values.get("before"), (String) values.get("after"), source, "fund", true, target));
+                    values.before(), values.after(), source, "fund", true, target, null, null, values.changes()));
         }
         if (command != null && "A".equals(command.domain())
                 && A1_ACCOUNT_PROPOSAL_AUTHORITIES.containsKey(text(command.op()))) {
