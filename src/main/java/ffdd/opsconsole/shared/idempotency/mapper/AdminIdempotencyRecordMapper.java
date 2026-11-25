@@ -171,6 +171,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
              WHERE id = #{id}
                AND status = 'FAILED'
                AND is_deleted = 0
+               AND (scope <> 'D3_RESERVE_INJECTION' OR origin_admin_id IS NULL OR response_json IS NULL)
             """)
     int resetFailedById(@Param("id") Long id,
                         @Param("requestHash") String requestHash,

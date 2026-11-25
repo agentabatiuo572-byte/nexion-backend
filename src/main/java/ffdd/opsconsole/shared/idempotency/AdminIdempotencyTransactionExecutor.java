@@ -7,6 +7,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.time.LocalDateTime;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -29,6 +30,7 @@ public class AdminIdempotencyTransactionExecutor {
     private static final String STATUS_SUCCEEDED = "SUCCEEDED";
     private static final String STATUS_FAILED = "FAILED";
     private static final String STATUS_UNKNOWN = "UNKNOWN";
+    private static final String D3_RESERVE_INJECTION = "D3_RESERVE_INJECTION";
 
     private final AdminIdempotencyRecordMapper recordMapper;
     private final ObjectMapper objectMapper;
@@ -190,7 +192,7 @@ public class AdminIdempotencyTransactionExecutor {
         } else if (record == null && current != null) {
             AdminIdempotencyRecordEntity raced = recordMapper.selectActive(scope, idempotencyKey);
             if (raced != null) {
-                return Claim.replayed(replay(raced, requestHash, responseType));
+                return Claim.replayed(replay(raced, requestHash, responseType, origin));
             }
             throw conflict("IDEMPOTENCY_RECLAIM_CONFLICT");
         } else if (record == null) {
@@ -228,7 +230,7 @@ public class AdminIdempotencyTransactionExecutor {
                 AdminIdempotencyRecordEntity duplicate =
                         expiryTransitionExecutor.loadActiveCommitted(scope, idempotencyKey);
                 if (duplicate != null) {
-                    return Claim.replayed(replay(duplicate, requestHash, responseType));
+                    return Claim.replayed(replay(duplicate, requestHash, responseType, origin));
                 }
                 throw conflict("IDEMPOTENCY_KEY_CONFLICT");
             }
@@ -275,6 +277,15 @@ public class AdminIdempotencyTransactionExecutor {
                 throw conflict("IDEMPOTENCY_SUCCESS_STATE_LOST");
             }
             return result;
+        } catch (BizException failure) {
+            if (D3_RESERVE_INJECTION.equals(original.getScope()) && original.getOriginAdminId() != null
+                    && original.getOriginAdminId().toString().equals(AdminActorResolver.subjectId())
+                    && d3ReserveBusinessRejection(failure.getCode(), failure.getMessage())) {
+                // Retain the fixed D3 rejection only after the business transaction rolls back.
+                throw new AdminCommandBusinessRejection(failure.getCode(), failure.getMessage(),
+                        ApiResult.fail(failure.getCode(), failure.getMessage()));
+            }
+            throw failure;
         } finally {
             AdminIdempotencyExecutionContext.restore(previous);
         }
@@ -334,11 +345,9 @@ public class AdminIdempotencyTransactionExecutor {
                 replayA2Rejection(record, null, record.getResponseJson());
             }
         }
-        if (!STATUS_FAILED.equals(record.getStatus())) {
-            return Claim.replayed(replay(record, requestHash, responseType));
-        }
-        if (!requestHash.equals(record.getRequestHash())) {
-            return Claim.replayed(replay(record, requestHash, responseType));
+        if (!STATUS_FAILED.equals(record.getStatus()) || retainedD3ReserveRejection(record)
+                || !requestHash.equals(record.getRequestHash())) {
+            return Claim.replayed(replay(record, requestHash, responseType, origin));
         }
         if (origin != null && !origin.targets().isEmpty()) {
             String currentTargets = writeJson(origin.targets());
@@ -362,12 +371,13 @@ public class AdminIdempotencyTransactionExecutor {
         AdminIdempotencyRecordEntity raced = expiryTransitionExecutor.loadActiveCommitted(
                 record.getScope(), record.getIdempotencyKey());
         if (raced != null) {
-            return Claim.replayed(replay(raced, requestHash, responseType));
+            return Claim.replayed(replay(raced, requestHash, responseType, origin));
         }
         throw conflict("IDEMPOTENCY_RETRY_CONFLICT");
     }
 
-    private <T> T replay(AdminIdempotencyRecordEntity record, String requestHash, Class<T> responseType) {
+    private <T> T replay(AdminIdempotencyRecordEntity record, String requestHash, Class<T> responseType,
+                         AdminCommandOrigin origin) {
         if (!requestHash.equals(record.getRequestHash())) {
             throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
         }
@@ -376,6 +386,15 @@ public class AdminIdempotencyTransactionExecutor {
             return readJson(record.getResponseJson(), responseType);
         }
         if (STATUS_FAILED.equals(record.getStatus())) {
+            if (retainedD3ReserveRejection(record)) {
+                if (origin == null || origin.actorId() != record.getOriginAdminId()) {
+                    throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
+                }
+                ApiResult<?> rejection = readJson(record.getResponseJson(), ApiResult.class);
+                if (rejection != null && d3ReserveBusinessRejection(rejection.getCode(), rejection.getMessage())) {
+                    throw new BizException(rejection.getCode(), rejection.getMessage());
+                }
+            }
             throw conflict("IDEMPOTENCY_PREVIOUS_REQUEST_FAILED");
         }
         if (STATUS_UNKNOWN.equals(record.getStatus())) {
@@ -385,6 +404,16 @@ public class AdminIdempotencyTransactionExecutor {
             throw conflict("IDEMPOTENCY_INVESTIGATION_" + record.getStatus());
         }
         throw conflict("IDEMPOTENCY_REQUEST_IN_PROGRESS");
+    }
+
+    private static boolean retainedD3ReserveRejection(AdminIdempotencyRecordEntity record) {
+        return D3_RESERVE_INJECTION.equals(record.getScope()) && record.getOriginAdminId() != null
+                && StringUtils.hasText(record.getResponseJson());
+    }
+
+    private static boolean d3ReserveBusinessRejection(int code, String message) {
+        return (code == 409 && "VOUCHER_ALREADY_REGISTERED".equals(message))
+                || (code == 400 && "VOUCHER_NO_INVALID".equals(message));
     }
 
     /** Only the existing D2 batch-to-selected-review child relation may share its parent's PROCESSING fence. */
