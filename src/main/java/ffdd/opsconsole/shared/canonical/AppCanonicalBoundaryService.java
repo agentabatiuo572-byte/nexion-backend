@@ -53,6 +53,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.annotation.Isolation;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.TransientDataAccessException;
 import org.springframework.util.StringUtils;
@@ -544,6 +545,10 @@ public class AppCanonicalBoundaryService {
             if (pendingReplacements.containsKey(device.id())) {
                 projection.put("replacement", pendingReplacements.get(device.id()));
             }
+            if (!sandboxRuntime && !developmentRuntime && isSlotOccupyingActiveState(device.status())
+                    && device.activatedAt() != null && device.deactivatedAt() == null && !device.pendingDeactivate()) {
+                projection.put("slotReplacementTiming", slotReplacementTiming(userId, device));
+            }
             CanonicalStateMapper.DeviceRealizedToday realized = realizedByDevice.get(device.id());
             projection.put("todayEarningsUsdt", realized == null
                     ? BigDecimal.ZERO.setScale(6, RoundingMode.HALF_UP)
@@ -595,6 +600,22 @@ public class AppCanonicalBoundaryService {
                 "sourceEnvironment", sourceEnvironment,
                 "runId", runId,
                 "serverCanonical", true));
+    }
+
+    private String slotReplacementTiming(long userId, CanonicalStateMapper.OwnedDevice device) {
+        try {
+            if (computeV2Lifecycle != null) {
+                Boolean simulatedWaits = computeV2Lifecycle.slotReplacementWaitsForSimulated(
+                        userId, device.id(), device.instanceNo());
+                if (simulatedWaits != null) return simulatedWaits ? "PENDING" : "IMMEDIATE";
+                if (computeV2Lifecycle.slotReplacementWaitsForComputeV2(userId, device.id(), device.instanceNo())) {
+                    return "PENDING";
+                }
+            }
+            return mapper.hasActiveTask(userId, device.id()) ? "PENDING" : "IMMEDIATE";
+        } catch (BizException | DataAccessException unavailable) {
+            return "UNKNOWN";
+        }
     }
 
     private boolean isAcceptanceSandboxRuntime() {

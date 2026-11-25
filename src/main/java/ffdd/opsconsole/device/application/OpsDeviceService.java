@@ -259,6 +259,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     @org.springframework.beans.factory.annotation.Autowired
     private DeviceOrderRefundImpactService refundImpacts;
     @org.springframework.beans.factory.annotation.Autowired
+    private DeviceSlotReplacementCompletion slotReplacement;
+    @org.springframework.beans.factory.annotation.Autowired
     private SimulatedTaskWakeService simulationWakes;
     @org.springframework.beans.factory.annotation.Autowired
     private ffdd.opsconsole.platform.mapper.AuditOperationTicketMapper auditTickets;
@@ -4144,7 +4146,9 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             return ApiResult.fail(409, "ORDER_STATE_CONFLICT");
         }
         E4OrderRefundSettlementFacade.Settlement settlement = null;
+        List<Long> replacementDeviceIds = List.of();
         if ("E4_ORDER_REFUNDED".equals(auditAction)) {
+            replacementDeviceIds = catalogRepository.lockRefundReplacementDeviceIds(normalizedOrderNo);
             // Keep the same lock order as payment (catalog assets before wallet) so
             // concurrent pay/refund transactions cannot deadlock by taking the two
             // resource families in opposite order. Any later failure rolls both
@@ -4193,6 +4197,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 "idempotencyKey", idempotencyKey.trim()));
         if (settlement != null) {
             if (promotions != null) promotions.confirmE4Refund(normalizedOrderNo, settlement.ledgerBizNo());
+            if (!replacementDeviceIds.isEmpty()) slotReplacement.afterOwnershipLoss(replacementDeviceIds);
             publishRefundEvents(normalizedOrderNo, facts, before, updated, request, settlement);
         } else {
             if (promotions != null && ORDER_STOCK_RELEASE_STATES.contains(toState)) {

@@ -167,8 +167,10 @@ public class AppTaskAssignmentService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> continuousWorkerRelease(ContinuousIdentity identity, String taskNo, String key) {
-        Grant grant = lockedContinuousGrant(identity, taskNo);
-        return testWorkerRelease(grant, taskNo, key);
+        String scope = testWorker.continuousReleaseScope(identity, taskNo, key);
+        requireProductionRuntime(TestComputeWorkerService.CONTINUOUS_OWNER);
+        return executeOnce(scope, key, sha256("{}"), () ->
+                releaseTestWorker(lockedContinuousGrant(identity, taskNo), taskNo));
     }
 
     private Grant lockedContinuousGrant(ContinuousIdentity identity, String taskNo) {
@@ -216,48 +218,56 @@ public class AppTaskAssignmentService {
         testWorker.requireTaskPath(grant, taskNo);
         testWorker.requireFixedKey(grant, "RELEASE", key);
         requireProductionRuntime(grant.ownerId());
-        return executeOnce(testWorker.scope(grant, "RELEASE"), key, sha256("{}"), () -> {
-            testWorker.requireCurrent(grant);
-            lockProductionUser(grant.ownerId());
-            DeviceRow device = mapper.lockOwnedDevice(grant.ownerId(), grant.deviceId());
-            if (device == null || !grant.instanceNo().equals(device.instanceNo())) throw new BizException(403, "TEST_COMPUTE_WORKER_BINDING_INVALID");
-            var runtime = mapper.lockTestWorkerRuntime(grant.ownerId(), grant.deviceId(), grant.instanceNo());
-            if (testWorker.continuous(grant)) {
-                testWorker.requireDevice(grant, device);
-                LocalDateTime now = now();
-                AssignmentRow task = mapper.lockAssignment(grant.ownerId(), taskNo, "PRODUCTION");
-                testWorker.requireTask(grant, task, now);
-                if (!TestComputeWorkerService.KIND.equals(task.modelName()) || !TestComputeWorkerService.CLIENT.equals(task.clientName())
-                        || task.completedAt() != null || task.receiptNo() != null
-                        || runtime == null || !taskNo.equals(runtime.activeTaskNo())
-                        || !TestComputeWorkerService.CLIENT.equals(runtime.clientName())
-                        || !testWorker.marker(grant).equals(runtime.agentVersion())
-                        || !("ONLINE".equals(runtime.onlineStatus()) || "OFFLINE".equals(runtime.onlineStatus()))
-                        || StringUtils.hasText(runtime.pausedReason())) {
-                    throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
-                }
-                if (mapper.cancelTestWorkerAssignment(grant.ownerId(), grant.deviceId(), grant.instanceNo(), taskNo,
-                        grant.taskConfigId(), testWorker.marker(grant), now) != 1) {
-                    throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
-                }
-                if ("ONLINE".equals(runtime.onlineStatus()) && !testWorker.close(grant, now)) {
-                    throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
-                }
-                if (mapper.clearRuntimeTask(grant.ownerId(), grant.deviceId(), taskNo, now) != 1) {
-                    throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
-                }
-                Map<String, Object> detail = testWorker.bindings(grant);
-                detail.put("taskStatus", "CANCELLED");
-                testWorker.record(grant, "TEST_COMPUTE_WORKER_RELEASED", taskNo, detail);
-                testWorker.requireCurrent(grant);
-                return ApiResult.ok(linked("executionKind", TestComputeWorkerService.KIND, "taskNo", taskNo,
-                        "released", true, "taskStatus", "CANCELLED", "serverCanonical", true, "deploymentScope", "TEST"));
+        return executeOnce(testWorker.scope(grant, "RELEASE"), key, sha256("{}"), () -> releaseTestWorker(grant, taskNo));
+    }
+
+    private ApiResult<Map<String, Object>> releaseTestWorker(Grant grant, String taskNo) {
+        testWorker.requireCurrent(grant);
+        lockProductionUser(grant.ownerId());
+        DeviceRow device = mapper.lockOwnedDevice(grant.ownerId(), grant.deviceId());
+        if (device == null || !grant.instanceNo().equals(device.instanceNo())) throw new BizException(403, "TEST_COMPUTE_WORKER_BINDING_INVALID");
+        var runtime = mapper.lockTestWorkerRuntime(grant.ownerId(), grant.deviceId(), grant.instanceNo());
+        if (testWorker.continuous(grant)) {
+            testWorker.requireDevice(grant, device);
+            LocalDateTime now = now();
+            AssignmentRow task = mapper.lockAssignment(grant.ownerId(), taskNo, "PRODUCTION");
+            testWorker.requireTask(grant, task, now);
+            if (!TestComputeWorkerService.KIND.equals(task.modelName()) || !TestComputeWorkerService.CLIENT.equals(task.clientName())
+                    || task.completedAt() != null || task.receiptNo() != null
+                    || runtime == null || !taskNo.equals(runtime.activeTaskNo())
+                    || !TestComputeWorkerService.CLIENT.equals(runtime.clientName())
+                    || !testWorker.marker(grant).equals(runtime.agentVersion())
+                    || !("ONLINE".equals(runtime.onlineStatus()) || "OFFLINE".equals(runtime.onlineStatus()))
+                    || StringUtils.hasText(runtime.pausedReason())) {
+                throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
             }
-            boolean released = testWorker.close(grant, now());
-            if (released) testWorker.record(grant, "TEST_COMPUTE_WORKER_RELEASED", taskNo, testWorker.bindings(grant));
+            if (mapper.cancelTestWorkerAssignment(grant.ownerId(), grant.deviceId(), grant.instanceNo(), taskNo,
+                    grant.taskConfigId(), testWorker.marker(grant), now) != 1) {
+                throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+            }
+            if ("ONLINE".equals(runtime.onlineStatus()) && !testWorker.close(grant, now)) {
+                throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+            }
+            if (mapper.clearRuntimeTask(grant.ownerId(), grant.deviceId(), taskNo, now) != 1) {
+                throw new BizException(409, "TEST_COMPUTE_WORKER_RELEASE_CONFLICT");
+            }
+            Map<String, Object> detail = testWorker.bindings(grant);
+            detail.put("taskStatus", "CANCELLED");
+            testWorker.record(grant, "TEST_COMPUTE_WORKER_RELEASED", taskNo, detail);
+            var pendingDevice = mapper.lockLeaseExpiryDevice(grant.ownerId(), grant.deviceId());
+            if (pendingDevice != null && deactivatePendingDeviceAfterLastTask(grant.ownerId(), pendingDevice, now)) {
+                recordPendingDeviceDeactivation(grant.ownerId(), pendingDevice, "TASK_RELEASED_WITHOUT_ACTIVE_TASK",
+                        AuditLogWriteRequest.builder().actorType("TEST_COMPUTE_WORKER").actorUsername(grant.getName())
+                                .method("POST").path("/api/test/compute-workers/v2/tasks/" + taskNo + "/release"));
+            }
             testWorker.requireCurrent(grant);
-            return ApiResult.ok(linked("executionKind", TestComputeWorkerService.KIND, "taskNo", taskNo, "released", released));
-        });
+            return ApiResult.ok(linked("executionKind", TestComputeWorkerService.KIND, "taskNo", taskNo,
+                    "released", true, "taskStatus", "CANCELLED", "serverCanonical", true, "deploymentScope", "TEST"));
+        }
+        boolean released = testWorker.close(grant, now());
+        if (released) testWorker.record(grant, "TEST_COMPUTE_WORKER_RELEASED", taskNo, testWorker.bindings(grant));
+        testWorker.requireCurrent(grant);
+        return ApiResult.ok(linked("executionKind", TestComputeWorkerService.KIND, "taskNo", taskNo, "released", released));
     }
 
     @Transactional(readOnly = true)
@@ -531,21 +541,7 @@ public class AppTaskAssignmentService {
         if (mapper.expireAssignment(userId, task.taskNo(), runtime.sourceEnvironment(), now) != 1) return false;
         mapper.clearRuntimeTask(userId, deviceId, task.taskNo(), now);
 
-        boolean deactivated = false;
-        if (Boolean.TRUE.equals(device.pendingDeactivate())
-                && !mapper.hasActiveProductionTask(userId, deviceId)) {
-            deactivated = mapper.deactivatePendingDeviceAfterLeaseExpiry(
-                    userId, deviceId, device.rowVersion(), now) == 1;
-            if (deactivated) {
-                mapper.markRuntimeDeactivated(userId, deviceId, now);
-                slotReplacement.afterDeactivation(userId, deviceId);
-            }
-            if (!deactivated && !mapper.hasActiveProductionTask(userId, deviceId)) {
-                // Preserve the expired task as a retry candidate when the device CAS lost without a new
-                // active task explaining it; committing here would strand pending_deactivate indefinitely.
-                throw new BizException(409, "TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_CAS_CONFLICT");
-            }
-        }
+        boolean deactivated = deactivatePendingDeviceAfterLastTask(userId, device, now);
 
         Map<String, Object> expiryFact = linked("userId", userId, "deviceId", deviceId,
                 "taskNo", task.taskNo(), "leaseExpiresAt", task.leaseExpiresAt(), "status", "EXPIRED");
@@ -556,12 +552,32 @@ public class AppTaskAssignmentService {
                 .actorUsername("system").method("SCHEDULED")
                 .path("/internal/task-assignment-expiry-worker").result("SUCCESS").riskLevel("MEDIUM")
                 .detail(expiryFact).build());
-        if (deactivated) recordLeaseExpiryDeviceDeactivation(userId, device, now);
+        if (deactivated) {
+            recordPendingDeviceDeactivation(userId, device, "LEASE_EXPIRED_WITHOUT_ACTIVE_TASK",
+                    AuditLogWriteRequest.builder().actorId(0L).actorType("SYSTEM").actorUsername("system")
+                            .method("SCHEDULED").path("/internal/task-assignment-expiry-worker"));
+        }
         return true;
     }
 
-    private void recordLeaseExpiryDeviceDeactivation(
+    private boolean deactivatePendingDeviceAfterLastTask(
             Long userId, AppTaskAssignmentMapper.LeaseExpiryDevice device, LocalDateTime now) {
+        if (!Boolean.TRUE.equals(device.pendingDeactivate()) || mapper.hasActiveProductionTask(userId, device.id())) {
+            return false;
+        }
+        if (mapper.deactivatePendingDeviceAfterLastTask(userId, device.id(), device.rowVersion(), now) != 1) {
+            if (mapper.hasActiveProductionTask(userId, device.id())) return false;
+            // Roll back the task terminal state so the pending device can be retried.
+            throw new BizException(409, "TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_CAS_CONFLICT");
+        }
+        mapper.markRuntimeDeactivated(userId, device.id(), now);
+        slotReplacement.afterDeactivation(userId, device.id());
+        return true;
+    }
+
+    private void recordPendingDeviceDeactivation(
+            Long userId, AppTaskAssignmentMapper.LeaseExpiryDevice device, String trigger,
+            AuditLogWriteRequest.AuditLogWriteRequestBuilder audit) {
         if (device.rowVersion() == null || device.rowVersion() < 0 || !StringUtils.hasText(device.status())) {
             throw new BizException(409, "TASK_ASSIGNMENT_DEFERRED_DEACTIVATION_STATE_UNAVAILABLE");
         }
@@ -578,13 +594,11 @@ public class AppTaskAssignmentService {
                 "status", "DEACTIVATED", "rowVersion", device.rowVersion() + 1);
         outboxService.publishUserEvent("USER_DEVICE", device.instanceNo(), "device.deactivated", userId,
                 attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), state);
-        auditLogService.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
+        auditLogService.recordRequiredForTrustedActor(audit
                 .action("USER_DEVICE_DEFERRED_DEACTIVATED").resourceType("USER_DEVICE")
                 .resourceId(String.valueOf(device.id())).bizNo(device.instanceNo()).userId(userId)
-                .actorId(0L).actorType("SYSTEM").actorUsername("system")
-                .method("SCHEDULED").path("/internal/task-assignment-expiry-worker")
                 .result("SUCCESS").riskLevel("MEDIUM")
-                .detail(linked("trigger", "LEASE_EXPIRED_WITHOUT_ACTIVE_TASK", "state", state)).build());
+                .detail(linked("trigger", trigger, "state", state)).build());
     }
 
     @Transactional(rollbackFor = Exception.class)

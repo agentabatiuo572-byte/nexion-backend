@@ -484,6 +484,11 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     }
 
     @Override
+    public List<Long> lockRefundReplacementDeviceIds(String orderNo) {
+        return mapper.lockRefundReplacementDeviceIds(orderNo);
+    }
+
+    @Override
     public boolean rollbackRefundedOrderAssets(String orderNo, LocalDateTime now) {
         return rollbackOrderAssets(orderNo, now, true);
     }

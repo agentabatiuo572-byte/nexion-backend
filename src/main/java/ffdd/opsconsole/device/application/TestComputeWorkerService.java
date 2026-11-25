@@ -198,15 +198,32 @@ public class TestComputeWorkerService {
     }
 
     public void requireFixedKey(Grant grant, String operation, String key) {
-        if (!("TEST355-" + operation + "-" + sha256(grant.taskNo().getBytes(StandardCharsets.UTF_8))).equals(key)) {
+        requireFixedKey(grant.taskNo(), operation, key);
+    }
+
+    private void requireFixedKey(String taskNo, String operation, String key) {
+        if (!("TEST355-" + operation + "-" + sha256(taskNo.getBytes(StandardCharsets.UTF_8))).equals(key)) {
             throw new BizException(422, "TEST_COMPUTE_WORKER_IDEMPOTENCY_INVALID");
         }
     }
 
+    /** A completed continuous release can be recovered after its live claim has been cleared. */
+    public String continuousReleaseScope(ContinuousIdentity identity, String taskNo, String key) {
+        requireContinuousCurrent(identity);
+        requireFixedKey(safe(taskNo, 96), "RELEASE", key);
+        return scope("RELEASE", CONTINUOUS_RUN, identity.executorId(), Long.toString(CONTINUOUS_OWNER),
+                Long.toString(CONTINUOUS_DEVICE), CONTINUOUS_INSTANCE, taskNo, CONTINUOUS_CONFIG);
+    }
+
     public String scope(Grant grant, String operation) {
-        return "TEST355:" + operation + ":" + sha256((grant.runId() + "\n" + grant.executorId() + "\n"
-                + grant.ownerId() + "\n" + grant.deviceId() + "\n" + grant.instanceNo() + "\n" + grant.taskNo()
-                + "\n" + grant.taskConfigId() + (continuous(grant) ? "" : "\n" + grant.issuedAt() + "\n" + grant.expiresAt())).getBytes(StandardCharsets.UTF_8));
+        String configAndLease = grant.taskConfigId();
+        if (!continuous(grant)) configAndLease += "\n" + grant.issuedAt() + "\n" + grant.expiresAt();
+        return scope(operation, grant.runId(), grant.executorId(), Long.toString(grant.ownerId()),
+                Long.toString(grant.deviceId()), grant.instanceNo(), grant.taskNo(), configAndLease);
+    }
+
+    private String scope(String operation, String... binding) {
+        return "TEST355:" + operation + ":" + sha256(String.join("\n", binding).getBytes(StandardCharsets.UTF_8));
     }
 
     public String newTaskNo(Grant grant) {

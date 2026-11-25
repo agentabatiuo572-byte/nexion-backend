@@ -1,6 +1,7 @@
 package ffdd.opsconsole.promotion.application;
 
 import ffdd.opsconsole.device.application.HostingCenterService;
+import ffdd.opsconsole.device.application.DeviceSlotReplacementCompletion;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.device.application.DeviceMonthlyTargetService;
 import ffdd.opsconsole.device.mapper.SimulatedTaskMapper;
@@ -27,6 +28,8 @@ import ffdd.opsconsole.common.domain.LegacyUvtProof;
 public class PromotionRewardService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceSlotReplacementCompletion slotReplacement;
 
     private final PromotionMapper db;
     private final PromotionOrderService orders;
@@ -219,8 +222,10 @@ public class PromotionRewardService {
             WHERE obligation_id=? AND basis_type='APPROVED_CORRECTION' AND status='MANUAL_REVIEW' AND outstanding>0 FOR UPDATE
             """,obligationId);
     }
+    record GiftRevocation(int deviceCount,List<Long> revokedDeviceIds) {}
+
     // The executed refund locks the same participant rows as compute settlement before revoking the gift.
-    static int revokeRefundGifts(PromotionMapper db,SimulatedTaskMapper simulatedTasks,
+    static GiftRevocation revokeRefundGifts(PromotionMapper db,SimulatedTaskMapper simulatedTasks,
             DeviceMonthlyTargetService monthlyTargets,Map<String,Object> reward){
         List<Map<String,Object>> devices=db.list("""
             SELECT d.id,d.ownership_status FROM nx_promotion_device_receipt r JOIN nx_user_device d
@@ -230,6 +235,7 @@ public class PromotionRewardService {
               AND (d.ownership_status='OWNED' OR (d.ownership_status='REVOKED' AND d.status='DEACTIVATED'))
             ORDER BY d.id FOR UPDATE
             """,reward.get("obligation_id"),reward.get("beneficiary_id"),reward.get("order_no"));
+        List<Long> revokedDeviceIds=new ArrayList<>();
         for(var device:devices){
             Object deviceId=device.get("id"),userId=reward.get("beneficiary_id");
             db.write("""
@@ -253,10 +259,12 @@ public class PromotionRewardService {
                 WHERE user_device_id=? AND user_id=?
                   AND (state<>'STOPPED' OR NOT (last_error <=> 'PROMOTION_REFUND') OR current_task_no IS NOT NULL OR next_action_at IS NOT NULL)
                 """,deviceId,userId);
-            if("OWNED".equals(device.get("ownership_status")))
+            if("OWNED".equals(device.get("ownership_status"))){
                 changed(db.write("UPDATE nx_user_device SET ownership_status='REVOKED',status='DEACTIVATED',deactivated_at=NOW(6),pending_deactivate=0,row_version=row_version+1,updated_at=NOW(6) WHERE id=? AND ownership_status='OWNED'",deviceId));
+                revokedDeviceIds.add(number(deviceId));
+            }
         }
-        return devices.size();
+        return new GiftRevocation(devices.size(),revokedDeviceIds);
     }
     private Map<String,Object> reverseLocked(Map<String,Object> row,Map<String,Object> basis,String commandId,String reason){
         String id=text(row.get("obligation_id"));String basisType=text(basis.get("type"));
@@ -278,9 +286,12 @@ public class PromotionRewardService {
         BigDecimal recovered=priorRecovered;
         Map<String,Object> evidence=historical?new LinkedHashMap<>(parse(previous.get("evidence_json"))):new LinkedHashMap<>();
         Map<String,Object> platformLoss=new LinkedHashMap<>();
+        List<Long> revokedDeviceIds=new ArrayList<>();
         if(correction!=null)evidence.put("priorCorrectionId",correction.get("reversal_id"));
         if("DEVICE".equals(asset)&&wholeRefund){
-            recovered=BigDecimal.valueOf(revokeRefundGifts(db,simulatedTasks,monthlyTargets,row)).subtract(corrected).max(priorRecovered);
+            var revocation=revokeRefundGifts(db,simulatedTasks,monthlyTargets,row);
+            recovered=BigDecimal.valueOf(revocation.deviceCount()).subtract(corrected).max(priorRecovered);
+            revokedDeviceIds.addAll(revocation.revokedDeviceIds());
             Map<String,BigDecimal> posted=new LinkedHashMap<>();
             for(var earned:db.list("""
                 SELECT e.asset,e.amount FROM nx_earning_event e
@@ -304,6 +315,7 @@ public class PromotionRewardService {
                     &&db.list("SELECT id FROM nx_compute_share_enrollment WHERE user_device_id=? FOR UPDATE",deviceId).isEmpty();
                 if(!unused)continue;
                 changed(db.write("UPDATE nx_user_device SET ownership_status='REVOKED',status='DEACTIVATED',deactivated_at=NOW(6),pending_deactivate=0,row_version=row_version+1,updated_at=NOW(6) WHERE id=? AND ownership_status='OWNED'",deviceId));
+                revokedDeviceIds.add(deviceId);
                 recovered=recovered.add(BigDecimal.ONE);
             }
             evidence.put("revokedDeviceCount",recovered.intValueExact());
@@ -315,6 +327,7 @@ public class PromotionRewardService {
             if(recovered.signum()>0){posting="PROMOTION-REVERSE-"+id+(correction==null?"":"-REFUND");
                 ledger.postLedgerEntry(posting,number(row.get("beneficiary_id")),"PROMOTION_REWARD_REVERSAL",asset,"OUT",recovered,"SUCCESS",reason);}
         }
+        if(slotReplacement!=null&&!revokedDeviceIds.isEmpty())slotReplacement.afterOwnershipLoss(revokedDeviceIds);
         BigDecimal recoveredDelta=recovered.subtract(priorRecovered),outstanding=amount.subtract(recovered);
         if("DEVICE".equals(asset)&&recoveredDelta.signum()>0&&!"UNLIMITED".equals(db.product(text(reserved.get("product_no")),true).get("inventory_mode")))
             changed(db.write("UPDATE nx_product SET stock=stock+?,updated_at=NOW(6) WHERE product_no=? AND is_deleted=0",recoveredDelta.intValueExact(),reserved.get("product_no")));

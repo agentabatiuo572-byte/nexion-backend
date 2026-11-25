@@ -169,6 +169,8 @@ public class TestComputeV2Service {
 
     public Map<String,Object> heartbeat(Identity caller,String runner,String taskNo,long generation,String token) {
         var view=ownedExecution(caller,runner,taskNo,generation,token);
+        if(!Set.of("COMPUTING","VERIFYING").contains(view.status()) || view.leaseExpiresAt()==null
+                || !view.leaseExpiresAt().isAfter(clock.instant()))throw error(409,"COMPUTE_V2_LEASE_EXPIRED");
         runtime.renew(view.event().userId(),view.event().deviceId(),generation,executionId(caller,runner));
         return Map.of("state",view.status(),"serverNow",clock.instant().toString());
     }
@@ -448,23 +450,37 @@ public class TestComputeV2Service {
                     runtime.fenceExpired(event.userId(),deviceId,event.generation());
             } catch(RuntimeException unavailable){LOG.warn("Compute v2 phone lease recovery deferred device={} reason={}",deviceId,unavailable.getClass().getSimpleName());}
         }
+        try {runtime.retryExecutionTerminations();}
+        catch(RuntimeException unavailable){LOG.warn("Compute v2 terminal publish retry deferred reason={}",unavailable.getClass().getSimpleName());}
+        lifecycle.ifPresent(service->{
+            for(long deviceId:runtime.executingDevices()) {
+                try {
+                    var current=runtime.viewDevice(deviceId);
+                    if(current.isEmpty())continue;
+                    var view=current.get();var event=view.event();
+                    if(view.leaseExpiresAt()!=null && !view.leaseExpiresAt().isAfter(clock.instant())
+                            && Set.of("RECOVERING","FAILED","COMPLETED").contains(view.status()))
+                        service.finalizeExited(event.userId(),deviceId,event.taskNo(),event.generation());
+                } catch(RuntimeException unavailable){LOG.warn("Compute v2 slot replacement retry deferred device={} reason={}",deviceId,unavailable.getClass().getSimpleName());}
+            }
+        });
     }
 
     @Scheduled(fixedDelayString="${nexion.compute-v2.dispatch-delay-ms:1000}",scheduler="computeV2TaskScheduler")
     public synchronized void issueEnrolled() {
         if(enrolled.isEmpty() || !runtime.isReady()) return;
         lifecycle.ifPresent(ComputeV2DeviceLifecycleService::finalizePendingEnrolled);
-        if(environment.getProperty("nexion.simulated-tasks.enabled",Boolean.class,false))return;
-        if(!runtime.canAcceptWork())return;
+        boolean dispatch=!environment.getProperty("nexion.simulated-tasks.enabled",Boolean.class,false) && runtime.canAcceptWork();
         List<Long> devices=enrolled.stream().sorted().toList();
         // One shared cursor, bounded work per tick; no account-specific timer, JVM or journal.
         for(int n=0;n<Math.min(12,devices.size());n++) {
             Long priority=n<6?readyDevices.poll():null;
             if(priority!=null)readyDeviceIds.remove(priority);
             long deviceId=priority==null?devices.get(Math.floorMod(scanCursor.getAndIncrement(),devices.size())):priority;
-            if(phones.isPresent() && phones.get().manages(deviceId))continue;
             try {
                 var current=runtime.viewDevice(deviceId);
+                if(current.isPresent() && lifecycle.isPresent() && lifecycle.get().discardStoppedQueue(current.get()))continue;
+                if(!dispatch || phones.isPresent() && phones.get().manages(deviceId))continue;
                 if(current.isPresent()) {
                     var view=current.get();var event=view.event();
                     if("ISSUING".equals(view.status())) {

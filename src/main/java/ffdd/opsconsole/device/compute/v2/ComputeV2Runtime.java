@@ -134,18 +134,88 @@ public class ComputeV2Runtime {
         return stageAndSend(event(Kind.FAILED,userId,deviceId,current.instanceNo(),current.taskNo(),generation,
                 clock.instant(),current.task(),null,reason));
     }
-    public boolean cancelQueued(long userId,long deviceId,long generation,String reason) {
+    /** Runs under the device command lock and atomically registers the cancellation for MQ delivery. */
+    public Optional<ComputeV2Event> reserveQueuedCancellation(long userId,long deviceId,long generation,String reason) {
         var current = require(userId,deviceId,generation);
         var failed = event(Kind.FAILED,userId,deviceId,current.instanceNo(),current.taskNo(),generation,
                 clock.instant(),current.task(),null,reason);
-        String original = store.execute("cancel",current.taskNo(),Long.toString(generation),failed.eventId(),store.encode(failed));
-        if (original == null || original.isEmpty()) return false;
-        send(store.decode(original,ComputeV2Event.class)); return true;
+        String original = store.execute("cancel",current.taskNo(),Long.toString(generation),failed.eventId(),store.encode(failed),
+                Long.toString(clock.millis()),Integer.toString(config.getUnpersistedCapacity()));
+        return original == null || original.isEmpty() ? Optional.empty() : Optional.of(store.decode(original,ComputeV2Event.class));
+    }
+
+    public void confirmQueuedCancellation(ComputeV2Event reserved) {
+        if (reserved.kind()!=Kind.FAILED || reserved.task().startedAt()!=null)
+            throw new IllegalArgumentException("Reserved queued cancellation required");
+        send(reserved);
     }
     public ComputeV2Event fenceExpired(long userId,long deviceId,long generation) {
         var current = require(userId,deviceId,generation);
         return stageAndSend(event(Kind.FENCED,userId,deviceId,current.instanceNo(),current.taskNo(),generation,
                 clock.instant(),current.task(),null,"LEASE_EXPIRED"));
+    }
+
+    /** Retries immutable staged outcomes and fences expired work restored without a terminal event. */
+    public void retryExecutionTerminations() {
+        long now = clock.millis();
+        String recoveredAt = store.value("recovered-at");
+        for (String permit : store.members("permits")) {
+            int delimiter = permit.lastIndexOf(':');
+            String task = permit.substring(0,delimiter);
+            String state = store.field("states",task);
+            Kind kind;
+            if ("VERIFYING".equals(state)) kind = Kind.VERIFIED;
+            else if ("RECOVERING".equals(state)) kind = Kind.FENCED;
+            else if ("FAILING".equals(state)) kind = Kind.FAILED;
+            else continue;
+            long generation = Long.parseLong(permit.substring(delimiter+1));
+            String id = ComputeV2Event.eventId(task,generation,kind);
+            String staged = store.field("staged",id);
+            if (staged != null) {
+                if (store.field("outgoing",id) == null) send(store.decode(staged,ComputeV2Event.class));
+                continue;
+            }
+            if (kind == Kind.FENCED && "RECOVERY_REQUIRED".equals(store.field("executors",task))
+                    && store.field("lifecycle-events",id) == null && recoveredAt != null
+                    && now >= Long.parseLong(recoveredAt) + config.getLeaseSeconds()*1000L) {
+                Double lease = store.score("leases",task);
+                if (lease != null && lease <= now && !completionPending(task,generation)) {
+                    var current = event(task).orElseThrow();
+                    fenceExpired(current.userId(),current.deviceId(),generation);
+                }
+            }
+        }
+    }
+
+    public List<Long> executingDevices() {
+        return store.members("permits").stream()
+                .map(permit -> permit.substring(0,permit.lastIndexOf(':')))
+                .map(task -> store.field("task-devices",task)).filter(Objects::nonNull)
+                .map(Long::parseLong).distinct().toList();
+    }
+
+    /** The device slot may move once the old generation is durably unable to settle a new result. */
+    public boolean hasExpiredTerminalResult(RuntimeView view) {
+        var current = view.event();
+        if (persistence == null || current.task().startedAt() == null || view.leaseExpiresAt() == null
+                || view.leaseExpiresAt().isAfter(clock.instant())) return false;
+        if ("RECOVERY_REQUIRED".equals(view.executorId())) {
+            String recoveredAt = store.value("recovered-at");
+            if (recoveredAt == null || clock.millis() < Long.parseLong(recoveredAt) + config.getLeaseSeconds()*1000L) return false;
+        }
+        Kind terminal;
+        if ("COMPLETED".equals(view.status()) && current.kind() == Kind.VERIFIED) terminal = Kind.VERIFIED;
+        else if ("RECOVERING".equals(view.status())) terminal = Kind.FENCED;
+        else if ("FAILED".equals(view.status())) terminal = Kind.FAILED;
+        else return false;
+        String task = current.taskNo();
+        long generation = current.generation();
+        if (terminal != Kind.VERIFIED && (current.kind() == Kind.VERIFIED || completionPending(task,generation)
+                || persistence.findLifecycle(ComputeV2Event.eventId(task,generation,Kind.VERIFIED)).isPresent())) return false;
+        return persistence.findLifecycle(ComputeV2Event.eventId(task,generation,terminal))
+                .filter(event -> event.userId() == current.userId() && event.deviceId() == current.deviceId()
+                        && event.instanceNo().equals(current.instanceNo()) && event.deploymentScope().equals(current.deploymentScope()))
+                .isPresent();
     }
     /** Called only by the trusted process observer after the inference process actually exits. */
     public ComputeV2Event executionExited(long userId,long deviceId,long generation,String executorId) {
@@ -272,7 +342,8 @@ public class ComputeV2Runtime {
                     event.generation(),event.occurredAt(),event.task(),zero,null));
         }
         String original = store.execute("stage",event.taskNo(),Long.toString(event.generation()),event.eventId(),store.encode(event),
-                event.kind().name(),Long.toString(clock.millis()),entitlement,zeroReward,Integer.toString(config.getDedupRetentionSeconds()));
+                event.kind().name(),Long.toString(clock.millis()),entitlement,zeroReward,Integer.toString(config.getDedupRetentionSeconds()),
+                Long.toString(config.getLeaseSeconds()*1000L));
         return send(store.decode(original,ComputeV2Event.class));
     }
     private ComputeV2Event sameProof(ComputeV2Event original,Verified evidence) {

@@ -158,6 +158,31 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         });
     }
 
+    /** Null means this device still follows its non-simulated deactivation path. */
+    public Boolean slotReplacementWaits(long userId, long deviceId, String instanceNo) {
+        if (!manages(deviceId)) return null;
+        var runtime = mapper.runtime(deviceId);
+        boolean legacyPending = hasLegacyPending(userId, deviceId);
+        if (runtime == null) return legacyPending ? null : false;
+        if (legacyPending || runtime.userId() != userId || !instanceNo.equals(runtime.instanceNo())) {
+            throw error(409, "SIMULATED_REPLACEMENT_TIMING_UNAVAILABLE");
+        }
+        if (runtime.currentTaskNo() == null) return false;
+
+        var device = mapper.readOwnedDevice(userId, deviceId);
+        var task = mapper.task(runtime.currentTaskNo());
+        if (device == null || !instanceNo.equals(device.instanceNo()) || task == null
+                || task.userId() != userId || task.deviceId() != deviceId || task.generation() != runtime.generation()
+                || !"RUNNING".equals(task.status())) {
+            throw error(409, "SIMULATED_REPLACEMENT_TIMING_UNAVAILABLE");
+        }
+        LocalDateTime observed = now();
+        LocalDateTime cutoff = earlier(runtime.stopAt(), runtime.phone() ? runtime.phoneValidUntil() : null);
+        cutoff = earlier(cutoff, earlier(device.deactivatedAt(), inactiveCutoff(device, observed)));
+        return (abandonBefore == null || !task.startedAt().isBefore(abandonBefore))
+                && task.dueAt().isAfter(observed) && (cutoff == null || cutoff.isAfter(observed));
+    }
+
     /** A successful immediate stop records its cutoff now, even when older earned tasks need more batches. */
     public RuntimeRow requestStop(long userId,long deviceId,boolean afterCurrent) {
         requireEnabled();LocalDateTime stopped=now();

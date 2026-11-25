@@ -140,6 +140,10 @@ public interface DeviceCatalogRepository {
 
     boolean rollbackOrderAssets(String orderNo, LocalDateTime now);
 
+    default List<Long> lockRefundReplacementDeviceIds(String orderNo) {
+        return List.of();
+    }
+
     default boolean rollbackRefundedOrderAssets(String orderNo, LocalDateTime now) {
         return rollbackOrderAssets(orderNo, now);
     }

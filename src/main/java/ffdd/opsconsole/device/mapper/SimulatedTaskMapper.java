@@ -112,6 +112,9 @@ public interface SimulatedTaskMapper {
 
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND sandbox=0 AND is_deleted=0 FOR UPDATE")
     Long lockUser(@Param("userId")long userId);
+    @Select(DEVICE + " AND UPPER(d.ownership_status)='OWNED'")
+    DeviceRow readOwnedDevice(@Param("userId") long userId, @Param("deviceId") long deviceId);
+
     // Device and runtime changes remain exclusive.
     @Select(DEVICE+" AND UPPER(d.ownership_status)='OWNED' FOR UPDATE OF d,r")
     DeviceRow lockDevice(@Param("userId")long userId,@Param("deviceId")long deviceId);

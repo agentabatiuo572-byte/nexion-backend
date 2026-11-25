@@ -31,6 +31,13 @@ public interface DeviceSlotReplacementMapper {
     Long successor(long userId, long oldDeviceId);
 
     @Select("""
+            SELECT old_device_id FROM nx_device_slot_replacement
+             WHERE user_id=#{userId} AND new_device_id=#{newDeviceId}
+             FOR UPDATE
+            """)
+    Long predecessor(long userId, long newDeviceId);
+
+    @Select("""
             SELECT EXISTS(SELECT 1 FROM nx_device_slot_replacement
                            WHERE user_id=#{userId} AND new_device_id=#{newDeviceId})
             """)

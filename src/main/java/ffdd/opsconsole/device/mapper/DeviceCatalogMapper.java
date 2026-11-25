@@ -1695,6 +1695,16 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                            @Param("idempotencyKey") String idempotencyKey,
                            @Param("now") LocalDateTime now);
 
+    @Select("""
+            SELECT d.id FROM nx_user_device d FORCE INDEX (idx_user_device_order)
+              LEFT JOIN nx_device_slot_replacement outgoing ON outgoing.old_device_id=d.id AND outgoing.user_id=d.user_id
+              LEFT JOIN nx_device_slot_replacement incoming ON incoming.new_device_id=d.id AND incoming.user_id=d.user_id
+             WHERE d.source_order_no=#{orderNo} AND d.is_deleted=0 AND d.ownership_status='OWNED'
+               AND (outgoing.old_device_id IS NOT NULL OR incoming.new_device_id IS NOT NULL)
+             ORDER BY d.user_id,d.id FOR UPDATE
+            """)
+    List<Long> lockRefundReplacementDeviceIds(@Param("orderNo") String orderNo);
+
     @Update("""
             UPDATE nx_user_device d
               JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id

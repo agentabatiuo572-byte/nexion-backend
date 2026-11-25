@@ -913,7 +913,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                                   AND active.source_environment='PRODUCTION' AND active.is_deleted=0
                                   AND UPPER(active.status) IN ('CLAIMED','RUNNING'))
             """)
-    int deactivatePendingDeviceAfterLeaseExpiry(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
+    int deactivatePendingDeviceAfterLastTask(@Param("userId") Long userId, @Param("deviceId") Long deviceId,
                                                 @Param("expectedRowVersion") Long expectedRowVersion,
                                                 @Param("now") LocalDateTime now);
 
