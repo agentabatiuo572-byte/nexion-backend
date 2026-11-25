@@ -270,10 +270,12 @@ public class PurchasePaymentService {
             }
             var snapshot = quote;
             if ("TRIAL_CONVERT".equals(kind)) {
+                var trialPricing = map(pricing.get("trial"));
                 snapshot = new LinkedHashMap<>(quote);
-                snapshot.put(TRIAL_CLAIM_SNAPSHOT, map(pricing.get("trial")).get("claimNo"));
-                snapshot.putAll(trials.externalDeviceSnapshot(owner, text(payload.get("productNo"))));
-                snapshot.put("trialPricingPolicy", map(pricing.get("trial")).get("trialPricingPolicy"));
+                snapshot.put(TRIAL_CLAIM_SNAPSHOT, trialPricing.get("claimNo"));
+                snapshot.putAll(trials.externalDeviceSnapshot(owner, text(payload.get("productNo")), trialPricing));
+                snapshot.put("trialPricingPolicy", trialPricing.get("trialPricingPolicy"));
+                quote.put("trialPurchaseBreakdown", snapshot.get("trialPurchaseBreakdown"));
             }
             db.write("INSERT INTO nx_purchase_payment_quote(quote_id,user_id,kind,payment_method,payload_json,quote_json,pricing_hash,expires_at) VALUES(?,?,?,?,?,?,?,?)",
                     id,owner,kind,method,json(payload),json(snapshot),hash(pricing),timestamp(expires));

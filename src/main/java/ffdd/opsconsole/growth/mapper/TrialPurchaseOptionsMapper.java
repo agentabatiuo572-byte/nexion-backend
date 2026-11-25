@@ -14,7 +14,7 @@ public interface TrialPurchaseOptionsMapper {
                    p.price_usdt priceUsdt,p.stock,p.status,p.store_visible storeVisible,p.unlock_phase unlockPhase,
                    p.gpu_model gpuModel,p.vram_total_gb vramTotalGb,s.power_text power,
             """ + StorefrontProductPublishGate.BLOCK_REASON_SQL + """
-             AS publishBlock
+             AS publishBlock, p.tagline
               FROM nx_product p LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0
             """;
@@ -72,5 +72,5 @@ public interface TrialPurchaseOptionsMapper {
     record Command(long actorId, String requestJson, String receiptJson) {}
     record Product(long id, String productNo, String name, String productType, String inventoryMode,
                    BigDecimal priceUsdt, Integer stock, String status, Boolean storeVisible, String unlockPhase,
-                   String gpuModel, Integer vramTotalGb, String power, String publishBlock) {}
+                   String gpuModel, Integer vramTotalGb, String power, String publishBlock, String tagline) {}
 }

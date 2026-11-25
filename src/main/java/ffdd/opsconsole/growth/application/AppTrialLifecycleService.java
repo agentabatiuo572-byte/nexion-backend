@@ -652,11 +652,19 @@ public class AppTrialLifecycleService {
         return ApiResult.ok(frozen);
     }
 
-    public Map<String, Object> externalDeviceSnapshot(Long owner, String productNo) {
+    public Map<String, Object> externalDeviceSnapshot(Long owner, String productNo, Map<String, Object> trialPricing) {
         TrialRow row = mapper.trial(owner);
         String code = externalPaymentProduct(row, productNo);
         var product = purchaseOptions.product(code);
-        var snapshot = linked("trialDeviceName", product == null ? row.deviceName() : product.name());
+        String name = product == null ? row.deviceName() : product.name();
+        var breakdown = linked("productNo", trialPricing.get("productNo"), "productName", name,
+                "priceUsdt", TrialPurchaseOptions.amount((BigDecimal) trialPricing.get("priceUsdt")),
+                "promoDiscountUsdt", TrialPurchaseOptions.amount((BigDecimal) trialPricing.get("promoDiscountUsdt")),
+                "offsetUsdt", TrialPurchaseOptions.amount((BigDecimal) trialPricing.get("offsetUsdt")),
+                "earlyDiscountUsdt", TrialPurchaseOptions.amount((BigDecimal) trialPricing.get("earlyDiscountUsdt")),
+                "amountUsdt", TrialPurchaseOptions.amount((BigDecimal) trialPricing.get("amountUsdt")));
+        if (product != null && StringUtils.hasText(product.tagline())) breakdown.put("productSubtitle", product.tagline());
+        var snapshot = linked("trialDeviceName", name, "trialPurchaseBreakdown", breakdown);
         var artwork = purchaseOptions.artwork(code);
         if (artwork != null) snapshot.putAll(linked("trialImageSku", artwork.sku(),
                 "trialImageAssetId", artwork.assetId(), "trialImageObjectKey", artwork.objectKey()));
