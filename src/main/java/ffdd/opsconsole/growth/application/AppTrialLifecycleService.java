@@ -11,8 +11,10 @@ import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.Attribution;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.PolicyRow;
+import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.TrialExternalPayment;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.TrialRow;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.WalletRow;
+import ffdd.opsconsole.growth.mapper.TrialPurchaseOptionsMapper.Product;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -50,6 +52,8 @@ import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
@@ -58,6 +62,7 @@ import org.springframework.util.StringUtils;
 
 /** H2 single source of truth: state, settlement, wallet/D4 and A4 all commit together. */
 @Service
+@Slf4j
 @RequiredArgsConstructor(onConstructor_ = @org.springframework.beans.factory.annotation.Autowired)
 public class AppTrialLifecycleService {
     @org.springframework.beans.factory.annotation.Autowired
@@ -68,6 +73,9 @@ public class AppTrialLifecycleService {
 
     @org.springframework.beans.factory.annotation.Autowired
     private TrialPurchaseOptions purchaseOptions;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private ObjectProvider<PurchasePaymentService> purchasePayments;
 
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
 
@@ -153,22 +161,19 @@ public class AppTrialLifecycleService {
         var codes = new java.util.LinkedHashSet<String>();
         codes.add(original);
         codes.addAll(purchaseOptions.selected());
-        var images = productImages.urls(codes);
+        var originalMethods = purchasePayments.getObject().availableTrialPaymentMethods();
         var options = new java.util.ArrayList<Map<String, Object>>();
         for (String code : codes) {
             boolean isOriginal = original.equals(code);
-            var product = purchaseOptions.product(code);
-            if (!isOriginal && product == null) continue;
-            BigDecimal price = isOriginal ? row.priceUsdt() : product.priceUsdt();
-            var option = linked("productNo", code, "name", isOriginal ? row.deviceName() : product.name(),
-                    "imageUrl", images.get(code), "originalTrialProduct", isOriginal,
-                    "productType", product == null ? "DEVICE" : product.productType(),
-                    "inventoryMode", product == null ? "FINITE" : product.inventoryMode(),
-                    "priceUsdt", TrialPurchaseOptions.amount(price),
-                    "paymentMethods", isOriginal ? List.of("WALLET", "CREGIS_USDT_BSC", "HDPAY_BANK") : List.of("WALLET"));
-            if (isOriginal) option.put("storePriceUsdt", product == null ? null : TrialPurchaseOptions.amount(product.priceUsdt()));
+            Product product = null;
+            BigDecimal price = isOriginal ? row.priceUsdt() : null;
+            Map<String, Object> quoteDetails = null;
+            String quoteVersion = null;
             String reason;
             try {
+                product = purchaseOptions.product(code);
+                if (!isOriginal && product == null) continue;
+                if (!isOriginal) price = product.priceUsdt();
                 reason = isOriginal ? purchaseOptions.listingBlock(product) : purchaseOptions.otherListingBlock(product);
                 if (!isOriginal && reason != null) continue;
                 if (positiveOrNull(price) == null || positiveOrNull(row.dailyUsdt()) == null
@@ -176,8 +181,8 @@ public class AppTrialLifecycleService {
                     throw new BizException(409, "TRIAL_DAILY_YIELD_INVALID");
                 }
                 var quote = quote(row, policy, now, false, code, price, false);
-                option.put("quote", decimalQuote(quote, price));
-                option.put("quoteVersion", quote.version());
+                quoteDetails = decimalQuote(quote, price);
+                quoteVersion = quote.version();
                 if (reason == null) reason = purchaseOptions.stockOrConfigurationBlock(product);
                 if (reason == null && !trialGateEnabled()) reason = "TRIAL_KILL_SWITCH_DISABLED";
                 if (reason == null) {
@@ -186,8 +191,20 @@ public class AppTrialLifecycleService {
                 }
             } catch (BizException ex) {
                 reason = ex.getMessage();
-            } catch (org.springframework.dao.DataAccessException | IllegalArgumentException ex) {
+            } catch (RuntimeException ex) {
+                log.warn("Could not read trial purchase option for SKU {}", code, ex);
                 reason = "TRIAL_PRODUCT_QUOTE_UNAVAILABLE";
+            }
+            var option = linked("productNo", code, "name", isOriginal ? row.deviceName() : product == null ? code : product.name(),
+                    "imageUrl", trialOptionImage(code), "originalTrialProduct", isOriginal,
+                    "productType", product == null ? (isOriginal ? "DEVICE" : null) : product.productType(),
+                    "inventoryMode", product == null ? (isOriginal ? "FINITE" : null) : product.inventoryMode(),
+                    "priceUsdt", TrialPurchaseOptions.amount(price),
+                    "paymentMethods", isOriginal ? originalMethods : List.of("WALLET"));
+            if (isOriginal) option.put("storePriceUsdt", product == null ? null : TrialPurchaseOptions.amount(product.priceUsdt()));
+            if (quoteDetails != null) {
+                option.put("quote", quoteDetails);
+                option.put("quoteVersion", quoteVersion);
             }
             option.put("canPurchase", reason == null);
             option.put("unavailableReason", reason);
@@ -195,6 +212,15 @@ public class AppTrialLifecycleService {
         }
         return ApiResult.ok(linked("claimNo", row.claimNo(), "serverTime", now.atZone(BUSINESS_ZONE).toOffsetDateTime().toString(),
                 "options", options));
+    }
+
+    private String trialOptionImage(String productNo) {
+        try {
+            return productImages.urlForSku(productNo);
+        } catch (RuntimeException ex) {
+            log.warn("Could not read trial purchase image for SKU {}", productNo, ex);
+            return null;
+        }
     }
 
     private LocalDateTime utcNow() {
@@ -396,52 +422,59 @@ public class AppTrialLifecycleService {
     private ApiResult<Map<String, Object>> cancelOnce(Long userId, String reason, boolean opsOverride) {
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CANCELLABLE");
-        if (!opsOverride && externalPaymentHoldsClaim(row)) throw new BizException(409, EXTERNAL_PAYMENT_IN_PROGRESS);
-        if (!opsOverride && purchaseOptions != null) {
-            var pending = purchaseOptions.balance(userId, row.claimNo());
-            if (pending != null) throw originalPurchaseConflict(pending, false);
-        }
+        if (!opsOverride) requireNoOriginalPurchase(row, false);
         return cancelClaim(userId, row, reason);
     }
 
-    private boolean externalPaymentHoldsClaim(TrialRow row) {
+    private TrialExternalPayment originalExternalPayment(TrialRow row) {
         var claim = new ExternalPaymentClaim(row.claimNo(), row.claimedAt().atZone(BUSINESS_ZONE).toInstant());
         Instant now = clock.instant();
-        // The caller owns the buyer and claim locks. A non-locking read preserves purchase delivery's intent -> buyer order.
-        return mapper.openTrialExternalPayments(row.userId()).stream().anyMatch(payment ->
-                claim.matches(payment.claimNo(), payment.pricingAsOf())
-                        && PurchasePaymentService.openPaymentHoldsTrial(payment.paymentMethod(), payment.deadline(), payment.reason(), now));
+        // Keep this a non-locking read under the caller's buyer lock, preserving delivery's intent -> buyer lock order.
+        for (var payment : mapper.openTrialExternalPayments(row.userId())) {
+            if (claim.matches(payment.claimNo(), payment.pricingAsOf())
+                    && !purchasePayments.getObject().lateTrialPaymentCanReselect(payment.intentNo(), payment.paymentMethod(),
+                            payment.deadline(), payment.providerDeadline(), payment.reason(), payment.status(), payment.paidAt(),
+                            payment.confirmedAt(), now)) {
+                return payment;
+            }
+        }
+        return null;
+    }
+
+    private Map<String, Object> externalPurchase(TrialRow row, TrialExternalPayment payment) {
+        String imageUrl = null;
+        try {
+            imageUrl = payment.imageSku() == null ? purchaseOptions.image(payment.productNo())
+                    : purchaseOptions.snapshotImage(payment.imageSku(), payment.imageAssetId(), payment.imageObjectKey());
+        } catch (RuntimeException unavailable) {
+            log.warn("Could not read trial purchase image for intent {}", payment.intentNo(), unavailable);
+        }
+        return linked("kind", "EXTERNAL", "claimNo", row.claimNo(), "intentNo", payment.intentNo(),
+                "productNo", payment.productNo(), "name", payment.deviceName() == null ? row.deviceName() : payment.deviceName(),
+                "imageUrl", imageUrl, "paymentMethod", payment.paymentMethod(), "expectedAmountUsdt", payment.confirmedAmount(),
+                "deadlineAt", PurchasePaymentService.effectivePaymentDeadline(payment.deadline(), payment.providerDeadline()).toString(),
+                "status", payment.status());
     }
 
     private Map<String, Object> originalPurchase(TrialRow row) {
         if (row == null || !active(row.status())) return null;
-        var claim = new ExternalPaymentClaim(row.claimNo(), row.claimedAt().atZone(BUSINESS_ZONE).toInstant());
-        for (var payment : mapper.openTrialExternalPayments(row.userId())) {
-            if (!claim.matches(payment.claimNo(), payment.pricingAsOf())
-                    || PurchasePaymentService.lateTrialPaymentCanReselect(payment.paymentMethod(), payment.deadline(),
-                            payment.providerDeadline(), payment.reason(), payment.status(), payment.paidAt(),
-                            payment.confirmedAt(), clock.instant())) {
-                continue;
-            }
-            return linked("kind", "EXTERNAL", "claimNo", row.claimNo(), "intentNo", payment.intentNo(),
-                    "productNo", payment.productNo(), "name", payment.deviceName() == null ? row.deviceName() : payment.deviceName(),
-                    "imageUrl", payment.imageSku() == null ? purchaseOptions.image(payment.productNo()) :
-                            purchaseOptions.snapshotImage(payment.imageSku(), payment.imageAssetId(), payment.imageObjectKey()),
-                    "paymentMethod", payment.paymentMethod(), "expectedAmountUsdt", payment.confirmedAmount(),
-                    "deadlineAt", PurchasePaymentService.effectivePaymentDeadline(payment.deadline(), payment.providerDeadline()).toString(),
-                    "status", payment.status());
-        }
-        return purchaseOptions.balance(row.userId(), row.claimNo());
+        var payment = originalExternalPayment(row);
+        if (payment == null) return purchaseOptions.balance(row.userId(), row.claimNo());
+        return externalPurchase(row, payment);
     }
 
     public void requireNoOriginalPurchase(long userId, boolean externalEntry) {
-        TrialRow row = mapper.trial(userId);
-        var original = originalPurchase(row);
-        // Preserve the existing balance exception for non-late review reasons.
-        if (!externalEntry && original != null && "EXTERNAL".equals(original.get("kind")) && !externalPaymentHoldsClaim(row)) {
-            original = purchaseOptions.balance(userId, row.claimNo());
+        requireNoOriginalPurchase(mapper.trial(userId), externalEntry);
+    }
+
+    private void requireNoOriginalPurchase(TrialRow row, boolean externalEntry) {
+        if (row == null || !active(row.status())) return;
+        var payment = originalExternalPayment(row);
+        if (payment != null) throw originalPurchaseConflict(externalPurchase(row, payment), externalEntry);
+        if (purchaseOptions != null) {
+            var pending = purchaseOptions.balance(row.userId(), row.claimNo());
+            if (pending != null) throw originalPurchaseConflict(pending, externalEntry);
         }
-        if (original != null) throw originalPurchaseConflict(original, externalEntry);
     }
 
     private TrialPurchaseConflict originalPurchaseConflict(Map<String, Object> purchase, boolean externalEntry) {
@@ -457,7 +490,7 @@ public class AppTrialLifecycleService {
         String admittedClaim = purchaseOptions.balanceClaim(userId, key);
         if (admittedClaim != null && !row.claimNo().equals(admittedClaim)) throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
         if (admittedClaim != null) return () -> {};
-        requireNoOriginalPurchase(userId, false);
+        requireNoOriginalPurchase(row, false);
         if (!withinConversionDeadline(conversionDeadline(row), businessNow())) {
             throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
         }
@@ -495,11 +528,7 @@ public class AppTrialLifecycleService {
         Map<String, String> policy = policyMap();
         TrialRow row = mapper.lockTrial(userId);
         if (row == null) return ApiResult.fail(409, "TRIAL_NOT_EXTENDABLE");
-        if (active(row.status()) && externalPaymentHoldsClaim(row)) throw new BizException(409, EXTERNAL_PAYMENT_IN_PROGRESS);
-        if (active(row.status()) && purchaseOptions != null) {
-            var pending = purchaseOptions.balance(userId, row.claimNo());
-            if (pending != null) throw originalPurchaseConflict(pending, false);
-        }
+        requireNoOriginalPurchase(row, false);
         LocalDateTime now = businessNow();
         if ("ACTIVE".equals(normalize(row.status())) && !row.expiresAt().isAfter(now)) {
             if (mapper.enterGrace(row.id(), row.version(), now) != 1) throw new BizException(409, "TRIAL_GRACE_CONFLICT");
@@ -869,7 +898,8 @@ public class AppTrialLifecycleService {
         requireUser(userId);
         TrialRow row = mapper.lockTrial(userId);
         // The scheduler reuses one key per due claim. Leave a transient payment hold outside the stored result.
-        if (row != null && active(row.status()) && row.claimNo().equals(expectedClaimNo) && externalPaymentHoldsClaim(row)) {
+        if (row != null && active(row.status()) && row.claimNo().equals(expectedClaimNo)
+                && originalExternalPayment(row) != null) {
             return ApiResult.fail(409, EXTERNAL_PAYMENT_IN_PROGRESS);
         }
         return once("TRIAL_SETTLE_DUE", userId, idempotencyKey, expectedClaimNo,

@@ -120,16 +120,79 @@ public class PurchasePaymentService {
         };
     }
     private static String method(CregisNetwork network){return network==CregisNetwork.BEP20?"CREGIS_USDT_BSC":"CREGIS_USDT_"+network.network();}
+
+    /** Channel availability for the original trial SKU, independent of its price and eligibility. */
+    public List<String> availableTrialPaymentMethods() {
+        Set<String> configured = new HashSet<>();
+        try {
+            for (var channel : maps(policy.current().get("channels"))) {
+                if (Boolean.TRUE.equals(channel.get("configured"))) {
+                    configured.add(text(channel.get("paymentMethod")));
+                }
+            }
+        } catch (RuntimeException unavailable) {
+            log.warn("Could not read trial purchase payment policy", unavailable);
+            return List.of("WALLET");
+        }
+
+        List<String> methods = new ArrayList<>();
+        methods.add("WALLET");
+        List<CregisNetwork> openNetworks = new ArrayList<>();
+        for (var network : CregisNetwork.values()) {
+            if (!configured.contains(method(network)) || !cregisDirectConfigured(network)) continue;
+            try {
+                cregisGate(network, true, false);
+                openNetworks.add(network);
+            } catch (BizException closed) {
+                // The provision gate or network switch is closed.
+            } catch (org.springframework.dao.DataAccessException unavailable) {
+                log.warn("Could not read trial purchase payment switch for {}", network, unavailable);
+            }
+        }
+        if (!openNetworks.isEmpty()) {
+            try {
+                var coins = crGateway.provider().projectCoins();
+                for (var network : openNetworks) {
+                    if (cregisAssetEnabled(network, coins)) methods.add(method(network));
+                }
+            } catch (CregisGatewayException unavailable) {
+                log.warn("Could not read Cregis purchase assets for trial: {}", unavailable.getMessage());
+            }
+        }
+        if (configured.contains("HDPAY_BANK")) {
+            try {
+                ready("HDPAY_BANK");
+                bankQuoteRate(fx.findFxQuoteConfig());
+                methods.add("HDPAY_BANK");
+            } catch (BizException | HdPayGatewayException closed) {
+                // The bank provider, server IP or quote configuration is unavailable.
+            } catch (RuntimeException unavailable) {
+                log.warn("Could not read trial purchase bank quote configuration", unavailable);
+            }
+        }
+        return methods;
+    }
+
+    private boolean cregisDirectConfigured(CregisNetwork network) {
+        return cr.getMode() == CregisProperties.Mode.PROVIDER && cr.isDepositEnabled()
+                && cr.isDepositCreditEnabled() && cr.getProjectId() > 0 && cr.confirmations(network) >= 15
+                && cr.networkConfigured(network) && cr.depositNetworkEnabled(network);
+    }
+
+    private static boolean cregisAssetEnabled(CregisNetwork network, List<CregisGateway.Coin> coins) {
+        return coins.stream().anyMatch(coin -> coin.addressEnabled() && network.chainId().equals(coin.chainId())
+                && network.tokenMatches(coin.tokenId()));
+    }
+
     private void ready(String method){
         if("HDPAY_BANK".equals(method)){
             if(!hd.ready())throw new BizException(503,"HDPAY_CONFIGURATION_INCOMPLETE");
             HdPayServerIp.requirePublicIpv4(hd.getServerIp());
         }else if(cregis(method)){
             var network=network(method);
-            if(cr.getMode()!=CregisProperties.Mode.PROVIDER||!cr.isDepositEnabled()||!cr.isDepositCreditEnabled()||cr.getProjectId()<=0||cr.confirmations(network)<15||!cr.networkConfigured(network)||!cr.depositNetworkEnabled(network))
+            if(!cregisDirectConfigured(network))
                 throw new BizException(503,"CREGIS_DIRECT_PAYMENT_UNAVAILABLE");
-            if(crGateway.provider().projectCoins().stream().noneMatch(coin->coin.addressEnabled()
-                    &&network.chainId().equals(coin.chainId())&&network.tokenMatches(coin.tokenId())))
+            if(!cregisAssetEnabled(network, crGateway.provider().projectCoins()))
                 throw new BizException(503,"CREGIS_DIRECT_PAYMENT_ASSET_UNAVAILABLE");
             cregisGate(network,true,false);
         }else throw new BizException(422,"PURCHASE_PAYMENT_METHOD_INVALID");
@@ -197,9 +260,8 @@ public class PurchasePaymentService {
                     "feePolicyVersion",current.get("version"),"paymentFeesConfigured",true,"pricingAsOf",pricingAt.toString(),"expiresAt",expires.toString(),"deadlineAt",deadline.toString(),"confirmationGraceEndsAt",graceEnd(method,deadline).toString(),"currency","HDPAY_BANK".equals(method)?"VND":"USDT");
             if ("TRIAL_CONVERT".equals(kind)) quote.put("trialOffsetBasis", "ACCRUED_B90");
             if("HDPAY_BANK".equals(method)){
-                var config=fx.findFxQuoteConfig();if(config==null)throw new BizException(503,"FX_QUOTE_UNAVAILABLE");
-                BigDecimal quoted=VietnamPaymentPolicy.quoteRate(new BigDecimal(text(config.get("baseRateVndPerUsdt"))),new BigDecimal(text(config.get("buySpreadPct"))));
-                if(quoted.signum()<=0)throw new BizException(503,"FX_QUOTE_UNAVAILABLE");
+                var config=fx.findFxQuoteConfig();
+                BigDecimal quoted=bankQuoteRate(config);
                 quote.put("fxRateVndPerUsdt",quoted.toPlainString());quote.put("fxVersion",config.get("version"));
                 quote.put("amountVnd",total.multiply(quoted).setScale(0,RoundingMode.HALF_UP).toPlainString());
             }
@@ -215,6 +277,14 @@ public class PurchasePaymentService {
             return quote;
         });
     }
+    private BigDecimal bankQuoteRate(Map<String, Object> config) {
+        if (config == null) throw new BizException(503, "FX_QUOTE_UNAVAILABLE");
+        BigDecimal rate = VietnamPaymentPolicy.quoteRate(new BigDecimal(text(config.get("baseRateVndPerUsdt"))),
+                new BigDecimal(text(config.get("buySpreadPct"))));
+        if (rate.signum() <= 0) throw new BizException(503, "FX_QUOTE_UNAVAILABLE");
+        return rate;
+    }
+
     private List<Map<String,Object>> activeIntents(Object owner,Object kind,String payload,String excluding){
         // Resolve legacy aliases with the actual order column's collation, not JSON/string equality.
         return db.rows("SELECT p.intent_no,p.kind,p.status,p.reason,p.confirmed_at,p.receipt_json FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND "+IN_PROGRESS+" AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
@@ -312,15 +382,36 @@ public class PurchasePaymentService {
         if (!deadline.isAfter(current)) throw new BizException(409, "ORDER_PAYMENT_EXPIRED");
     }
     static Instant graceEnd(Object method,Instant deadline){return deadline.plusSeconds("CREGIS_USDT_BSC".equals(method)?180:300);}
-    public static boolean openPaymentHoldsTrial(String method, Instant deadline, String reason, Instant now) {
-        // Unpaid attempts stay open until reconciliation expires them. Deliverable funds keep the claim for delivery or retry.
-        return !NON_DELIVERABLE_FUNDS.contains(text(reason)) || now.isBefore(graceEnd(method, deadline));
-    }
-    public static boolean lateTrialPaymentCanReselect(String method, Instant deadline, Instant providerDeadline,
+    public boolean lateTrialPaymentCanReselect(String intentNo, String method, Instant deadline, Instant providerDeadline,
             String reason, String status, Instant paidAt, Instant confirmedAt, Instant now) {
         return "MANUAL_REVIEW".equals(status) && "PAYMENT_LATE_REVIEW".equals(reason)
-                && confirmedAt != null && paidAt != null && !paidAt.isBefore(effectivePaymentDeadline(deadline, providerDeadline))
-                && !now.isBefore(graceEnd(method, deadline));
+                && confirmedAt != null && paidAt != null && !paidAt.isAfter(confirmedAt)
+                && !paidAt.isBefore(effectivePaymentDeadline(deadline, providerDeadline))
+                && !now.isBefore(graceEnd(method, deadline))
+                && verifiedLateTrialArrival(intentNo, method);
+    }
+
+    // Old quota-release processing could label any arrival as late. Check the persisted payment evidence.
+    private boolean verifiedLateTrialArrival(String intentNo, String method) {
+        if ("HDPAY_BANK".equals(method)) {
+            return db.one("""
+                    SELECT 1 FROM nx_purchase_payment_intent
+                     WHERE intent_no=? AND paid_at>=created_at AND confirmed_bank_amount_vnd>0
+                       AND confirmed_bank_amount_vnd=CAST(JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.amountVnd')) AS DECIMAL(20,0))
+                    """, intentNo) != null;
+        }
+        if (!cregis(method)) return false;
+        return db.one("""
+                SELECT 1 FROM nx_purchase_payment_arrival a
+                  JOIN nx_purchase_payment_intent p ON p.intent_no=a.intent_no AND p.provider_project=a.provider_project
+                  JOIN nx_cregis_deposit_address d ON d.purchase_intent_no=a.intent_no AND d.chain_id=a.chain_id
+                   AND d.purpose='PURCHASE_DIRECT' AND d.state='DIRECT_PURCHASE'
+                 WHERE a.intent_no=? AND a.chain_id=?
+                   AND a.block_number>d.allocation_block AND a.amount>0
+                   AND a.amount=CAST(JSON_UNQUOTE(JSON_EXTRACT(p.quote_json,'$.totalUsdt')) AS DECIMAL(38,18))
+                   AND NOT EXISTS (SELECT 1 FROM nx_purchase_payment_arrival other
+                                   WHERE other.intent_no=a.intent_no AND other.id<>a.id)
+                """, intentNo, network(method).chainId()) != null;
     }
 
     public static Instant effectivePaymentDeadline(Instant deadline, Instant providerDeadline) {
@@ -974,7 +1065,9 @@ public class PurchasePaymentService {
     }
     private String arrivalReasonAfterQuotaRelease(Map<String, Object> locked, String reason) {
         var reservation = quotaHolds.read(locked);
+        // Keep a trial's specific review reason. A released quota can prevent delivery but cannot prove late payment.
         return reservation != null && reservation.state() == PurchaseQuotaReservation.State.RELEASED
+                && (!"TRIAL_CONVERT".equals(locked.get("kind")) || reason.isBlank())
                 ? "PAYMENT_LATE_REVIEW" : reason;
     }
 
@@ -1287,7 +1380,7 @@ public class PurchasePaymentService {
             if ("EXPIRED".equals(row.get("status")) && row.get("confirmed_at") == null
                     && !"QUERY_UNKNOWN".equals(row.get("reconciliation_status"))) {
                 result.put("trialPurchaseOutcome", "UNPAID_TERMINAL");
-            } else if (lateTrialPaymentCanReselect(text(row.get("payment_method")), deadline(row), paymentDeadline(row),
+            } else if (lateTrialPaymentCanReselect(text(row.get("intent_no")), text(row.get("payment_method")), deadline(row), paymentDeadline(row),
                     text(row.get("reason")), text(row.get("status")), row.get("paid_at") == null ? null : instant(row.get("paid_at")),
                     row.get("confirmed_at") == null ? null : instant(row.get("confirmed_at")), now())) {
                 result.put("trialPurchaseOutcome", "LATE_PAYMENT_REVIEW");

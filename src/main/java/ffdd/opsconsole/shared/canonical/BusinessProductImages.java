@@ -6,6 +6,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +33,21 @@ public class BusinessProductImages {
         return result;
     }
 
+    /** A single-SKU read only depends on that SKU and its own possible series fallback. */
+    public String urlForSku(String sku) {
+        var row = findArtwork(sku);
+        if (row != null && needsSeriesFallback(row)) {
+            String representative = ProductSeries.kind(row.seriesCode(), null);
+            if (representative != null && !representative.equals(sku)) row = findArtwork(representative);
+        }
+        return url(toArtwork(row));
+    }
+
+    private AppTradeinMapper.ProductArtwork findArtwork(String sku) {
+        if (sku == null || sku.isBlank()) return null;
+        return mapper.businessProductArtwork(List.of(sku)).stream().findFirst().orElse(null);
+    }
+
     public Map<String, Artwork> artwork(Collection<String> skuCodes) {
         var requested = new LinkedHashSet<>(skuCodes);
         requested.removeIf(code -> code == null || code.isBlank());
@@ -49,14 +65,22 @@ public class BusinessProductImages {
         for (String sku : requested) {
             var row = rows.get(sku);
             if (row == null) continue;
-            if ((row.assetId() == null || row.assetId().isBlank()) && (row.objectKey() == null || row.objectKey().isBlank())) {
-                row = rows.get(ProductSeries.kind(row.seriesCode(), null));
-            }
-            if (row == null || !ManagedSkuMediaIdentity.isApprovedImageObjectKey(row.objectKey())
-                    || !ManagedSkuMediaIdentity.isCanonicalPair(row.assetId(), row.objectKey())) continue;
-            result.put(sku, new Artwork(row.sku(), row.assetId(), row.objectKey()));
+            if (needsSeriesFallback(row)) row = rows.get(ProductSeries.kind(row.seriesCode(), null));
+            var source = toArtwork(row);
+            if (source != null) result.put(sku, source);
         }
         return result;
+    }
+
+    private static boolean needsSeriesFallback(AppTradeinMapper.ProductArtwork row) {
+        return (row.assetId() == null || row.assetId().isBlank())
+                && (row.objectKey() == null || row.objectKey().isBlank());
+    }
+
+    private static Artwork toArtwork(AppTradeinMapper.ProductArtwork row) {
+        return row != null && ManagedSkuMediaIdentity.isApprovedImageObjectKey(row.objectKey())
+                && ManagedSkuMediaIdentity.isCanonicalPair(row.assetId(), row.objectKey())
+                ? new Artwork(row.sku(), row.assetId(), row.objectKey()) : null;
     }
 
     public String url(Artwork artwork) {
