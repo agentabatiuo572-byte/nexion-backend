@@ -454,7 +454,7 @@ public class AuditLogService {
                 firstText(request.getPath(), servletRequest == null ? null : servletRequest.getRequestURI()),
                 normalizeCode(request.getResult(), "SUCCESS"),
                 normalizeCode(request.getRiskLevel(), "INFO"),
-                sanitizer.toSafeJson(detail),
+                sanitizer.toSafeJson(detail, "A2_OPERATION_PROPOSED".equals(action)),
                 retentionMonths,
                 expireAt);
     }

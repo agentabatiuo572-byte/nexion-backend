@@ -53,6 +53,7 @@ import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
 import ffdd.opsconsole.shared.audit.A2AuditAggregate;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
+import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.idempotency.AdminCommandBusinessRejection;
 import ffdd.opsconsole.shared.exception.AppTextChineseNotAllowedException;
@@ -405,6 +406,7 @@ public class OpsAuditCenterService {
             return ApiResult.fail(proposalContext.getCode(), proposalContext.getMessage());
         }
         AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor descriptor = proposalContext.getData();
+        Map<String, Object> auditDetail = new LinkedHashMap<>();
         AuditLockTarget target = request.target();
         if (A2ReplayContext.isAvatarCommand(command)) {
             var expectedTarget = A2ReplayContext.avatarTarget(command);
@@ -449,7 +451,9 @@ public class OpsAuditCenterService {
                         : "RISK_LEAD".equals(actualRole) ? "风控主管"
                         : accessPolicy.authenticatedOperatorRoleLabel());
             } else if (!superAdminProposal && replayBusinessPermissionGuard.delegatedProposal()) {
-                ticket.setOperatorRole("风控");
+                String roleCode = accessPolicy.current().roleCode();
+                ticket.setOperatorRole(AdminOperatorRoleResolver.roleLabel(roleCode));
+                if (roleCode != null) auditDetail.put("role", roleCode);
             }
             ticket.setOperationType(descriptor.operationType());
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
@@ -728,6 +732,16 @@ public class OpsAuditCenterService {
         ticketMapper.insert(ticket);
         if (promotions != null && refundOrderNo != null) promotions.holdA2Refund(ticket.getOperationId(), refundOrderNo);
 
+        auditDetail.putAll(Map.of(
+                "operationId", ticket.getOperationId(),
+                "action", ticket.getAction(),
+                "resource", ticket.getObjectText(),
+                "before", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getBeforeValue() : auditReviewValue(ticket, "before"),
+                "after", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getAfterValue() : auditReviewValue(ticket, "after"),
+                "type", ticket.getOperationType(),
+                "sourceDomain", sourceDomain,
+                "reason", ticket.getReason(),
+                "idempotencyKey", idempotencyKey.trim()));
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
                 .action(A2_OPERATION_PROPOSED)
                 .resourceType("A2_OPERATION")
@@ -737,16 +751,7 @@ public class OpsAuditCenterService {
                 .actorUsername(ticket.getOperatorName())
                 .result("SUCCESS")
                 .riskLevel(operationRiskLevel(ticket))
-                .detail(Map.of(
-                        "operationId", ticket.getOperationId(),
-                        "action", ticket.getAction(),
-                        "resource", ticket.getObjectText(),
-                        "before", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getBeforeValue() : auditReviewValue(ticket, "before"),
-                        "after", TeamFundApproval.supports(command) || G3MarketApproval.supports(command) ? ticket.getAfterValue() : auditReviewValue(ticket, "after"),
-                        "type", ticket.getOperationType(),
-                        "sourceDomain", sourceDomain,
-                        "reason", ticket.getReason(),
-                        "idempotencyKey", idempotencyKey.trim()))
+                .detail(auditDetail)
                 .build());
         return ApiResult.ok(toTicket(ticket, true));
     }

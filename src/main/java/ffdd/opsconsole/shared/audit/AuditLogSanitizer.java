@@ -28,12 +28,16 @@ public class AuditLogSanitizer {
     private final ObjectMapper objectMapper;
 
     public String toSafeJson(Object detail) {
+        return toSafeJson(detail, false);
+    }
+
+    String toSafeJson(Object detail, boolean retainProposalRole) {
         if (detail == null) {
             return null;
         }
         try {
             Object sanitized = sanitizeValue(detail);
-            return clip(objectMapper.writeValueAsString(sanitized), sanitized);
+            return clip(objectMapper.writeValueAsString(sanitized), sanitized, retainProposalRole);
         } catch (JsonProcessingException ex) {
             return "{\"serialization\":\"failed\"}";
         }
@@ -99,7 +103,7 @@ public class AuditLogSanitizer {
         return false;
     }
 
-    private String clip(String json, Object sanitized) {
+    private String clip(String json, Object sanitized, boolean retainProposalRole) {
         if (json == null || json.length() <= MAX_DETAIL_JSON_LENGTH) {
             return json;
         }
@@ -118,6 +122,9 @@ public class AuditLogSanitizer {
                 if ((value instanceof CharSequence || value instanceof Number) && value.toString().length() <= 128) {
                     clipped.put(key, value);
                 }
+            }
+            if (retainProposalRole && map.get("role") instanceof String role && role.length() <= 80) {
+                clipped.put("role", role);
             }
         }
         try {

@@ -20,7 +20,7 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
               before_value VARCHAR(128) NOT NULL,
               after_value VARCHAR(128) NOT NULL,
               operator_name VARCHAR(128) NOT NULL,
-              operator_role VARCHAR(32) NOT NULL,
+              operator_role VARCHAR(80) NOT NULL,
               operation_type VARCHAR(32) NOT NULL,
               amplifies TINYINT NOT NULL DEFAULT 0,
               sos TINYINT NOT NULL DEFAULT 0,

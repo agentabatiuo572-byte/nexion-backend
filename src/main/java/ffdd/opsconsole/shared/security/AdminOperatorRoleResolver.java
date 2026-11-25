@@ -27,8 +27,7 @@ public class AdminOperatorRoleResolver {
     }
 
     public String resolve() {
-        String roleCode = resolveCode();
-        return roleCode == null ? "认证运营员" : roleLabel(roleCode);
+        return roleLabel(resolveCode());
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -42,7 +41,8 @@ public class AdminOperatorRoleResolver {
         }
     }
 
-    private static String roleLabel(String roleCode) {
+    public static String roleLabel(String roleCode) {
+        if (roleCode == null) return "认证运营员";
         return switch (roleCode) {
             case "SUPER_ADMIN" -> "超管";
             case "CONFIG_ADMIN" -> "配置管理员";
