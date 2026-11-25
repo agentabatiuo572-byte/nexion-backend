@@ -3977,6 +3977,28 @@ public class OpsTeamService implements AuditReplayable {
         var rewards = commissionRepository.vRankRewardsForUpdate("V8").stream()
                 .map(this::normalizeRewardMap)
                 .toList();
+        Map<String, String> voucherNames = null;
+        Map<String, String> skuNames = null;
+        for (var reward : rewards) {
+            String type = String.valueOf(reward.get("type")).trim().toLowerCase(Locale.ROOT);
+            if ("voucher".equals(type) && reward.containsKey("voucherId")) {
+                if (voucherNames == null) {
+                    voucherNames = voucherLabels();
+                }
+                String name = voucherNames.get(reward.get("voucherId"));
+                if (name != null) {
+                    reward.put("voucherName", name);
+                }
+            } else if ("sku".equals(type) && reward.containsKey("skuId")) {
+                if (skuNames == null) {
+                    skuNames = skuLabels();
+                }
+                String name = skuNames.get(reward.get("skuId"));
+                if (name != null) {
+                    reward.put("skuName", name);
+                }
+            }
+        }
         return new V8PromotionSnapshot(originalRank, rewards, v7, v8);
     }
 
