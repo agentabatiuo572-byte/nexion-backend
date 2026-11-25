@@ -51,19 +51,18 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
     List<Long> findK4BatchRecomputeOwners(@Param("recordId") long recordId, @Param("scope") String scope,
                                            @Param("key") String key, @Param("hash") String hash);
 
-    /** Exact durable command identity; retention may move the audit into its cold payload. */
+    /** A truncated legacy audit may still carry the command identity injected by AuditLogService. */
     @Select("""
-            SELECT operationId,
-                   IF(COUNT(DISTINCT BINARY actorUsername)=1, MIN(actorUsername), NULL) AS actorUsername
-              FROM (
-              SELECT resource_id AS operationId, actor_username AS actorUsername
+            WITH receipts AS (
+              SELECT resource_id AS operationId, actor_username AS actorUsername,
+                     CAST(detail_json AS CHAR CHARACTER SET utf8mb4) AS receiptDetail
                 FROM nx_audit_log
                WHERE is_deleted=0 AND actor_type='ADMIN' AND actor_id=#{actorId}
                  AND action=#{action} AND resource_type='A2_OPERATION' AND result='SUCCESS'
-                 AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey'))=BINARY #{key}
               UNION ALL
               SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS operationId,
-                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')), 'null') AS actorUsername
+                     NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')), 'null') AS actorUsername,
+                     JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')) AS receiptDetail
                 FROM nx_audit_log_archive
                WHERE content_sha256 IS NOT NULL
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
@@ -71,10 +70,21 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))=#{action}
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='A2_OPERATION'
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
-                 AND BINARY JSON_UNQUOTE(JSON_EXTRACT(
-                       JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.idempotencyKey'))=BINARY #{key}
-            ) receipts
+            )
+            SELECT operationId,
+                   IF(COUNT(DISTINCT BINARY actorUsername)=1, MIN(actorUsername), NULL) AS actorUsername
+              FROM receipts
              WHERE (#{operationId} IS NULL OR operationId=#{operationId})
+               AND (BINARY JSON_UNQUOTE(JSON_EXTRACT(receiptDetail,'$.idempotencyKey'))=BINARY #{key}
+                 OR (JSON_CONTAINS_PATH(receiptDetail,'one','$.idempotencyKey')=0
+                 AND JSON_EXTRACT(receiptDetail,'$.truncated')=CAST('true' AS JSON)
+                 AND BINARY JSON_UNQUOTE(JSON_EXTRACT(receiptDetail,'$._adminCommand.scope'))=BINARY 'A2_COMMAND'
+                 AND JSON_TYPE(JSON_EXTRACT(receiptDetail,'$._adminCommand.commandKey'))='STRING'
+                 AND BINARY JSON_UNQUOTE(JSON_EXTRACT(receiptDetail,'$._adminCommand.commandKey'))=BINARY #{key}
+                 AND JSON_TYPE(JSON_EXTRACT(receiptDetail,'$._adminCommand.recordId')) IN ('INTEGER','UNSIGNED INTEGER')
+                 AND JSON_EXTRACT(receiptDetail,'$._adminCommand.recordId') > 0
+                 AND REGEXP_LIKE(JSON_UNQUOTE(JSON_EXTRACT(receiptDetail,'$._adminCommand.requestHash')),
+                                 '^[0-9a-f]{64}$','c')))
              GROUP BY operationId
              LIMIT 2
             """)
