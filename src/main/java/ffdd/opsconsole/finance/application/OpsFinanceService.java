@@ -428,7 +428,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 var proposed = request.getNetworkConfirmFeeUsd();
                 before.put(field, d5NetworkSummary(original));
                 after.put(field, d5NetworkSummary(proposed));
-                changes.add(Map.of("field", field, "before", original, "after", proposed, "unit", "USD"));
+                changes.add(Map.of("field", field, "before", original, "after", proposed, "unit", "USDT"));
             } else if ("networkEnabled".equals(field)) {
                 var original = change.beforeNetworkEnabled();
                 var proposed = request.getNetworkEnabled();
@@ -443,9 +443,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 String unit = switch (field) {
                     case "dailyLimitCount" -> "count";
                     case "balanceMaxRatio", "networkFeeRatio" -> "ratio";
-                    case "minUsdt", "networkFeeMin", "networkFeeMax" -> "USDT";
+                    case "minUsdt", "networkFeeMin", "networkFeeMax", "smallAmountThresholdUsd" -> "USDT";
                     case "nexFeeOffsetRate" -> "USDT/UVT";
-                    case "smallAmountThresholdUsd" -> "USD";
                     case "payoutSlaHours", PayoutAddressProtection.EFFECTIVE_DELAY_FIELD -> "hours";
                     case PayoutAddressProtection.CHANGE_COOLDOWN_FIELD -> "days";
                     default -> throw new IllegalArgumentException("Unsupported D5 field");

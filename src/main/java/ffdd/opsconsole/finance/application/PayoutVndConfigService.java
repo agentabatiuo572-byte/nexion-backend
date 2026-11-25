@@ -106,7 +106,7 @@ public class PayoutVndConfigService {
                     String unit = switch (field) {
                         case "sellSpreadPct", "requoteTolerancePct", "feeRatePct" -> "%";
                         case "quoteTtlMinWithdraw" -> "minutes";
-                        default -> "USD";
+                        default -> "USDT";
                     };
                     changes.add(Map.of("field", field, "before", current.values().get(field),
                             "after", next.get(field), "unit", unit));
