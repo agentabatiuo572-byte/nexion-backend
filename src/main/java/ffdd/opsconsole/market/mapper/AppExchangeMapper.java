@@ -126,6 +126,18 @@ public interface AppExchangeMapper {
     List<MarketPoint> marketHistoryPoints();
 
     @Select("""
+            SELECT COALESCE(SUM(CASE WHEN UPPER(o.from_asset)='USDT' THEN o.from_amount
+                                     ELSE ROUND(o.from_amount * o.rate, 6) END),0)
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE o.is_deleted=0 AND UPPER(o.status) IN ('COMPLETED','SUCCESS')
+               AND o.updated_at>=DATE_SUB(NOW(),INTERVAL 24 HOUR) AND o.updated_at<=NOW()
+               AND ((UPPER(o.from_asset)='USDT' AND UPPER(o.to_asset) IN ('UVT','NEX'))
+                 OR (UPPER(o.from_asset) IN ('UVT','NEX') AND UPPER(o.to_asset)='USDT'))
+            """)
+    BigDecimal marketVolume24hUsdt();
+
+    @Select("""
             SELECT metricCode,metricLabel,priceUsdt,deltaPercent,volume24hUsdt,sparkline,sampledAt
               FROM (
                     SELECT metric_code AS metricCode,metric_label AS metricLabel,
