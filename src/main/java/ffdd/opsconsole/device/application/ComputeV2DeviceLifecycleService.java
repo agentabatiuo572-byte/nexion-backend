@@ -12,8 +12,10 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -64,9 +66,14 @@ public class ComputeV2DeviceLifecycleService {
 
     /** Read-only estimate for Compute V2. The caller also checks simulated and legacy work. */
     public boolean slotReplacementWaitsForComputeV2(long userId,long deviceId,String instanceNo) {
-        var view=ownedView(userId,deviceId);
-        if(view.isPresent())return slotReplacementWaits(view.get(),instanceNo) || mapper.hasUnresolvedComputeV1Request(userId,deviceId);
-        if(runtime.isPresent() && enrolled.contains(deviceId) && mapper.hasUnresolvedComputeV1Request(userId,deviceId))
+        if(runtime.isEmpty() || !enrolled.contains(deviceId))return false;
+        var snapshot=runtime.get().replacementView(userId,deviceId);
+        if(snapshot.isPresent()) {
+            var view=snapshot.get();
+            return slotReplacementWaits(view.event(),view.status(),view.executing(),instanceNo,view::exited)
+                    || mapper.hasUnresolvedComputeV1Request(userId,deviceId);
+        }
+        if(mapper.hasUnresolvedComputeV1Request(userId,deviceId))
             throw error("COMPUTE_V2_LEGACY_REQUEST_UNRESOLVED");
         return false;
     }
@@ -162,6 +169,35 @@ public class ComputeV2DeviceLifecycleService {
         if (runtimeToStop != null) simulated.stopForH5Login(runtimeToStop);
     }
 
+    /** An uncertain Redis read leaves the swap pending without blocking native session revocation. */
+    public boolean hasOtherWorkAfterPhoneTaskCancellation(long userId, long deviceId, String instanceNo) {
+        boolean enrolledInV2 = runtime.isPresent() && enrolled.contains(deviceId);
+        if (enrolledInV2) {
+            try {
+                var snapshot = runtime.orElseThrow().replacementView(userId, deviceId);
+                if (snapshot.isPresent()) {
+                    var view = snapshot.get();
+                    var event = view.event();
+                    if (!instanceNo.equals(event.instanceNo()) || !scope.equals(event.deploymentScope())
+                            || !drained(view.status(), event.task().startedAt() != null, view.executing(), view::exited))
+                        return true;
+                }
+            } catch (DataAccessException | BizException uncertain) {
+                return true;
+            }
+        }
+        if (mapper.hasUnresolvedComputeV1Request(userId, deviceId)) return true;
+        try {
+            var simulatedRuntime = simulated.lockReplacementRuntime(userId, deviceId, instanceNo, true, enrolledInV2);
+            return simulatedRuntime != null && simulatedRuntime.currentTaskNo() != null;
+        } catch (BizException blocked) {
+            return switch (blocked.getMessage()) {
+                case "SIMULATED_DEVICE_BUSY", "COMPUTE_V2_DEVICE_BUSY", "COMPUTE_V2_LEGACY_REQUEST_UNRESOLVED" -> true;
+                default -> throw blocked;
+            };
+        }
+    }
+
     private Optional<RuntimeView> ownedView(long user,long device) {
         if(runtime.isEmpty() || !enrolled.contains(device))return Optional.empty();
         if(!runtime.get().isReady())throw new BizException(503,"COMPUTE_V2_RUNTIME_RECOVERING");
@@ -192,19 +228,29 @@ public class ComputeV2DeviceLifecycleService {
     }
 
     private boolean drained(RuntimeView view) {
-        if(view.executorId()!=null)return false;
         var event=view.event();
-        if(event.task().startedAt()==null)return "FAILED".equals(view.status());
-        return runtime.orElseThrow().hasExited(event.taskNo(),event.generation());
+        return drained(view.status(),event.task().startedAt()!=null,view.executorId()!=null,
+                ()->runtime.orElseThrow().hasExited(event.taskNo(),event.generation()));
+    }
+
+    private boolean drained(String status,boolean started,boolean executing,BooleanSupplier exited) {
+        return !executing && (started ? exited.getAsBoolean() : "FAILED".equals(status));
     }
 
     private boolean slotReplacementWaits(RuntimeView view,String instanceNo) {
-        if(!instanceNo.equals(view.event().instanceNo()) || !scope.equals(view.event().deploymentScope()))
+        var event=view.event();
+        return slotReplacementWaits(event,view.status(),view.executorId()!=null,instanceNo,
+                ()->runtime.orElseThrow().hasExited(event.taskNo(),event.generation()));
+    }
+
+    private boolean slotReplacementWaits(ComputeV2Event event,String status,boolean executing,String instanceNo,BooleanSupplier exited) {
+        if(!instanceNo.equals(event.instanceNo()) || !scope.equals(event.deploymentScope()))
             throw error("COMPUTE_V2_OWNER_CHANGED");
-        if(view.status()==null)throw new BizException(503,"COMPUTE_V2_RUNTIME_RECOVERING");
-        return switch(view.status()) {
-            case "ISSUING","QUEUED" -> !neverStartedQueue(view);
-            case "COMPLETED","FAILED","RECOVERING" -> !drained(view);
+        if(status==null)throw new BizException(503,"COMPUTE_V2_RUNTIME_RECOVERING");
+        boolean started=event.task().startedAt()!=null;
+        return switch(status) {
+            case "ISSUING","QUEUED" -> executing || started;
+            case "COMPLETED","FAILED","RECOVERING" -> !drained(status,started,executing,exited);
             case "STARTING","COMPUTING","VERIFYING","FAILING" -> true;
             default -> throw new BizException(503,"COMPUTE_V2_RUNTIME_RECOVERING");
         };
@@ -297,6 +343,19 @@ public class ComputeV2DeviceLifecycleService {
         }));
     }
 
+    private void finalizePendingPhoneTaskCancellation(long userId, long deviceId) {
+        transaction.executeWithoutResult(status -> {
+            var owner = mapper.lockUser(userId);
+            var device = mapper.lockDeviceForUserCommand(deviceId);
+            if (owner == null || owner.sandbox() || device == null || device.userId() != userId
+                    || !device.pendingDeactivate() || !"OWNED".equals(device.ownershipStatus())) return;
+            String taskNo = mapper.cancelledPendingSlotPhoneTask(userId, deviceId);
+            if (taskNo == null || mapper.hasActiveTask(userId, deviceId)
+                    || hasOtherWorkAfterPhoneTaskCancellation(userId, deviceId, device.instanceNo())) return;
+            finishLocked(userId, device, taskNo, "USER_DEVICE_DEFERRED_DEACTIVATED");
+        });
+    }
+
     private boolean finishLocked(long user,CanonicalStateMapper.UserDeviceCommandRow row,String task,String action) {
         var attribution=mapper.userEventAttribution(user);
         if(attribution==null)throw error("USER_EVENT_ATTRIBUTION_UNAVAILABLE");
@@ -322,6 +381,8 @@ public class ComputeV2DeviceLifecycleService {
             try{
                 var current=ownedView(row.userId(),row.deviceId());
                 if(current.isPresent())drain(row.userId(),row.deviceId(),current.get().event().taskNo(),current.get().event().generation(),null);
+                else if(enrolled.contains(row.deviceId()) && mapper.cancelledPendingSlotPhoneTask(row.userId(),row.deviceId())!=null)
+                    finalizePendingPhoneTaskCancellation(row.userId(),row.deviceId());
                 else{
                     var exited=mapper.lastComputeV2Exit(row.userId(),row.deviceId(),scope);
                     if(exited!=null)finalizeExited(row.userId(),row.deviceId(),exited.taskNo(),exited.generation());

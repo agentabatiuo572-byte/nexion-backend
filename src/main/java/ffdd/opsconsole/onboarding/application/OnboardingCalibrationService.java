@@ -476,12 +476,11 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         if (sandbox != 0) return;
         var binding = mapper.phoneBinding(userId,"PRODUCTION","");
         if (binding == null) return;
-        mapper.claimPhoneExecution(userId, executionSupported && installationId.equals(binding.installationId())
-                ? installationId : "");
         if (executionSupported && installationId.equals(binding.installationId())) {
+            mapper.claimPhoneExecution(userId, installationId);
             mapper.lockPhoneDevices(userId);
             mapper.restoreBoundPhoneRuntime(userId,binding.userDeviceId());
-        } else stopPhoneTasks(userId, -1L);
+        } else stopPhoneExecution(userId);
     }
 
     @Override
@@ -508,7 +507,8 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
 
     private void stopPhoneExecution(long userId) {
         mapper.claimPhoneExecution(userId, "");
-        stopPhoneTasks(userId, -1L);
+        stopPhoneTasks(userId, -1L).stream().map(ReplacedPhoneTask::userDeviceId).distinct()
+                .forEach(deviceId -> capacity.finishPendingPhoneSlotAfterTaskCancellation(userId, deviceId));
     }
 
     /** Only the guarded current APP may call this; it never claims or stops another installation. */
@@ -628,7 +628,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         }
     }
 
-    private void cancelReplacedPhoneTasks(Long userId, Long keepUserDeviceId, boolean scheduledReconciliation) {
+    private List<ReplacedPhoneTask> cancelReplacedPhoneTasks(Long userId, Long keepUserDeviceId, boolean scheduledReconciliation) {
         mapper.lockPhoneDevices(userId);
         List<ReplacedPhoneTask> tasks = mapper.lockOtherPhoneTasks(userId, keepUserDeviceId);
         if (tasks == null) throw new BizException(503, "ONBOARDING_PHONE_TASK_READ_FAILED");
@@ -652,11 +652,13 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             }
             outboxService.publish("COMPUTE_TASK", task.taskNo(), "TASK_ASSIGNMENT_PHONE_REPLACED", fact);
         }
+        return tasks;
     }
 
-    private void stopPhoneTasks(long userId, long keepUserDeviceId) {
-        cancelReplacedPhoneTasks(userId, keepUserDeviceId, false);
+    private List<ReplacedPhoneTask> stopPhoneTasks(long userId, long keepUserDeviceId) {
+        var tasks = cancelReplacedPhoneTasks(userId, keepUserDeviceId, false);
         mapper.clearReplacedPhoneRuntime(userId, keepUserDeviceId);
+        return tasks;
     }
 
     private int signalMemoryGb(Object value) {

@@ -52,29 +52,53 @@ public class PhoneActivationCapacityService implements PhoneActivationCapacityCo
     @Transactional(propagation = Propagation.MANDATORY)
     public void releaseBoundPhoneSlot(long userId, long deviceId, boolean scheduledReconciliation) {
         var device = mapper.lockDeviceForUserCommand(deviceId);
-        if (device == null || device.userId() != userId || device.activatedAt() == null || device.deactivatedAt() != null
-                || !"OWNED".equalsIgnoreCase(device.ownershipStatus())
-                || !SLOT_OCCUPYING_STATUSES.contains(device.status().toUpperCase(Locale.ROOT))
-                || !("PHONE".equalsIgnoreCase(device.deviceType()) || "MOBILE".equalsIgnoreCase(device.deviceType()))) return;
+        if (!occupiesPhoneSlot(userId, device)) return;
         computeLifecycle.stopForH5Login(userId, deviceId, device.instanceNo());
         if (mapper.deactivateOwnedDeviceCas(userId, deviceId, device.rowVersion()) != 1)
             throw new BizException(409, "DEVICE_VERSION_CONFLICT");
-        slotReplacement.afterDeactivation(userId, deviceId);
-        var attribution = mapper.userEventAttribution(userId);
-        if (attribution == null) throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
-        var fact = Map.of("userId", userId, "deviceId", deviceId, "instanceNo", device.instanceNo(),
-                "previousStatus", device.status(), "status", "DEACTIVATED", "rowVersion", device.rowVersion() + 1);
-        outbox.publishUserEvent("USER_DEVICE", device.instanceNo(), "device.deactivated", userId,
-                attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), fact);
-        audit.recordRequiredForTrustedActor(AuditLogWriteRequest.builder()
-                .action("USER_DEVICE_DEACTIVATED").resourceType("USER_DEVICE").resourceId(Long.toString(deviceId))
-                .bizNo(device.instanceNo()).userId(userId)
+        completePhoneSlotRelease(userId, device, AuditLogWriteRequest.builder().action("USER_DEVICE_DEACTIVATED")
                 .actorId(scheduledReconciliation ? 0L : userId)
                 .actorType(scheduledReconciliation ? "SYSTEM" : "USER")
                 .actorUsername(scheduledReconciliation ? "system" : "user:" + userId)
-                .method(scheduledReconciliation ? "SCHEDULED" : "INTERNAL").path("/internal/auth/h5-phone-release")
+                .method(scheduledReconciliation ? "SCHEDULED" : "INTERNAL").path("/internal/auth/h5-phone-release"),
+                scheduledReconciliation ? "LEGACY_DUAL_SESSION_RECONCILED" : "H5_LOGIN");
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void finishPendingPhoneSlotAfterTaskCancellation(long userId, long deviceId) {
+        var owner = mapper.lockUser(userId);
+        if (owner == null || owner.sandbox()) return;
+        var device = mapper.lockDeviceForUserCommand(deviceId);
+        if (!occupiesPhoneSlot(userId, device) || !device.pendingDeactivate() || mapper.hasActiveTask(userId, deviceId)
+                || computeLifecycle.hasOtherWorkAfterPhoneTaskCancellation(userId, deviceId, device.instanceNo())) return;
+        if (mapper.deactivatePendingComputeV2Device(userId, deviceId, device.rowVersion()) != 1)
+            throw new BizException(409, "DEVICE_VERSION_CONFLICT");
+        mapper.markDeviceRuntimeDeactivated(deviceId);
+        completePhoneSlotRelease(userId, device, AuditLogWriteRequest.builder().action("USER_DEVICE_DEFERRED_DEACTIVATED")
+                .actorId(0L).actorType("SYSTEM").actorUsername("system").method("INTERNAL")
+                .path("/internal/auth/phone-execution-stop"), "PHONE_TASK_CANCELLED");
+    }
+
+    private static boolean occupiesPhoneSlot(long userId, CanonicalStateMapper.UserDeviceCommandRow device) {
+        return device != null && device.userId() == userId && device.activatedAt() != null && device.deactivatedAt() == null
+                && "OWNED".equalsIgnoreCase(device.ownershipStatus())
+                && SLOT_OCCUPYING_STATUSES.contains(device.status().toUpperCase(Locale.ROOT))
+                && ("PHONE".equalsIgnoreCase(device.deviceType()) || "MOBILE".equalsIgnoreCase(device.deviceType()));
+    }
+
+    private void completePhoneSlotRelease(long userId, CanonicalStateMapper.UserDeviceCommandRow device,
+            AuditLogWriteRequest.AuditLogWriteRequestBuilder auditEntry, String reason) {
+        slotReplacement.afterDeactivation(userId, device.id());
+        var attribution = mapper.userEventAttribution(userId);
+        if (attribution == null) throw new BizException(409, "USER_EVENT_ATTRIBUTION_UNAVAILABLE");
+        var fact = Map.of("userId", userId, "deviceId", device.id(), "instanceNo", device.instanceNo(),
+                "previousStatus", device.status(), "status", "DEACTIVATED", "rowVersion", device.rowVersion() + 1);
+        outbox.publishUserEvent("USER_DEVICE", device.instanceNo(), "device.deactivated", userId,
+                attribution.phase(), attribution.accountAgeMonths(), attribution.cohort(), fact);
+        audit.recordRequiredForTrustedActor(auditEntry.resourceType("USER_DEVICE").resourceId(Long.toString(device.id()))
+                .bizNo(device.instanceNo()).userId(userId)
                 .result("SUCCESS").riskLevel("MEDIUM")
-                .detail(Map.of("reason", scheduledReconciliation ? "LEGACY_DUAL_SESSION_RECONCILED" : "H5_LOGIN", "state", fact))
-                .build());
+                .detail(Map.of("reason", reason, "state", fact)).build());
     }
 }

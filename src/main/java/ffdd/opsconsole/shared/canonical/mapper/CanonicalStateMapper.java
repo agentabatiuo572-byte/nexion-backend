@@ -391,6 +391,23 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     List<ComputeV2PendingDevice> pendingComputeV2Deactivations(@Param("afterId") long afterId,@Param("limit") int limit);
     record ComputeV2PendingDevice(long deviceId,long userId) {}
 
+    @Select("""
+            SELECT t.task_no
+              FROM nx_user_device d
+              JOIN nx_device_slot_replacement r ON r.user_id=d.user_id AND r.old_device_id=d.id
+              JOIN nx_phone_binding b ON b.user_id=d.user_id AND b.user_device_id=d.id
+                    AND b.source_environment='PRODUCTION' AND b.run_id=''
+              JOIN nx_compute_task t ON t.user_id=d.user_id AND t.user_device_id=d.id
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+               AND d.source_channel='ONBOARDING' AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND d.ownership_status='OWNED' AND UPPER(d.device_type) IN ('MOBILE','PHONE')
+               AND d.pending_deactivate=1 AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
+               AND t.source_environment='PRODUCTION' AND t.is_deleted=0 AND t.task_no LIKE 'CTA-%'
+               AND t.status='CANCELLED' AND t.last_error='PHONE_REPLACED' AND t.updated_at>=d.activated_at
+             ORDER BY t.id DESC LIMIT 1
+            """)
+    String cancelledPendingSlotPhoneTask(@Param("userId") long userId, @Param("deviceId") long deviceId);
+
     @Update("""
         UPDATE nx_user_device d SET status='DEACTIVATED',activated_at=NULL,deactivated_at=NOW(),
             pending_deactivate=0,row_version=row_version+1,updated_at=NOW()
@@ -400,6 +417,8 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             AND d.activated_at IS NOT NULL AND d.row_version=#{expectedVersion}
             AND NOT EXISTS(SELECT 1 FROM nx_compute_task t WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId}
                 AND t.is_deleted=0 AND t.source_environment='PRODUCTION' AND t.status IN ('CLAIMED','RUNNING') AND t.task_no NOT LIKE 'CV2-%')
+            AND NOT EXISTS(SELECT 1 FROM nx_simulated_device_runtime s WHERE s.user_device_id=d.id
+                AND s.current_task_no IS NOT NULL)
             AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_request r WHERE r.owner_id=#{userId} AND r.device_id=#{deviceId}
                 AND r.state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS (
         """+ffdd.opsconsole.device.mapper.LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+"))")

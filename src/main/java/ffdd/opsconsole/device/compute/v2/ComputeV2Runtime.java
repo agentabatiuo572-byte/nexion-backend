@@ -1,6 +1,8 @@
 package ffdd.opsconsole.device.compute.v2;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import ffdd.opsconsole.device.compute.v2.ComputeV2Event.*;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.time.*;
 import java.util.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,6 +20,7 @@ public class ComputeV2Runtime {
     private final ComputeV2Persistence persistence;
     public record RuntimeView(ComputeV2Event event, String status, String executorId, Instant leaseExpiresAt,
             long pendingUsdtMicros, long pendingNexMicros) { }
+    public record ReplacementView(ComputeV2Event event, String status, boolean executing, boolean exited) { }
     public record PendingSummary(long pendingUsdtMicros,long pendingNexMicros,long pendingTaskCount,long pendingNexTaskCount) { }
     public record PendingVerifiedSnapshot(PendingSummary summary,List<ComputeV2Event> events) {
         public PendingVerifiedSnapshot { events = List.copyOf(events); }
@@ -253,6 +256,51 @@ public class ComputeV2Runtime {
                 store.field("executors",taskNo),lease == null ? null : Instant.ofEpochMilli(lease.longValue()),
                 amount("pending-usdt",userId),amount("pending-nex",userId)));
     }
+
+    /** Reads the pointer, generation and exit evidence together while terminal cleanup can run. */
+    public Optional<ReplacementView> replacementView(long userId,long deviceId) {
+        var values = store.reserve("replacement-view",Long.toString(deviceId),Long.toString(userId));
+        switch (values.get(0).toString()) {
+            case "EMPTY": return Optional.empty();
+            case "UNAVAILABLE": throw replacementUnavailable();
+            case "OWNER_MISMATCH": throw new BizException(409,"COMPUTE_V2_OWNER_CHANGED");
+            case "PRESENT": break;
+            default: throw new IllegalStateException("Invalid compute replacement view");
+        }
+        String taskNo = values.get(1).toString();
+        String generationText = values.get(2).toString();
+        String instanceNo = values.get(3).toString();
+        String payload = values.get(8).toString();
+        long generation;
+        ComputeV2Event current;
+        try {
+            generation = Long.parseLong(generationText);
+            if (generation <= 0 || !Long.toString(generation).equals(generationText)) throw replacementUnavailable();
+            if ("EVENT".equals(values.get(7))) {
+                current = store.decode(payload,ComputeV2Event.class);
+            } else {
+                var task = store.decode(payload,TaskSnapshot.class);
+                if (task == null) throw replacementUnavailable();
+                current = event(Kind.ISSUED,userId,deviceId,instanceNo,taskNo,generation,task.issuedAt(),task,null,null);
+            }
+        } catch (IllegalArgumentException invalid) {
+            throw replacementUnavailable();
+        } catch (IllegalStateException invalid) {
+            if (invalid.getCause() instanceof JsonProcessingException) throw replacementUnavailable();
+            throw invalid;
+        }
+        if (current == null) throw replacementUnavailable();
+        if (current.userId()!=userId || current.deviceId()!=deviceId || !taskNo.equals(current.taskNo())
+                || generation!=current.generation() || !instanceNo.equals(current.instanceNo()))
+            throw new BizException(409,"COMPUTE_V2_OWNER_CHANGED");
+        return Optional.of(new ReplacementView(current,values.get(4).toString(),
+                "1".equals(values.get(5)),"1".equals(values.get(6))));
+    }
+
+    private BizException replacementUnavailable() {
+        return new BizException(503,"COMPUTE_V2_RUNTIME_RECOVERING");
+    }
+
     /** Internal scheduler lookup. Public callers must always use the authenticated-owner overload. */
     public Optional<RuntimeView> viewDevice(long deviceId) {
         String taskNo = store.field("devices",Long.toString(deviceId));

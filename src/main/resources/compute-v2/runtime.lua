@@ -78,6 +78,27 @@ end
 if op == 'ready' then
   return redis.call('GET',key('ready')) == '1' and redis.call('EXISTS',key('last-freeze')) == 1 and '1' or '0'
 end
+if op == 'replacement-view' then
+  if redis.call('GET',key('ready')) ~= '1' or redis.call('EXISTS',key('last-freeze')) == 0 then return {'UNAVAILABLE'} end
+  local device,owner = ARGV[2],ARGV[3]
+  local task = redis.call('HGET',key('devices'),device)
+  if not task then return {'EMPTY'} end
+  local taskOwner = redis.call('HGET',key('owners'),task)
+  local taskDevice = redis.call('HGET',key('task-devices'),task)
+  if not taskOwner or not taskDevice then return {'UNAVAILABLE'} end
+  if taskOwner ~= owner or taskDevice ~= device then return {'OWNER_MISMATCH'} end
+  local generation = redis.call('HGET',key('generation'),task)
+  if not generation or generation ~= redis.call('HGET',key('device-generation'),device) then return {'UNAVAILABLE'} end
+  local instance = redis.call('HGET',key('instances'),task)
+  local state = redis.call('HGET',key('states'),task)
+  local event = redis.call('HGET',key('completed'),task) or redis.call('HGET',key('start-events'),task)
+      or redis.call('HGET',key('issued-events'),task)
+  local payload = event or redis.call('HGET',key('snapshots'),task)
+  if not instance or not state or not payload then return {'UNAVAILABLE'} end
+  return {'PRESENT',task,generation,instance,state,
+      redis.call('HEXISTS',key('executors'),task) == 1 and '1' or '0',
+      hasExited(task,generation) and '1' or '0',event and 'EVENT' or 'SNAPSHOT',payload}
+end
 if op == 'admission' then
   return ARGV[5]=='1' and not admissionError(ARGV[2],ARGV[3],ARGV[4]) and '1' or '0'
 end
