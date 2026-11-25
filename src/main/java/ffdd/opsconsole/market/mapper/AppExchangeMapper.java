@@ -71,11 +71,21 @@ public interface AppExchangeMapper {
             """)
     String emergencyValue(@Param("key") String key);
 
+    // A stopped sampler cannot renew a published price. Match the price G3 formally published
+    // so a delayed sampler write cannot supersede a manual price during a pause.
     @Select("""
             SELECT price_usdt FROM nx_price_index
              WHERE metric_code IN ('UVT','UVT_USDT') AND status='ACTIVE' AND is_deleted=0
-               AND sampled_at>=DATE_SUB(NOW(),INTERVAL 5 MINUTE)
                AND sampled_at<=DATE_ADD(NOW(),INTERVAL 1 MINUTE)
+               AND CASE WHEN EXISTS (
+                   SELECT 1 FROM nx_config_item
+                    WHERE config_key='wallet.nex_market.paused' AND status=1 AND is_deleted=0
+                      AND LOWER(TRIM(config_value)) IN ('true','enabled','on','1','paused')
+               ) THEN price_usdt = (
+                   SELECT CAST(TRIM(config_value) AS DECIMAL(18,8)) FROM nx_config_item
+                    WHERE config_key='wallet.exchange.nex_usdt_price' AND status=1 AND is_deleted=0
+                      AND TRIM(config_value) REGEXP '^[0-9]{1,10}([.][0-9]{1,8})?$'
+               ) ELSE sampled_at>=DATE_SUB(NOW(),INTERVAL 5 MINUTE) END
              ORDER BY sampled_at DESC,id DESC LIMIT 1
             """)
     BigDecimal currentPrice();

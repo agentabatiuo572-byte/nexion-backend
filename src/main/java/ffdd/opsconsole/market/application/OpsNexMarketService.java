@@ -2602,8 +2602,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (!"fee".equals(paramKey) && !"feeMin".equals(paramKey)) {
             return BigDecimal.ZERO;
         }
-        // 与 G2ExchangeQueueBatchService 完全同一价格口径(同一 UVT/USDT 序列 + 5 分钟新鲜度窗口),
-        // 避免用过期价格把 Δ 算小、把覆盖率算高。
+        // 审批使用与实际兑换和队列结算相同的价格口径，以实际成交价核算新增应付。
         BigDecimal price = appExchangeMapper.currentPrice();
         if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BizException(503, "G3_PRICE_UNAVAILABLE");
