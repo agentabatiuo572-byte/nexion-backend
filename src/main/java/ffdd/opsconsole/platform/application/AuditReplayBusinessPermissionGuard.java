@@ -353,7 +353,7 @@ public class AuditReplayBusinessPermissionGuard {
         return authority != null && grants.contains(authority);
     }
 
-    private String f5ActionAuthority(AuditReplayCommand command) {
+    String f5ActionAuthority(AuditReplayCommand command) {
         if (command == null || !"F".equalsIgnoreCase(text(command.domain()))) return null;
         String operation = text(command.op()).toLowerCase(Locale.ROOT);
         return switch (operation) {
@@ -836,6 +836,7 @@ public class AuditReplayBusinessPermissionGuard {
             return "h8_referral_settlement".equals(operation) || "h8_referral_settlement_user".equals(operation);
         }
         if (!"F".equalsIgnoreCase(domain)) return false;
+        if (f5ActionAuthority(command) != null) return true;
         return switch (operation) {
             case "f_unilevel_bootstrap", "f_seven_layer_activation", "f_direct_referral_policy",
                     "f4_pool_settle", "f4_leaderboard_period_payout" -> true;
@@ -2750,7 +2751,7 @@ public class AuditReplayBusinessPermissionGuard {
                 : "network_f1_reward_reverse";
     }
 
-    String vRankUvtReissueSummary(AuditReplayCommand command) {
+    String vRankReissueSummary(AuditReplayCommand command) {
         if (command == null || !"F".equalsIgnoreCase(command.domain())
                 || !"f_reward_payout_action".equalsIgnoreCase(command.op())
                 || !"reissue".equalsIgnoreCase(value(command.params(), "action"))) {
@@ -2758,10 +2759,15 @@ public class AuditReplayBusinessPermissionGuard {
         }
         String payoutId = value(command.params(), "payoutId").trim();
         Map<String, Object> payout = teamCommissionRepository.findRewardPayoutByPayoutId(payoutId);
-        if (payout == null || !"uvt".equalsIgnoreCase(String.valueOf(payout.get("rewardType")))) {
-            return null;
+        if (payout == null) return null;
+        String currency = text(payout.get("rewardType")).toUpperCase(Locale.ROOT);
+        Object sponsorUserId = payout.get("sponsorUserId");
+        if (sponsorUserId != null && ("UVT".equals(currency) || "USDT".equals(currency))) {
+            return "补发 " + payout.get("amount") + " " + currency + " 给原收款邀请人 " + sponsorUserId + " · 直接到账";
         }
-        return "补发 " + payout.get("amount") + " UVT 给晋级用户 " + payout.get("userId") + " · 冷却后可用";
+        return "UVT".equals(currency)
+                ? "补发 " + payout.get("amount") + " UVT 给晋级用户 " + payout.get("userId") + " · 冷却后可用"
+                : null;
     }
 
     /** F1-BE-09:提案阶段就校验「已用券扣不扣回」的参数,不让非法参数拖到批准回放才失败。 */

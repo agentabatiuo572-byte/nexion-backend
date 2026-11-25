@@ -634,7 +634,7 @@ public class OpsAuditCenterService {
                 return fail(OpsErrorCode.VALIDATION_FAILED, "COMMAND_SERIALIZE_FAILED");
             }
         }
-        String reissueSummary = replayBusinessPermissionGuard.vRankUvtReissueSummary(command);
+        String reissueSummary = replayBusinessPermissionGuard.vRankReissueSummary(command);
         if (reissueSummary != null) {
             ticket.setAfterValue(reissueSummary);
         }
@@ -924,20 +924,26 @@ public class OpsAuditCenterService {
             String operationId = separator < 0 ? null : operation.substring(separator + 1).trim().toUpperCase(Locale.ROOT);
             if (operationId != null) {
                 var ticket = ticketMapper.selectActiveByOperationId(operationId);
+                var command = ticket == null ? null : deserializeCommand(ticket.getCommandJson());
+                Long makerId = ticket == null ? null : ticketMakerId(ticket, command);
                 // A successful old decision still needs today's actor/global/scope authorization.
                 // It does not need to qualify as a new decision against a now-terminal ticket.
                 if ("WITHDRAW".equals(verb)) {
                     if (ticket == null) return fail(OpsErrorCode.FORBIDDEN);
-                    var command = deserializeCommand(ticket.getCommandJson());
-                    if (!canAccessWithdrawal(ticket, command, ticketMakerId(ticket, command), actorId)) {
+                    if (!canAccessWithdrawal(ticket, command, makerId, actorId)) {
                         return fail(OpsErrorCode.FORBIDDEN);
                     }
                 } else {
-                    var access = decisionAccess(ticket, ticket == null ? null : ticketMakerId(ticket,
-                            deserializeCommand(ticket.getCommandJson())), actorId);
+                    var access = decisionAccess(ticket, makerId, actorId);
                     if (access.getCode() != 0) return ApiResult.fail(access.getCode(), access.getMessage());
+                    if ("APPROVE".equals(verb) && replayBusinessPermissionGuard.f5ActionAuthority(command) != null) {
+                        if (makerId == null) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
+                        if (makerId.equals(actorId)) return ApiResult.fail(403, "A2_MAKER_CHECKER_REQUIRED");
+                        var permission = replayBusinessPermissionGuard.validateDecisionPermission(command, true);
+                        if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());
+                    }
                 }
-                catalogReceipt = ticket != null && G4CatalogApproval.supports(deserializeCommand(ticket.getCommandJson()));
+                catalogReceipt = G4CatalogApproval.supports(command);
             }
             com.fasterxml.jackson.databind.node.ObjectNode fields = request == null ? null : objectMapper.valueToTree(request);
             var fingerprint = fields == null ? null : fields.deepCopy();
@@ -1330,7 +1336,7 @@ public class OpsAuditCenterService {
         if (STATUS_APPROVED.equals(nextStatus)) {
             ApiResult<Void> preconditions = replayBusinessPermissionGuard.validateApprovalPreconditions(cmd);
             if (preconditions.getCode() != 0) return ApiResult.fail(preconditions.getCode(), preconditions.getMessage());
-            String reissueSummary = replayBusinessPermissionGuard.vRankUvtReissueSummary(cmd);
+            String reissueSummary = replayBusinessPermissionGuard.vRankReissueSummary(cmd);
             if (reissueSummary != null && !reissueSummary.equals(ticket.getAfterValue())) {
                 return ApiResult.fail(409, "F1_UVT_REISSUE_REVIEW_CHANGED");
             }

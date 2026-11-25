@@ -4897,6 +4897,7 @@ public class OpsTeamService implements AuditReplayable {
         }
         String rewardType = String.valueOf(original.getOrDefault("rewardType", "")).toLowerCase(Locale.ROOT);
         Long userId = parseLongFromMap(original.get("userId"));
+        Long sponsorUserId = parseLongFromMap(original.get("sponsorUserId"));
         String rankCode = String.valueOf(original.getOrDefault("rankCode", ""));
         BigDecimal amount = decimalValue(original.get("amount"), BigDecimal.ZERO);
         String operator = resolveOperator("MANUAL", request == null ? null : actor(request.operator()));
@@ -4907,18 +4908,27 @@ public class OpsTeamService implements AuditReplayable {
         if ("usdt".equals(rewardType) || "uvt".equals(rewardType)) {
             requirePayoutIncreaseCoverage(amount.signum() > 0);
             String currency = "usdt".equals(rewardType) ? "USDT" : "UVT";
+            boolean sponsorPayout = sponsorUserId != null;
+            Long recipientUserId = sponsorPayout ? sponsorUserId : userId;
             BigDecimal amountUsdt = "USDT".equals(currency) ? amount : BigDecimal.ZERO;
             BigDecimal amountNex = "UVT".equals(currency) ? amount : BigDecimal.ZERO;
             String remark = "F1 V-Rank reward REISSUE | rank=" + rankCode + " type=" + rewardType + " operator=" + operator;
             Long newCommissionEventId = commissionRepository.insertCommissionEvent(
-                    userId, "vrank_reward", null, currency,
-                    amountUsdt, amountNex, "COOLING", resolveCommissionCoolingDays(), remark);
+                    recipientUserId, sponsorPayout ? "cultivation" : "vrank_reward",
+                    sponsorPayout ? userId : null, currency, amountUsdt, amountNex,
+                    sponsorPayout ? "UNLOCKED" : "COOLING", sponsorPayout ? 0 : resolveCommissionCoolingDays(), remark);
             if (newCommissionEventId == null) {
                 throw new IllegalStateException("COMMISSION_EVENT_INSERT_FAILED");
             }
-            String billId = "F1-VRANKREWARD-REISSUE-" + newCommissionEventId;
-            ledgerPostingFacade.postLedgerEntry(
-                    billId, userId, "TEAM_COMMISSION", currency, "IN", amount, "PENDING", remark);
+            String billId;
+            if (sponsorPayout) {
+                billId = "F5-COMMISSION-" + newCommissionEventId + "-RELEASE";
+                ledgerPostingFacade.releaseCommissionFunds(newCommissionEventId);
+            } else {
+                billId = "F1-VRANKREWARD-REISSUE-" + newCommissionEventId;
+                ledgerPostingFacade.postLedgerEntry(
+                        billId, recipientUserId, "TEAM_COMMISSION", currency, "IN", amount, "PENDING", remark);
+            }
             if (!commissionRepository.linkReissuedRewardCommission(payoutId.trim(), newCommissionEventId, billId)) {
                 throw new IllegalStateException("PAYOUT_COMMISSION_LINK_CONFLICT");
             }
