@@ -32,6 +32,11 @@ WHERE task.created_at = seed.whole_second + INTERVAL 1 SECOND
   AND task.price = policy.base_reward AND task.min_reward = policy.base_reward
   AND task.max_reward = policy.base_reward AND task.saturation = 0
   AND CAST(task.status AS BINARY) = 'active' AND task.is_deleted = 0
-  AND CAST(task.unit_text AS BINARY) = '/job' AND CAST(task.requirement AS BINARY) = '手机+'
+  AND CAST(task.unit_text AS BINARY) = '/job'
   AND task.model_name = '' AND CAST(task.min_vram AS BINARY) = '0GB'
-  AND CAST(task.kill_init AS BINARY) = '派发中';
+  AND (
+    (CAST(task.requirement AS BINARY) = '手机+' AND CAST(task.kill_init AS BINARY) = '派发中')
+    -- The first TEST import read both UTF-8 labels as latin1. Match that exact stored pair.
+    OR (CAST(task.requirement AS BINARY) = 0xC3A6E280B0E280B9C3A6C593C2BA2B
+        AND CAST(task.kill_init AS BINARY) = 0xC3A6C2B4C2BEC3A5C28FE28098C3A4C2B8C2AD)
+  );
