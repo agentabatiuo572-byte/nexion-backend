@@ -4891,7 +4891,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             return normalizeTrialAutoCharge(value);
         }
         if ("earlyPurchaseDiscountUSD".equals(key)) {
-            // A fixed USDT amount off what is left to pay; 0 switches the early-conversion quote off.
+            // A fixed USDT amount off the remaining purchase price, independent of trial rewards.
             BigDecimal amount = parseDecimal(value.replace("$", "").replace(",", ""));
             if (amount.stripTrailingZeros().scale() > 2) {
                 throw new IllegalArgumentException("TRIAL_EARLY_DISCOUNT_SCALE_INVALID");
