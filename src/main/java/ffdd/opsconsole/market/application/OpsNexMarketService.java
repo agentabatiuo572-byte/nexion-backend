@@ -2667,6 +2667,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return def == null ? null : readText(def.configKey(), def.defaultValue());
     }
 
+    /** A stored blank is not a confirmed default for approval rechecks. */
+    boolean matchesExchangeApprovalSnapshot(String paramKey, String current) {
+        ExchangeParamDef def = exchangeParamDef(paramKey);
+        return def != null && configFacade.activeValue(def.configKey()).orElse(def.defaultValue()).equals(current);
+    }
+
     /** 规范化后的候选 G2 值;无效时返回 null。 */
     String exchangeParamCandidateValue(String paramKey, String rawValue) {
         ExchangeParamDef def = exchangeParamDef(paramKey);

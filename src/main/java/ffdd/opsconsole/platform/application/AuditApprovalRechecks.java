@@ -25,6 +25,9 @@ final class AuditApprovalRechecks {
     private AuditApprovalRechecks() {}
 
     static boolean confirmed(AuditReplayCommand command, BizException failure) {
+        if (failure instanceof G2G7ParamApproval.OldValueChangedRecheck) {
+            return G2G7ParamApproval.supports(command);
+        }
         if (failure instanceof OpsEmergencyControlService.ExpiredDrillRecheck) {
             return AuditReplayBusinessPermissionGuard.isJ4Execution(command);
         }
