@@ -258,14 +258,14 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             SELECT GREATEST(COALESCE((
                      SELECT CAST(current_value AS SIGNED) FROM nx_growth_trial_policy
                       WHERE policy_key='seatsLeftToday' AND is_deleted=0 LIMIT 1
-                   ),0)-claimed_count,0)
+                   ),0)-CAST(claimed_count AS SIGNED),0)
               FROM nx_growth_trial_daily_quota
              WHERE quota_date=#{quotaDate}
             """)
     Integer trialQuotaRemaining(@Param("quotaDate") LocalDate quotaDate);
 
     @Select("""
-            SELECT GREATEST(daily_limit-claimed_count,0)
+            SELECT GREATEST(CAST(daily_limit AS SIGNED)-CAST(claimed_count AS SIGNED),0)
               FROM nx_growth_trial_daily_quota WHERE quota_date=#{quotaDate} FOR UPDATE
             """)
     Integer lockedTrialQuotaRemaining(@Param("quotaDate") LocalDate quotaDate);
