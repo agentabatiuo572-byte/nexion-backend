@@ -270,6 +270,14 @@ public class PromotionAdminService {
         String lifecycle=commandState(p);
         require(p.get("draft_version")!=null&&number(p.get("draft_version"))==ver&&!Set.of("ENDED","ARCHIVED").contains(lifecycle),"PROMOTION_VERSION_NOT_CURRENT");
         String current=text(v.get("status"));String expected=switch(action){case "submit"->"DRAFT";case "approve","reject"->"PENDING_APPROVAL";case "publish"->"APPROVED";case "withdraw"->current;default->throw new BizException(422,"PROMOTION_ACTION_INVALID");};require(expected.equals(current)&&(!"withdraw".equals(action)||Set.of("PENDING_APPROVAL","APPROVED").contains(current)),"PROMOTION_VERSION_STATE_INVALID");
+        long actor=actor();
+        if ("approve".equals(action) || "reject".equals(action)) {
+            requireIndependentVersionReviewer(id,ver,number(v.get("revision")),actor);
+        }
+        if ("publish".equals(action)) {
+            long reviewer=number(v.get("approved_by"));
+            require(reviewer>0 && reviewer!=actor,"PROMOTION_MAKER_CHECKER_REQUIRED");
+        }
         var draft=parse(v.get("contract_json"));Map<String,Object> resolved=Map.of();
         if("submit".equals(action))draft=validator.completeAuthoredCopy(draft,"title","terms");
         if(!Set.of("reject","withdraw").contains(action)){
@@ -280,14 +288,6 @@ public class PromotionAdminService {
             natives.fixtureAllowed(p.get("fixture_run_id"));
             resolved=governancePolicies(draft,true);
             semantic(id,draft,resolved);
-        }
-        long actor=actor();
-        if("approve".equals(action)||"publish".equals(action)){
-            var auth=PromotionPolicyResolver.content(resolved,"authorization");
-            if(Boolean.TRUE.equals(auth.get("separateMakerChecker"))){
-                if("publish".equals(action))require(number(v.get("approved_by"))!=actor,"PROMOTION_MAKER_CHECKER_REQUIRED");
-                else requireIndependentVersionReviewer(id,ver,number(v.get("revision")),actor);
-            }
         }
         if("publish".equals(action)){
             if("PAUSED".equals(lifecycle))require(instant(draft.get("endsAt")).isAfter(Instant.now()),"PROMOTION_ALREADY_ENDED");

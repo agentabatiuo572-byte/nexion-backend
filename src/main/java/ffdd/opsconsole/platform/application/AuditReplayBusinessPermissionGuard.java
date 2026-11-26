@@ -14,6 +14,8 @@ import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.growth.application.H7VoucherDisposition;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
+import ffdd.opsconsole.growth.application.OpsReferralRewardService;
+import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.risk.application.K1RiskApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
@@ -174,6 +176,8 @@ public class AuditReplayBusinessPermissionGuard {
     private G4ParamApproval g4ParamApproval;
     @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
+    @Autowired
+    private OpsReferralRewardService referralRewards;
     @Autowired
     private H1GrowthApproval h1GrowthApproval;
     @Autowired
@@ -1376,10 +1380,40 @@ public class AuditReplayBusinessPermissionGuard {
         if (H4GrowthApproval.isRaffleOpen(boundCommand)) {
             return describeH4Proposal(request, boundCommand);
         }
+        if (isH8Settlement(boundCommand)) {
+            return describeH8SettlementProposal(request, boundCommand);
+        }
         if (G3MarketApproval.supports(boundCommand) || isVersionedFUiConfigProposal(boundCommand)) {
             return validateRequestContext(request, boundCommand);
         }
         return validateProposalContext(request);
+    }
+
+    private ApiResult<DelegatedProposalDescriptor> describeH8SettlementProposal(
+            AuditOperationProposalRequest request, AuditReplayCommand command) {
+        var context = validateRequestContext(request, command);
+        if (context.getCode() != 0) return context;
+        if (!hasAuthority("growth_h8_settle")) {
+            return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:growth_h8_settle");
+        }
+        var descriptor = context.getData();
+        var params = command.params();
+        boolean targeted = "h8_referral_settlement_user".equalsIgnoreCase(text(command.op()));
+        Long user = targeted ? strictLong(params.get("invitedUserId"), 1, 9_007_199_254_740_991L) : null;
+        Integer limit = targeted ? Integer.valueOf(1) : strictInteger(params.get("limit"), 1, 100);
+        var snapshot = new ReferralSettlementRunRequest(limit, null, null,
+                strictLong(params.get("expectedH8Version"), 0, Long.MAX_VALUE),
+                strictInteger(params.get("expectedRhythmMonth"), 1, 24), value(params, "rewardSnapshotHash"));
+        var review = referralRewards.previewSettlementProposal(user, snapshot);
+        return ApiResult.ok(new DelegatedProposalDescriptor(descriptor.action(), descriptor.objectId(),
+                review.before(), review.after(), descriptor.sourceDomain(), descriptor.operationType(),
+                descriptor.amplifies(), descriptor.target()));
+    }
+
+    private boolean isH8Settlement(AuditReplayCommand command) {
+        return command != null && "H".equalsIgnoreCase(text(command.domain()))
+                && Set.of("h8_referral_settlement", "h8_referral_settlement_user")
+                .contains(text(command.op()).toLowerCase(Locale.ROOT));
     }
 
     private ApiResult<DelegatedProposalDescriptor> describeH4Proposal(
@@ -1689,7 +1723,8 @@ public class AuditReplayBusinessPermissionGuard {
         }
         DelegatedProposalDescriptor descriptor = delegatedDescriptor(command);
         if (descriptor == null) {
-            return delegated || command != null && "h8_referral_settlement_user".equalsIgnoreCase(text(command.op()))
+            return delegated || isH8Settlement(command)
+                    || command != null && "h8_referral_settlement_user".equalsIgnoreCase(text(command.op()))
                     ? ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_CONTEXT_UNMAPPED")
                     : ApiResult.ok(null);
         }
