@@ -148,7 +148,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -178,7 +179,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -208,7 +210,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -238,7 +241,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -269,7 +273,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -409,6 +414,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
              LIMIT 1 FOR UPDATE
             """)
     TargetProduct lockTargetProduct(@Param("productId") Long productId, @Param("productNo") String productNo);
+
+    @Select("SELECT price_usdt FROM nx_product WHERE id=#{productId} AND is_deleted=0 FOR SHARE")
+    BigDecimal lockSourceCurrentPrice(@Param("productId") Long productId);
 
     String VISIBLE_TRADEIN_OUTPUT = """
                AND is_deleted=0
@@ -650,7 +658,17 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
 
     record SourceDevice(Long id, Long userId, String instanceNo, Long productId, String productNo,
                         String productName, String productTier, String status, BigDecimal actualPaidUsdt,
-                        Long rowVersion, boolean activated) {
+                        Long rowVersion, boolean activated, BigDecimal currentPriceUsdt) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public SourceDevice { }
+
+        public SourceDevice(Long id, Long userId, String instanceNo, Long productId, String productNo,
+                            String productName, String productTier, String status, BigDecimal actualPaidUsdt,
+                            Long rowVersion, boolean activated) {
+            this(id, userId, instanceNo, productId, productNo, productName, productTier, status,
+                    actualPaidUsdt, rowVersion, activated, null);
+        }
+
         public SourceDevice(Long id, Long userId, String instanceNo, Long productId, String productNo,
                             String productName, String productTier, String status, BigDecimal actualPaidUsdt) {
             this(id, userId, instanceNo, productId, productNo, productName, productTier, status, actualPaidUsdt,

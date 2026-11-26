@@ -9,6 +9,7 @@ public record AppTradeinQuoteResponse(
         String targetProductNo,
         String targetProductName,
         BigDecimal sourceActualPaidUsdt,
+        BigDecimal sourceCurrentPriceUsdt,
         BigDecimal cumulativeOutputUsdt,
         BigDecimal outputRatioPct,
         BigDecimal creditRatePct,

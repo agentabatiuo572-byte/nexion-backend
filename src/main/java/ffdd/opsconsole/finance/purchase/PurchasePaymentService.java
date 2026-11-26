@@ -84,6 +84,8 @@ public class PurchasePaymentService {
     private final Clock clock;
     private static final Set<String> KINDS=Set.of("ORDER_PAY","TRIAL_CONVERT","TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP");
     private static final String TRIAL_CLAIM_SNAPSHOT = "trialClaimNo";
+    private static final String TRADEIN_PRICE_BASIS = "tradeinPricingBasis";
+    private static final String CATALOG_PRICE = "CATALOG_PRICE_V1";
     private static final Set<String> NON_DELIVERABLE_FUNDS = Set.of("PAYMENT_AMOUNT_MISMATCH",
             "PAYMENT_LATE_REVIEW", "PAYMENT_MULTIPLE_ARRIVALS", "PAYMENT_BEFORE_ALLOCATION",
             "PAYMENT_TIME_UNVERIFIED", "PAYMENT_REFUNDED_REVIEW");
@@ -237,7 +239,7 @@ public class PurchasePaymentService {
             Instant trialDeadline = "TRIAL_CONVERT".equals(kind) ? trials.requireExternalPaymentConversion(owner) : null;
             Instant pricingAt=now();
             var target=new ReplacementTarget();
-            var pricing=pricing(owner,kind,payload,pricingAt,false,false,true,target,false,null,Map.of(),true);
+            var pricing=pricing(owner,kind,payload,pricingAt,false,false,true,target,false,null,Map.of(),true,false);
             if ("ORDER_PAY".equals(kind)) {
                 payload.put("orderNo", pricing.get("orderNo"));
                 requireOrdinaryOrderPayment(owner, payload);
@@ -269,7 +271,10 @@ public class PurchasePaymentService {
                 quote.put("amountVnd",total.multiply(quoted).setScale(0,RoundingMode.HALF_UP).toPlainString());
             }
             var snapshot = quote;
-            if ("TRIAL_CONVERT".equals(kind)) {
+            if ("TRADE_IN".equals(kind)) {
+                snapshot = new LinkedHashMap<>(quote);
+                snapshot.put(TRADEIN_PRICE_BASIS, CATALOG_PRICE);
+            } else if ("TRIAL_CONVERT".equals(kind)) {
                 var trialPricing = map(pricing.get("trial"));
                 snapshot = new LinkedHashMap<>(quote);
                 snapshot.put(TRIAL_CLAIM_SNAPSHOT, trialPricing.get("claimNo"));
@@ -441,7 +446,7 @@ public class PurchasePaymentService {
     private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,
                                       boolean legacyTrialQuote, boolean legacyTrialVersion, boolean checkReplacementSource, ReplacementTarget target,
                                       boolean lockReplacement, PurchaseQuotaReservation reservation, Map<String, String> trialPolicy,
-                                      boolean newTrialQuote){
+                                      boolean newQuote, boolean legacyTradeinPricing){
         hostingCenters.requirePool();
         switch(kind){
             case "ORDER_PAY":{
@@ -456,9 +461,16 @@ public class PurchasePaymentService {
                 var q = require(tradeins.externalPaymentQuote(owner,
                         new AppTradeinQuoteRequest(optionalLong(payload.get("sourceDeviceId")),
                                 optionalLong(payload.get("targetProductId")), text(payload.get("targetProductNo"))),
-                        lockReplacement, reservation));
+                        lockReplacement, reservation, legacyTradeinPricing));
                 if(payload.get("expectedSourceVersion")==null||number(payload.get("expectedSourceVersion"))!=q.sourceRowVersion())
                     throw new BizException(409,"TRADEIN_SOURCE_VERSION_CONFLICT");
+                if (newQuote) {
+                    var reviewed = jsonMapper.convertValue(payload, AppTradeinSubmitRequest.class);
+                    if (reviewed.expectedPayableUsdt() == null || reviewed.expectedDiscountUsdt() == null) {
+                        throw new BizException(409, "TRADEIN_QUOTE_CHANGED");
+                    }
+                    AppTradeinService.requireExpectedAmounts(reviewed.expectedPayableUsdt(), reviewed.expectedDiscountUsdt(), q);
+                }
                 if(checkReplacementSource)tradeins.requireRecyclableSource(owner,q.sourceDeviceId());
                 if(target!=null)target.productNo=q.targetProductNo();
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"sourceVersion",q.sourceRowVersion(),"sourceDeviceId",q.sourceDeviceId(),
@@ -496,7 +508,7 @@ public class PurchasePaymentService {
                     throw new BizException(409, "TRIAL_AMOUNT_INVALID");
                 }
                 Object businessAmount = q.get("amountUsdt");
-                if (newTrialQuote) requireExternalTrialAmount(businessAmount);
+                if (newQuote) requireExternalTrialAmount(businessAmount);
                 BigDecimal subtotal = money(businessAmount);
                 if (!legacyTrialQuote && subtotal.compareTo(new BigDecimal(expected)) > 0) {
                     throw trialQuoteConflict("TRIAL_AMOUNT_MISMATCH", payload, q);
@@ -708,6 +720,10 @@ public class PurchasePaymentService {
         if (preflight.rejection() != null) throw preflight.rejection();
         if (preflight.replay() != null) return values("intent", preflight.replay(), "winner", false);
         var originalQuote=preflight.quote();
+        if ("TRADE_IN".equals(originalQuote.get("kind"))
+                && !CATALOG_PRICE.equals(parse(originalQuote.get("quote_json")).get(TRADEIN_PRICE_BASIS))) {
+            throw new BizException(409, "PURCHASE_PAYMENT_PRICING_CHANGED");
+        }
         boolean bsc=cregis(originalQuote.get("payment_method"));
         CregisNetwork network=bsc?network(originalQuote.get("payment_method")):null;
         ready(text(originalQuote.get("payment_method")));
@@ -754,7 +770,7 @@ public class PurchasePaymentService {
             var target=new ReplacementTarget();
             var pricing=pricing(owner, kind, payload, pricingAt, !frozenQuote.containsKey("trialOffsetBasis"),
                     !"ACCRUED_B90".equals(frozenQuote.get("trialOffsetBasis")), true, target, quotaHoldEnabled, null,
-                    frozenTrialPolicy(frozenQuote), false);
+                    frozenTrialPolicy(frozenQuote), false, false);
             if(!hash(pricing).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             if ("TRIAL_CONVERT".equals(kind) && frozenQuote.get("businessAmountUsdt") == null) {
                 // Legacy quotes without an exact amount rely on the revalidated original business pricing.
@@ -1141,6 +1157,7 @@ public class PurchasePaymentService {
             user(owner,true);var quote=parse(intent.get("quote_json"));
             boolean legacyTrialQuote=!quote.containsKey("trialOffsetBasis");
             boolean legacyTrialVersion = !"ACCRUED_B90".equals(quote.get("trialOffsetBasis"));
+            boolean legacyTradeinPricing = !CATALOG_PRICE.equals(quote.get(TRADEIN_PRICE_BASIS));
             var trialPolicy = frozenTrialPolicy(quote);
             Instant pricingAt = Instant.parse(text(quote.get("pricingAsOf")));
             String trialClaimNo;
@@ -1154,7 +1171,8 @@ public class PurchasePaymentService {
                 trialClaimNo = null;
             }
             // Fulfilment checks the replacement source under the existing submission rules.
-            var pricing = pricing(owner, kind, payload, pricingAt, legacyTrialQuote, legacyTrialVersion, false, null, false, reservation, trialPolicy, false);
+            var pricing = pricing(owner, kind, payload, pricingAt, legacyTrialQuote, legacyTrialVersion,
+                    false, null, false, reservation, trialPolicy, false, legacyTradeinPricing);
             if (!hash(pricing).equals(intent.get("pricing_hash"))) throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             if (reservation != null) {
                 if (!reservation.businessId().equals(reservationBusiness(kind, pricing))) throw PurchaseQuotaReservation.conflict();
@@ -1163,7 +1181,8 @@ public class PurchasePaymentService {
             Instant paidAt = instant(intent.get("paid_at") == null ? intent.get("confirmed_at") : intent.get("paid_at"));
             var result = VerifiedPurchasePayment.settle(owner, text(intent.get("payment_method")), no,
                     money(quote.get("subtotalUsdt")), pricingAt, paidAt,
-                    () -> fulfil(owner, kind, payload, no, legacyTrialQuote, legacyTrialVersion, reservation, trialClaimNo, trialPolicy));
+                    () -> fulfil(owner, kind, payload, no, legacyTrialQuote, legacyTrialVersion, reservation,
+                            trialClaimNo, trialPolicy, legacyTradeinPricing));
             Object receipt=require(result);
             Map<String,Object> canonical=jsonMapper.convertValue(receipt,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});
             canonical.put("walletDebitUsdt","0.00");canonical.put("amountUsdt",quote.get("businessAmountUsdt"));
@@ -1212,10 +1231,10 @@ public class PurchasePaymentService {
         }catch(RuntimeException unavailable){return false;}
     }
     private ApiResult<?> fulfil(long owner,String kind,Map<String,Object> payload,String no,boolean legacyTrialQuote, boolean legacyTrialVersion, PurchaseQuotaReservation reservation,
-            String trialClaimNo, Map<String, String> trialPolicy){
+            String trialClaimNo, Map<String, String> trialPolicy, boolean legacyTradeinPricing){
         return switch(kind){
             case "ORDER_PAY"->orders.settleVerifiedExternal(owner,text(payload.get("orderNo")),reservation);
-            case "TRADE_IN"->tradeins.settleVerifiedExternal(owner,"TRADE_IN",no,jsonMapper.convertValue(payload,AppTradeinSubmitRequest.class),null,null,reservation);
+            case "TRADE_IN"->tradeins.settleVerifiedExternal(owner,"TRADE_IN",no,jsonMapper.convertValue(payload,AppTradeinSubmitRequest.class),null,null,reservation,legacyTradeinPricing);
             case "CAPACITY_REPLACE"->tradeins.settleVerifiedExternal(owner,"CAPACITY_REPLACE",no,null,jsonMapper.convertValue(payload,AppCapacityReplaceSubmitRequest.class),null,reservation);
             case "CAPACITY_KEEP"->tradeins.settleVerifiedExternal(owner,"CAPACITY_KEEP",no,null,null,jsonMapper.convertValue(payload,AppCapacityKeepSubmitRequest.class),reservation);
             case "TRIAL_CONVERT"->trials.settleVerifiedExternal(owner,text(payload.get("productNo")),new BigDecimal(text(payload.get("expectedAmountUsdt"))),text(payload.get("quoteVersion")),legacyTrialQuote,legacyTrialVersion,reservation,trialClaimNo,trialPolicy);
@@ -1413,6 +1432,7 @@ public class PurchasePaymentService {
         var result=parse(row.get("quote_json"));result.putAll(values("intentNo",row.get("intent_no"),"commandKey",row.get("command_key"),"status",row.get("status"),
                 "reason",row.get("reason"),"version",row.get("version"),"expiresAt",deadline(row).toString(),"deadlineAt",deadline(row).toString(),"confirmationGraceEndsAt",graceEnd(row.get("payment_method"),deadline(row)).toString()));
         result.remove(TRIAL_CLAIM_SNAPSHOT);
+        result.remove(TRADEIN_PRICE_BASIS);
         result.remove("trialPricingPolicy");
         result.remove("trialDeviceName");
         result.remove("trialImageSku");
