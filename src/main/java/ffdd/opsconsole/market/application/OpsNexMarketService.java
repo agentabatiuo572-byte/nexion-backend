@@ -1490,10 +1490,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             List<NexMarketCurveFrame> resumeCurve = configFacade.activeValueForUpdate(WEEKLY_CURVE_KEY)
                     .filter(StringUtils::hasText).map(this::readCurve).orElse(List.of());
             if (resumeCurve.size() != 7) throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
-            String pin = readText(PIN_CONTROL_KEY, "").trim().toUpperCase(Locale.ROOT);
-            var pinnedDay = pinnedDayIndex(pin);
-            var cursor = pinnedDay.isPresent() ? Optional.<Integer>empty() : configuredActiveDayIndex();
-            int nextDayIndex = pinnedDay.orElseGet(() -> nextAdvanceDayIndex(cursor.orElseGet(this::activeDayIndex)));
+            int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
             NexMarketCurveFrame activeFrame = frameFor(resumeCurve, nextDayIndex);
             // 先按冻结依据比对(漂移即版本冲突)，再判断这次恢复是否还属于提价。
             if (activeFrame != null) {
@@ -1501,11 +1498,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
                 }
                 if (!request.field().equals(activeFrame.targetPrice().stripTrailingZeros().toPlainString())) {
-                    // A missing cursor, unknown pin or end-of-week loop fallback cannot establish the selected day.
-                    boolean confirmedDay = pinnedDay.isPresent()
-                            || ("未钉住".equals(pin) && cursor.filter(day -> day < 6).isPresent());
-                    throw confirmedDay ? frozenMarketPriceConflict(request.field(), activeFrame.targetPrice())
-                            : new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                    throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
                 }
             }
             BigDecimal current = requireAuthoritativeCurrentPrice();
@@ -2287,27 +2280,20 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private int storedActiveDayIndex() {
-        return configuredActiveDayIndex().orElseGet(this::activeDayIndex);
-    }
-
-    private Optional<Integer> configuredActiveDayIndex() {
         String raw = readText(ACTIVE_DAY_INDEX_KEY, "");
         try {
             int dayIndex = Integer.parseInt(raw.trim());
             if (dayIndex >= 0 && dayIndex <= 6) {
-                return Optional.of(dayIndex);
+                return dayIndex;
             }
         } catch (RuntimeException ignored) {
             // Fall back to UTC weekday for first boot or corrupt config.
         }
-        return Optional.empty();
+        return activeDayIndex();
     }
 
     private int nextAdvanceDayIndex() {
-        return nextAdvanceDayIndex(storedActiveDayIndex());
-    }
-
-    private int nextAdvanceDayIndex(int current) {
+        int current = storedActiveDayIndex();
         if (current >= 6 && !loopAtEnd()) {
             return 6;
         }
@@ -2320,10 +2306,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private Optional<Integer> pinnedDayIndex() {
-        return pinnedDayIndex(readText(PIN_CONTROL_KEY, "").trim().toUpperCase(Locale.ROOT));
-    }
-
-    private static Optional<Integer> pinnedDayIndex(String value) {
+        String value = readText(PIN_CONTROL_KEY, "未钉住").trim().toUpperCase(Locale.ROOT);
         if (!value.matches("D[1-7]")) {
             return Optional.empty();
         }

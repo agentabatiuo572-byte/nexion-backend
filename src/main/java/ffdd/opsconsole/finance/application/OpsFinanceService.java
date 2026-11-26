@@ -507,7 +507,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return versionConflict != null ? versionConflict : ApiResult.fail(503, PayoutAddressProtection.UNAVAILABLE);
         }
         if (versionConflict != null) {
-            if (before.get("networkFeeMin").compareTo(before.get("networkFeeMax")) > 0) return versionConflict;
+            if (!hasValidD5VersionEvidence(before, changedFields)) return versionConflict;
             throw new WithdrawalLimitsVersionAdvanced();
         }
         BigDecimal nextFeeMin = changedFields.contains("networkFeeMin")
@@ -529,6 +529,27 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return loosensWithdrawalLimit(field, before.get(field), requestedWithdrawalLimitValue(field, request));
         });
         return ApiResult.ok(new D5WithdrawalChange(currentVersion, before, beforeNetworkEnabled, amplifies));
+    }
+
+    private boolean hasValidD5VersionEvidence(Map<String, BigDecimal> values, Set<String> changedFields) {
+        BigDecimal balanceRatio = values.get("balanceMaxRatio");
+        BigDecimal feeMin = values.get("networkFeeMin");
+        BigDecimal feeMax = values.get("networkFeeMax");
+        boolean changesFeeRange = changedFields.contains("networkFeeMin") || changedFields.contains("networkFeeMax");
+        return wholeD5ValueInRange(values.get("dailyLimitCount"), 1, 10)
+                && balanceRatio.signum() > 0 && balanceRatio.compareTo(BigDecimal.ONE) <= 0
+                && d5NetworkFees(values).values().stream().allMatch(this::validNetworkConfirmFee)
+                && values.get("nexFeeOffsetRate").signum() > 0
+                && inRange(values.get("smallAmountThresholdUsd"), BigDecimal.ZERO, BigDecimal.valueOf(500))
+                && wholeD5ValueInRange(values.get("payoutSlaHours"), 1, 168)
+                && feeMin.compareTo(feeMax) <= 0
+                && (!changesFeeRange || (validLegacyD5FeeBound(feeMin) && validLegacyD5FeeBound(feeMax)))
+                && (!changedFields.contains("networkFeeRatio") || validLegacyD5FeeRatio(values.get("networkFeeRatio")));
+    }
+
+    private boolean wholeD5ValueInRange(BigDecimal value, int min, int max) {
+        return inRange(value, BigDecimal.valueOf(min), BigDecimal.valueOf(max))
+                && value.stripTrailingZeros().scale() <= 0;
     }
 
     private ApiResult<Map<String, Object>> requireWithdrawalLimitsAmplification(D5WithdrawalChange change) {
@@ -2551,16 +2572,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 && !inRange(request.getBalanceMaxRatio(), new BigDecimal("0.50"), BigDecimal.ONE)) {
             return ApiResult.fail(400, "BALANCE_MAX_RATIO_INVALID");
         }
-        if (changedFields.contains("networkFeeRatio")
-                && !inRange(request.getNetworkFeeRatio(), BigDecimal.ZERO, new BigDecimal("0.05"))) {
+        if (changedFields.contains("networkFeeRatio") && !validLegacyD5FeeRatio(request.getNetworkFeeRatio())) {
             return ApiResult.fail(400, "NETWORK_FEE_RATIO_INVALID");
         }
-        if (changedFields.contains("networkFeeMin")
-                && !inRange(request.getNetworkFeeMin(), BigDecimal.ZERO, new BigDecimal("1000000"))) {
+        if (changedFields.contains("networkFeeMin") && !validLegacyD5FeeBound(request.getNetworkFeeMin())) {
             return ApiResult.fail(400, "NETWORK_FEE_MIN_INVALID");
         }
-        if (changedFields.contains("networkFeeMax")
-                && !inRange(request.getNetworkFeeMax(), BigDecimal.ZERO, new BigDecimal("1000000"))) {
+        if (changedFields.contains("networkFeeMax") && !validLegacyD5FeeBound(request.getNetworkFeeMax())) {
             return ApiResult.fail(400, "NETWORK_FEE_MAX_INVALID");
         }
         if (changedFields.contains("nexFeeOffsetRate")
@@ -2608,6 +2626,14 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private boolean validNetworkConfirmFee(BigDecimal value) {
         return inRange(value, BigDecimal.ZERO, new BigDecimal("25"))
                 && value.multiply(new BigDecimal("2")).stripTrailingZeros().scale() <= 0;
+    }
+
+    private boolean validLegacyD5FeeRatio(BigDecimal value) {
+        return inRange(value, BigDecimal.ZERO, new BigDecimal("0.05"));
+    }
+
+    private boolean validLegacyD5FeeBound(BigDecimal value) {
+        return inRange(value, BigDecimal.ZERO, BigDecimal.valueOf(1_000_000));
     }
 
     private boolean inRange(BigDecimal value, BigDecimal min, BigDecimal max) {
