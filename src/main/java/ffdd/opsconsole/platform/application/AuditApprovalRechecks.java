@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
 import ffdd.opsconsole.emergency.application.OpsEmergencyControlService;
+import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.market.application.G4ParamApproval;
@@ -36,6 +37,9 @@ final class AuditApprovalRechecks {
     static boolean confirmed(AuditReplayCommand command, int code, String reason) {
         if (command == null || command.op() == null || reason == null || (code != 404 && code != 409 && code != 422)) {
             return false;
+        }
+        if (G2G7ParamApproval.supports(command)) {
+            return code == 422 && "COVERAGE_BELOW_REDLINE".equals(reason);
         }
         if (G4CatalogApproval.supports(command)) return "G4_CATALOG_SNAPSHOT_CHANGED".equals(reason);
         if (G4DividendApproval.supports(command)) {
