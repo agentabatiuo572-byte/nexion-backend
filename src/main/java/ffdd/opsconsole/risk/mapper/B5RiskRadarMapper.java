@@ -137,20 +137,38 @@ public interface B5RiskRadarMapper {
             @Param("startAt") LocalDateTime startAt,
             @Param("endAt") LocalDateTime endAt);
 
-    String SIGNAL_COLUMNS = """
-            s.signal_no AS signalNo,
-                   CASE UPPER(severity)
-                     WHEN 'CRITICAL' THEN 'P0'
-                     WHEN 'HIGH' THEN 'P1'
-                     WHEN 'MEDIUM' THEN 'P2'
-                     ELSE 'P3'
-                   END AS level,
+    String SIGNAL_LEVEL = """
+            CASE UPPER(s.severity)
+              WHEN 'CRITICAL' THEN 'P0'
+              WHEN 'HIGH' THEN 'P1'
+              WHEN 'MEDIUM' THEN 'P2'
+              ELSE 'P3'
+            END
+            """;
+
+    String SIGNAL_CATEGORY = """
+            CASE
+              WHEN LOCATE(_binary'multi_account', LOWER(s.signal_type)) > 0 THEN 'MULTI_ACCOUNT'
+              WHEN LOCATE(_binary'arbitrage', LOWER(s.signal_type)) > 0
+                OR LOCATE(_binary'trial_cycle', LOWER(s.signal_type)) > 0
+                OR LOCATE(_binary'leaderboard_velocity', LOWER(s.signal_type)) > 0 THEN 'ABUSE'
+              WHEN LOCATE(_binary'withdraw', LOWER(s.signal_type)) > 0 THEN 'WITHDRAW'
+              WHEN LOCATE(_binary'tamper', LOWER(s.signal_type)) > 0 THEN 'TAMPER'
+              WHEN LOWER(TRIM(s.signal_type)) = _binary'user_frozen' THEN 'USER_FROZEN'
+              WHEN LOWER(TRIM(s.signal_type)) = _binary'd1_chargeback_shortfall' THEN 'CHARGEBACK_SHORTFALL'
+              ELSE 'OTHER'
+            END
+            """;
+
+    String SIGNAL_HANDLING_STATUS = "COALESCE(d.handling_status, 'open')";
+
+    String SIGNAL_COLUMNS = "s.signal_no AS signalNo, " + SIGNAL_LEVEL + " AS level, " + """
                    s.signal_type AS signalType,
                    s.user_id AS userId,
                    s.evidence AS evidence,
                    CONCAT('U', LPAD(s.user_id, GREATEST(8, LENGTH(CAST(s.user_id AS CHAR))), '0')) AS userNo,
                    DATE_FORMAT(s.created_at, '%Y-%m-%dT%H:%i:%s') AS createdAt,
-                   COALESCE(d.handling_status, 'open') AS handlingStatus,
+                   """ + SIGNAL_HANDLING_STATUS + " AS handlingStatus, " + """
                    COALESCE(d.version, 0) AS handlingVersion,
                    d.handled_by AS handledBy,
                    DATE_FORMAT(d.handled_at, '%Y-%m-%dT%H:%i:%s') AS handledAt,
@@ -175,18 +193,28 @@ public interface B5RiskRadarMapper {
              AND t.user_id=s.user_id AND t.is_deleted=0
             """;
 
-    String SIGNAL_FILTER = """
+    String SIGNAL_WINDOW = """
              WHERE s.is_deleted=0
                AND s.created_at >= #{startAt}
                AND s.created_at &lt; #{endAt}
+            """;
+
+    String SIGNAL_FILTER = SIGNAL_WINDOW + """
                <if test="signalTypes != null and !signalTypes.isEmpty()">
                  AND s.signal_type IN
                  <foreach collection="signalTypes" item="type" open="(" separator="," close=")">
                    #{type}
                  </foreach>
                </if>
+               <if test="categories != null and !categories.isEmpty()">
+            """ + " AND " + SIGNAL_CATEGORY + """
+                 IN
+                 <foreach collection="categories" item="category" open="(" separator="," close=")">
+                   #{category}
+                 </foreach>
+               </if>
                <if test="handlingStatus != null">
-                 AND COALESCE(d.handling_status, 'open')=#{handlingStatus}
+            """ + " AND " + SIGNAL_HANDLING_STATUS + " = #{handlingStatus} " + """
                </if>
                <if test="userId != null">AND s.user_id=#{userId}</if>
             """;
@@ -206,9 +234,13 @@ public interface B5RiskRadarMapper {
             + SIGNAL_SOURCE + SIGNAL_FILTER + "</script>")
     Map<String, Object> countSignals(@Param("startAt") LocalDateTime startAt,
             @Param("endAt") LocalDateTime endAt, @Param("signalTypes") List<String> signalTypes,
-            @Param("handlingStatus") String handlingStatus, @Param("userId") Long userId);
+            @Param("categories") List<String> categories, @Param("handlingStatus") String handlingStatus,
+            @Param("userId") Long userId);
 
-    @Select("<script>SELECT " + SIGNAL_COLUMNS + ", DATE_FORMAT(t.occurred_at, '%Y-%m-%dT%H:%i:%s') AS occurredAt "
+    String SIGNAL_DETAIL_COLUMNS = SIGNAL_COLUMNS + ", " + SIGNAL_CATEGORY + " AS category, "
+            + "DATE_FORMAT(t.occurred_at, '%Y-%m-%dT%H:%i:%s') AS occurredAt ";
+
+    @Select("<script>SELECT " + SIGNAL_DETAIL_COLUMNS
             + SIGNAL_SOURCE + TAMPER_EVENT + SIGNAL_FILTER + """
              ORDER BY s.created_at DESC, s.id DESC
              LIMIT #{size} OFFSET #{offset}
@@ -216,14 +248,23 @@ public interface B5RiskRadarMapper {
             """)
     List<Map<String, Object>> pageSignals(@Param("startAt") LocalDateTime startAt,
             @Param("endAt") LocalDateTime endAt, @Param("signalTypes") List<String> signalTypes,
-            @Param("handlingStatus") String handlingStatus, @Param("userId") Long userId,
+            @Param("categories") List<String> categories, @Param("handlingStatus") String handlingStatus,
+            @Param("userId") Long userId,
             @Param("size") int size, @Param("offset") long offset);
 
-    @Select("SELECT " + SIGNAL_COLUMNS + ", DATE_FORMAT(t.occurred_at, '%Y-%m-%dT%H:%i:%s') AS occurredAt "
+    @Select("SELECT " + SIGNAL_DETAIL_COLUMNS
             + SIGNAL_SOURCE + TAMPER_EVENT + """
              WHERE s.is_deleted=0 AND s.signal_no=#{signalNo}
             """)
     Map<String, Object> findSignal(@Param("signalNo") String signalNo);
+
+    @Select("<script>SELECT " + SIGNAL_CATEGORY + " AS category, COUNT(*) AS signalCount, "
+            + "COUNT(DISTINCT s.user_id) AS accountCount, MIN(" + SIGNAL_LEVEL + ") AS highestLevel, "
+            + "MAX(s.created_at) AS latestAt " + SIGNAL_SOURCE + SIGNAL_WINDOW
+            + " AND " + SIGNAL_HANDLING_STATUS + " = 'open' "
+            + " GROUP BY category ORDER BY highestLevel, latestAt DESC, category </script>")
+    List<CategorySummaryRow> openCategorySummaries(@Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
 
     @Select("SELECT COUNT(*) FROM nx_risk_signal WHERE signal_no=#{signalNo} AND is_deleted=0")
     int signalExists(@Param("signalNo") String signalNo);
@@ -464,6 +505,10 @@ public interface B5RiskRadarMapper {
     List<Map<String, Object>> killSwitchStates();
 
     record SignalDispositionRecord(String signalNo, String status, long version) {
+    }
+
+    record CategorySummaryRow(String category, long signalCount, long accountCount, String highestLevel,
+                              LocalDateTime latestAt) {
     }
 
     record AlertDeliveryRecord(long id, String signalNo, String subscriber, String channel,

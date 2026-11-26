@@ -122,6 +122,12 @@ public class OpsTreasuryController {
         return treasuryService.bDomainDashboard();
     }
 
+    @GetMapping(value = "/b-domain", params = "riskFeed=OPEN_BY_CATEGORY")
+    @PreAuthorize("hasAuthority('overview_b1_read') and hasAuthority('overview_b5_read')")
+    public ApiResult<Map<String, Object>> categorizedBDomainDashboard() {
+        return treasuryService.bDomainDashboard(true);
+    }
+
     @PostMapping("/b-domain/alerts/{alertId}/ack")
     @PreAuthorize("hasAuthority('overview_b1_write')")
     public ApiResult<Map<String, Object>> acknowledgeBDomainAlert(

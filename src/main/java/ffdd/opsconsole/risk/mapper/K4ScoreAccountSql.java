@@ -13,7 +13,7 @@ public final class K4ScoreAccountSql {
                            WHEN s.model_version<>m.model_version OR s.as_of IS NULL
                                 OR s.as_of<DATE_SUB(m.evaluated_at, INTERVAL 1 DAY) THEN 'STALE'
                            WHEN COALESCE(o.override_score,s.model_score)>=m.auto_escalate_score THEN 'AUTO_REPORT'
-                           WHEN COALESCE(o.override_score,s.model_score)>=m.band_high_min THEN 'HIGH'
+                           WHEN COALESCE(o.override_score,s.model_score)>=m.band_high_min THEN 'HIGH_BELOW_AUTO'
                            WHEN COALESCE(o.override_score,s.model_score)>=m.band_low_max THEN 'MEDIUM'
                            ELSE 'LOW'
                        END AS band
@@ -43,10 +43,11 @@ public final class K4ScoreAccountSql {
                    DATE_FORMAT(m.evaluated_at,'%Y-%m-%d %H:%i:%s') AS evaluatedAt,
                    COUNT(CASE WHEN band<>'STALE' THEN 1 END) AS totalUsers,
                    COUNT(CASE WHEN band='AUTO_REPORT' THEN 1 END) AS autoEscalated,
-                   COUNT(CASE WHEN band IN ('AUTO_REPORT','HIGH') THEN 1 END) AS highRisk,
+                   COUNT(CASE WHEN band='HIGH_BELOW_AUTO' THEN 1 END) AS highBelowAuto,
+                   COUNT(CASE WHEN band IN ('AUTO_REPORT','HIGH_BELOW_AUTO') THEN 1 END) AS highRisk,
                    COUNT(CASE WHEN band='MEDIUM' THEN 1 END) AS mediumRisk,
                    COUNT(CASE WHEN band='LOW' THEN 1 END) AS lowRisk,
-                   COUNT(CASE WHEN band IN ('AUTO_REPORT','HIGH','MEDIUM') THEN 1 END) AS flaggedAccounts,
+                   COUNT(CASE WHEN band IN ('AUTO_REPORT','HIGH_BELOW_AUTO','MEDIUM') THEN 1 END) AS flaggedAccounts,
                    COUNT(CASE WHEN band<>'STALE' AND overridden THEN 1 END) AS activeOverrides,
                    COUNT(CASE WHEN band='STALE' THEN 1 END) AS staleScoreUsers
               FROM active_model m CROSS JOIN scores
@@ -63,7 +64,7 @@ public final class K4ScoreAccountSql {
             SELECT user_no AS userNo,model_score AS modelScore,effective_score AS effectiveScore,
                    overridden,score_model_version AS modelVersion,as_of AS asOf
               FROM scores
-             WHERE band=#{band} OR (#{band}='HIGH' AND band='AUTO_REPORT')
+             WHERE band=#{band} OR (#{band}='HIGH' AND band IN ('AUTO_REPORT','HIGH_BELOW_AUTO'))
              ORDER BY effective_score DESC,user_no ASC
              LIMIT #{limit} OFFSET #{offset}
             """;

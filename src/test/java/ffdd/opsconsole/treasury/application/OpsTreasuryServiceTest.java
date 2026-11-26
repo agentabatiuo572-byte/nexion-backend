@@ -78,6 +78,7 @@ class OpsTreasuryServiceTest {
                 configFacade, mock(ffdd.opsconsole.platform.mapper.AuditObjectLockMapper.class),
                 emergencyRepository,
                 riskTamperSignalFacade,
+                mock(ffdd.opsconsole.risk.facade.RiskSignalCategorySummaryFacade.class),
                 auditLogService,
                 idempotencyService,
                 eventOutboxService,

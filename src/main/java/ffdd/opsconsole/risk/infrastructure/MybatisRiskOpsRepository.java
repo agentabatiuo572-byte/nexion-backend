@@ -649,6 +649,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         String countKey = switch (band) {
             case AUTO_REPORT -> "autoEscalated";
             case HIGH -> "highRisk";
+            case HIGH_BELOW_AUTO -> "highBelowAuto";
             case MEDIUM -> "mediumRisk";
             case STALE -> "staleScoreUsers";
         };

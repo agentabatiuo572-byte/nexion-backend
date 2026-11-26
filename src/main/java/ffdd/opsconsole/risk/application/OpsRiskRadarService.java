@@ -3,6 +3,7 @@ package ffdd.opsconsole.risk.application;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.risk.domain.RiskSignalCategory;
 import ffdd.opsconsole.risk.dto.B5AlertSubscriptionRequest;
 import ffdd.opsconsole.risk.dto.B5BankRunThresholdRequest;
 import ffdd.opsconsole.risk.dto.B5ThresholdPreviewRequest;
@@ -108,8 +109,8 @@ public class OpsRiskRadarService {
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
-    public ApiResult<Map<String, Object>> signals(List<String> signalTypes, OffsetDateTime start, OffsetDateTime end,
-            String handlingStatus, String userNo, int pageNum, int pageSize) {
+    public ApiResult<Map<String, Object>> signals(List<String> signalTypes, List<String> categories,
+            OffsetDateTime start, OffsetDateTime end, String handlingStatus, String userNo, int pageNum, int pageSize) {
         if (pageNum < 1 || pageSize < 1 || pageSize > 200) {
             throw new BizException(400, "B5_SIGNAL_PAGE_INVALID");
         }
@@ -127,6 +128,14 @@ public class OpsRiskRadarService {
         if (types.stream().anyMatch(type -> type.isEmpty() || type.length() > 64)) {
             throw new BizException(400, "B5_SIGNAL_TYPE_INVALID");
         }
+        List<String> categoryKeys = categories == null ? List.of() : categories.stream()
+                .flatMap(category -> Arrays.stream(category.split(",", -1)))
+                .map(category -> category.trim().toUpperCase(Locale.ROOT)).distinct().toList();
+        try {
+            categoryKeys.forEach(RiskSignalCategory::valueOf);
+        } catch (IllegalArgumentException invalidCategory) {
+            throw new BizException(400, "B5_SIGNAL_CATEGORY_INVALID");
+        }
         String status = text(handlingStatus);
         if (status != null) {
             status = status.toLowerCase(Locale.ROOT);
@@ -135,11 +144,11 @@ public class OpsRiskRadarService {
             }
         }
         Long userId = signalUserId(text(userNo));
-        Map<String, Object> totals = mapper.countSignals(startAt, endAt, types, status, userId);
+        Map<String, Object> totals = mapper.countSignals(startAt, endAt, types, categoryKeys, status, userId);
         long total = whole(totals.get("total"));
         long offset = (pageNum - 1L) * pageSize;
         List<Map<String, Object>> records = offset >= total ? List.of()
-                : mapper.pageSignals(startAt, endAt, types, status, userId, pageSize, offset).stream()
+                : mapper.pageSignals(startAt, endAt, types, categoryKeys, status, userId, pageSize, offset).stream()
                         .map(this::signalWithTimes).toList();
         return ApiResult.ok(section("records", records, "total", total, "accountCount", whole(totals.get("accountCount")),
                 "pageNum", pageNum, "pageSize", pageSize, "startAt", offsetTime(startAt), "endAt", offsetTime(endAt)));
@@ -165,6 +174,9 @@ public class OpsRiskRadarService {
 
     private Map<String, Object> signalWithTimes(Map<String, Object> row) {
         Map<String, Object> view = signalView(row);
+        RiskSignalCategory category = RiskSignalCategory.valueOf(requireSignalField(row.get("category"), "category"));
+        view.put("category", category.name());
+        view.put("categoryName", category.displayName());
         for (String key : List.of("createdAt", "handledAt", "occurredAt")) {
             String stored = text("occurredAt".equals(key) ? row.get(key) : view.get(key));
             view.put(key, stored == null ? null : offsetTime(LocalDateTime.parse(stored)));

@@ -101,13 +101,14 @@ public class OpsRiskRadarController {
     @PreAuthorize("hasAuthority('overview_b5_read')")
     public ApiResult<Map<String, Object>> signals(
             @RequestParam(required = false) List<String> signalType,
+            @RequestParam(required = false) List<String> category,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime startAt,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime endAt,
             @RequestParam(required = false) String handlingStatus,
             @RequestParam(required = false) String userNo,
             @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "20") int pageSize) {
-        return service.signals(signalType, startAt, endAt, handlingStatus, userNo, pageNum, pageSize);
+        return service.signals(signalType, category, startAt, endAt, handlingStatus, userNo, pageNum, pageSize);
     }
 
     @GetMapping("/radar/signals/{signalNo}")

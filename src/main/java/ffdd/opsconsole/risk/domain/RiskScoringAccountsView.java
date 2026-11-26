@@ -7,7 +7,7 @@ public record RiskScoringAccountsView(
         String modelVersion, int bandLowMax, int bandHighMin, int autoEscalateScore, List<Row> records) {
 
     public enum Band {
-        AUTO_REPORT, HIGH, MEDIUM, STALE
+        AUTO_REPORT, HIGH, HIGH_BELOW_AUTO, MEDIUM, STALE
     }
 
     public record Row(String userNo, Integer modelScore, Integer effectiveScore, boolean overridden,
