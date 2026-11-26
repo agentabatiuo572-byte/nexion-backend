@@ -6,11 +6,13 @@ import ffdd.opsconsole.growth.mapper.ReferralRewardMapper;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper.AppReferralAccount;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper.AppReferralLedgerRow;
 import ffdd.opsconsole.growth.mapper.ReferralRewardMapper.AppReferralLedgerSummary;
+import ffdd.opsconsole.growth.mapper.ReferralRewardMapper.AppPendingRewardWindow;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -66,13 +68,22 @@ public class AppReferralRewardService {
         String source = sandboxFacts ? "mock" : "ledger";
         int accountSandbox = sandbox ? 1 : 0;
         ReferralRewardPublicConfigView config = rewardConfig.publicConfig();
-        java.time.LocalDateTime effectiveAt = config.effectiveAt().atZone(DATABASE_ZONE).toLocalDateTime();
+        LocalDateTime effectiveAt = config.effectiveAt().atZone(DATABASE_ZONE).toLocalDateTime();
         long invitedCount = sandboxFacts
                 ? mapper.appSandboxInvitedCount(userId, effectiveAt, runId)
                 : mapper.appInvitedCount(userId, effectiveAt, environment, accountSandbox);
-        long pendingCount = sandboxFacts
-                ? mapper.appSandboxPendingCount(userId, effectiveAt, runId)
-                : mapper.appPendingCount(userId, effectiveAt, environment, accountSandbox);
+        boolean currentPayable = config.enabled() && (config.welcomeGift().usdtAmount().signum() > 0
+                || config.welcomeGift().nexAmount().signum() > 0 || config.inviterReward().nexAmount().signum() > 0);
+        long pendingCount;
+        if (sandboxFacts) {
+            pendingCount = currentPayable ? mapper.appSandboxPendingCount(userId, effectiveAt, runId) : 0L;
+        } else {
+            LocalDateTime currentStart = currentPayable ? effectiveAt : null;
+            List<AppPendingRewardWindow> priorWindows = rewardConfig.appPriorPendingRewardWindows();
+            pendingCount = priorWindows.isEmpty()
+                    ? mapper.appPendingCount(userId, currentStart, environment, accountSandbox)
+                    : mapper.appPendingCountInWindows(userId, currentStart, priorWindows, environment, accountSandbox);
+        }
         long positiveSettlements = sandboxFacts
                 ? mapper.appSandboxPositiveSettlementCount(userId, runId)
                 : mapper.appPositiveSettlementCount(userId, environment, accountSandbox);

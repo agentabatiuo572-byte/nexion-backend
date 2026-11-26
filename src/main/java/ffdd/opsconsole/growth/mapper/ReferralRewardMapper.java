@@ -100,22 +100,36 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                          @Param("accountSandbox") Integer accountSandbox);
 
     @Select("""
+            <script>
             SELECT COUNT(*)
               FROM nx_user invited
               JOIN nx_user owner ON owner.id = #{userId} AND owner.is_deleted = 0 AND owner.status = 'ACTIVE'
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = invited.id AND s.is_deleted = 0
-             WHERE invited.sponsor_user_id = #{userId} AND invited.id <> #{userId}
+             WHERE invited.sponsor_user_id = #{userId} AND invited.id != #{userId}
                AND invited.is_deleted = 0 AND invited.status = 'ACTIVE'
-               AND invited.created_at >= #{effectiveAt} AND s.id IS NULL
+               AND s.id IS NULL
                AND #{sourceEnvironment} = 'PRODUCTION'
                AND COALESCE(owner.sandbox, 0) = #{accountSandbox}
                AND COALESCE(invited.sandbox, 0) = #{accountSandbox}
+               AND (
+                 <if test="effectiveAt != null">invited.created_at >= #{effectiveAt} OR</if>
+                 <foreach collection="priorWindows" item="window">
+                   (invited.created_at >= #{window.effectiveAt} AND invited.created_at &lt; #{window.effectiveUntil}) OR
+                 </foreach>
+                 1 = 0
+               )
+            </script>
             """)
-    long appPendingCount(@Param("userId") Long userId,
-                         @Param("effectiveAt") LocalDateTime effectiveAt,
-                         @Param("sourceEnvironment") String sourceEnvironment,
-                         @Param("accountSandbox") Integer accountSandbox);
+    long appPendingCountInWindows(@Param("userId") Long userId,
+                                  @Param("effectiveAt") LocalDateTime effectiveAt,
+                                  @Param("priorWindows") List<AppPendingRewardWindow> priorWindows,
+                                  @Param("sourceEnvironment") String sourceEnvironment,
+                                  @Param("accountSandbox") Integer accountSandbox);
+
+    default long appPendingCount(Long userId, LocalDateTime effectiveAt, String sourceEnvironment, Integer accountSandbox) {
+        return appPendingCountInWindows(userId, effectiveAt, List.of(), sourceEnvironment, accountSandbox);
+    }
 
     @Select("""
             SELECT COUNT(*)
@@ -947,6 +961,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
     record ReferralRow(Long invitedUserId, Long inviterUserId) {}
     record K2GiftBlock(String clusterId, String hitSource, String riskRowId, String disposition) {}
     record AppReferralAccount(String referralCode, Integer sandbox, BigDecimal walletNexAvailable) {}
+    record AppPendingRewardWindow(LocalDateTime effectiveAt, LocalDateTime effectiveUntil) {}
     record AppReferralLedgerSummary(Long settledCount, BigDecimal lifetimeInviterNex) {}
     record AppReferralLedgerRow(String settlementNo, BigDecimal amountNex, String ledgerStatus,
                                 BigDecimal balanceAfter, String releaseBucket,

@@ -115,6 +115,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
     /** A sandbox drill reached its terminal proof; no production side effect exists to roll back. */
     private static final String J4_DRILL_ROLLBACK_NOT_REQUIRED = "NOT_REQUIRED";
     private static final String J4_DRILL_VALIDATION_ONLY_REASON = "VALIDATION_ONLY_NO_PRODUCTION_ACTIONS";
+    private static final String J4_PLAYBOOK_NOT_READY = "J4_PLAYBOOK_NOT_READY";
     private static final Set<String> SOP_RECOVERY_MARKERS = Set.of(
             "恢复", "解封", "放行", "开启", "启用", "restore", "release", "enable", "resume");
     private static final Set<String> J1_CANONICAL_GATE_SETTINGS = Set.of(
@@ -1428,7 +1429,12 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         // maker/checker separation and incorrectly reject a dedicated J4 checker.
         ApiResult<Map<String, Object>> validation = validateExecutablePlaybook(seed, true);
         if (validation != null) {
-            return rejectJ4("PLAYBOOK_EXECUTE", seed.code(), operator, request.reason(), idempotencyKey, validation);
+            rejectJ4("PLAYBOOK_EXECUTE", seed.code(), operator, request.reason(), idempotencyKey, validation);
+            if (J4_PLAYBOOK_NOT_READY.equals(validation.getMessage()) && !seed.draft()
+                    && "active".equals(seed.state()) && emergencyRepository.hasExpiredDrillEvidence(seed.code())) {
+                throw new ExpiredDrillRecheck();
+            }
+            return validation;
         }
         ApiResult<Map<String, Object>> confirmationError = validateJ4StepConfirmations(seed, request);
         if (confirmationError != null) {
@@ -2612,13 +2618,19 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         if (production && (seed.draft() || !"active".equals(seed.state())
                 || !isJ4DrillFresh(seed.lastDrill())
                 || !emergencyRepository.hasCurrentDrillEvidence(seed.code()))) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "J4_PLAYBOOK_NOT_READY");
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), J4_PLAYBOOK_NOT_READY);
         }
         if (requiresI3Dispatch(seed)
                 && notificationDispatchFacade.inspectEmergencyCampaign(seed.notifyCampaignNo()).isEmpty()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "J4_NOTIFY_CAMPAIGN_NOT_READY");
         }
         return null;
+    }
+
+    public static final class ExpiredDrillRecheck extends BizException {
+        private ExpiredDrillRecheck() {
+            super(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), J4_PLAYBOOK_NOT_READY);
+        }
     }
 
     private ApiResult<Map<String, Object>> validateJ4StepConfirmations(

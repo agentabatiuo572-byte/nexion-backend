@@ -496,24 +496,27 @@ public class OpsReferralRewardService {
                         }
                         long nextVersion = Math.addExact(currentVersion, 1L);
                         Instant policyChangeAt = clock.instant();
+                        boolean hasEffectiveAt = config.activeValue(EFFECTIVE_AT_KEY).isPresent();
                         Long pendingBeforePolicyChange = null;
-                        if (config.activeValue(EFFECTIVE_AT_KEY).isPresent()) {
+                        if (hasEffectiveAt) {
                             LocalDateTime priorEffectiveAt = effectiveAtRequired();
                             // Every accepted param change freezes the running interval. Only an interval
                             // that was actually enabled with positive rewards is sealed; a disabled or
                             // zero-reward interval must not resurrect registrations made while it was off.
                             // Pending count may be temporarily zero (wallet missing or risk review), but
                             // the valid old segment still needs its own amount, interval and lock mode.
-                            boolean priorEligible = "enabled".equals(paramKey) ? Boolean.parseBoolean(before) : referralEnabled();
-                            if (priorEligible && hasPositiveRewards(effectiveRewards())) {
+                            if (referralEnabled() && hasPositiveRewards(effectiveRewards())) {
                                 pendingBeforePolicyChange = mapper.totalPendingBefore(priorEffectiveAt,
                                         LocalDateTime.ofInstant(policyChangeAt, DATABASE_ZONE), 0, "risk_bucket".equals(lockMode()));
                                 storePriorPolicy(priorEffectiveAt, policyChangeAt);
                             }
                         }
-                        config.upsertAdminValue(EFFECTIVE_AT_KEY, policyChangeAt.toString(), "DATETIME", "GROWTH_REFERRAL",
-                                "H8 reward policy version " + nextVersion
-                                        + " effective time; earlier pending referrals are never repriced");
+                        boolean disabling = "enabled".equals(paramKey) && "false".equals(value);
+                        if (!disabling || !hasEffectiveAt) {
+                            config.upsertAdminValue(EFFECTIVE_AT_KEY, policyChangeAt.toString(), "DATETIME", "GROWTH_REFERRAL",
+                                    "H8 reward policy version " + nextVersion
+                                            + " effective time; earlier pending referrals are never repriced");
+                        }
                         config.upsertAdminValue(STORAGE_KEYS.get(paramKey), value,
                                 "enabled".equals(paramKey) ? "BOOLEAN"
                                         : "newcomer.lockMode".equals(paramKey) ? "STRING" : "DECIMAL", "GROWTH_REFERRAL",
@@ -1011,6 +1014,14 @@ public class OpsReferralRewardService {
                             new BigDecimal(p[8]))));
         }
         return policies;
+    }
+
+    public List<ReferralRewardMapper.AppPendingRewardWindow> appPriorPendingRewardWindows() {
+        return priorPolicies().stream()
+                .filter(prior -> hasPositiveRewards(prior.rewards()))
+                .map(prior -> new ReferralRewardMapper.AppPendingRewardWindow(
+                        prior.effectiveAt(), prior.effectiveUntil()))
+                .toList();
     }
 
     private record RewardSnapshot(

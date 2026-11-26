@@ -2,6 +2,7 @@ package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.emergency.application.OpsEmergencyControlService;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4ParamApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
@@ -22,6 +23,9 @@ final class AuditApprovalRechecks {
     private AuditApprovalRechecks() {}
 
     static boolean confirmed(AuditReplayCommand command, BizException failure) {
+        if (failure instanceof OpsEmergencyControlService.ExpiredDrillRecheck) {
+            return AuditReplayBusinessPermissionGuard.isJ4Execution(command);
+        }
         if (failure instanceof DirectReferralService.LockedStatusConflict) {
             return command != null && "F".equalsIgnoreCase(command.domain()) && "f_commission_status".equals(command.op());
         }

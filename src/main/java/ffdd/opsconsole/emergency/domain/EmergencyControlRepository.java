@@ -266,6 +266,11 @@ public interface EmergencyControlRepository {
         return false;
     }
 
+    /** The locked playbook and its linked successful drill both date back more than 90 days. */
+    default boolean hasExpiredDrillEvidence(String code) {
+        return false;
+    }
+
     default long countExecutionsSinceByMode(String mode, LocalDateTime since) {
         return executions(Integer.MAX_VALUE).stream()
                 .filter(row -> mode.equals(String.valueOf(row.get("mode"))))
