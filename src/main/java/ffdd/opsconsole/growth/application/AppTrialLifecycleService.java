@@ -7,6 +7,7 @@ import ffdd.opsconsole.finance.purchase.PurchasePaymentService;
 import ffdd.opsconsole.finance.purchase.VerifiedPurchasePayment;
 import ffdd.opsconsole.finance.purchase.PurchaseQuotaReservation;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
+import ffdd.opsconsole.growth.application.TrialPurchaseOptions.PurchaseOption;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.growth.mapper.AppTrialLifecycleMapper.Attribution;
@@ -163,11 +164,15 @@ public class AppTrialLifecycleService {
         var policy = policyMap();
         String original = trialProductCode(policy, row);
         if (original == null) return ApiResult.fail(409, "TRIAL_PRODUCT_REQUIRED");
-        var codes = new java.util.LinkedHashSet<String>();
-        codes.add(original);
-        codes.addAll(purchaseOptions.selected());
+        var selectedOptions = new LinkedHashMap<String, PurchaseOption>();
+        // The claim's product comes first and follows defaults even when also selected for other claims.
+        selectedOptions.put(original, new PurchaseOption(original, null, null, null));
+        for (var option : purchaseOptions.selectedOptions()) {
+            selectedOptions.putIfAbsent(option.productNo(), option);
+        }
         var options = new java.util.ArrayList<Map<String, Object>>();
-        for (String code : codes) {
+        for (var optionPricing : selectedOptions.values()) {
+            String code = optionPricing.productNo();
             boolean isOriginal = original.equals(code);
             boolean subcent = false;
             Product product = null;
@@ -185,7 +190,7 @@ public class AppTrialLifecycleService {
                         || positiveOrNull(row.dailyNex()) == null) {
                     throw new BizException(409, "TRIAL_DAILY_YIELD_INVALID");
                 }
-                var quote = quote(row, policy, now, false, code, price, false, true);
+                var quote = quote(row, optionPricing.effectivePolicy(policy), now, false, code, price, false, true);
                 subcent = TrialPurchaseOptions.isPositiveSubcent(quote.amountUsdt());
                 quoteDetails = decimalQuote(quote, price);
                 quoteVersion = quote.version();
@@ -236,7 +241,7 @@ public class AppTrialLifecycleService {
     }
 
     private Map<String, Object> decimalQuote(Quote quote, BigDecimal price) {
-        var view = quoteView(quote, price);
+        var view = appQuoteView(quote, price);
         view.replaceAll((key, value) -> value instanceof BigDecimal amount ? TrialPurchaseOptions.amount(amount) : value);
         return view;
     }
@@ -792,16 +797,15 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_AMOUNT_INVALID");
         }
         if (confirmedQuote != null && confirmedQuote.length() > 96) return ApiResult.fail(422, "TRIAL_QUOTE_VERSION_INVALID");
-        Map<String, String> policy = policyMap();
         var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.TRIAL_CONVERT, "USER:" + userId);
         TrialRow row = mapper.lockTrial(userId);
         if (row == null || !active(row.status())) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         if (paymentClaimNo != null && !paymentClaimNo.equals(row.claimNo())) return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
-        String configured = trialProductCode(policy, row);
         String canonicalRequested = canonicalTrialProductId(productNo);
-        boolean original = canonicalRequested.equals(configured);
-        if (configured == null || (!original && (VerifiedPurchasePayment.active()
-                || !purchaseOptions.containsForPurchase(canonicalRequested)))) {
+        String pinnedProduct = pinnedTrialProductCode(row);
+        var optionPricing = VerifiedPurchasePayment.active() || canonicalRequested.equals(pinnedProduct)
+                ? null : purchaseOptions.findForPurchase(canonicalRequested);
+        if (pinnedProduct != null && !canonicalRequested.equals(pinnedProduct) && optionPricing == null) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
         }
         LocalDateTime now = businessNow();
@@ -811,6 +815,13 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(409, "TRIAL_NOT_CONVERTIBLE");
         }
         AppTrialLifecycleMapper.ConversionProduct product = mapper.lockConversionProduct(canonicalRequested);
+        // The selected option and catalog price stay locked while reading the current defaults.
+        Map<String, String> policy = policyMap();
+        String configured = trialProductCode(policy, row);
+        boolean original = canonicalRequested.equals(configured);
+        if (configured == null || (!original && optionPricing == null)) {
+            return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_ELIGIBLE");
+        }
         var selected = purchaseOptions.product(canonicalRequested);
         String reason = original ? purchaseOptions.listingBlock(selected) : purchaseOptions.otherListingBlock(selected);
         if (reason == null) reason = purchaseOptions.stockOrConfigurationBlock(selected);
@@ -830,7 +841,9 @@ public class AppTrialLifecycleService {
         if (subtotal == null || subtotal.signum() <= 0) {
             throw new BizException(409, "TRIAL_PRICE_SNAPSHOT_INVALID");
         }
-        Quote quote = quote(row, frozenPolicy.isEmpty() ? policy : frozenPolicy, VerifiedPurchasePayment.active()
+        var pricingPolicy = frozenPolicy.isEmpty() ? policy : frozenPolicy;
+        if (!original) pricingPolicy = optionPricing.effectivePolicy(policy);
+        Quote quote = quote(row, pricingPolicy, VerifiedPurchasePayment.active()
                 ? LocalDateTime.ofInstant(VerifiedPurchasePayment.pricingInstant(),BUSINESS_ZONE) : now, legacyQuote,
                 product.productNo(), subtotal, legacyVersion, !VerifiedPurchasePayment.active()
                         || FULL_TERM_POLICY.equals(frozenPolicy.get(SETTLEMENT_POLICY_KEY)));
@@ -1008,7 +1021,9 @@ public class AppTrialLifecycleService {
         BigDecimal shadowNex = row.dailyNex().multiply(days).setScale(6, RoundingMode.DOWN);
         BigDecimal offset = row.offsetCapUsdt() == null ? shadowUsdt : shadowUsdt.min(row.offsetCapUsdt());
         BigDecimal remainder = shadowUsdt.subtract(offset).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
-        BigDecimal discount = early ? conversionPromoDiscount(row.priceUsdt(), policy) : BigDecimal.ZERO;
+        BigDecimal discount = early
+                ? conversionPromoDiscount(row.priceUsdt(), conversionPromoRate(policy), conversionPromoCap(policy))
+                : BigDecimal.ZERO;
         BigDecimal charge = row.priceUsdt().subtract(discount).subtract(offset)
                 .max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
         return new Settlement(shadowUsdt, shadowNex, offset, remainder, discount, charge);
@@ -1032,7 +1047,9 @@ public class AppTrialLifecycleService {
             settledUsdt = row.dailyUsdt().multiply(days).setScale(6, RoundingMode.DOWN).max(settledUsdt);
             settledNex = row.dailyNex().multiply(days).setScale(6, RoundingMode.DOWN).max(settledNex);
         }
-        BigDecimal promo = conversionPromoDiscount(subtotal, policy);
+        BigDecimal rate = conversionPromoRate(policy);
+        BigDecimal cap = conversionPromoCap(policy);
+        BigDecimal promo = conversionPromoDiscount(subtotal, rate, cap);
         // Previously issued external payment quotes retain the exact discount and reward they froze.
         BigDecimal offset = legacyQuote && row.offsetCapUsdt()!=null ? settledUsdt.min(row.offsetCapUsdt()) :
                 accrued.offsetUsdt().min(subtotal.subtract(promo).max(BigDecimal.ZERO));
@@ -1049,8 +1066,8 @@ public class AppTrialLifecycleService {
         String version = policyName;
         if (!legacyVersion) {
             String basis = String.join("|", row.claimNo(), productNo, TrialPurchaseOptions.amount(subtotal),
-                    String.valueOf(row.offsetCapUsdt()), conversionPromoRate(policy).stripTrailingZeros().toPlainString(),
-                    decimal(policy, "discountCapUSD", "50").stripTrailingZeros().toPlainString(), promo.toPlainString(), configured.toPlainString());
+                    String.valueOf(row.offsetCapUsdt()), rate.stripTrailingZeros().toPlainString(),
+                    cap.stripTrailingZeros().toPlainString(), promo.toPlainString(), configured.toPlainString());
             version += ":" + sha256(basis).substring(0, 24);
         } else if (early) {
             String basis = legacyQuote ? String.join("|",row.claimNo(),settledUsdt.toPlainString(),settledNex.toPlainString(),
@@ -1061,7 +1078,8 @@ public class AppTrialLifecycleService {
         }
         return new Quote(accrued, policyName, version, early, settledUsdt, settledNex,
                 settledUsdt.subtract(accrued.shadowUsdt()), settledNex.subtract(accrued.shadowNex()),
-                offset, remainder, promo, configured, earlyDiscount, baseDiscount.add(earlyDiscount), amount,
+                offset, remainder, promo, rate.movePointRight(2), cap,
+                configured, earlyDiscount, baseDiscount.add(earlyDiscount), amount,
                 early ? row.expiresAt() : null);
     }
 
@@ -1084,14 +1102,17 @@ public class AppTrialLifecycleService {
                 && row.expiresAt() != null && now.isBefore(row.expiresAt());
     }
 
-    private BigDecimal conversionPromoDiscount(BigDecimal catalogPrice, Map<String, String> policy) {
-        return catalogPrice.multiply(conversionPromoRate(policy))
-                .min(decimal(policy, "discountCapUSD", "50"))
+    private BigDecimal conversionPromoDiscount(BigDecimal catalogPrice, BigDecimal rate, BigDecimal cap) {
+        return catalogPrice.multiply(rate).min(cap)
                 .setScale(6, RoundingMode.DOWN);
     }
 
     private BigDecimal conversionPromoRate(Map<String, String> policy) {
         return decimal(policy, "discountRate", "15").movePointLeft(2);
+    }
+
+    private BigDecimal conversionPromoCap(Map<String, String> policy) {
+        return decimal(policy, "discountCapUSD", "50");
     }
 
     /** 商品未配收益时列为 0/NULL —— 只有正值才算「有权威收益」。 */
@@ -1240,7 +1261,7 @@ public class AppTrialLifecycleService {
         result.put("priceUsdt", row.priceUsdt());
         if (preview != null && row.priceUsdt() != null && row.priceUsdt().signum() > 0) {
             Quote current = quote(row, policy, now, false, configuredProductCode, row.priceUsdt(), false, true);
-            Map<String,Object> purchaseQuote = quoteView(current, row.priceUsdt());
+            Map<String,Object> purchaseQuote = appQuoteView(current, row.priceUsdt());
             purchaseQuote.put("trialOffsetCapUSD",row.offsetCapUsdt()==null?null:row.offsetCapUsdt().stripTrailingZeros().toPlainString());
             result.put("offsetUsdt",current.offsetUsdt());
             result.put("remainderUsdt",current.remainderUsdt());
@@ -1280,7 +1301,14 @@ public class AppTrialLifecycleService {
         return result;
     }
 
-    /** The same numbers convert() will settle; the App only displays them. */
+    private Map<String, Object> appQuoteView(Quote quote, BigDecimal priceUsdt) {
+        var view = quoteView(quote, priceUsdt);
+        view.put("discountRate", decimalTerm(quote.discountRatePercent()));
+        view.put("discountCapUsdt", TrialPurchaseOptions.amount(quote.discountCapUsdt()));
+        return view;
+    }
+
+    /** External payments also hash this raw view, so keep its serialized fields stable. */
     private Map<String, Object> quoteView(Quote quote, BigDecimal priceUsdt) {
         Map<String, Object> view = linked(
                 "settlementPolicy", quote.policy(), "quoteVersion", quote.version(),
@@ -1646,6 +1674,7 @@ public class AppTrialLifecycleService {
             Settlement accrued, String policy, String version, boolean early,
             BigDecimal settledUsdt, BigDecimal rewardNex, BigDecimal earlyRewardUsdt, BigDecimal earlyRewardNex,
             BigDecimal offsetUsdt, BigDecimal remainderUsdt, BigDecimal promoDiscountUsdt,
+            BigDecimal discountRatePercent, BigDecimal discountCapUsdt,
             BigDecimal earlyDiscountConfiguredUsdt, BigDecimal earlyDiscountUsdt, BigDecimal discountUsdt,
             BigDecimal amountUsdt, LocalDateTime earlyEndsAt) {
         /** Settlement-snapshot suffix; refunds key the reward reversal off {@code settlementPolicy}. */

@@ -280,7 +280,9 @@ public class PurchasePaymentService {
                 snapshot.put(TRIAL_CLAIM_SNAPSHOT, trialPricing.get("claimNo"));
                 snapshot.putAll(trials.externalDeviceSnapshot(owner, text(payload.get("productNo")), trialPricing));
                 snapshot.put("trialPricingPolicy", trialPricing.get("trialPricingPolicy"));
-                quote.put("trialPurchaseBreakdown", snapshot.get("trialPurchaseBreakdown"));
+                var breakdown = new LinkedHashMap<>(map(snapshot.get("trialPurchaseBreakdown")));
+                exposeTrialQuoteTerms(breakdown, trialPricing);
+                quote.put("trialPurchaseBreakdown", breakdown);
             }
             db.write("INSERT INTO nx_purchase_payment_quote(quote_id,user_id,kind,payment_method,payload_json,quote_json,pricing_hash,expires_at) VALUES(?,?,?,?,?,?,?,?)",
                     id,owner,kind,method,json(payload),json(snapshot),hash(pricing),timestamp(expires));
@@ -578,10 +580,19 @@ public class PurchasePaymentService {
 
     private TrialPurchaseConflict trialQuoteConflict(String code, Map<String, Object> payload, Map<String, Object> current) {
         var quote = new LinkedHashMap<>(current);
+        exposeTrialQuoteTerms(quote, current);
         quote.remove("trialPricingPolicy");
         quote.replaceAll((key, value) -> value instanceof BigDecimal amount ? TrialPurchaseOptions.amount(amount) : value);
         return new TrialPurchaseConflict(code, values("claimNo", quote.get("claimNo"), "productNo", payload.get("productNo"),
                 "quoteVersion", quote.get("quoteVersion"), "quote", quote));
+    }
+
+    private void exposeTrialQuoteTerms(Map<String, Object> view, Map<String, Object> pricing) {
+        var terms = map(pricing.get("trialPricingPolicy"));
+        if (terms.isEmpty()) return;
+        view.put("discountRate", new BigDecimal(text(terms.get("discountRate"))).stripTrailingZeros().toPlainString());
+        view.put("discountCapUsdt", TrialPurchaseOptions.amount(new BigDecimal(text(terms.get("discountCapUSD")))));
+        view.put("earlyDiscountConfiguredUsdt", TrialPurchaseOptions.amount((BigDecimal) pricing.get("earlyDiscountConfiguredUsdt")));
     }
 
     private Map<String, String> frozenTrialPolicy(Map<String, Object> quote) {

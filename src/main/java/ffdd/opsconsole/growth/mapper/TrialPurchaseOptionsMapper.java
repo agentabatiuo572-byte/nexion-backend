@@ -3,12 +3,14 @@ package ffdd.opsconsole.growth.mapper;
 import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import java.math.BigDecimal;
 import java.util.List;
+import org.apache.ibatis.annotations.AutomapConstructor;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 public interface TrialPurchaseOptionsMapper {
+    String OPTIONS = "SELECT version,product_nos productNos,pricing_json pricingJson FROM nx_trial_purchase_options WHERE id=1";
     String PRODUCT = """
             SELECT p.id,p.product_no productNo,p.name,p.product_type productType,p.inventory_mode inventoryMode,
                    p.price_usdt priceUsdt,p.stock,p.status,p.store_visible storeVisible,p.unlock_phase unlockPhase,
@@ -25,17 +27,21 @@ public interface TrialPurchaseOptionsMapper {
     @Select(PRODUCT + " AND p.product_no=#{no}")
     Product product(@Param("no") String no);
 
-    @Select("SELECT version,product_nos productNos FROM nx_trial_purchase_options WHERE id=1")
+    @Select(OPTIONS)
     Options options();
 
-    @Select("SELECT version,product_nos productNos FROM nx_trial_purchase_options WHERE id=1 FOR UPDATE")
+    @Select(OPTIONS + " FOR UPDATE")
     Options lockOptions();
 
-    @Select("SELECT version,product_nos productNos FROM nx_trial_purchase_options WHERE id=1 FOR SHARE")
+    @Select(OPTIONS + " FOR SHARE")
     Options shareOptions();
 
-    @Update("UPDATE nx_trial_purchase_options SET version=version+1,product_nos=#{products} WHERE id=1")
-    int replace(@Param("products") String products);
+    @Update("""
+            UPDATE nx_trial_purchase_options
+               SET version=version+1,product_nos=#{products},pricing_json=#{pricing,jdbcType=VARCHAR}
+             WHERE id=1
+            """)
+    int replace(@Param("products") String products, @Param("pricing") String pricing);
 
     @Select("""
             SELECT actor_id actorId,request_json requestJson,receipt_json receiptJson
@@ -68,7 +74,14 @@ public interface TrialPurchaseOptionsMapper {
     int acceptBalance(@Param("owner") long owner, @Param("claim") String claim,
                       @Param("key") String key, @Param("snapshot") String snapshot);
 
-    record Options(long version, String productNos) {}
+    record Options(long version, String productNos, String pricingJson) {
+        @AutomapConstructor
+        public Options {}
+
+        public Options(long version, String productNos) {
+            this(version, productNos, null);
+        }
+    }
     record Command(long actorId, String requestJson, String receiptJson) {}
     record Product(long id, String productNo, String name, String productType, String inventoryMode,
                    BigDecimal priceUsdt, Integer stock, String status, Boolean storeVisible, String unlockPhase,

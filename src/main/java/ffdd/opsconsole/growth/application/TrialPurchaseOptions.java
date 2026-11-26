@@ -1,11 +1,13 @@
 package ffdd.opsconsole.growth.application;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
 import ffdd.opsconsole.device.domain.ProductInventoryMode;
 import ffdd.opsconsole.growth.mapper.TrialPurchaseOptionsMapper;
+import ffdd.opsconsole.growth.mapper.TrialPurchaseOptionsMapper.Options;
 import ffdd.opsconsole.growth.mapper.TrialPurchaseOptionsMapper.Product;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -37,6 +39,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class TrialPurchaseOptions {
     public static final String WRITE_PERMISSION_NAME = "免费试用设置修改";
     private static final BigDecimal CENT_USDT = new BigDecimal("0.01");
+    private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
+    private static final BigDecimal MILLION = BigDecimal.valueOf(1_000_000);
+    private static final BigDecimal HALF_MICRO = new BigDecimal("0.0000005");
+    // The audit sanitizer's 4096-character limit includes fields added by the audit writer.
+    private static final int AUDIT_DETAIL_BUDGET = 3500;
     private final TrialPurchaseOptionsMapper db;
     private final StorefrontProductReleasePolicy release;
     private final StorefrontPurchaseGatePolicy gatePolicy;
@@ -47,11 +54,36 @@ public class TrialPurchaseOptions {
     private final ObjectMapper json;
 
     public record ReplaceRequest(List<String> productNos, Long version, String reason, String requestNo,
-                                 Long confirmedActorId) {}
+                                 Long confirmedActorId, List<PurchaseOption> items) {
+        public ReplaceRequest(List<String> productNos, Long version, String reason, String requestNo,
+                              Long confirmedActorId) {
+            this(productNos, version, reason, requestNo, confirmedActorId, null);
+        }
+    }
+
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    public record PurchaseOption(String productNo, String discountRate, String discountCapUSD,
+                                 String earlyPurchaseDiscountUSD) {
+        public Map<String, String> effectivePolicy(Map<String, String> defaults) {
+            var policy = new LinkedHashMap<>(defaults);
+            if (discountRate != null) {
+                policy.put("discountRate", discountRate);
+                policy.put("discountCapUSD", discountCapUSD);
+            }
+            if (earlyPurchaseDiscountUSD != null) {
+                policy.put("earlyPurchaseDiscountUSD", earlyPurchaseDiscountUSD);
+            }
+            return policy;
+        }
+
+        private Map<String, Object> values() {
+            return fields("productNo", productNo, "discountRate", discountRate, "discountCapUSD", discountCapUSD,
+                    "earlyPurchaseDiscountUSD", earlyPurchaseDiscountUSD);
+        }
+    }
 
     public Map<String, Object> adminView(String target) {
         var options = db.options();
-        var selected = selected(options);
         Map<String, Map<String, Object>> candidates = new LinkedHashMap<>();
         for (Product product : db.products()) {
             candidates.put(product.productNo(), adminProduct(product, product.productNo()));
@@ -59,7 +91,13 @@ public class TrialPurchaseOptions {
         return fields("currentTrialProduct", target == null ? null :
                         candidates.getOrDefault(target, adminProduct(null, target)),
                 "writePermissionName", WRITE_PERMISSION_NAME, "purchaseOptionsVersion", options.version(),
-                "otherPurchaseProducts", selected.stream().map(no -> candidates.getOrDefault(no, adminProduct(null, no))).toList(),
+                "purchaseOptionsPricing", true,
+                "otherPurchaseProducts", optionsByProduct(options).values().stream().map(option -> {
+                    String no = option.productNo();
+                    var product = new LinkedHashMap<>(candidates.getOrDefault(no, adminProduct(null, no)));
+                    product.putAll(option.values());
+                    return product;
+                }).toList(),
                 "purchaseCandidates", new ArrayList<>(candidates.values()));
     }
 
@@ -69,21 +107,19 @@ public class TrialPurchaseOptions {
         if (actor == null || request == null || !actor.equals(String.valueOf(request.confirmedActorId()))) {
             throw new BizException(403, "TRIAL_OPTIONS_ACTOR_MISMATCH");
         }
-        if (request.version() == null || request.version() < 0 || request.productNos() == null
+        boolean pricingRequest = request.items() != null;
+        boolean legacyRequest = request.productNos() != null;
+        if (request.version() == null || request.version() < 0 || pricingRequest == legacyRequest
                 || request.reason() == null || request.reason().isBlank() || request.reason().length() > 500
                 || request.requestNo() == null || !request.requestNo().matches("[A-Za-z0-9:_-]{1,128}")) {
             throw new BizException(422, "TRIAL_OPTIONS_REQUEST_INVALID");
         }
-        var requested = new LinkedHashSet<String>();
-        for (String no : request.productNos()) {
-            if (!validProductNo(no) || !requested.add(no)) {
-                throw new BizException(422, "TRIAL_OPTIONS_PRODUCT_INVALID");
-            }
-        }
+        var signature = fields(pricingRequest ? "items" : "productNos",
+                pricingRequest ? request.items().stream().map(item -> item == null ? null : item.values()).toList()
+                        : request.productNos(),
+                "version", request.version().toString(), "reason", request.reason());
         var state = db.lockOptions();
         long actorId = Long.parseLong(actor);
-        var signature = fields("productNos", request.productNos(), "version", request.version().toString(),
-                "reason", request.reason());
         var previous = db.command(request.requestNo());
         if (previous != null) {
             if (previous.actorId() != actorId) throw new BizException(403, "TRIAL_OPTIONS_ACTOR_MISMATCH");
@@ -92,25 +128,68 @@ public class TrialPurchaseOptions {
             }
             return ApiResult.ok(decode(previous.receiptJson()));
         }
+        var requested = new LinkedHashMap<String, PurchaseOption>();
+        var requestedItems = pricingRequest ? request.items()
+                : request.productNos().stream().map(no -> new PurchaseOption(no, null, null, null)).toList();
+        for (var item : requestedItems) {
+            if (item == null || !validProductNo(item.productNo()) || requested.containsKey(item.productNo())) {
+                throw new BizException(422, "TRIAL_OPTIONS_PRODUCT_INVALID");
+            }
+            if ((item.discountRate() == null) != (item.discountCapUSD() == null)) {
+                throw new BizException(422, "TRIAL_OPTIONS_PRICING_INVALID");
+            }
+            requested.put(item.productNo(), new PurchaseOption(item.productNo(),
+                    normalizePricing(item.discountRate(), "discountRate"),
+                    normalizePricing(item.discountCapUSD(), "discountCapUSD"),
+                    normalizePricing(item.earlyPurchaseDiscountUSD(), "earlyPurchaseDiscountUSD")));
+        }
+        var productNos = List.copyOf(requested.keySet());
         if (state.version() != request.version()) throw new BizException(409, "TRIAL_OPTIONS_VERSION_CONFLICT");
-        var before = selected(state);
-        for (String no : requested) {
-            if (!before.contains(no)) {
+        var before = optionsByProduct(state);
+        var after = new LinkedHashMap<String, PurchaseOption>();
+        for (var item : requested.values()) {
+            String no = item.productNo();
+            var retained = before.get(no);
+            var next = !pricingRequest && retained != null ? retained : item;
+            if (!next.equals(retained)) {
                 var product = db.product(no);
                 String reason = otherListingBlock(product);
                 if (reason == null && !product.productNo().equals(no)) reason = "PRODUCT_CODE_MISMATCH";
                 if (reason != null) throw new TrialPurchaseConflict("TRIAL_OPTIONS_PRODUCT_UNAVAILABLE",
                         fields("productNo", no, "reason", reason));
             }
+            after.put(no, next);
         }
-        var receipt = fields("productNos", request.productNos(), "version", state.version() + 1);
-        db.replace(encode(request.productNos()));
+        long newVersion = state.version() + 1;
+        var receipt = fields("productNos", productNos, "version", newVersion);
+        if (pricingRequest) receipt.put("items", after.values().stream().map(PurchaseOption::values).toList());
+        var overrides = after.values().stream()
+                .filter(item -> item.discountRate() != null || item.earlyPurchaseDiscountUSD() != null).toList();
+        db.replace(encode(productNos), overrides.isEmpty() ? null : encode(overrides));
         db.record(request.requestNo(), actorId, encode(signature), encode(receipt));
-        audit.recordRequired(AuditLogWriteRequest.builder().action("H2_TRIAL_PURCHASE_OPTIONS_CHANGED")
+        String reason = request.reason().trim();
+        var auditDetail = fields("before", before.keySet(), "after", productNos,
+                "beforeItems", before.values().stream().map(PurchaseOption::values).toList(),
+                "afterItems", after.values().stream().map(PurchaseOption::values).toList(),
+                "beforeVersion", state.version(), "afterVersion", newVersion, "reason", reason);
+        var auditEntry = AuditLogWriteRequest.builder().action("H2_TRIAL_PURCHASE_OPTIONS_CHANGED")
                 .resourceType("TRIAL_POLICY").resourceId("purchase-options").bizNo(request.requestNo())
                 .actorId(actorId).actorType("ADMIN").actorUsername(AdminActorResolver.resolve("admin:" + actor))
-                .result("SUCCESS").detail(fields("before", before, "after", requested, "reason", request.reason().trim()))
-                .build());
+                .result("SUCCESS");
+        audit.recordRequired(auditEntry.detail(auditDetail).build());
+        if (encode(auditDetail).length() > AUDIT_DETAIL_BUDGET) {
+            var affected = new LinkedHashSet<>(before.keySet());
+            affected.addAll(productNos);
+            auditEntry.action("H2_TRIAL_PURCHASE_OPTIONS_ITEM");
+            for (String no : affected) {
+                var oldItem = before.get(no);
+                var newItem = after.get(no);
+                audit.recordRequired(auditEntry.detail(fields("productNo", no,
+                        "before", oldItem == null ? null : oldItem.values(),
+                        "after", newItem == null ? null : newItem.values(),
+                        "beforeVersion", state.version(), "afterVersion", newVersion, "reason", reason)).build());
+            }
+        }
         return ApiResult.ok(receipt);
     }
 
@@ -118,16 +197,59 @@ public class TrialPurchaseOptions {
         return selected(db.options());
     }
 
+    public List<PurchaseOption> selectedOptions() {
+        return List.copyOf(optionsByProduct(db.options()).values());
+    }
+
     static boolean validProductNo(String productNo) {
         return productNo != null && productNo.matches("[A-Za-z0-9._-]{1,64}");
     }
 
     public boolean containsForPurchase(String productNo) {
-        return selected(db.shareOptions()).contains(productNo);
+        return findForPurchase(productNo) != null;
     }
 
-    private List<String> selected(TrialPurchaseOptionsMapper.Options options) {
+    public PurchaseOption findForPurchase(String productNo) {
+        return optionsByProduct(db.shareOptions()).get(productNo);
+    }
+
+    private List<String> selected(Options options) {
         return read(options.productNos(), new TypeReference<List<String>>() {});
+    }
+
+    private Map<String, PurchaseOption> optionsByProduct(Options options) {
+        var overrides = new LinkedHashMap<String, PurchaseOption>();
+        if (options.pricingJson() != null) {
+            for (var item : read(options.pricingJson(), new TypeReference<List<PurchaseOption>>() {})) {
+                overrides.put(item.productNo(), item);
+            }
+        }
+        var selected = new LinkedHashMap<String, PurchaseOption>();
+        for (String no : selected(options)) {
+            selected.put(no, overrides.getOrDefault(no, new PurchaseOption(no, null, null, null)));
+        }
+        return selected;
+    }
+
+    private static String normalizePricing(String raw, String key) {
+        if (raw == null) return null;
+        String value = raw.trim();
+        if (value.length() > 120) throw new BizException(422, "TRIAL_OPTIONS_PRICING_INVALID");
+        value = value.replace("%", "").replace(",", "");
+        if (!"discountRate".equals(key)) value = value.replace("$", "");
+        BigDecimal amount;
+        try {
+            amount = new BigDecimal(value.trim());
+        } catch (NumberFormatException invalid) {
+            throw new BizException(422, "TRIAL_OPTIONS_PRICING_INVALID");
+        }
+        BigDecimal max = "discountCapUSD".equals(key) ? MILLION : HUNDRED;
+        if (amount.signum() < 0 || amount.compareTo(max) > 0
+                || ("earlyPurchaseDiscountUSD".equals(key) && amount.stripTrailingZeros().scale() > 2)) {
+            throw new BizException(422, "TRIAL_OPTIONS_PRICING_INVALID");
+        }
+        return amount.compareTo(HALF_MICRO) < 0 ? "0"
+                : amount.setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
     public Product product(String productNo) {

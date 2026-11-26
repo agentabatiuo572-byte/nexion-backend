@@ -581,6 +581,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261123_purchase_device_placement.sql")
   (Join-Path $root "scripts\migrations\20261124_purchase_payment_refund_closeout.sql")
   (Join-Path $root "scripts\migrations\20261125_b90_trial_purchase_options.sql")
+  (Join-Path $root "scripts\migrations\20261127_b125_trial_purchase_option_pricing.sql")
   (Join-Path $root "scripts\migrations\20261124_bug663_retire_duplicate_wheel_seed.sql")
   (Join-Path $root "scripts\migrations\20261124_b81_order_user_hide.sql")
   (Join-Path $root "scripts\migrations\20261124_b83_purchase_rank.sql")
