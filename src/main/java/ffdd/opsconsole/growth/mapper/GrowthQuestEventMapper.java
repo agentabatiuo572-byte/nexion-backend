@@ -474,6 +474,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    COUNT(CASE WHEN UPPER(status) = 'REDEEMED' THEN 1 END) AS redeemed,
                    COUNT(CASE WHEN UPPER(status) = 'REDEEMED'
                                    AND LOCATE(',settlementPolicy=FULL_TERM_ON_CONVERSION,', settlement_snapshot) > 0
+                                   AND LOCATE(',earlyDiscountConfiguredUsdt=0,', settlement_snapshot) = 0
                               THEN 1 END) AS earlyRedeemed,
                    COUNT(CASE WHEN UPPER(status) = 'REDEEMED'
                                    AND (LOCATE(',settlementPolicy=FULL_TERM_ON_CONVERSION,', settlement_snapshot) > 0

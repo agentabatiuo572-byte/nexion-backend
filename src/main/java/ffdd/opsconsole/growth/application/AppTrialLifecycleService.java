@@ -107,11 +107,12 @@ public class AppTrialLifecycleService {
             "CLAIMED", "ACTIVE", "GRACE", "EXTENDED", "REDEEMED", "FAILED", "CANCELLED");
     private static final String LEGACY_TRIAL_PRODUCT_ID = "device-trial-standard";
     private static final String CANONICAL_TRIAL_PRODUCT_ID = "stellarbox-s1";
-    /** FEAT-TRIAL05: converting inside the original term settles the full claimed term plus a fixed discount. */
+    /** FEAT-TRIAL05: an eligible purchase inside the original term settles the full claimed term. */
     public static final String FULL_TERM_POLICY = "FULL_TERM_ON_CONVERSION";
     public static final String ACCRUED_POLICY = "ACCRUED_ON_CONVERSION";
     public static final String ORDER_TRIAL_DEVICE_REQUIRES_CONVERSION = "ORDER_TRIAL_DEVICE_REQUIRES_CONVERSION";
     private static final String EARLY_DISCOUNT_KEY = "earlyPurchaseDiscountUSD";
+    private static final String SETTLEMENT_POLICY_KEY = "settlementPolicy";
 
     @lombok.NonNull
     private final SupportPaymentAttributionFacade paymentAttribution;
@@ -181,7 +182,7 @@ public class AppTrialLifecycleService {
                         || positiveOrNull(row.dailyNex()) == null) {
                     throw new BizException(409, "TRIAL_DAILY_YIELD_INVALID");
                 }
-                var quote = quote(row, policy, now, false, code, price, false);
+                var quote = quote(row, policy, now, false, code, price, false, true);
                 subcent = TrialPurchaseOptions.isPositiveSubcent(quote.amountUsdt());
                 quoteDetails = decimalQuote(quote, price);
                 quoteVersion = quote.version();
@@ -640,17 +641,22 @@ public class AppTrialLifecycleService {
         var livePolicy = policyMap();
         var policy = frozenPolicy.isEmpty() ? livePolicy : frozenPolicy;
         String productNo = trialProductCode(livePolicy, row);
-        var frozen = quoteView(quote(row, policy, pricingAt, legacyQuote, productNo,
-                row.priceUsdt(), legacyVersion), row.priceUsdt());
+        boolean fullTermWithoutDiscount = frozenPolicy.isEmpty()
+                || FULL_TERM_POLICY.equals(frozenPolicy.get(SETTLEMENT_POLICY_KEY));
+        var pricingQuote = quote(row, policy, pricingAt, legacyQuote, productNo, row.priceUsdt(),
+                legacyVersion, fullTermWithoutDiscount);
+        var frozen = quoteView(pricingQuote, row.priceUsdt());
         // Entering grace is the single automatic revision between the original term and grace.
         long pricingVersion="GRACE".equals(normalize(row.status())) && pricingAt.isBefore(row.expiresAt())
                 ? row.version()-1 : row.version();
         frozen.put("sourceVersion",pricingVersion);frozen.put("claimNo",row.claimNo());
         if (!legacyVersion) {
             frozen.put("productNo", productNo);
-            frozen.put("trialPricingPolicy", Map.of("discountRate", decimal(policy, "discountRate", "15").toPlainString(),
+            frozen.put("trialPricingPolicy", frozenPolicy.isEmpty() ? Map.of(
+                    "discountRate", decimal(policy, "discountRate", "15").toPlainString(),
                     "discountCapUSD", decimal(policy, "discountCapUSD", "50").toPlainString(),
-                    EARLY_DISCOUNT_KEY, earlyPurchaseDiscount(policy).toPlainString()));
+                    EARLY_DISCOUNT_KEY, earlyPurchaseDiscount(policy).toPlainString(),
+                    SETTLEMENT_POLICY_KEY, pricingQuote.policy()) : frozenPolicy);
         }
         return ApiResult.ok(frozen);
     }
@@ -794,7 +800,8 @@ public class AppTrialLifecycleService {
         }
         Quote quote = quote(row, frozenPolicy.isEmpty() ? policy : frozenPolicy, VerifiedPurchasePayment.active()
                 ? LocalDateTime.ofInstant(VerifiedPurchasePayment.pricingInstant(),BUSINESS_ZONE) : now, legacyQuote,
-                product.productNo(), subtotal, legacyVersion);
+                product.productNo(), subtotal, legacyVersion, !VerifiedPurchasePayment.active()
+                        || FULL_TERM_POLICY.equals(frozenPolicy.get(SETTLEMENT_POLICY_KEY)));
         Settlement settlement = quote.accrued();
         BigDecimal promoDiscount = quote.promoDiscountUsdt();
         BigDecimal discount = quote.discountUsdt();
@@ -976,17 +983,16 @@ public class AppTrialLifecycleService {
     }
 
     /**
-     * FEAT-TRIAL05 conversion quote. With {@code earlyPurchaseDiscountUSD > 0}, converting before the
-     * original expiry settles the whole claimed term (claim-day rates x original days) and takes a
-     * fixed discount off what is left to pay. The real accrual stays untouched; the difference is the
-     * early-conversion reward. Grace/extension never add days or the fixed discount. Claims without a
-     * complete snapshot keep the accrued rule instead of inventing zero-valued rewards.
+     * FEAT-TRIAL05 conversion quote. Eligible purchases before the original expiry settle the whole
+     * claimed term. The fixed discount applies to the remaining purchase price. An external payment
+     * frozen under the previous rule still requires a positive discount to settle the whole term.
      */
     private Quote quote(TrialRow row, Map<String, String> policy, LocalDateTime now, boolean legacyQuote,
-            String productNo, BigDecimal subtotal, boolean legacyVersion) {
+            String productNo, BigDecimal subtotal, boolean legacyVersion, boolean fullTermWithoutDiscount) {
         Settlement accrued = settlement(row, policy, false, now);
         BigDecimal configured = earlyPurchaseDiscount(policy);
-        boolean early = configured.signum() > 0 && fullTermSnapshot(row) && inOriginalTerm(row, now);
+        boolean early = fullTermSnapshot(row) && inOriginalTerm(row, now)
+                && (configured.signum() > 0 || (fullTermWithoutDiscount && !legacyVersion));
         BigDecimal settledUsdt = accrued.shadowUsdt();
         BigDecimal settledNex = accrued.shadowNex();
         if (early) {
@@ -1165,7 +1171,7 @@ public class AppTrialLifecycleService {
         result.put("remainderUsdt", preview == null ? safe(row.remainderUsdt()) : preview.remainderUsdt());
         result.put("priceUsdt", row.priceUsdt());
         if (preview != null && row.priceUsdt() != null && row.priceUsdt().signum() > 0) {
-            Quote current = quote(row, policy, now, false, configuredProductCode, row.priceUsdt(), false);
+            Quote current = quote(row, policy, now, false, configuredProductCode, row.priceUsdt(), false, true);
             Map<String,Object> purchaseQuote = quoteView(current, row.priceUsdt());
             purchaseQuote.put("trialOffsetCapUSD",row.offsetCapUsdt()==null?null:row.offsetCapUsdt().stripTrailingZeros().toPlainString());
             result.put("offsetUsdt",current.offsetUsdt());
@@ -1570,6 +1576,7 @@ public class AppTrialLifecycleService {
             return ",settlementPolicy=" + policy + ",quoteVersion=" + version
                     + ",settledUsdt=" + settledUsdt + ",settledNex=" + rewardNex
                     + ",earlyRewardUsdt=" + earlyRewardUsdt + ",earlyRewardNex=" + earlyRewardNex
+                    + ",earlyDiscountConfiguredUsdt=" + earlyDiscountConfiguredUsdt.stripTrailingZeros().toPlainString()
                     + ",earlyDiscountUsdt=" + earlyDiscountUsdt;
         }
 
