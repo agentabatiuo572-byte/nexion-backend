@@ -93,10 +93,17 @@ public class H3GrowthApproval {
                 new AuditLockTarget(locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
             return ApiResult.fail(403, "H3_APPROVAL_FORBIDDEN");
         }
-        if (!growth.h3ApprovalState(target).equals(command.params().get("expectedState"))) {
+        Map<String, String> current = growth.h3ApprovalState(target);
+        Object expected = command.params().get("expectedState");
+        Object proposalReason = command.params().get("proposalReason");
+        if (!current.equals(expected)) {
+            if (CONFIG.equals(command.op()) && proposalReason instanceof String
+                    && confirmedStateChange(target.id(), expected, current)) {
+                throw new ConfirmedRecheckFailure(409, "H3_CONFIG_STALE");
+            }
             return ApiResult.fail(409, "H3_CONFIG_STALE");
         }
-        if (!(command.params().get("proposalReason") instanceof String reason)) {
+        if (!(proposalReason instanceof String reason)) {
             return ApiResult.fail(422, "H3_PROPOSAL_INVALID");
         }
         if (CREATE.equals(command.op())) {
@@ -107,6 +114,39 @@ public class H3GrowthApproval {
         var request = config(command, reason);
         return commands.execute("H3", "QUEST_CONFIG_UPDATE", target.id(), context.idempotencyKey(), request,
                 () -> growth.executeApprovedH3Config(context.idempotencyKey(), target.id(), request, target));
+    }
+
+    private static boolean confirmedStateChange(String key, Object expected, Map<String, String> current) {
+        if (!(expected instanceof Map<?, ?> previous) || !current.keySet().equals(previous.keySet())) return false;
+        if (current.keySet().equals(Set.of("id", "kind", "status"))) {
+            var validStatuses = Set.of("0", "1", "2");
+            String id = current.get("id");
+            String kind = current.get("kind");
+            return id.matches("[1-9][0-9]*") && id.equals(previous.get("id"))
+                    && !kind.isBlank() && !"null".equals(kind) && kind.equals(previous.get("kind"))
+                    && previous.get("status") instanceof String status && validStatuses.contains(status)
+                    && validStatuses.contains(current.get("status"));
+        }
+        if (!current.keySet().equals(Set.of("value")) || !(previous.get("value") instanceof String oldValue)) {
+            return false;
+        }
+        String value = current.get("value");
+        try {
+            if ("dayOne.triReward".equals(key)) {
+                return !DayOneTriRewardPolicy.normalizeStoredPolicy(oldValue)
+                        .equals(DayOneTriRewardPolicy.normalizeStoredPolicy(value));
+            }
+            return key.startsWith("weekly.mult.") && OpsGrowthService.parseWeeklyPhaseMultiplier(oldValue)
+                    .compareTo(OpsGrowthService.parseWeeklyPhaseMultiplier(value)) != 0;
+        } catch (BizException | IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
+    public static final class ConfirmedRecheckFailure extends BizException {
+        ConfirmedRecheckFailure(int code, String reason) {
+            super(code, reason);
+        }
     }
 
     private static Map<?, ?> values(AuditReplayCommand command) {

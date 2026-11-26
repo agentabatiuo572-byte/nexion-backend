@@ -87,6 +87,12 @@ public class PhoneActivationCapacityService implements PhoneActivationCapacityCo
                 && ("PHONE".equalsIgnoreCase(device.deviceType()) || "MOBILE".equalsIgnoreCase(device.deviceType()));
     }
 
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void completeReplacementAfterPhoneDeactivation(long userId, long deviceId) {
+        slotReplacement.afterDeactivation(userId, deviceId);
+    }
+
     private void completePhoneSlotRelease(long userId, CanonicalStateMapper.UserDeviceCommandRow device,
             AuditLogWriteRequest.AuditLogWriteRequestBuilder auditEntry, String reason) {
         slotReplacement.afterDeactivation(userId, device.id());

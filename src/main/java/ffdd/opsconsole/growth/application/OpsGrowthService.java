@@ -2152,8 +2152,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             String missionCode = taskReward.group(1);
             int newReward;
             try {
-                newReward = bounded(h3Decimal(request.value(), 0), BigDecimal.ZERO, new BigDecimal("100000"))
-                        .setScale(0, RoundingMode.UNNECESSARY).intValueExact();
+                newReward = h3Reward(request.value(), 0).setScale(0, RoundingMode.UNNECESSARY).intValueExact();
             } catch (RuntimeException ex) {
                 return validation("QUEST_REWARD_INVALID");
             }
@@ -2165,6 +2164,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return validation("QUEST_DAY_ONE_GROUP_REWARD_REQUIRED");
             }
             if (!expectedIntegerMatches(request.expectedValue(), oldReward)) {
+                if (approved && !preview && confirmedH3RewardChange(request.expectedValue(), BigDecimal.valueOf(oldReward), 0)) {
+                    throw new H3GrowthApproval.ConfirmedRecheckFailure(
+                            OpsErrorCode.VALIDATION_FAILED.httpStatus(), "QUEST_CONFIG_STALE");
+                }
                 return validation("QUEST_CONFIG_STALE");
             }
             if (newReward == oldReward) {
@@ -2191,8 +2194,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             String challengeCode = monthlyReward.group(1);
             BigDecimal newReward;
             try {
-                newReward = bounded(h3Decimal(request.value(), 6), BigDecimal.ZERO, new BigDecimal("100000"))
-                        .setScale(6, RoundingMode.UNNECESSARY);
+                newReward = h3Reward(request.value(), 6).setScale(6, RoundingMode.UNNECESSARY);
             } catch (RuntimeException ex) {
                 return validation("MONTHLY_REWARD_INVALID");
             }
@@ -2201,6 +2203,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return validation("MONTHLY_CHALLENGE_NOT_FOUND");
             }
             if (!expectedDecimalMatches(request.expectedValue(), oldReward)) {
+                if (approved && !preview && confirmedH3RewardChange(request.expectedValue(), oldReward, 6)) {
+                    throw new H3GrowthApproval.ConfirmedRecheckFailure(
+                            OpsErrorCode.VALIDATION_FAILED.httpStatus(), "QUEST_CONFIG_STALE");
+                }
                 return validation("QUEST_CONFIG_STALE");
             }
             if (newReward.compareTo(oldReward) == 0) {
@@ -2439,6 +2445,18 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return value;
     }
 
+    private static BigDecimal h3Reward(String raw, int scale) {
+        return bounded(h3Decimal(raw, scale), BigDecimal.ZERO, new BigDecimal("100000"));
+    }
+
+    private static boolean confirmedH3RewardChange(String expected, BigDecimal current, int scale) {
+        try {
+            return h3Reward(expected, scale).compareTo(h3Reward(current.toPlainString(), scale)) != 0;
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
     private ApiResult<Map<String, Object>> h3ApprovalGate(
             boolean amplifies, boolean approved, boolean preview, String before, String after) {
         if (preview && !amplifies) return validation("H3_APPROVAL_NOT_REQUIRED");
@@ -2451,7 +2469,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     || coverage.nexUsdRate().signum() <= 0) {
                 throw new BizException(422, "B1_COVERAGE_DATA_UNAVAILABLE");
             }
-            if (coverage.redlineBreached()) throw new BizException(422, "B1_COVERAGE_BELOW_REDLINE");
+            if (coverage.redlineBreached()) {
+                String reason = "B1_COVERAGE_BELOW_REDLINE";
+                throw preview ? new BizException(422, reason) : new H3GrowthApproval.ConfirmedRecheckFailure(422, reason);
+            }
         }
         return preview ? ApiResult.ok(Map.of("before", before, "after", after)) : null;
     }

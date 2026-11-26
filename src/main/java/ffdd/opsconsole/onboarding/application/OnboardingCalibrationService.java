@@ -623,8 +623,11 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
     private void deactivateCurrentCalibrationDevice(Long userId, Scope scope, String installationId) {
         String instance = currentPhoneInstance(userId, scope, installationId);
         if (!mapper.phoneInstanceBoundToOtherInstallation(userId, scope.sourceEnvironment(), scope.runId(),
-                installationId, instance)) {
-            mapper.deactivatePhoneDevice(userId, instance, scope.sourceEnvironment(), scope.runId());
+                installationId, instance)
+                && mapper.deactivatePhoneDevice(userId, instance, scope.sourceEnvironment(), scope.runId()) == 1
+                && !scope.sandbox()) {
+            long phoneDeviceId = mapper.phoneDeviceId(userId, instance, scope.sourceEnvironment(), scope.runId());
+            capacity.completeReplacementAfterPhoneDeactivation(userId, phoneDeviceId);
         }
     }
 

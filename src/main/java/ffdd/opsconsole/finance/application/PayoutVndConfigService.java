@@ -10,6 +10,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
@@ -80,6 +81,9 @@ public class PayoutVndConfigService {
         State current = readState(mode != UpdateMode.PREVIEW);
         if (current == null || validateStored(current.values()) != null) {
             return ApiResult.fail(503, "D7_CONFIG_UNAVAILABLE");
+        }
+        if (mode == UpdateMode.REPLAY && current.version() > request.expectedVersion()) {
+            throw new ConfigVersionAdvanced();
         }
         if (!current.version().equals(request.expectedVersion())) {
             return ApiResult.fail(409, "D7_CONFIG_VERSION_CONFLICT");
@@ -405,6 +409,12 @@ public class PayoutVndConfigService {
     private boolean booleanValue(Object value) {
         if (!(value instanceof Boolean bool)) throw new IllegalArgumentException("not boolean");
         return bool;
+    }
+
+    public static final class ConfigVersionAdvanced extends BizException {
+        private ConfigVersionAdvanced() {
+            super(409, "D7_CONFIG_VERSION_CONFLICT");
+        }
     }
 
     private record State(

@@ -86,6 +86,9 @@ public final class BankRunThresholdPolicy {
         }
         long version = parseVersion(configFacade.activeValueForUpdate(VERSION_CONFIG_KEY)
                 .orElseThrow(() -> new BizException(500, "B5_CONFIG_VERSION_INVALID")));
+        if (approved && expectedVersion != null && version > expectedVersion) {
+            throw new ThresholdVersionAdvanced();
+        }
         Change change = proposedChange(configFacade, yellow, redline, expectedVersion, version);
         if (approved) {
             requireAmplification(change);
@@ -121,6 +124,12 @@ public final class BankRunThresholdPolicy {
     private static void requireAmplification(Change change) {
         if (!change.amplifies()) {
             throw new BizException(422, "B5_BANKRUN_THRESHOLDS_AMPLIFICATION_REQUIRED");
+        }
+    }
+
+    public static final class ThresholdVersionAdvanced extends BizException {
+        private ThresholdVersionAdvanced() {
+            super(409, "B5_THRESHOLD_VERSION_CONFLICT");
         }
     }
 

@@ -1154,6 +1154,9 @@ public class OpsTreasuryService {
         }
         ledgerRepository.lockOperationMutex(B1_THRESHOLD_MUTEX);
         B1ThresholdChange change = thresholdChange(values);
+        if (approvalOperationId != null && expectedVersion != null && change.version() > expectedVersion) {
+            throw new ThresholdVersionAdvanced(409, "CONFIG_VERSION_CONFLICT");
+        }
         ApiResult<Void> validation = validateThresholdChange(change, expectedVersion, approvalOperationId != null);
         if (validation.getCode() != 0) {
             return ApiResult.fail(validation.getCode(), validation.getMessage());
@@ -1249,6 +1252,12 @@ public class OpsTreasuryService {
     private record B1ThresholdChange(long version, B1CoverageThresholds before, B1CoverageThresholds after) {
         int redlineDirection() {
             return after.redlinePct().compareTo(before.redlinePct());
+        }
+    }
+
+    public static final class ThresholdVersionAdvanced extends BizException {
+        private ThresholdVersionAdvanced(int code, String reason) {
+            super(code, reason);
         }
     }
 

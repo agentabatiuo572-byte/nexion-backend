@@ -3,6 +3,10 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
 import ffdd.opsconsole.emergency.application.OpsEmergencyControlService;
+import ffdd.opsconsole.finance.application.PayoutVndConfigService;
+import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
+import ffdd.opsconsole.growth.application.H3GrowthApproval;
+import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.market.application.G2G7ParamApproval;
@@ -13,6 +17,9 @@ import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.team.application.DirectReferralService;
 import ffdd.opsconsole.team.application.OpsTeamService;
+import ffdd.opsconsole.treasury.application.BankRunThresholdPolicy;
+import ffdd.opsconsole.treasury.application.OpsTreasuryService;
+import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import java.util.Objects;
 import java.util.Set;
 
@@ -27,6 +34,21 @@ final class AuditApprovalRechecks {
     private AuditApprovalRechecks() {}
 
     static boolean confirmed(AuditReplayCommand command, BizException failure) {
+        if (failure instanceof H3GrowthApproval.ConfirmedRecheckFailure) {
+            return H3GrowthApproval.supports(command);
+        }
+        if (failure instanceof H4GrowthApproval.ConfirmedSnapshotChange) {
+            return H4GrowthApproval.supports(command);
+        }
+        if (failure instanceof OpsTreasuryService.ThresholdVersionAdvanced) {
+            return TreasuryThresholdApproval.supports(command) && "B1".equals(TreasuryThresholdApproval.source(command));
+        }
+        if (failure instanceof BankRunThresholdPolicy.ThresholdVersionAdvanced) {
+            return TreasuryThresholdApproval.supports(command) && "B5".equals(TreasuryThresholdApproval.source(command));
+        }
+        if (failure instanceof PayoutVndConfigService.ConfigVersionAdvanced) {
+            return WithdrawalConfigApproval.supports(command) && "d7_payout_vnd_config".equals(command.op());
+        }
         if (failure instanceof OpsGrowthService.H5ApprovalRecheckFailure) {
             return H5GrowthApproval.supports(command);
         }
@@ -48,6 +70,10 @@ final class AuditApprovalRechecks {
         }
         if (G2G7ParamApproval.supports(command)) {
             return code == 422 && "COVERAGE_BELOW_REDLINE".equals(reason);
+        }
+        if (TreasuryThresholdApproval.supports(command)) {
+            return "B1".equals(TreasuryThresholdApproval.source(command))
+                    && code == 422 && "COVERAGE_BELOW_REDLINE".equals(reason);
         }
         if (G4CatalogApproval.supports(command)) return "G4_CATALOG_SNAPSHOT_CHANGED".equals(reason);
         if (G4DividendApproval.supports(command)) {
