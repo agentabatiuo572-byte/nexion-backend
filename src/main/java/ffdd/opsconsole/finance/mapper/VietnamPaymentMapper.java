@@ -401,7 +401,7 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
             @Param("operator") String operator,
             @Param("reason") String reason);
 
-    @Select("""
+    String FX_QUOTE_CONFIG_SELECT = """
             SELECT config_code AS configCode,
                    base_rate_vnd_per_usdt AS baseRateVndPerUsdt,
                    buy_spread_pct AS buySpreadPct,
@@ -410,8 +410,13 @@ public interface VietnamPaymentMapper extends BaseMapper<DepositOrderEntity> {
                    updated_at AS updatedAt
               FROM nx_finance_fx_quote_config
              WHERE config_code = 'VND_USDT' AND is_deleted = 0
-            """)
+            """;
+
+    @Select(FX_QUOTE_CONFIG_SELECT)
     Map<String, Object> findFxQuoteConfig();
+
+    @Select(FX_QUOTE_CONFIG_SELECT + "FOR UPDATE")
+    Map<String, Object> findFxQuoteConfigForUpdate();
 
     @Select("""
             SELECT t.operation_id AS operationId, t.status, t.operator_name AS submittedBy,

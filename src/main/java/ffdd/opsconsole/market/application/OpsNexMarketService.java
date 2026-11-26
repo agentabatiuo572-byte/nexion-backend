@@ -1354,6 +1354,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private record PreparedMarketPolicy(G3MarketApproval.Review review, NexMarketCurveUpdateRequest curve,
                                         NexMarketValueUpdateRequest value) {}
 
+    public static final class ConfirmedMarketPolicyRevisionConflict extends BizException {
+        private ConfirmedMarketPolicyRevisionConflict() {
+            super(409, "G3_POLICY_REVISION_CONFLICT");
+        }
+    }
+
+    private static BizException marketPolicyRevisionConflict(boolean confirmed) {
+        return confirmed ? new ConfirmedMarketPolicyRevisionConflict()
+                : new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+    }
+
     private PreparedMarketPolicy prepareMarketPolicy(G3MarketPolicyChangeRequest request, String reason, String operator) {
         ApiResult<Map<String, Object>> guard = requireCommand("g3-policy-review", reason);
         if (guard != null) throw new BizException(guard.getCode(), guard.getMessage());
@@ -1368,7 +1379,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     .filter(StringUtils::hasText).map(this::readCurve).orElse(List.of());
             if (before.size() != 7) throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
             if (!request.expectedRevision().equals(marketPolicyRevision("curve", writeCurve(before)))) {
-                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                throw marketPolicyRevisionConflict(before.stream().allMatch(frame ->
+                        validMarketPolicyNumber(frame.targetPrice(), false)
+                                && validMarketPolicyNumber(frame.pumpProbability(), true)));
             }
             boolean probability = "pumpProbability".equals(request.field());
             BigDecimal value = marketPolicyNumber(parseDecimal(request.value(), null), probability);
@@ -1401,10 +1414,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return new PreparedMarketPolicy(review, new NexMarketCurveUpdateRequest(frames, reason, operator, before), null);
         }
         if ("current-price".equals(request.action())) {
-            configFacade.activeValueForUpdate(CURRENT_PRICE_KEY);
+            var lockedPrice = configFacade.activeValueForUpdate(CURRENT_PRICE_KEY)
+                    .map(raw -> parseDecimal(raw, null)).orElse(null);
             BigDecimal before = requireAuthoritativeCurrentPrice();
-            if (!request.expectedRevision().equals(marketPolicyRevision("price", before.stripTrailingZeros().toPlainString()))) {
-                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+            BigDecimal canonicalPrice = before.stripTrailingZeros();
+            if (!request.expectedRevision().equals(marketPolicyRevision("price", canonicalPrice.toPlainString()))) {
+                throw marketPolicyRevisionConflict(lockedPrice != null && before.compareTo(lockedPrice) == 0
+                        && validMarketPolicyNumber(canonicalPrice, false));
             }
             BigDecimal value = marketPolicyNumber(parseDecimal(request.value(), null), false).setScale(8, RoundingMode.UNNECESSARY);
             if (value.compareTo(before) <= 0) throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
@@ -1438,7 +1454,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
                 }
                 if (!request.field().equals(pinned.targetPrice().stripTrailingZeros().toPlainString())) {
-                    throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                    throw frozenMarketPriceConflict(request.field(), pinned.targetPrice());
                 }
             }
             BigDecimal current = requireAuthoritativeCurrentPrice();
@@ -1474,7 +1490,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             List<NexMarketCurveFrame> resumeCurve = configFacade.activeValueForUpdate(WEEKLY_CURVE_KEY)
                     .filter(StringUtils::hasText).map(this::readCurve).orElse(List.of());
             if (resumeCurve.size() != 7) throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
-            int nextDayIndex = pinnedDayIndex().orElseGet(this::nextAdvanceDayIndex);
+            String pin = readText(PIN_CONTROL_KEY, "").trim().toUpperCase(Locale.ROOT);
+            var pinnedDay = pinnedDayIndex(pin);
+            var cursor = pinnedDay.isPresent() ? Optional.<Integer>empty() : configuredActiveDayIndex();
+            int nextDayIndex = pinnedDay.orElseGet(() -> nextAdvanceDayIndex(cursor.orElseGet(this::activeDayIndex)));
             NexMarketCurveFrame activeFrame = frameFor(resumeCurve, nextDayIndex);
             // 先按冻结依据比对(漂移即版本冲突)，再判断这次恢复是否还属于提价。
             if (activeFrame != null) {
@@ -1482,7 +1501,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
                 }
                 if (!request.field().equals(activeFrame.targetPrice().stripTrailingZeros().toPlainString())) {
-                    throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                    // A missing cursor, unknown pin or end-of-week loop fallback cannot establish the selected day.
+                    boolean confirmedDay = pinnedDay.isPresent()
+                            || ("未钉住".equals(pin) && cursor.filter(day -> day < 6).isPresent());
+                    throw confirmedDay ? frozenMarketPriceConflict(request.field(), activeFrame.targetPrice())
+                            : new BizException(409, "G3_POLICY_REVISION_CONFLICT");
                 }
             }
             BigDecimal current = requireAuthoritativeCurrentPrice();
@@ -1511,7 +1534,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
         String before = configFacade.activeValueForUpdate(SCHEDULE_CONTROL_KEY).orElse(null);
         if (!request.expectedRevision().equals(marketPolicyRevision("schedule", before))) {
-            throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+            boolean expectedUnconfigured = request.expectedRevision().equals(marketPolicyRevision("schedule", null))
+                    || request.expectedRevision().equals(marketPolicyRevision("schedule", ""));
+            throw marketPolicyRevisionConflict(expectedUnconfigured && StringUtils.hasText(before)
+                    && !NexMarketSchedule.parse(before).fallback());
         }
         if (StringUtils.hasText(before)) throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
         String value = normalizeControlValue("schedule", request.value());
@@ -1536,6 +1562,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
     }
 
+    private BizException frozenMarketPriceConflict(String frozenPrice, BigDecimal currentPrice) {
+        BigDecimal previousPrice = parseDecimal(frozenPrice, null);
+        return marketPolicyRevisionConflict(validMarketPolicyNumber(previousPrice, false)
+                && frozenPrice.equals(previousPrice.stripTrailingZeros().toPlainString())
+                && validMarketPolicyNumber(currentPrice, false) && previousPrice.compareTo(currentPrice) != 0);
+    }
+
     private List<Map<String, Object>> marketCurveReview(List<NexMarketCurveFrame> frames) {
         return frames.stream().map(frame -> Map.<String, Object>of("日期", "D" + (frame.dayIndex() + 1),
                 "目标价（USDT/UVT）", frame.targetPrice(), "上涨概率", frame.pumpProbability(),
@@ -1555,13 +1588,15 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private BigDecimal marketPolicyNumber(BigDecimal value, boolean probability) {
+        if (!validMarketPolicyNumber(value, probability)) throw new BizException(422, "G3_POLICY_VALUE_INVALID");
+        return value.stripTrailingZeros();
+    }
+
+    private static boolean validMarketPolicyNumber(BigDecimal value, boolean probability) {
         int scale = probability ? 6 : 8;
         BigDecimal max = probability ? BigDecimal.ONE : new BigDecimal("1000000");
-        if (value == null || value.scale() > scale || value.compareTo(max) > 0
-                || (probability ? value.signum() < 0 : value.signum() <= 0)) {
-            throw new BizException(422, "G3_POLICY_VALUE_INVALID");
-        }
-        return value.stripTrailingZeros();
+        return value != null && value.scale() <= scale && value.compareTo(max) <= 0
+                && (probability ? value.signum() >= 0 : value.signum() > 0);
     }
 
     private void validateCurvePolicyValues(List<NexMarketCurveFrame> frames) {
@@ -2252,20 +2287,27 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private int storedActiveDayIndex() {
+        return configuredActiveDayIndex().orElseGet(this::activeDayIndex);
+    }
+
+    private Optional<Integer> configuredActiveDayIndex() {
         String raw = readText(ACTIVE_DAY_INDEX_KEY, "");
         try {
             int dayIndex = Integer.parseInt(raw.trim());
             if (dayIndex >= 0 && dayIndex <= 6) {
-                return dayIndex;
+                return Optional.of(dayIndex);
             }
         } catch (RuntimeException ignored) {
             // Fall back to UTC weekday for first boot or corrupt config.
         }
-        return activeDayIndex();
+        return Optional.empty();
     }
 
     private int nextAdvanceDayIndex() {
-        int current = storedActiveDayIndex();
+        return nextAdvanceDayIndex(storedActiveDayIndex());
+    }
+
+    private int nextAdvanceDayIndex(int current) {
         if (current >= 6 && !loopAtEnd()) {
             return 6;
         }
@@ -2278,7 +2320,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private Optional<Integer> pinnedDayIndex() {
-        String value = readText(PIN_CONTROL_KEY, "未钉住").trim().toUpperCase(Locale.ROOT);
+        return pinnedDayIndex(readText(PIN_CONTROL_KEY, "").trim().toUpperCase(Locale.ROOT));
+    }
+
+    private static Optional<Integer> pinnedDayIndex(String value) {
         if (!value.matches("D[1-7]")) {
             return Optional.empty();
         }

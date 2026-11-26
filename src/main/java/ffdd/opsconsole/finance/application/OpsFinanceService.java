@@ -41,6 +41,7 @@ import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskContext;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskRuleFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -410,7 +411,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return validation;
         }
         Set<String> changedFields = request.changedD5Fields();
-        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(request, changedFields, false);
+        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(request, changedFields, false, false);
         if (result.getCode() != 0) {
             return ApiResult.fail(result.getCode(), result.getMessage());
         }
@@ -469,13 +470,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (validation != null) {
             return validation;
         }
-        // A2 owns the transaction and idempotency key. A failed replay leaves the ticket retryable.
+        // A2 owns the transaction and idempotency key.
         return updateWithdrawalLimitsNew(idempotencyKey.trim(), request, request.changedD5Fields(),
                 AdminActorResolver.resolve(request.getOperator()), approvalOperationId);
     }
 
     private ApiResult<D5WithdrawalChange> readWithdrawalLimitsChange(
-            WithdrawalLimitsUpdateRequest request, Set<String> changedFields, boolean lock) {
+            WithdrawalLimitsUpdateRequest request, Set<String> changedFields, boolean lock, boolean approving) {
         long currentVersion;
         try {
             currentVersion = (lock ? configFacade.activeValueForUpdate("withdrawal.d5.version")
@@ -487,8 +488,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         } catch (RuntimeException ex) {
             return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
         }
-        if (currentVersion != request.getExpectedVersion()) {
-            return ApiResult.fail(409, "CONFIG_VERSION_CONFLICT");
+        long expectedVersion = request.getExpectedVersion();
+        ApiResult<D5WithdrawalChange> versionConflict = currentVersion == expectedVersion
+                ? null : ApiResult.fail(409, "CONFIG_VERSION_CONFLICT");
+        if (versionConflict != null && (!approving || expectedVersion <= 0 || currentVersion < expectedVersion)) {
+            return versionConflict;
         }
 
         Map<String, BigDecimal> before;
@@ -497,10 +501,14 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             before = currentD5OwnedValues();
             beforeNetworkEnabled = currentD5NetworkEnabledValues();
         } catch (IllegalStateException ex) {
-            return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
+            return versionConflict != null ? versionConflict : ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
         }
         if (changedFields.stream().anyMatch(field -> PayoutAddressProtection.isField(field) && !before.containsKey(field))) {
-            return ApiResult.fail(503, PayoutAddressProtection.UNAVAILABLE);
+            return versionConflict != null ? versionConflict : ApiResult.fail(503, PayoutAddressProtection.UNAVAILABLE);
+        }
+        if (versionConflict != null) {
+            if (before.get("networkFeeMin").compareTo(before.get("networkFeeMax")) > 0) return versionConflict;
+            throw new WithdrawalLimitsVersionAdvanced();
         }
         BigDecimal nextFeeMin = changedFields.contains("networkFeeMin")
                 ? request.getNetworkFeeMin() : before.get("networkFeeMin");
@@ -545,7 +553,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             Set<String> changedFields,
             String actor,
             String approvalOperationId) {
-        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(request, changedFields, true);
+        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(
+                request, changedFields, true, approvalOperationId != null);
         if (result.getCode() != 0) {
             return ApiResult.fail(result.getCode(), result.getMessage());
         }
@@ -2507,6 +2516,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
 
     private record D5WithdrawalChange(long version, Map<String, BigDecimal> before,
             Map<String, Boolean> beforeNetworkEnabled, boolean amplifies) {}
+
+    public static final class WithdrawalLimitsVersionAdvanced extends BizException {
+        private WithdrawalLimitsVersionAdvanced() {
+            super(409, "CONFIG_VERSION_CONFLICT");
+        }
+    }
 
     private ApiResult<Map<String, Object>> validateWithdrawalLimitsCommand(
             WithdrawalLimitsUpdateRequest request, String idempotencyKey, boolean preview) {

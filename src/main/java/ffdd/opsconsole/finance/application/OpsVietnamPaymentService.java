@@ -188,9 +188,15 @@ public class OpsVietnamPaymentService {
         @SuppressWarnings({"rawtypes", "unchecked"})
         ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
                 "D6_FX_QUOTE_UPDATE", idempotencyKey, requestHash, ApiResult.class, () -> {
-                    Map<String, Object> before = requiredMap(mapper.findFxQuoteConfig(), "FX_QUOTE_CONFIG_UNAVAILABLE");
+                    boolean approving = A2ReplayContext.isReplaying() && A2ReplayContext.operationId() != null;
+                    Map<String, Object> before = requiredMap(approving ? mapper.findFxQuoteConfigForUpdate()
+                            : mapper.findFxQuoteConfig(), "FX_QUOTE_CONFIG_UNAVAILABLE");
                     String actor = operator(request.operator());
-                    if (longValue(before.get("version")) != request.expectedVersion()) {
+                    long currentVersion = longValue(before.get("version"));
+                    if (approving && currentVersion > request.expectedVersion()) {
+                        throw new FxQuoteVersionAdvanced();
+                    }
+                    if (currentVersion != request.expectedVersion()) {
                         conflict("FX_QUOTE_VERSION_CONFLICT");
                     }
                     if (decimal(before.get("baseRateVndPerUsdt"))
@@ -205,7 +211,7 @@ public class OpsVietnamPaymentService {
                             decimal(before.get("buySpreadPct"))).compareTo(VietnamPaymentPolicy.quoteRate(
                                     request.baseRateVndPerUsdt(), request.buySpreadPct())) > 0;
                     if (baseIncrease || lowerQuote) {
-                        if (!A2ReplayContext.isReplaying() || A2ReplayContext.operationId() == null) {
+                        if (!approving) {
                             throw new BizException(409, "D6_FX_QUOTE_APPROVAL_REQUIRED");
                         }
                         if (baseIncrease && !payoutVnd.coverageHealthy()) {
@@ -248,6 +254,12 @@ public class OpsVietnamPaymentService {
                     return ApiResult.ok(response);
                 });
         return result;
+    }
+
+    public static final class FxQuoteVersionAdvanced extends BizException {
+        private FxQuoteVersionAdvanced() {
+            super(409, "FX_QUOTE_VERSION_CONFLICT");
+        }
     }
 
     private Map<String, Object> fxSnapshot(Map<String, Object> config) {

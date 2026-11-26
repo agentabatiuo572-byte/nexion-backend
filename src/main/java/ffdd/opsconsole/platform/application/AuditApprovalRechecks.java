@@ -3,6 +3,9 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
 import ffdd.opsconsole.emergency.application.OpsEmergencyControlService;
+import ffdd.opsconsole.finance.application.EarningsReleaseService;
+import ffdd.opsconsole.finance.application.OpsFinanceService;
+import ffdd.opsconsole.finance.application.OpsVietnamPaymentService;
 import ffdd.opsconsole.finance.application.PayoutVndConfigService;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
@@ -10,10 +13,14 @@ import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.market.application.G2G7ParamApproval;
+import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.market.application.G4ParamApproval;
+import ffdd.opsconsole.market.application.OpsNexMarketService;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.risk.application.K1RiskApproval;
+import ffdd.opsconsole.risk.application.RiskReleaseParamsService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.team.application.DirectReferralService;
 import ffdd.opsconsole.team.application.OpsTeamService;
@@ -49,6 +56,21 @@ final class AuditApprovalRechecks {
         if (failure instanceof PayoutVndConfigService.ConfigVersionAdvanced) {
             return WithdrawalConfigApproval.supports(command) && "d7_payout_vnd_config".equals(command.op());
         }
+        if (failure instanceof OpsFinanceService.WithdrawalLimitsVersionAdvanced) {
+            return WithdrawalConfigApproval.supports(command) && "D5".equals(WithdrawalConfigApproval.source(command));
+        }
+        if (failure instanceof OpsVietnamPaymentService.FxQuoteVersionAdvanced) {
+            return WithdrawalConfigApproval.supports(command) && "D6".equals(WithdrawalConfigApproval.source(command));
+        }
+        if (failure instanceof OpsNexMarketService.ConfirmedMarketPolicyRevisionConflict) {
+            return G3MarketApproval.supports(command);
+        }
+        if (failure instanceof RiskReleaseParamsService.ConfirmedSnapshotChange) {
+            return K1RiskApproval.supports(command) && "k1_release_param".equals(command.op());
+        }
+        if (failure instanceof EarningsReleaseService.ConfirmedRecoveryChange) {
+            return K1RiskApproval.supports(command) && "k1_earnings_release".equals(command.op());
+        }
         if (failure instanceof OpsGrowthService.H5ApprovalRecheckFailure) {
             return H5GrowthApproval.supports(command);
         }
@@ -68,7 +90,7 @@ final class AuditApprovalRechecks {
         if (command == null || command.op() == null || reason == null || (code != 404 && code != 409 && code != 422)) {
             return false;
         }
-        if (G2G7ParamApproval.supports(command)) {
+        if (G2G7ParamApproval.supports(command) || G3MarketApproval.supports(command)) {
             return code == 422 && "COVERAGE_BELOW_REDLINE".equals(reason);
         }
         if (TreasuryThresholdApproval.supports(command)) {

@@ -36,6 +36,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class EarningsReleaseService {
     private static final Set<String> BUCKETS = Set.of("withdrawable", "pending_review", "bonus_locked");
+    private static final Set<String> PROTECTED_BUCKETS = Set.of("pending_review", "bonus_locked");
     private static final Set<String> ASSETS = Set.of("USDT", "UVT");
     private static final Set<String> SOURCE_ENVIRONMENTS = Set.of("PRODUCTION", "SANDBOX");
     // Other domains have their own reversal owners. Do not let two owners recover the same source.
@@ -420,8 +421,11 @@ public class EarningsReleaseService {
         }
         if (expectedBefore != null) {
             RecoveryEntry locked = mapper.lockRecoveryEntry(entryNo);
-            if (!entrySnapshot(locked).equals(expectedBefore)) {
-                throw new BizException(409, "K1_EARNINGS_RELEASE_STALE");
+            boolean releasable = hasProtectedBalance(locked);
+            if (!releasable || !entrySnapshot(locked, locked.recoveredAmount()).equals(expectedBefore)) {
+                String reason = releasable ? "K1_EARNINGS_RELEASE_STALE" : "K1_EARNINGS_RELEASE_ENTRY_NOT_PROTECTED";
+                if (recoveredAfterProposal(locked, expectedBefore)) throw new ConfirmedRecoveryChange(reason);
+                throw new BizException(409, reason);
             }
         }
         ProtectedEntry entry = mapper.lockProtectedEntry(entryNo);
@@ -450,30 +454,15 @@ public class EarningsReleaseService {
 
     public record ApprovalReview(String action, String before, String after) {}
 
-    /** Minimal locked projection for A2 binding: source/status plus gross, recovered and net. */
+    /** Server-owned projection for A2 binding: source/status plus gross, recovered and net. */
     @Transactional
     public Map<String,Object> approvalBefore(String entryNo) {
         if (!StringUtils.hasText(entryNo)) throw new BizException(422, "K1_EARNINGS_RELEASE_ENTRY_REQUIRED");
         RecoveryEntry row = mapper.recoveryEntry(entryNo.trim());
-        if (row == null || !"ACTIVE".equals(row.status()) || !Integer.valueOf(0).equals(row.isDeleted())
-                || !Set.of("pending_review", "bonus_locked").contains(row.bucket())
-                || row.amount() == null || row.recoveredAmount() == null
-                || row.amount().subtract(row.recoveredAmount()).signum() <= 0) {
+        if (!hasProtectedBalance(row)) {
             throw new BizException(409, "K1_EARNINGS_RELEASE_ENTRY_NOT_PROTECTED");
         }
-        Map<String,Object> before = new LinkedHashMap<>();
-        before.put("entryNo", row.entryNo());
-        before.put("userId", String.valueOf(row.userId()));
-        before.put("sourceType", row.sourceType());
-        before.put("sourceRef", row.sourceRef());
-        before.put("sourceEnvironment", row.sourceEnvironment());
-        before.put("asset", row.asset());
-        before.put("grossAmount", plain(row.amount()));
-        before.put("recoveredAmount", plain(row.recoveredAmount()));
-        before.put("netAmount", plain(row.amount().subtract(row.recoveredAmount())));
-        before.put("bucket", row.bucket());
-        before.put("status", row.status());
-        return before;
+        return entrySnapshot(row, row.recoveredAmount());
     }
 
     /** Proposal-time preview: checks the protected entry and existing exact B1, writes nothing. */
@@ -500,13 +489,36 @@ public class EarningsReleaseService {
         return manualReleaseOnce(entryNo.trim(), new EarningsManualReleaseRequest(reason, operator), expectedBefore);
     }
 
-    private Map<String,Object> entrySnapshot(RecoveryEntry row) {
-        if (row == null || !"ACTIVE".equals(row.status()) || !Integer.valueOf(0).equals(row.isDeleted())
-                || !Set.of("pending_review", "bonus_locked").contains(row.bucket())
-                || row.amount() == null || row.recoveredAmount() == null
-                || row.amount().subtract(row.recoveredAmount()).signum() <= 0) {
-            throw new BizException(409, "K1_EARNINGS_RELEASE_ENTRY_NOT_PROTECTED");
+    private boolean protectedSource(RecoveryEntry row) {
+        return row != null && "ACTIVE".equals(row.status()) && Integer.valueOf(0).equals(row.isDeleted())
+                && row.bucket() != null && PROTECTED_BUCKETS.contains(row.bucket())
+                && row.amount() != null && row.recoveredAmount() != null;
+    }
+
+    private boolean hasProtectedBalance(RecoveryEntry row) {
+        return protectedSource(row) && row.amount().compareTo(row.recoveredAmount()) > 0;
+    }
+
+    private boolean recoveredAfterProposal(RecoveryEntry row, Map<?,?> expectedBefore) {
+        if (!protectedSource(row) || !StringUtils.hasText(row.entryNo()) || row.userId() == null || row.userId() <= 0
+                || row.sourceType() == null || !RECOVERY_SOURCES.contains(row.sourceType())
+                || !StringUtils.hasText(row.sourceRef()) || row.asset() == null || !ASSETS.contains(row.asset())
+                || !(row.sourceType().startsWith("MOCK_") ? "SANDBOX" : "PRODUCTION").equals(row.sourceEnvironment())
+                || !(expectedBefore.get("recoveredAmount") instanceof String amount)
+                || !amount.matches("(?:0|[1-9][0-9]{0,17})(?:\\.[0-9]{1,6})?")) return false;
+        BigDecimal previousRecovered = new BigDecimal(amount);
+        return row.recoveredAmount().compareTo(previousRecovered) > 0
+                && row.recoveredAmount().compareTo(row.amount()) <= 0
+                && entrySnapshot(row, previousRecovered).equals(expectedBefore);
+    }
+
+    public static final class ConfirmedRecoveryChange extends BizException {
+        private ConfirmedRecoveryChange(String reason) {
+            super(409, reason);
         }
+    }
+
+    private Map<String,Object> entrySnapshot(RecoveryEntry row, BigDecimal recoveredAmount) {
         Map<String,Object> before = new LinkedHashMap<>();
         before.put("entryNo", row.entryNo());
         before.put("userId", String.valueOf(row.userId()));
@@ -515,8 +527,8 @@ public class EarningsReleaseService {
         before.put("sourceEnvironment", row.sourceEnvironment());
         before.put("asset", row.asset());
         before.put("grossAmount", plain(row.amount()));
-        before.put("recoveredAmount", plain(row.recoveredAmount()));
-        before.put("netAmount", plain(row.amount().subtract(row.recoveredAmount())));
+        before.put("recoveredAmount", plain(recoveredAmount));
+        before.put("netAmount", plain(row.amount().subtract(recoveredAmount)));
         before.put("bucket", row.bucket());
         before.put("status", row.status());
         return before;
