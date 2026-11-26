@@ -3,6 +3,8 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
 import ffdd.opsconsole.emergency.application.OpsEmergencyControlService;
+import ffdd.opsconsole.growth.application.H5GrowthApproval;
+import ffdd.opsconsole.growth.application.OpsGrowthService;
 import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
@@ -25,6 +27,9 @@ final class AuditApprovalRechecks {
     private AuditApprovalRechecks() {}
 
     static boolean confirmed(AuditReplayCommand command, BizException failure) {
+        if (failure instanceof OpsGrowthService.StreakMilestoneRecheckFailure) {
+            return H5GrowthApproval.isStreakMilestone(command);
+        }
         if (failure instanceof G2G7ParamApproval.OldValueChangedRecheck) {
             return G2G7ParamApproval.supports(command);
         }

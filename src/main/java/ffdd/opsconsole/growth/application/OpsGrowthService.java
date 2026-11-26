@@ -3044,7 +3044,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         ApiResult<Map<String, Object>> guard = requireCommand(idempotencyKey, request == null ? null : request.reason());
         if (guard != null) return guard;
         Map<String, Object> before = lockStreakMilestoneState(milestoneId);
-        if (approved && !before.equals(expectedBefore)) return ApiResult.fail(409, "H5_CONFIG_STALE");
+        if (approved && !before.equals(expectedBefore)) {
+            if (expectedBefore != null && before.keySet().equals(expectedBefore.keySet())
+                    && before.get("id").equals(expectedBefore.get("id"))
+                    && Objects.equals(request.expectedValue(), expectedBefore.get("reward"))
+                    && isCompleteActiveStreakSnapshot(expectedBefore)
+                    && isCompleteActiveStreakSnapshot(before)) {
+                throw new StreakMilestoneRecheckFailure(409, "H5_CONFIG_STALE");
+            }
+            return ApiResult.fail(409, "H5_CONFIG_STALE");
+        }
         requireActiveStreakMilestone(before);
         if (StringUtils.hasText(request.expectedValue())
                 && !before.get("reward").equals(approved ? request.expectedValue() : request.expectedValue().trim())) {
@@ -3056,7 +3065,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         boolean amplifies = streakRewardAmplifies(oldReward, newReward);
         if (amplifies) {
             if (!approved) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
-            requireH5Coverage();
+            requireH5Coverage(Objects.equals(request.expectedValue(), before.get("reward"))
+                    && isCompleteActiveStreakSnapshot(before));
         } else if (approved) {
             return ApiResult.fail(422, "H5_APPROVAL_NOT_REQUIRED");
         }
@@ -3118,22 +3128,52 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private void requireActiveStreakMilestone(Map<String, Object> before) {
-        if (!Integer.valueOf(1).equals(before.get("status")) || !Integer.valueOf(0).equals(before.get("deleted"))) {
+        if (!isActiveStreakSnapshot(before)) {
             throw new BizException(422, "STREAK_MILESTONE_ID_INVALID");
         }
     }
 
-    private record StreakReward(String type, BigDecimal amount) {}
+    private static boolean isActiveStreakSnapshot(Map<?, ?> snapshot) {
+        return Integer.valueOf(1).equals(snapshot.get("status")) && Integer.valueOf(0).equals(snapshot.get("deleted"));
+    }
+
+    private static boolean isCompleteActiveStreakSnapshot(Map<?, ?> snapshot) {
+        Object badgeCode = snapshot.get("badgeCode");
+        if (!isActiveStreakSnapshot(snapshot) || !(snapshot.get("day") instanceof Integer)
+                || !(snapshot.get("reward") instanceof String reward) || !StringUtils.hasText(reward)
+                || reward.codePointCount(0, reward.length()) > 128
+                || !(snapshot.get("rewardType") instanceof String type)
+                || !(snapshot.get("amount") instanceof String amount)
+                || !amount.matches("(?:0|[1-9][0-9]{0,11})(?:\\.[0-9]{0,5}[1-9])?")
+                || (badgeCode != null && !(badgeCode instanceof String code && code.codePointCount(0, code.length()) <= 64))) {
+            return false;
+        }
+        String rewardType = type.toUpperCase(Locale.ROOT);
+        return (!"BADGE".equals(rewardType) || StringUtils.hasText((String) badgeCode))
+                && new StreakReward(rewardType, new BigDecimal(amount)).isSupported();
+    }
+
+    public static final class StreakMilestoneRecheckFailure extends BizException {
+        private StreakMilestoneRecheckFailure(int code, String reason) {
+            super(code, reason);
+        }
+    }
+
+    private record StreakReward(String type, BigDecimal amount) {
+        boolean isSupported() {
+            return Set.of("UVT", "USDT", "SPIN", "BADGE").contains(type) && amount.signum() >= 0
+                    && (!"SPIN".equals(type) || (amount.stripTrailingZeros().scale() <= 0
+                        && amount.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) <= 0));
+        }
+    }
 
     private StreakReward currentStreakReward(Map<String, Object> before) {
         String type = String.valueOf(before.get("rewardType")).toUpperCase(Locale.ROOT);
-        BigDecimal amount = new BigDecimal((String) before.get("amount"));
-        if (!Set.of("UVT", "USDT", "SPIN", "BADGE").contains(type) || amount.signum() < 0
-                || ("SPIN".equals(type) && (amount.stripTrailingZeros().scale() > 0
-                    || amount.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0))) {
+        StreakReward reward = new StreakReward(type, new BigDecimal((String) before.get("amount")));
+        if (!reward.isSupported()) {
             throw new BizException(422, "STREAK_REWARD_STATE_UNSUPPORTED");
         }
-        return new StreakReward(type, amount);
+        return reward;
     }
 
     private StreakReward parseStreakReward(String reward, Map<String, Object> before, StreakReward oldReward) {
@@ -3913,12 +3953,20 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private void requireH5Coverage() {
+        requireH5Coverage(false);
+    }
+
+    private void requireH5Coverage(boolean confirmedStreakSnapshot) {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         if (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null || coverage.redlinePct() == null
                 || coverage.coverageRatio().signum() <= 0 || coverage.redlinePct().signum() <= 0) {
             throw new BizException(422, "B1_COVERAGE_DATA_UNAVAILABLE");
         }
-        if (coverage.redlineBreached()) throw new BizException(422, "B1_COVERAGE_BELOW_REDLINE");
+        if (coverage.redlineBreached()) {
+            String reason = "B1_COVERAGE_BELOW_REDLINE";
+            throw confirmedStreakSnapshot ? new StreakMilestoneRecheckFailure(422, reason)
+                    : new BizException(422, reason);
+        }
     }
 
     private boolean powerUpNoteAmplifies(Map<String, Object> current, String note) {
