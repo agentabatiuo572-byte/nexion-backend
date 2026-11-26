@@ -632,6 +632,11 @@ public class PurchasePaymentService {
         }
         if ("ACCRUED_B90".equals(frozen.get("trialOffsetBasis"))
                 && text(payload.get("quoteVersion")).equals(text(current.get("quoteVersion")))) {
+            var currentAmount = (BigDecimal) current.get("amountUsdt");
+            if (currentAmount.signum() == 0) {
+                throw new BizException(409, "ZERO_PAYMENT_REQUIRES_WALLET");
+            }
+            requireExternalTrialAmount(currentAmount);
             requireExternalTrialAmount(frozen.get("businessAmountUsdt"));
             return null;
         }
