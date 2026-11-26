@@ -224,8 +224,8 @@ public final class PhoneCalibrationConfigService {
             }
             State state = JSON.readValue(value, State.class);
             if (state == null || state.revision() < 0) throw new IllegalArgumentException();
-            if (state.current() != null) state.current().validate();
-            if (state.scheduled() != null) state.scheduled().validate();
+            if (state.current() != null) state.current().validateStructure();
+            if (state.scheduled() != null) state.scheduled().validateStructure();
             long latest = Math.max(state.current() == null ? 0 : state.current().version(),
                     state.scheduled() == null ? 0 : state.scheduled().version());
             if (latest != state.revision() || (state.scheduled() != null && state.current() != null
