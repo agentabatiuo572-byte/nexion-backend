@@ -3,6 +3,7 @@ package ffdd.opsconsole.treasury.application;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
+import java.math.MathContext;
 
 /** Threshold configuration shared by B5 and the J1 R1 trigger. */
 public final class BankRunThresholdPolicy {
@@ -11,6 +12,7 @@ public final class BankRunThresholdPolicy {
     public static final String APPROVAL_REQUIRED = "B5_BANKRUN_THRESHOLDS_APPROVAL_REQUIRED";
     private static final String VERSION_CONFIG_KEY = "risk.bankrun-threshold-version";
     private static final String VERSION_REMARK = "B5 optimistic concurrency version";
+    private static final BigDecimal ONE_HUNDRED = BigDecimal.valueOf(100);
     public static final BigDecimal DEFAULT_YELLOW_PCT = new BigDecimal("20");
     public static final BigDecimal DEFAULT_REDLINE_PCT = new BigDecimal("40");
     public static final BigDecimal MIN_YELLOW_PCT = new BigDecimal("5");
@@ -19,6 +21,20 @@ public final class BankRunThresholdPolicy {
     public static final BigDecimal MAX_REDLINE_PCT = new BigDecimal("80");
 
     private BankRunThresholdPolicy() {
+    }
+
+    public static BigDecimal ratio(BigDecimal withdrawalRequests, BigDecimal reserve) {
+        if (reserve.signum() == 0) {
+            return withdrawalRequests.signum() > 0 ? BigDecimal.ONE : BigDecimal.ZERO;
+        }
+        return withdrawalRequests.divide(reserve, MathContext.DECIMAL128);
+    }
+
+    public static boolean reached(BigDecimal withdrawalRequests, BigDecimal reserve, BigDecimal thresholdPct) {
+        if (reserve.signum() == 0) {
+            return ratio(withdrawalRequests, reserve).movePointRight(2).compareTo(thresholdPct) >= 0;
+        }
+        return withdrawalRequests.multiply(ONE_HUNDRED).compareTo(reserve.multiply(thresholdPct)) >= 0;
     }
 
     public static Bands resolve(PlatformConfigFacade configFacade) {

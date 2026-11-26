@@ -205,9 +205,11 @@ public class OpsRiskRadarService {
         BigDecimal grossInflow = decimal(money.get("grossInflowUsdt"));
         boolean bankRunCalculable = j1BankRun != null && j1BankRun.ratioPct() != null
                 || j1BankRun == null && reserve.signum() > 0;
-        BigDecimal bankRunRatio = j1BankRun != null && j1BankRun.ratioPct() != null
-                ? j1BankRun.ratioPct().movePointLeft(2)
-                : bankRunCalculable ? ratio(withdrawal24h, reserve) : null;
+        BigDecimal bankRunRatio = null;
+        if (bankRunCalculable) {
+            bankRunRatio = j1BankRun == null ? ratio(withdrawal24h, reserve)
+                    : BankRunThresholdPolicy.ratio(withdrawal24h, reserve);
+        }
         BigDecimal pressureNumerator = payout.add(commission);
         boolean pressureCalculable = grossInflow.signum() > 0;
         BigDecimal pressureRatio = pressureCalculable ? ratio(pressureNumerator, grossInflow) : null;
@@ -247,7 +249,7 @@ public class OpsRiskRadarService {
                 "ratio24h", bankRunRatio,
                 "ratioCalculable", bankRunCalculable,
                 "light", bankRunCalculable
-                        ? thresholdLight(bankRunRatio, bands.yellowPct(), bands.redlinePct())
+                        ? thresholdLight(withdrawal24h, reserve, bands.yellowPct(), bands.redlinePct())
                         : withdrawal24h.signum() > 0 ? "red" : "unavailable",
                 "withdraw24hUsdt", money(withdrawal24h),
                 "reserveUsdt", money(reserve),
@@ -513,11 +515,12 @@ public class OpsRiskRadarService {
         if (j1BankRun == null || j1BankRun.ratioPct() == null) {
             throw new BizException(500, "B5_MONEY_SOURCE_UNAVAILABLE");
         }
-        BigDecimal ratio = j1BankRun.ratioPct().movePointLeft(2);
+        BigDecimal withdrawal24h = j1BankRun.withdrawalRequests24hUsdt();
+        BigDecimal reserve = j1BankRun.reserveUsdt();
         return ApiResult.ok(section(
-                "ratio24h", ratio,
+                "ratio24h", BankRunThresholdPolicy.ratio(withdrawal24h, reserve),
                 "ratioCalculable", true,
-                "light", thresholdLight(ratio, thresholds.yellow(), thresholds.red()),
+                "light", thresholdLight(withdrawal24h, reserve, thresholds.yellow(), thresholds.red()),
                 "yellowPct", thresholds.yellow(),
                 "redPct", thresholds.red(),
                 "expectedVersion", currentVersion));
@@ -974,10 +977,10 @@ public class OpsRiskRadarService {
         }
     }
 
-    private String thresholdLight(BigDecimal ratio, BigDecimal yellowPct, BigDecimal redPct) {
-        BigDecimal pct = ratio.multiply(new BigDecimal("100"));
-        if (pct.compareTo(redPct) >= 0) return "red";
-        if (pct.compareTo(yellowPct) >= 0) return "yellow";
+    private String thresholdLight(BigDecimal withdrawalRequests24h, BigDecimal reserve,
+            BigDecimal yellowPct, BigDecimal redPct) {
+        if (BankRunThresholdPolicy.reached(withdrawalRequests24h, reserve, redPct)) return "red";
+        if (BankRunThresholdPolicy.reached(withdrawalRequests24h, reserve, yellowPct)) return "yellow";
         return "green";
     }
 

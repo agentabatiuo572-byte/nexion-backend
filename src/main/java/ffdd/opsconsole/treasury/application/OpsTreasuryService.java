@@ -1701,11 +1701,12 @@ public class OpsTreasuryService {
         BigDecimal pressureTightPct = decimal(snapshot.get("runRiskPct"));
         BigDecimal reserveUsd = decimal(snapshot.get("reserveUsd"));
         BigDecimal withdrawalRequests24h = safe(ledgerRepository.sumWithdrawalRequested24hUsdt());
-        BigDecimal bankRunRatio = pctScale(pct(withdrawalRequests24h, reserveUsd));
+        BigDecimal bankRunRatio = BankRunThresholdPolicy.ratio(withdrawalRequests24h, reserveUsd).movePointRight(2);
+        BigDecimal bankRunDisplayPct = pctScale(pct(withdrawalRequests24h, reserveUsd));
         BankRunThresholdPolicy.Bands bankRunBands = BankRunThresholdPolicy.resolve(configFacade);
         BigDecimal bankRunYellowPct = bankRunBands.yellowPct();
         BigDecimal bankRunRedlinePct = bankRunBands.redlinePct();
-        feed.add(dynamicCoverageFeed(snapshot, bankRunRatio, bankRunYellowPct, bankRunRedlinePct));
+        feed.add(dynamicCoverageFeed(snapshot, bankRunDisplayPct, withdrawalRequests24h, reserveUsd, bankRunBands));
         if (!k4ScoringAvailable) {
             feed.add(section(
                     "sev", "p1",
@@ -1862,12 +1863,13 @@ public class OpsTreasuryService {
     private Map<String, Object> dynamicCoverageFeed(
             Map<String, Object> snapshot,
             BigDecimal bankRun,
-            BigDecimal bankRunYellowPct,
-            BigDecimal bankRunRedlinePct) {
+            BigDecimal withdrawalRequests24h,
+            BigDecimal reserveUsd,
+            BankRunThresholdPolicy.Bands bands) {
         BigDecimal coverage = decimal(snapshot.get("coverageRatio"));
-        String severity = bankRun.compareTo(bankRunRedlinePct) >= 0
+        String severity = BankRunThresholdPolicy.reached(withdrawalRequests24h, reserveUsd, bands.redlinePct())
                 ? "p0"
-                : bankRun.compareTo(bankRunYellowPct) >= 0 ? "p1" : "p2";
+                : BankRunThresholdPolicy.reached(withdrawalRequests24h, reserveUsd, bands.yellowPct()) ? "p1" : "p2";
         return section(
                 "sev", severity,
                 "t", "挤兑比率 " + bankRun.stripTrailingZeros().toPlainString() + "% · 覆盖率 " + coverage.stripTrailingZeros().toPlainString() + "%",
