@@ -6,4 +6,5 @@ public interface PhoneActivationCapacityContract extends DomainFacade {
     void releaseBoundPhoneSlot(long userId, long deviceId, boolean scheduledReconciliation);
     void finishPendingPhoneSlotAfterTaskCancellation(long userId, long deviceId);
     void completeReplacementAfterPhoneDeactivation(long userId, long deviceId);
+    void cancelSlotReplacementForPhoneRebind(long userId, long previousDeviceId);
 }

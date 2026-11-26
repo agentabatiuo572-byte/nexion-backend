@@ -93,6 +93,12 @@ public class PhoneActivationCapacityService implements PhoneActivationCapacityCo
         slotReplacement.afterDeactivation(userId, deviceId);
     }
 
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void cancelSlotReplacementForPhoneRebind(long userId, long previousDeviceId) {
+        slotReplacement.cancelAfterPhoneRebind(userId, previousDeviceId);
+    }
+
     private void completePhoneSlotRelease(long userId, CanonicalStateMapper.UserDeviceCommandRow device,
             AuditLogWriteRequest.AuditLogWriteRequestBuilder auditEntry, String reason) {
         slotReplacement.afterDeactivation(userId, device.id());

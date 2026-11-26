@@ -237,6 +237,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
                 "PHONE_ACTIVATE", request.idempotencyKey().trim(), request);
         // An original committed result precedes current calibration, policy, binding and grant checks.
         if (command.replay()) return activationReceipt(replacements.receipt(command.operation()));
+        Long previousDevice = locked.binding() == null ? null : locked.binding().userDeviceId();
         CalibrationRow current = scope.sandbox()
                 ? mapper.findForUpdateScoped(userId, deviceId, scope.sourceEnvironment(), scope.runId())
                 : mapper.findForUpdate(userId, deviceId);
@@ -257,7 +258,7 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
             permit = replacements.prepareActivation(locked, new PhoneReplacementService.ActivationInput(
                     request.expectedBindingVersion(), request.bindingVersionPresent(), request.expectedPolicyVersion(),
                     Boolean.TRUE.equals(request.replacementConfirmed()), deviceId, hardwareKey(current), request.exceptionGrantId()), hardBlocks);
-            capacity.requireCapacity(userId, locked.binding() == null ? null : locked.binding().userDeviceId());
+            capacity.requireCapacity(userId, previousDevice);
         } catch (BizException rejection) {
             // No device/binding write has occurred. Persist only determinate business rejection receipts.
             if (rejection.getCode() != 409 && rejection.getCode() != 422) throw rejection;
@@ -267,6 +268,9 @@ public class OnboardingCalibrationService implements ffdd.opsconsole.common.boun
         String instanceNo = permit.replacement()
                 ? phoneInstanceNo(userId, scope, deviceId) : currentPhoneInstance(userId, scope, deviceId);
         Long device = bindPhoneDevice(userId, current, scope, instanceNo);
+        if (!scope.sandbox() && previousDevice != null && !previousDevice.equals(device)) {
+            capacity.cancelSlotReplacementForPhoneRebind(userId, previousDevice);
+        }
         if (mapper.savePhoneBinding(userId, deviceId, device, hardwareKey(current), scope.sourceEnvironment(), scope.runId()) < 1)
             throw new BizException(503, "ONBOARDING_PHONE_BIND_FAILED");
         if (recoveryKey != null && recoveryKey.matches("[a-f0-9]{64}") && matchesPhonePlatform(current, recoveryPlatform)) {

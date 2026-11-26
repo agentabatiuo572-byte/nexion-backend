@@ -236,7 +236,9 @@ public interface OnboardingCalibrationMapper {
               dc_location='User device',price_usdt_snapshot=0,ownership_status='OWNED',source_channel='ONBOARDING',
               status='ACTIVE',hashrate=VALUES(hashrate),daily_usdt=VALUES(daily_usdt),daily_nex=VALUES(daily_nex),
               last_seen_at=NOW(6),purchased_at=COALESCE(purchased_at,NOW()),activated_at=NOW(),deactivated_at=NULL,
-              pending_deactivate=0,row_version=row_version+1,updated_at=NOW(6),is_deleted=0
+              pending_deactivate=IF(EXISTS(SELECT 1 FROM nx_device_slot_replacement r
+                WHERE r.user_id=#{userId} AND r.old_device_id=nx_user_device.id),pending_deactivate,0),
+              row_version=row_version+1,updated_at=NOW(6),is_deleted=0
             """)
     int upsertPhoneDevice(@Param("userId") Long userId, @Param("instanceNo") String instanceNo,
                           @Param("productTier") String productTier, @Param("gpuModel") String gpuModel,

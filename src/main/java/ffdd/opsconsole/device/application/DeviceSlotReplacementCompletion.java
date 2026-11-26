@@ -27,6 +27,12 @@ public class DeviceSlotReplacementCompletion {
         completeAfterDeactivation(userId, oldDeviceId, false);
     }
 
+    /** The new bound phone takes the original slot, so the planned successor stays in inventory. */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void cancelAfterPhoneRebind(long userId, long oldDeviceId) {
+        replacements.unbind(userId, oldDeviceId);
+    }
+
     /** The refund or gift reversal holds its account locks and has applied every ownership change in the batch. */
     @Transactional(propagation = Propagation.MANDATORY)
     public void afterOwnershipLoss(List<Long> deviceIds) {
