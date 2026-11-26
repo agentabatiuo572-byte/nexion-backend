@@ -31,6 +31,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -43,7 +44,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -215,8 +218,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     "target", alertPayloadText(payload, "target"),
                     "operator", alertPayloadText(payload, "operator"),
                     "reason", alertPayloadText(payload, "reason"),
-                    "occurredAt", stringValue(payload.get("occurredAt"),
-                            message.getCreatedAt() == null ? "" : message.getCreatedAt().toString())));
+                    "occurredAt", alertOccurredAt(payload, message)));
         } catch (Exception ignored) {
             return Optional.empty();
         }
@@ -272,8 +274,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     "after", tamperConfigAlertState(after),
                     "operator", alertPayloadText(payload, "operator"),
                     "reason", alertPayloadText(payload, "reason"),
-                    "occurredAt", stringValue(payload.get("occurredAt"),
-                            message.getCreatedAt() == null ? "" : message.getCreatedAt().toString())));
+                    "occurredAt", alertOccurredAt(payload, message)));
         } catch (Exception ignored) {
             return Optional.empty();
         }
@@ -281,6 +282,22 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
 
     private static String alertPayloadText(Map<String, Object> payload, String field) {
         return payload.get(field) instanceof String value ? value : null;
+    }
+
+    private static String alertOccurredAt(Map<String, Object> payload, EventOutboxMessage message) {
+        if (payload.get("occurredAt") instanceof String value && !value.isBlank()) {
+            try {
+                var parsed = DateTimeFormatter.ISO_DATE_TIME.parseBest(value,
+                        OffsetDateTime::from, LocalDateTime::from);
+                OffsetDateTime time = parsed instanceof OffsetDateTime offsetTime ? offsetTime
+                        : ((LocalDateTime) parsed).atZone(StorageTime.ZONE).toOffsetDateTime();
+                return time.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+            } catch (DateTimeParseException ignored) {
+                // Fall back to the original event timestamp for malformed historical payloads.
+            }
+        }
+        LocalDateTime stored = message.getEventTs() != null ? message.getEventTs() : message.getCreatedAt();
+        return stored == null ? "" : stored.atZone(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
     private static Map<String, Object> tamperConfigAlertState(Map<?, ?> state) {
@@ -969,7 +986,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                             "audienceRole", "SUPER_ADMIN",
                             "operator", operator,
                             "reason", request.reason().trim(),
-                            "occurredAt", LocalDateTime.now().toString()));
+                            "occurredAt", OffsetDateTime.now(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)));
             auditRequired("J3_TAMPER_ALERT_CONFIG_CHANGED", "TAMPER_ALERT_CONFIG", "default", operator, "HIGH", map(
                     "before", before,
                     "after", after,
@@ -3028,7 +3045,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "reason", reason == null ? "" : reason.trim(),
                 "triggerBasis", triggerBasis == null ? "" : triggerBasis.trim(),
                 "audienceRole", "SUPER_ADMIN",
-                "occurredAt", LocalDateTime.now().toString()));
+                "occurredAt", OffsetDateTime.now(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)));
     }
 
     private String publishJ4Event(String eventType, String aggregateId, Map<String, Object> payload) {
