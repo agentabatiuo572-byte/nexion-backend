@@ -4,6 +4,7 @@ import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
 import ffdd.opsconsole.emergency.application.OpsEmergencyControlService;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
+import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.market.application.G4ParamApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -37,6 +38,7 @@ final class AuditApprovalRechecks {
             return false;
         }
         if (G4CatalogApproval.supports(command)) return "G4_CATALOG_SNAPSHOT_CHANGED".equals(reason);
+        if (G4DividendApproval.supports(command)) return code == 409 && "G4_DIVIDEND_STALE".equals(reason);
         if (G4ParamApproval.supports(command)) {
             return (code == 409 && "G4_GENESIS_PARAM_STALE".equals(reason))
                     || (code == 422 && "COVERAGE_BELOW_REDLINE".equals(reason));
