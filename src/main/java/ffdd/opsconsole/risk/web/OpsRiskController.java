@@ -16,6 +16,7 @@ import ffdd.opsconsole.risk.domain.RiskRuleHitView;
 import ffdd.opsconsole.risk.domain.RiskRuleView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.domain.RiskScoringAccountsView;
 import ffdd.opsconsole.risk.dto.RiskArbitrageActionRequest;
 import ffdd.opsconsole.risk.dto.RiskArbitrageParamUpdateRequest;
 import ffdd.opsconsole.risk.dto.RiskCaseQueryRequest;
@@ -305,6 +306,15 @@ public class OpsRiskController {
     @PreAuthorize("hasAuthority('risk_k4_read')")
     public ApiResult<Map<String, Object>> scoringOverview(@ModelAttribute RiskScoringOverviewQueryRequest request) {
         return riskService.scoringOverview(request);
+    }
+
+    @GetMapping("/scoring/accounts")
+    @PreAuthorize("hasAuthority('risk_k4_read')")
+    public ApiResult<RiskScoringAccountsView> scoringAccounts(
+            @RequestParam(value = "band", required = false) RiskScoringAccountsView.Band band,
+            @RequestParam(value = "pageNum", required = false) Integer pageNum,
+            @RequestParam(value = "pageSize", required = false) Integer pageSize) {
+        return riskService.scoringAccounts(band, pageNum, pageSize);
     }
 
     @GetMapping("/scoring/users")

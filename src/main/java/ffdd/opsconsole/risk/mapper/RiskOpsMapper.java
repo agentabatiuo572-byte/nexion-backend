@@ -11,6 +11,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreDimensionView;
 import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.infrastructure.RiskDecisionEntity;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -762,6 +763,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               FROM nx_risk_signal
              WHERE signal_type = 'TAMPER_DETECTED'
                AND created_at >= #{since}
+               AND created_at < DATE_ADD(#{since}, INTERVAL 7 DAY)
                AND is_deleted = 0
             """)
     TamperRadarRecord tamperRadarSnapshot(@Param("since") java.time.LocalDateTime since);
@@ -2061,10 +2063,19 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     long countScoreUsers();
 
+    @Select(K4ScoreAccountSql.SNAPSHOT)
+    Map<String, Object> scoreAccountSnapshot();
+
+    @Select(K4ScoreAccountSql.PAGE)
+    List<ScoreAccountRecord> pageScoreAccounts(@Param("band") String band, @Param("modelVersion") String modelVersion,
+            @Param("bandLowMax") int bandLowMax, @Param("bandHighMin") int bandHighMin,
+            @Param("autoEscalateScore") int autoEscalateScore, @Param("evaluatedAt") String evaluatedAt,
+            @Param("offset") long offset, @Param("limit") int limit);
+
     @Select("""
             SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
                    s.row_version AS rowVersion,
-                   COALESCE(DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s'),DATE_FORMAT(s.updated_at,'%Y-%m-%d %H:%i:%s')) AS asOf,
+                   DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s') AS asOf,
                    s.updated_text AS updatedText,
                    (SELECT h.contributions_json FROM nx_admin_risk_score_history h
                      WHERE h.user_no=s.user_no AND h.is_deleted=0
@@ -2873,6 +2884,10 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     record ScoreUserRecord(
             String userNo, Integer modelScore, String modelVersion, Long rowVersion, String asOf, String updatedText,
             String capturedContributionsJson) {
+    }
+
+    record ScoreAccountRecord(String userNo, Integer modelScore, Integer effectiveScore, boolean overridden,
+                              String modelVersion, LocalDateTime asOf) {
     }
 
     record ScoreUserSearchRecord(String userNo, Integer modelScore, String modelVersion, String updatedText,

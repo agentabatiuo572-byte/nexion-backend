@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.outbox;
 
 import ffdd.opsconsole.shared.outbox.mapper.EventConsumerDeliveryMapper;
+import ffdd.opsconsole.shared.outbox.mapper.EventConsumerDeliveryMapper.OriginalAlertEvent;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -131,6 +132,10 @@ public class EventConsumerDeliveryService {
 
     public List<EventConsumerDelivery> listByStatus(String consumerGroup, String status, int limit) {
         return mapper.listByStatus(blankToNull(consumerGroup), status, normalizeLimit(limit));
+    }
+
+    public List<OriginalAlertEvent> listOriginalAlertEvents(List<String> eventIds) {
+        return eventIds.isEmpty() ? List.of() : mapper.listOriginalAlertEvents(eventIds);
     }
 
     public EventConsumerDelivery getByEvent(String consumerGroup, String eventId) {

@@ -26,6 +26,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreModelView;
 import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.domain.RiskScoringAccountsView;
 import ffdd.opsconsole.risk.application.K4RiskScorer;
 import ffdd.opsconsole.risk.application.K4ScoreBackfillInitializer;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
@@ -631,6 +632,41 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     @Override
     public long countActiveScoreOverrides() {
         return mapper.countActiveScoreOverrides();
+    }
+
+    @Override
+    public Optional<RiskScoringAccountsView> pageScoreAccounts(
+            RiskScoringAccountsView.Band band, int pageNum, int pageSize) {
+        Map<String, Object> snapshot = mapper.scoreAccountSnapshot();
+        if (snapshot == null || !(snapshot.get("bandLowMax") instanceof Number low)
+                || !(snapshot.get("bandHighMin") instanceof Number high)
+                || !(snapshot.get("autoEscalateScore") instanceof Number auto)
+                || low.intValue() < 0 || high.intValue() > 100 || low.intValue() >= high.intValue()
+                || auto.intValue() < 0 || auto.intValue() > 100) {
+            return Optional.empty();
+        }
+        String modelVersion = (String) snapshot.get("modelVersion");
+        String countKey = switch (band) {
+            case AUTO_REPORT -> "autoEscalated";
+            case HIGH -> "highRisk";
+            case MEDIUM -> "mediumRisk";
+            case STALE -> "staleScoreUsers";
+        };
+        long total = ((Number) snapshot.get(countKey)).longValue();
+        long offset = ((long) pageNum - 1) * pageSize;
+        List<RiskScoringAccountsView.Row> records = offset >= total ? List.of() : mapper.pageScoreAccounts(
+                band.name(), modelVersion, low.intValue(), high.intValue(), auto.intValue(),
+                (String) snapshot.get("evaluatedAt"), offset, pageSize).stream().map(row -> {
+                    boolean scored = RiskScoreUserView.isScoredModel(row.modelVersion());
+                    return new RiskScoringAccountsView.Row(row.userNo(), scored ? row.modelScore() : null,
+                            scored || row.overridden() ? row.effectiveScore() : null, row.overridden(),
+                            scored ? row.modelVersion() : null,
+                            scored && row.asOf() != null ? row.asOf().atZone(StorageTime.ZONE)
+                                    .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME) : null,
+                            scored);
+                }).toList();
+        return Optional.of(new RiskScoringAccountsView(band, total, pageNum, pageSize,
+                modelVersion, low.intValue(), high.intValue(), auto.intValue(), records));
     }
 
     @Override

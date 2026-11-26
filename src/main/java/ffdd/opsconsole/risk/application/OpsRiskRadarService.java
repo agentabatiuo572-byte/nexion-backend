@@ -12,6 +12,7 @@ import ffdd.opsconsole.risk.mapper.B5RiskRadarMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -29,7 +30,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -83,6 +88,75 @@ public class OpsRiskRadarService {
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> radar() {
         return ApiResult.ok(radarView());
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ApiResult<Map<String, Object>> signals(List<String> signalTypes, OffsetDateTime start, OffsetDateTime end,
+            String handlingStatus, String userNo, int pageNum, int pageSize) {
+        if (pageNum < 1 || pageSize < 1 || pageSize > 200) {
+            throw new BizException(400, "B5_SIGNAL_PAGE_INVALID");
+        }
+        LocalDateTime endAt = end == null
+                ? LocalDateTime.ofInstant(clock.instant().truncatedTo(ChronoUnit.SECONDS).plusSeconds(1), StorageTime.ZONE)
+                : LocalDateTime.ofInstant(end.toInstant(), StorageTime.ZONE);
+        LocalDateTime startAt = start == null ? endAt.minusDays(7)
+                : LocalDateTime.ofInstant(start.toInstant(), StorageTime.ZONE);
+        if (!startAt.isBefore(endAt) || startAt.getYear() < 1000 || endAt.getYear() > 9999) {
+            throw new BizException(400, "B5_SIGNAL_WINDOW_INVALID");
+        }
+        List<String> types = signalTypes == null ? List.of() : signalTypes.stream()
+                .flatMap(type -> Arrays.stream(type.split(",", -1)))
+                .map(String::trim).distinct().toList();
+        if (types.stream().anyMatch(type -> type.isEmpty() || type.length() > 64)) {
+            throw new BizException(400, "B5_SIGNAL_TYPE_INVALID");
+        }
+        String status = text(handlingStatus);
+        if (status != null) {
+            status = status.toLowerCase(Locale.ROOT);
+            if (!Set.of("open", "handled", "resolved").contains(status)) {
+                throw new BizException(400, "B5_SIGNAL_HANDLING_STATUS_INVALID");
+            }
+        }
+        Long userId = signalUserId(text(userNo));
+        Map<String, Object> totals = mapper.countSignals(startAt, endAt, types, status, userId);
+        long total = whole(totals.get("total"));
+        long offset = (pageNum - 1L) * pageSize;
+        List<Map<String, Object>> records = offset >= total ? List.of()
+                : mapper.pageSignals(startAt, endAt, types, status, userId, pageSize, offset).stream()
+                        .map(this::signalWithTimes).toList();
+        return ApiResult.ok(section("records", records, "total", total, "accountCount", whole(totals.get("accountCount")),
+                "pageNum", pageNum, "pageSize", pageSize, "startAt", offsetTime(startAt), "endAt", offsetTime(endAt)));
+    }
+
+    public ApiResult<Map<String, Object>> signal(String signalNo) {
+        Map<String, Object> row = mapper.findSignal(signalNo.trim());
+        if (row == null) throw new BizException(404, "B5_SIGNAL_NOT_FOUND");
+        return ApiResult.ok(signalWithTimes(row));
+    }
+
+    private Long signalUserId(String userNo) {
+        if (userNo == null) return null;
+        if (!userNo.matches("[Uu][0-9]{8,19}")) throw new BizException(400, "B5_SIGNAL_USER_NO_INVALID");
+        try {
+            long userId = Long.parseLong(userNo.substring(1));
+            if (userId > 0) return userId;
+        } catch (NumberFormatException ignored) {
+            // Public number exceeds the stored BIGINT range.
+        }
+        throw new BizException(400, "B5_SIGNAL_USER_NO_INVALID");
+    }
+
+    private Map<String, Object> signalWithTimes(Map<String, Object> row) {
+        Map<String, Object> view = signalView(row);
+        for (String key : List.of("createdAt", "handledAt", "occurredAt")) {
+            String stored = text("occurredAt".equals(key) ? row.get(key) : view.get(key));
+            view.put(key, stored == null ? null : offsetTime(LocalDateTime.parse(stored)));
+        }
+        return view;
+    }
+
+    private String offsetTime(LocalDateTime stored) {
+        return stored.atZone(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -207,48 +281,50 @@ public class OpsRiskRadarService {
         if (rows == null) {
             throw new BizException(500, "B5_ALERT_FEED_SOURCE_UNAVAILABLE");
         }
-        return rows.stream().map(row -> {
-            String signalType = text(row.get("signalType"));
-            String normalized = signalType == null ? "" : signalType.toLowerCase(Locale.ROOT);
-            String label;
-            String target;
-            if (normalized.contains("multi_account")) {
-                label = "多账户风险";
-                target = "/risk/multi-account";
-            } else if (normalized.contains("arbitrage") || normalized.contains("trial_cycle")
-                    || normalized.contains("leaderboard_velocity")) {
-                label = "套利或刷量风险";
-                target = "/risk/abuse";
-            } else if (normalized.contains("withdraw")) {
-                label = "提现风险";
-                target = "/finance/withdrawals";
-            } else if (normalized.contains("tamper")) {
-                label = "篡改风险";
-                target = "/emergency/tamper";
-            } else {
-                label = "其他风险信号";
-                target = "/risk/scoring";
-            }
-            String handlingStatus = requireSignalField(row.get("handlingStatus"), "handlingStatus");
-            boolean unhandled = "open".equals(handlingStatus);
-            Map<String, Object> facts = signalFacts(text(row.get("signalNo")), signalType, text(row.get("evidence")));
-            return section(
-                    "signalNo", requireSignalField(row.get("signalNo"), "signalNo"),
-                    "level", requireSignalField(row.get("level"), "level"),
-                    "message", label,
-                    "signalType", signalType,
-                    "userId", whole(row.get("userId")),
-                    "userNo", text(row.get("userNo")),
-                    "facts", facts,
-                    "createdAt", requireSignalField(row.get("createdAt"), "createdAt"),
-                    "target", target,
-                    "handlingStatusAvailable", true,
-                    "handlingStatus", handlingStatus,
-                    "handlingVersion", whole(row.get("handlingVersion")),
-                    "handledBy", unhandled ? null : text(row.get("handledBy")),
-                    "handledAt", unhandled ? null : text(row.get("handledAt")),
-                    "deliveryStatus", requireSignalField(row.get("deliveryStatus"), "deliveryStatus"));
-        }).toList();
+        return rows.stream().map(this::signalView).toList();
+    }
+
+    private Map<String, Object> signalView(Map<String, Object> row) {
+        String signalType = text(row.get("signalType"));
+        String normalized = signalType == null ? "" : signalType.toLowerCase(Locale.ROOT);
+        String label;
+        String target;
+        if (normalized.contains("multi_account")) {
+            label = "多账户风险";
+            target = "/risk/multi-account";
+        } else if (normalized.contains("arbitrage") || normalized.contains("trial_cycle")
+                || normalized.contains("leaderboard_velocity")) {
+            label = "套利或刷量风险";
+            target = "/risk/abuse";
+        } else if (normalized.contains("withdraw")) {
+            label = "提现风险";
+            target = "/finance/withdrawals";
+        } else if (normalized.contains("tamper")) {
+            label = "篡改风险";
+            target = "/emergency/tamper";
+        } else {
+            label = "其他风险信号";
+            target = "/risk/scoring";
+        }
+        String handlingStatus = requireSignalField(row.get("handlingStatus"), "handlingStatus");
+        boolean unhandled = "open".equals(handlingStatus);
+        Map<String, Object> facts = signalFacts(text(row.get("signalNo")), signalType, text(row.get("evidence")));
+        return section(
+                "signalNo", requireSignalField(row.get("signalNo"), "signalNo"),
+                "level", requireSignalField(row.get("level"), "level"),
+                "message", label,
+                "signalType", signalType,
+                "userId", whole(row.get("userId")),
+                "userNo", text(row.get("userNo")),
+                "facts", facts,
+                "createdAt", requireSignalField(row.get("createdAt"), "createdAt"),
+                "target", target,
+                "handlingStatusAvailable", true,
+                "handlingStatus", handlingStatus,
+                "handlingVersion", whole(row.get("handlingVersion")),
+                "handledBy", unhandled ? null : text(row.get("handledBy")),
+                "handledAt", unhandled ? null : text(row.get("handledAt")),
+                "deliveryStatus", requireSignalField(row.get("deliveryStatus"), "deliveryStatus"));
     }
 
     private Map<String, Object> signalFacts(String signalNo, String signalType, String evidence) {
@@ -262,6 +338,7 @@ public class OpsRiskRadarService {
                 JsonNode node = EVIDENCE_JSON.readTree(evidence);
                 putFact(facts, "tamperPath", node.path("tamperPath").asText(null));
                 putFact(facts, "attackEffect", node.path("attackEffect").asText(null));
+                putFact(facts, "blockedAtEndpoint", node.path("blockedAtEndpoint").asText(null));
             } catch (JsonProcessingException ignored) {
                 // Malformed producer evidence remains unknown; internal errors must still propagate.
             }

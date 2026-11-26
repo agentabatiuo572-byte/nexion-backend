@@ -211,6 +211,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     "level", "mid",
                     "title", "J2 地域策略已变更 · " + scope,
                     "hint", target + " · " + operator + " · " + reason,
+                    "scope", alertPayloadText(payload, "scope"),
+                    "target", alertPayloadText(payload, "target"),
+                    "operator", alertPayloadText(payload, "operator"),
+                    "reason", alertPayloadText(payload, "reason"),
                     "occurredAt", stringValue(payload.get("occurredAt"),
                             message.getCreatedAt() == null ? "" : message.getCreatedAt().toString())));
         } catch (Exception ignored) {
@@ -264,11 +268,25 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     "level", "mid",
                     "title", "J3 篡改告警配置已变更",
                     "hint", "阈值 " + thresholdChange + " · K4 " + k4Change + " · " + operator + " · " + reason,
+                    "before", tamperConfigAlertState(before),
+                    "after", tamperConfigAlertState(after),
+                    "operator", alertPayloadText(payload, "operator"),
+                    "reason", alertPayloadText(payload, "reason"),
                     "occurredAt", stringValue(payload.get("occurredAt"),
                             message.getCreatedAt() == null ? "" : message.getCreatedAt().toString())));
         } catch (Exception ignored) {
             return Optional.empty();
         }
+    }
+
+    private static String alertPayloadText(Map<String, Object> payload, String field) {
+        return payload.get(field) instanceof String value ? value : null;
+    }
+
+    private static Map<String, Object> tamperConfigAlertState(Map<?, ?> state) {
+        return map(
+                "threshold", state.get("threshold") instanceof Number threshold ? threshold : null,
+                "feedK4", state.get("feedK4") instanceof Boolean feedK4 ? feedK4 : null);
     }
 
     @Transactional

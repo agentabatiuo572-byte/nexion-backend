@@ -199,6 +199,7 @@ public class SupportWorkbenchService {
     }
     static Map<String,Object> customerView(Map<String,Object> source,SupportRules rules,UserInviterView inviter) {
         var row=new LinkedHashMap<>(source);
+        row.remove("assignmentStartsAt");
         var asset=row.remove("advisorAvatarAssetId");var avatarVersion=row.remove("advisorAvatarVersion");
         if(asset==null || asset.toString().isBlank()) {
             row.put("advisorAvatar",null);row.put("advisorAvatarRef",null);
@@ -214,7 +215,8 @@ public class SupportWorkbenchService {
         for(String name:List.of("enabled","waitingReply","firstContact","due")) row.put(name,number(row.get(name))!=0);
         if(rules.maintenanceDays()==null) row.put("due",null);
         for(String name:List.of("lastEffectiveAt","lastExecutionAt","lastSucceededAt","nextDueAt","openCycleId","stoppedReason",
-                "pendingConversationNo","pendingThroughMessageId")) row.putIfAbsent(name,null);
+                "pendingConversationNo","pendingThroughMessageId","waitingReplySinceAt","firstContactSinceAt",
+                "maintenanceDueAt")) row.putIfAbsent(name,null);
         row.put("version",row.get("preferenceVersion"));
         if(inviter!=null) row.put("inviter",inviter(inviter));
         return row;

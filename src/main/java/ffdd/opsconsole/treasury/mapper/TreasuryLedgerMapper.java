@@ -1,6 +1,7 @@
 package ffdd.opsconsole.treasury.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.risk.mapper.K4ScoreAccountSql;
 import ffdd.opsconsole.shared.canonical.mapper.GenesisEmissionSql;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository.CommissionCoverageAmounts;
@@ -489,40 +490,7 @@ public interface TreasuryLedgerMapper extends BaseMapper<WalletLedgerEntity> {
             """)
     List<Map<String, Object>> riskVolumeBuckets(@Param("since") LocalDateTime since);
 
-    @Select("""
-            SELECT CONCAT('k4-v',m.model_version) AS modelVersion,
-                   m.band_low_max AS bandLowMax,
-                   m.band_high_min AS bandHighMin,
-                   m.auto_escalate_score AS autoEscalateScore,
-                   COUNT(s.id) AS totalUsers,
-                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) >= m.auto_escalate_score THEN 1 ELSE 0 END),0) AS autoEscalated,
-                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) >= m.band_high_min THEN 1 ELSE 0 END),0) AS highRisk,
-                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) >= m.band_low_max
-                                      AND COALESCE(o.override_score,s.model_score) < m.band_high_min THEN 1 ELSE 0 END),0) AS mediumRisk,
-                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) < m.band_low_max THEN 1 ELSE 0 END),0) AS lowRisk,
-                   COALESCE(SUM(CASE WHEN COALESCE(o.override_score,s.model_score) >= m.band_low_max THEN 1 ELSE 0 END),0) AS flaggedAccounts,
-                   COALESCE(SUM(CASE WHEN o.id IS NOT NULL THEN 1 ELSE 0 END),0) AS activeOverrides,
-                   (SELECT COUNT(*)
-                      FROM nx_admin_risk_score_user stale
-                      WHERE stale.is_deleted=0
-                        AND (stale.model_version<>CONCAT('k4-v',m.model_version)
-                             OR stale.as_of IS NULL
-                             OR stale.as_of < DATE_SUB(NOW(), INTERVAL 1 DAY))) AS staleScoreUsers
-               FROM (
-                    SELECT model_version,band_low_max,band_high_min,auto_escalate_score
-                      FROM nx_admin_risk_score_model
-                     WHERE state='active' AND is_deleted=0
-                     ORDER BY model_version DESC
-                     LIMIT 1
-              ) m
-              LEFT JOIN nx_admin_risk_score_user s
-                ON s.is_deleted=0
-               AND s.model_version=CONCAT('k4-v',m.model_version)
-               AND s.as_of >= DATE_SUB(NOW(), INTERVAL 1 DAY)
-              LEFT JOIN nx_admin_risk_score_override o
-                ON o.user_no=s.user_no AND o.active=1 AND o.is_deleted=0
-             GROUP BY m.model_version,m.band_low_max,m.band_high_min,m.auto_escalate_score
-            """)
+    @Select(K4ScoreAccountSql.SNAPSHOT)
     Map<String, Object> currentK4RiskScoreSnapshot();
 
     @Select("""

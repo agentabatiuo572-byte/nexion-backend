@@ -11,13 +11,14 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
     String PENDING = """
         FROM nx_conversation c JOIN nx_conversation_message m ON m.conversation_no=c.conversation_no
         LEFT JOIN nx_support_reply_cursor r ON r.conversation_no=c.conversation_no
-        WHERE c.user_id=u.id AND c.is_deleted=0 AND m.is_deleted=0 AND m.sender_type='user'
+        WHERE c.is_deleted=0 AND m.is_deleted=0 AND m.sender_type='user'
           AND m.id&gt;COALESCE(r.through_message_id,0)
         """;
+    String PENDING_FOR_USER = PENDING + " AND c.user_id=u.id";
     String PROJECTION = """
         WITH facts AS (
           SELECT u.id customerId,CAST(u.id AS CHAR) customerNo,u.nickname,u.avatar_url customerAvatarKey,
-            a.id assignmentId,a.version assignmentVersion,a.agent_admin_id agentAdminId,
+            a.id assignmentId,a.version assignmentVersion,a.agent_admin_id agentAdminId,a.starts_at assignmentStartsAt,
             COALESCE(ad.nickname,ad.username) agentName,
             av.avatar_asset_id advisorAvatarAssetId,av.avatar_version advisorAvatarVersion,
             COALESCE(p.enabled,1) enabled,COALESCE(p.version,1) preferenceVersion,p.reason stoppedReason,
@@ -29,8 +30,8 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
               WHERE c.assignment_id=a.id AND c.status='SUCCEEDED') lastSucceededAt,
             (SELECT c.id FROM nx_support_maintenance_cycle c WHERE c.assignment_id=a.id AND c.status='OPEN') openCycleId,
             (SELECT COUNT(*)
-        """ + PENDING + ") pendingReplyCount,(SELECT c.conversation_no " + PENDING
-            + " ORDER BY m.id DESC LIMIT 1) pendingConversationNo,(SELECT m.id " + PENDING
+        """ + PENDING_FOR_USER + ") pendingReplyCount,(SELECT c.conversation_no " + PENDING_FOR_USER
+            + " ORDER BY m.id DESC LIMIT 1) pendingConversationNo,(SELECT m.id " + PENDING_FOR_USER
             + " ORDER BY m.id DESC LIMIT 1) pendingThroughMessageId," + """
             NOT EXISTS(SELECT 1 FROM nx_support_human_message h
               WHERE h.assignment_id=a.id AND h.customer_id=u.id AND h.actor_type='ADMIN'
@@ -98,8 +99,18 @@ public interface SupportWorkbenchMapper extends BaseMapper<SupportAgentAssignmen
     @Select("<script>" + PROJECTION + "SELECT COUNT(*) FROM customers " + FILTER + "</script>")
     long count(Map<String,Object> query);
 
-    @Select("<script>" + PROJECTION + "SELECT * FROM customers " + FILTER
-        + " ORDER BY waitingReply DESC,nextDueAt IS NOT NULL,nextDueAt,customerId LIMIT #{limit} OFFSET #{offset}</script>")
+    String CUSTOMER_ORDER = " ORDER BY waitingReply DESC,nextDueAt IS NOT NULL,nextDueAt,customerId";
+
+    @Select("<script>" + PROJECTION + ", page_rows AS (SELECT * FROM customers " + FILTER + CUSTOMER_ORDER + """
+          LIMIT #{limit} OFFSET #{offset})
+        SELECT page_rows.*,CONVERT_TZ((SELECT MIN(m.created_at)
+        """ + PENDING + """
+          AND c.user_id=page_rows.customerId),@@session.time_zone,'+00:00') waitingReplySinceAt,
+          IF(firstContact=1 AND enabled=1,assignmentStartsAt,NULL) firstContactSinceAt,
+          IF(due=1,COALESCE(nextDueAt,assignmentStartsAt),NULL) maintenanceDueAt,
+          CAST(#{evaluatedAt} AS DATETIME(6)) evaluatedAt
+        FROM page_rows
+        """ + CUSTOMER_ORDER + "</script>")
     List<Map<String,Object>> customers(Map<String,Object> query);
 
     String EXECUTION_WINDOW = """

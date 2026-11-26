@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -34,6 +35,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreModelView;
 import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.domain.RiskScoringAccountsView;
 import ffdd.opsconsole.risk.domain.RiskScoringSourceCatalog;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.dto.RiskArbitrageActionRequest;
@@ -71,6 +73,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
@@ -1573,14 +1576,37 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(response);
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ApiResult<RiskScoringAccountsView> scoringAccounts(
+            RiskScoringAccountsView.Band band, Integer pageNum, Integer pageSize) {
+        if (band == null) {
+            return ApiResult.fail(400, "RISK_SCORE_BAND_REQUIRED");
+        }
+        return riskRepository.pageScoreAccounts(band, normalizePageNum(pageNum), normalizeLimit(pageSize, 20, 100))
+                .map(ApiResult::ok)
+                .orElseGet(() -> ApiResult.fail(503, "K4_RISK_SCORE_UNAVAILABLE"));
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<RiskScoreUserView> scoreUser(String userNo) {
         String normalized = trimmed(userNo);
         if (!StringUtils.hasText(normalized)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_USER_REQUIRED");
         }
         return riskRepository.findScoreUser(normalized)
-                .map(this::withK4ScoreHistory)
-                .map(ApiResult::ok)
+                .map(user -> {
+                    boolean scored = user.scored();
+                    String asOf = scored && user.asOf() != null
+                            ? LocalDateTime.parse(user.asOf().replace(' ', 'T')).atZone(StorageTime.ZONE)
+                                    .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+                            : null;
+                    return ApiResult.ok(new RiskScoreUserView(
+                            user.userNo(), scored ? user.modelScore() : null,
+                            scored || Boolean.TRUE.equals(user.overridden()) ? user.effectiveScore() : null,
+                            user.overridden(), scored ? user.bandLabel() : null, scored ? user.bandTone() : null,
+                            scored ? user.modelVersion() : null, user.rowVersion(), asOf, user.updatedText(),
+                            scored ? user.contributions() : List.of(), riskRepository.scoreHistory(user.userNo(), 20)));
+                })
                 .orElseGet(() -> ApiResult.fail(404, "SCORE_USER_NOT_FOUND"));
     }
 

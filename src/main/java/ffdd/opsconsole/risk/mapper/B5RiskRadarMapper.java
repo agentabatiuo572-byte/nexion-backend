@@ -137,8 +137,8 @@ public interface B5RiskRadarMapper {
             @Param("startAt") LocalDateTime startAt,
             @Param("endAt") LocalDateTime endAt);
 
-    @Select("""
-            SELECT s.signal_no AS signalNo,
+    String SIGNAL_COLUMNS = """
+            s.signal_no AS signalNo,
                    CASE UPPER(severity)
                      WHEN 'CRITICAL' THEN 'P0'
                      WHEN 'HIGH' THEN 'P1'
@@ -159,9 +159,39 @@ public interface B5RiskRadarMapper {
                                FROM nx_admin_risk_alert_delivery x
                               WHERE x.signal_no=s.signal_no AND x.is_deleted=0
                               ORDER BY x.id DESC LIMIT 1), 'NOT_QUEUED') AS deliveryStatus
+            """;
+
+    String SIGNAL_SOURCE = """
               FROM nx_risk_signal s
               LEFT JOIN nx_admin_risk_signal_disposition d
                 ON d.signal_no=s.signal_no AND d.is_deleted=0
+            """;
+
+    String TAMPER_EVENT = """
+            LEFT JOIN nx_emergency_tamper_event t
+              ON t.event_no=CASE WHEN s.signal_type='TAMPER_DETECTED' AND JSON_VALID(s.evidence)
+                                  THEN JSON_UNQUOTE(JSON_EXTRACT(s.evidence, '$.eventId')) END
+             AND s.signal_no=CONCAT('TAMPER-', LEFT(t.event_no, 40))
+             AND t.user_id=s.user_id AND t.is_deleted=0
+            """;
+
+    String SIGNAL_FILTER = """
+             WHERE s.is_deleted=0
+               AND s.created_at >= #{startAt}
+               AND s.created_at &lt; #{endAt}
+               <if test="signalTypes != null and !signalTypes.isEmpty()">
+                 AND s.signal_type IN
+                 <foreach collection="signalTypes" item="type" open="(" separator="," close=")">
+                   #{type}
+                 </foreach>
+               </if>
+               <if test="handlingStatus != null">
+                 AND COALESCE(d.handling_status, 'open')=#{handlingStatus}
+               </if>
+               <if test="userId != null">AND s.user_id=#{userId}</if>
+            """;
+
+    @Select("SELECT " + SIGNAL_COLUMNS + SIGNAL_SOURCE + """
              WHERE s.is_deleted=0
                AND s.created_at >= #{startAt}
                AND s.created_at < #{endAt}
@@ -171,6 +201,29 @@ public interface B5RiskRadarMapper {
     List<Map<String, Object>> recentSignals(
             @Param("startAt") LocalDateTime startAt,
             @Param("endAt") LocalDateTime endAt);
+
+    @Select("<script>SELECT COUNT(*) AS total, COUNT(DISTINCT s.user_id) AS accountCount "
+            + SIGNAL_SOURCE + SIGNAL_FILTER + "</script>")
+    Map<String, Object> countSignals(@Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt, @Param("signalTypes") List<String> signalTypes,
+            @Param("handlingStatus") String handlingStatus, @Param("userId") Long userId);
+
+    @Select("<script>SELECT " + SIGNAL_COLUMNS + ", DATE_FORMAT(t.occurred_at, '%Y-%m-%dT%H:%i:%s') AS occurredAt "
+            + SIGNAL_SOURCE + TAMPER_EVENT + SIGNAL_FILTER + """
+             ORDER BY s.created_at DESC, s.id DESC
+             LIMIT #{size} OFFSET #{offset}
+            </script>
+            """)
+    List<Map<String, Object>> pageSignals(@Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt, @Param("signalTypes") List<String> signalTypes,
+            @Param("handlingStatus") String handlingStatus, @Param("userId") Long userId,
+            @Param("size") int size, @Param("offset") long offset);
+
+    @Select("SELECT " + SIGNAL_COLUMNS + ", DATE_FORMAT(t.occurred_at, '%Y-%m-%dT%H:%i:%s') AS occurredAt "
+            + SIGNAL_SOURCE + TAMPER_EVENT + """
+             WHERE s.is_deleted=0 AND s.signal_no=#{signalNo}
+            """)
+    Map<String, Object> findSignal(@Param("signalNo") String signalNo);
 
     @Select("SELECT COUNT(*) FROM nx_risk_signal WHERE signal_no=#{signalNo} AND is_deleted=0")
     int signalExists(@Param("signalNo") String signalNo);

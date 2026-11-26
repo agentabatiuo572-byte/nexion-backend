@@ -6,6 +6,8 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
@@ -46,6 +48,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -1682,8 +1685,8 @@ public class OpsTreasuryService {
         long k4ActiveOverrides = decimal(k4.get("activeOverrides")).longValue();
         long k4StaleScoreUsers = decimal(k4.get("staleScoreUsers")).longValue();
         List<Map<String, Object>> severity = k4ScoringAvailable ? List.of(
-                section("nm", "高风险", "v", k4HighRisk, "c", "var(--danger)"),
-                section("nm", "中风险", "v", k4MediumRisk, "c", "var(--warning)"),
+                section("nm", "高风险", "v", k4HighRisk, "c", "var(--danger)", "band", "HIGH"),
+                section("nm", "中风险", "v", k4MediumRisk, "c", "var(--warning)", "band", "MEDIUM"),
                 section("nm", "低风险", "v", k4LowRisk, "c", "var(--success)")) : List.of();
         BigDecimal pressureTightPct = decimal(snapshot.get("runRiskPct"));
         BigDecimal reserveUsd = decimal(snapshot.get("reserveUsd"));
@@ -1705,18 +1708,24 @@ public class OpsTreasuryService {
                     "t", "自动上报分数线 " + k4AutoEscalateScore + " · " + k4AutoEscalated
                             + " 个账户 · 当前评分规则 " + k4ModelVersion,
                     "m", "按当前评分规则和最新得分统计（含手动改分）",
+                    "band", "AUTO_REPORT",
+                    "count", k4AutoEscalated,
                     "href", "/risk/scoring"));
         } else if (k4HighRisk > 0) {
             feed.add(section(
                     "sev", "p1",
                     "t", "高风险 " + k4HighRisk + " 个账户 · 当前评分规则 " + k4ModelVersion,
                     "m", "按手动改分后的最新得分统计",
+                    "band", "HIGH",
+                    "count", k4HighRisk,
                     "href", "/risk/scoring"));
         } else if (k4MediumRisk > 0) {
             feed.add(section(
                     "sev", "p2",
                     "t", "中风险 " + k4MediumRisk + " 个账户 · 当前评分规则 " + k4ModelVersion,
                     "m", "按手动改分后的最新得分统计",
+                    "band", "MEDIUM",
+                    "count", k4MediumRisk,
                     "href", "/risk/scoring"));
         }
         if (k4ScoringAvailable && k4StaleScoreUsers > 0) {
@@ -1724,14 +1733,26 @@ public class OpsTreasuryService {
                     "sev", "p2",
                     "t", k4StaleScoreUsers + " 个账户等待按当前规则重新评分",
                     "m", "旧规则的得分不计入异常账户和风险分布",
+                    "band", "STALE",
+                    "count", k4StaleScoreUsers,
                     "href", "/risk/scoring"));
         }
-        RiskTamperSignalFacade.TamperRadarSnapshot tamperRadar = riskTamperSignalFacade.tamperRadarSnapshot(since);
+        LocalDateTime tamperEndAt = LocalDateTime.ofInstant(
+                clock.instant().truncatedTo(ChronoUnit.SECONDS).plusSeconds(1), StorageTime.ZONE);
+        LocalDateTime tamperStartAt = tamperEndAt.minusDays(7);
+        RiskTamperSignalFacade.TamperRadarSnapshot tamperRadar = riskTamperSignalFacade.tamperRadarSnapshot(tamperStartAt);
         if (tamperRadar.signalCount() > 0) {
+            LocalDateTime tamperLatestAt = LocalDateTime.parse(tamperRadar.latestAt(), DateTimeFormatConfig.DATE_TIME_FORMATTER);
             feed.add(section(
                     "sev", "p1",
                     "t", "篡改拦截 " + tamperRadar.signalCount() + " 起 · 涉及 " + tamperRadar.accountCount() + " 个账户",
                     "m", "篡改防御拦截 · 最近 " + tamperRadar.latestAt(),
+                    "signalType", "TAMPER_DETECTED",
+                    "count", tamperRadar.signalCount(),
+                    "accountCount", tamperRadar.accountCount(),
+                    "latestAt", tamperLatestAt.atZone(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+                    "startAt", tamperStartAt.atZone(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+                    "endAt", tamperEndAt.atZone(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
                     "href", "/emergency/tamper"));
         }
         List<Map<String, Object>> gates = riskGates();
