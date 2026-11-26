@@ -9,6 +9,7 @@ import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -82,6 +83,18 @@ public class AdminIdempotencyService {
     }
 
 
+    /** An A2 approval can record a verified recheck outcome only after its replay transaction rolls back. */
+    public <T> T executeA2Approval(String key, String requestHash, Class<T> responseType, long actorId,
+                                   String readAuthority, java.util.List<AdminCommandOrigin.Target> targets,
+                                   Supplier<T> action, Function<RuntimeException, Runnable> recheckFinalizer) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("A2 approval must own its replay transaction");
+        }
+        AdminCommandOrigin origin = new AdminCommandOrigin(actorId, null, null, null, readAuthority, targets);
+        return execute("A2_COMMAND", key, requestHash, responseType, action, true, false, origin, false,
+                recheckFinalizer);
+    }
+
     /** Read-only recovery information. Callers must derive the scope from the authenticated actor. */
     public RecoveryStatus recoveryStatus(String scope, String idempotencyKey, String requestHash) {
         return transactionExecutor.recoveryStatus(normalizeScope(scope), normalizeIdempotencyKey(idempotencyKey),
@@ -145,6 +158,13 @@ public class AdminIdempotencyService {
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess, boolean repeatableRead, AdminCommandOrigin origin,
                           boolean independentAction) {
+        return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, repeatableRead, origin,
+                independentAction, null);
+    }
+
+    private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
+                          Supplier<T> action, boolean retainSuccess, boolean repeatableRead, AdminCommandOrigin origin,
+                          boolean independentAction, Function<RuntimeException, Runnable> recheckFinalizer) {
         String normalizedScope = normalizeScope(scope);
         String normalizedKey = normalizeIdempotencyKey(idempotencyKey);
         String normalizedHash = normalizeRequired(requestHash, "IDEMPOTENCY_REQUEST_HASH_REQUIRED");
@@ -161,6 +181,16 @@ public class AdminIdempotencyService {
         boolean joinedTransaction = TransactionSynchronizationManager.isActualTransactionActive()
                 && TransactionSynchronizationManager.isSynchronizationActive();
         AtomicReference<Object> businessRejection = new AtomicReference<>();
+        AtomicReference<Integer> replayCompletion = recheckFinalizer == null ? null : new AtomicReference<>();
+        Supplier<T> execution = recheckFinalizer == null ? action : () -> {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    replayCompletion.set(status);
+                }
+            });
+            return action.get();
+        };
         if (joinedTransaction) {
             // The success marker joins the caller's transaction. Its later rollback
             // restores the independently committed claim to PROCESSING. Finalize only
@@ -180,10 +210,14 @@ public class AdminIdempotencyService {
             });
         }
         try {
-            return independentAction ? transactionExecutor.runClaimedIndependent(claim.recordId(), action)
-                    : repeatableRead ? transactionExecutor.runClaimedRepeatableRead(claim.recordId(), action)
-                    : transactionExecutor.runClaimed(claim.recordId(), action);
+            return independentAction ? transactionExecutor.runClaimedIndependent(claim.recordId(), execution)
+                    : repeatableRead ? transactionExecutor.runClaimedRepeatableRead(claim.recordId(), execution)
+                    : transactionExecutor.runClaimed(claim.recordId(), execution);
         } catch (RuntimeException ex) {
+            if (replayCompletion != null && Integer.valueOf(TransactionSynchronization.STATUS_UNKNOWN).equals(replayCompletion.get())) {
+                log.error("A2 approval transaction completion is unknown for {}", claim.recordId(), ex);
+                throw conflictUnknownResult();
+            }
             Object businessResponse = ex instanceof AdminCommandBusinessRejection rejection
                     ? rejection.response() : null;
             if (businessResponse == null && ex instanceof BizException businessError) {
@@ -205,6 +239,19 @@ public class AdminIdempotencyService {
             }
             businessRejection.set(businessResponse);
             if (joinedTransaction || independentAction) throw ex;
+            Runnable finalizeRecheck = recheckFinalizer == null ? null : recheckFinalizer.apply(ex);
+            if (finalizeRecheck != null) {
+                if (!Integer.valueOf(TransactionSynchronization.STATUS_ROLLED_BACK).equals(replayCompletion.get())) {
+                    throw conflictUnknownResult();
+                }
+                try {
+                    transactionExecutor.markA2RecheckFailed(claim.recordId(), businessResponse, finalizeRecheck);
+                } catch (RuntimeException finalizationFailure) {
+                    log.error("Could not finalize A2 approval recheck {}", claim.recordId(), finalizationFailure);
+                    throw conflictUnknownResult();
+                }
+                throw ex;
+            }
             try {
                 transactionExecutor.markFailed(claim.recordId(), errorSummary(ex), businessResponse);
             } catch (RuntimeException markFailedError) {
@@ -213,6 +260,10 @@ public class AdminIdempotencyService {
             }
             throw ex;
         }
+    }
+
+    private BizException conflictUnknownResult() {
+        return new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "IDEMPOTENCY_RESULT_UNKNOWN");
     }
 
     static boolean eventFailureReceiptScope(String scope) {

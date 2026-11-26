@@ -557,11 +557,11 @@ public class F5CommissionService {
     private ApiResult<Map<String, Object>> reissueInternal(
             List<Long> eventIds, String reason, String operator, String idempotencyKey) {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (coverage == null || !coverage.reliable()) {
+        if (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
+                || coverage.redlinePct() == null || coverage.redlinePct().signum() <= 0) {
             throw new BizException(503, "COVERAGE_SNAPSHOT_UNAVAILABLE");
         }
-        if (coverage.coverageRatio() == null || coverage.redlinePct() == null
-                || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+        if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
             throw new BizException(
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.name());

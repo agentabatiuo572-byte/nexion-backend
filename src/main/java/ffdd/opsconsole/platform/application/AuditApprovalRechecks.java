@@ -1,0 +1,58 @@
+package ffdd.opsconsole.platform.application;
+
+import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
+import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.market.application.G4CatalogApproval;
+import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.team.application.OpsTeamService;
+import java.util.Objects;
+import java.util.Set;
+
+/** Only reasons that prove the original review has failed against current business facts. */
+final class AuditApprovalRechecks {
+    private static final Set<String> H8_SETTLEMENT_REASONS = Set.of("H8_REWARD_SNAPSHOT_CHANGED_REPROPOSE",
+            "B1_COVERAGE_BELOW_REDLINE", "REFERRAL_REWARD_DISABLED", "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
+    private static final Set<String> F5_STATUS_REASONS = Set.of("F5_COMMISSION_VERSION_CONFLICT",
+            "COMMISSION_EVENT_NOT_FOUND", "COMMISSION_USER_SUSPENDED", "F5_COOLDOWN_DEADLINE_UNRECOVERABLE",
+            "COVERAGE_BELOW_REDLINE", "F5_COMMISSION_STATE_CONFLICT", "DIRECT_REFERRAL_RELEASE_STATE_CONFLICT");
+
+    private AuditApprovalRechecks() {}
+
+    static boolean confirmed(AuditReplayCommand command, int code, String reason) {
+        if (command == null || command.op() == null || reason == null || (code != 404 && code != 409 && code != 422)) {
+            return false;
+        }
+        if (G4CatalogApproval.supports(command)) return "G4_CATALOG_SNAPSHOT_CHANGED".equals(reason);
+        if (A4RegistryApproval.supports(command)) return "A4_SCHEMA_VERSION_STALE".equals(reason);
+        if (LearningCourseActivationApproval.supports(command)) {
+            return Set.of("LEARNING_ACTIVATION_SNAPSHOT_CHANGED", "COVERAGE_BELOW_REDLINE").contains(reason);
+        }
+        if (OpsI18nLearningService.isCourseRewardAdjustment(command)) {
+            return "LEARNING_COURSE_REWARD_SNAPSHOT_CHANGED".equals(reason);
+        }
+        return switch (command.op()) {
+            case "h8_referral_settlement", "h8_referral_settlement_user" -> H8_SETTLEMENT_REASONS.contains(reason);
+            case "h8_reward_param_change" -> Set.of("H8_CONFIG_VERSION_CONFLICT", "H8_PARAM_APPROVAL_NOT_REQUIRED",
+                    "B1_COVERAGE_BELOW_REDLINE").contains(reason);
+            case "c3_adjust_approve" -> Set.of("ASSET_ADJUSTMENT_NOT_FOUND", "ASSET_ADJUSTMENT_NOT_REVIEWABLE",
+                    "COVERAGE_BELOW_REDLINE", "C3_INSUFFICIENT_BALANCE").contains(reason);
+            case "f_commission_status" -> F5_STATUS_REASONS.contains(reason) || confirmedF5Unfreeze(command, reason);
+            case "f5_commission_reverse" -> Set.of("COMMISSION_EVENT_NOT_FOUND", "COMMISSION_REVERSE_STATE_CONFLICT",
+                    "REFUND_REF_NOT_FOUND").contains(reason);
+            case "f5_commission_reissue" -> "COVERAGE_BELOW_REDLINE".equals(reason)
+                    || "DIRECT_REFERRAL_REISSUE_REQUIRES_SOURCE_RECONCILIATION".equals(reason)
+                    || reason.matches("COMMISSION_REISSUE_(SOURCE_NOT_FOUND|STATE_CONFLICT|ALREADY_CONSUMED):CM-[0-9]+");
+            case "f5_commission_suspension" -> Set.of("COMMISSION_USER_KINDS_ALREADY_SUSPENDED",
+                    "COMMISSION_USER_KINDS_NOT_SUSPENDED").contains(reason);
+            case "i4_disclosure_publish", "i5_disclosure_publish" -> Set.of("A2_DISCLOSURE_SNAPSHOT_CHANGED",
+                    "DISCLOSURE_DRAFT_VERSION_NOT_FOUND", "DISCLOSURE_DRAFT_SNAPSHOT_CHANGED",
+                    "DISCLOSURE_DRAFT_CHANGED_SAVE_BEFORE_PUBLISH").contains(reason);
+            default -> false;
+        };
+    }
+
+    private static boolean confirmedF5Unfreeze(AuditReplayCommand command, String reason) {
+        return "DIRECT_REFERRAL_SPONSOR_FROZEN".equals(reason) && command.params() != null
+                && "COOLING".equals(OpsTeamService.canonicalCommissionState(Objects.toString(command.params().get("value"), "")));
+    }
+}

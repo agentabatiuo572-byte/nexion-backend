@@ -117,6 +117,7 @@ public class OpsAuditCenterService {
     private static final String F5_COMMISSION_SUSPENSION = "f5_commission_suspension";
     private static final String E4_ORDER_REFUND = "e4_order_refund";
     private static final String WITHDRAWAL_CONFIG_CHANGES = "withdrawalConfigChanges";
+    private static final String APPROVAL_FAILURE_REASON = "approvalFailureReason";
     private static final String EXECUTED_DECISION_REASON = "即时执行·已生效(单人确认)";
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_APPROVED, STATUS_REJECTED, "withdrawn", "expired");
     private static final Set<String> A1_ACCOUNT_OBJECT_OPS = Set.of(
@@ -1064,6 +1065,11 @@ public class OpsAuditCenterService {
             var receipt = proposal
                     ? idempotencyService.executeBoundTargets(A2_COMMAND, idempotencyKey, requestHash,
                             AuditOperationTicket.class, originAuthority, originTargets, () -> requireSuccess(action.get()))
+                    : "APPROVE".equals(verb)
+                    ? idempotencyService.executeA2Approval(idempotencyKey, requestHash, AuditOperationTicket.class,
+                            actorId, originAuthority, originTargets, () -> requireSuccess(action.get()),
+                            failure -> failure instanceof ApprovalRecheckRejection recheck
+                                    ? () -> finalizeApprovalRecheck(recheck) : null)
                     : idempotencyService.executeOwned(A2_COMMAND, idempotencyKey, requestHash,
                             AuditOperationTicket.class, actorId, originAuthority, originTargets, () -> requireSuccess(action.get()));
             if (catalogProposal || (proposal && receipt.v8PromotionSnapshot() != null)) {
@@ -1185,6 +1191,7 @@ public class OpsAuditCenterService {
                                     accessPolicy.requireOriginalKeyProposalReader()))))) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
         }
+        if ("PROPOSE".equals(verb) && approvalFailureReason(ticket) != null) return ApiResult.ok(toTicket(ticket, mine));
         var metadata = ticketMetadata(ticket, command);
         return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
                 metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate(), command),
@@ -1412,10 +1419,17 @@ public class OpsAuditCenterService {
         // Refund participants were locked before the ticket; qualifications only read this locked transaction.
         if (STATUS_APPROVED.equals(nextStatus)) {
             ApiResult<Void> preconditions = replayBusinessPermissionGuard.validateApprovalPreconditions(cmd);
-            if (preconditions.getCode() != 0) return ApiResult.fail(preconditions.getCode(), preconditions.getMessage());
+            if (preconditions.getCode() != 0) {
+                if (AuditApprovalRechecks.confirmed(cmd, preconditions.getCode(), preconditions.getMessage())) {
+                    throw new ApprovalRecheckRejection(ticket, actorId, authenticatedOperator, idempotencyKey,
+                            request.reason(), preconditions);
+                }
+                return ApiResult.fail(preconditions.getCode(), preconditions.getMessage());
+            }
             String reissueSummary = replayBusinessPermissionGuard.vRankReissueSummary(cmd);
             if (reissueSummary != null && !reissueSummary.equals(ticket.getAfterValue())) {
-                return ApiResult.fail(409, "F1_UVT_REISSUE_REVIEW_CHANGED");
+                throw new ApprovalRecheckRejection(ticket, actorId, authenticatedOperator, idempotencyKey,
+                        request.reason(), ApiResult.fail(409, "F1_UVT_REISSUE_REVIEW_CHANGED"));
             }
             var pendingOperation = PendingApprovalProjection.operation(cmd);
             if (pendingOperation != null) {
@@ -1440,11 +1454,23 @@ public class OpsAuditCenterService {
                 A2ReplayContext.enterReplay(ticket.getOperationId());
             }
             try {
-                ApiResult<?> replayResult = replayDispatcher.dispatch(cmd, ctx);
+                ApiResult<?> replayResult;
+                try {
+                    replayResult = replayDispatcher.dispatch(cmd, ctx);
+                } catch (BizException failure) {
+                    if (AuditApprovalRechecks.confirmed(cmd, failure.getCode(), failure.getMessage())) {
+                        throw new ApprovalRecheckRejection(ticket, actorId, authenticatedOperator, idempotencyKey,
+                                request.reason(), ApiResult.fail(failure.getCode(), failure.getMessage(), failure.errorData()));
+                    }
+                    throw failure;
+                }
                 if (replayResult.getCode() != 0) {
                     if("MONTHLY_TARGET_POOL_INELIGIBLE".equals(replayResult.getMessage()))throw MonthlyTargetPoolException.fromResult(replayResult);
                     if("MONTHLY_TARGET_REWARD_OUT_OF_RANGE".equals(replayResult.getMessage()))throw MonthlyTargetRewardOutOfRangeException.fromResult(replayResult);
-                    // 回放失败:不删锁、不改状态、目标域域方法已 return fail 未写入 → ticket 保持 pending,原值保持
+                    if (AuditApprovalRechecks.confirmed(cmd, replayResult.getCode(), replayResult.getMessage())) {
+                        throw new ApprovalRecheckRejection(ticket, actorId, authenticatedOperator, idempotencyKey,
+                                request.reason(), replayResult);
+                    }
                     return ApiResult.fail(replayResult.getCode(), replayResult.getMessage());
                 }
                 if (TeamFundApproval.isSettlement(cmd) && replayResult.getData() instanceof SettlementResult settlement) {
@@ -1478,18 +1504,83 @@ public class OpsAuditCenterService {
                 && (STATUS_REJECTED.equals(nextStatus) || "withdrawn".equals(nextStatus))) {
             promotions.clearA2Refund(ticket.getOperationId(), lockedRefundOrder);
         }
+        recordDecision(ticket, auditAction, authenticatedOperator,
+                decisionDetail(ticket, nextStatus, idempotencyKey, request.reason()));
+        return ApiResult.ok(toTicket(ticket, makerMatches));
+    }
+
+    private void finalizeApprovalRecheck(ApprovalRecheckRejection failure) {
+        Long actorId = A2ReplayContext.authenticatedAdminId();
+        if (!Objects.equals(actorId, failure.actorId)) {
+            throw new IllegalStateException("A2 approval recheck actor changed");
+        }
+        AuditReplayCommand originalCommand = deserializeCommand(failure.commandJson);
+        String refundOrder = refundOrderNo(originalCommand);
+        if (promotions != null && refundOrder != null) promotions.lockOrderParticipants(refundOrder);
+        var ticket = ticketForUpdate(failure.operationId).orElse(null);
+        if (ticket == null) throw new IllegalStateException("A2 approval recheck ticket disappeared");
+        String currentStatus = normalizeText(ticket.getStatus()).toLowerCase(Locale.ROOT);
+        if (TERMINAL_STATUSES.contains(currentStatus)) return;
+        if (!STATUS_PENDING.equals(currentStatus) || !Objects.equals(failure.commandJson, ticket.getCommandJson())) {
+            throw new IllegalStateException("A2 approval recheck snapshot changed");
+        }
+        if (decisionQualification(ticket, originalCommand, ticketMakerId(ticket, originalCommand), actorId, true)
+                .getCode() != 0) {
+            throw new IllegalStateException("A2 approval recheck authorization changed");
+        }
+        try {
+            var stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(ticket.getCommandJson());
+            stored.put(APPROVAL_FAILURE_REASON, failure.getMessage());
+            ticket.setCommandJson(objectMapper.writeValueAsString(stored));
+        } catch (JsonProcessingException invalid) {
+            throw new IllegalStateException("A2 approval snapshot cannot store its recheck result", invalid);
+        }
+        ticket.setStatus(STATUS_REJECTED);
+        ticket.setDecisionReason(failure.decisionReason);
+        ticket.setDecidedAt(LocalDateTime.now());
+        if (ticketMapper.updateById(ticket) != 1) {
+            throw new IllegalStateException("A2 approval recheck ticket update failed");
+        }
+        releaseLock(ticket.getOperationId());
+        if (promotions != null && refundOrder != null) promotions.clearA2Refund(ticket.getOperationId(), refundOrder);
+        var detail = decisionDetail(ticket, STATUS_REJECTED, failure.idempotencyKey, failure.decisionReason);
+        detail.put("attemptedDecision", "approved");
+        detail.put(APPROVAL_FAILURE_REASON, failure.getMessage());
+        recordDecision(ticket, "A2_OPERATION_REJECTED", failure.operator, detail);
+    }
+
+    private void recordDecision(AuditOperationTicketEntity ticket, String action, String operator, Map<String, Object> detail) {
         auditLogService.recordRequired(AuditLogWriteRequest.builder()
-                .action(auditAction)
+                .action(action)
                 .resourceType("A2_OPERATION")
                 .resourceId(ticket.getOperationId())
                 .bizNo(ticket.getOperationId())
                 .actorType("ADMIN")
-                .actorUsername(authenticatedOperator)
+                .actorUsername(operator)
                 .result("SUCCESS")
                 .riskLevel(operationRiskLevel(ticket))
-                .detail(decisionDetail(ticket, nextStatus, idempotencyKey, request.reason()))
+                .detail(detail)
                 .build());
-        return ApiResult.ok(toTicket(ticket, makerMatches));
+    }
+
+    private static final class ApprovalRecheckRejection extends AdminCommandBusinessRejection {
+        private final String operationId;
+        private final String commandJson;
+        private final Long actorId;
+        private final String operator;
+        private final String idempotencyKey;
+        private final String decisionReason;
+
+        private ApprovalRecheckRejection(AuditOperationTicketEntity ticket, Long actorId, String operator,
+                String idempotencyKey, String decisionReason, ApiResult<?> failure) {
+            super(failure.getCode(), failure.getMessage(), failure);
+            this.operationId = ticket.getOperationId();
+            this.commandJson = ticket.getCommandJson();
+            this.actorId = actorId;
+            this.operator = operator;
+            this.idempotencyKey = idempotencyKey;
+            this.decisionReason = decisionReason.trim();
+        }
     }
 
     /**
@@ -1654,9 +1745,10 @@ public class OpsAuditCenterService {
         }
         try {
             com.fasterxml.jackson.databind.node.ObjectNode stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(commandJson);
+            stored.remove(APPROVAL_FAILURE_REASON);
             if ("E".equals(stored.path("domain").asText())
                     && Set.of("e1_bundle_discount", E4_ORDER_REFUND).contains(stored.path("op").asText())) {
-                return objectMapper.readValue(commandJson, AuditReplayCommand.class);
+                return objectMapper.treeToValue(stored, AuditReplayCommand.class);
             }
             stored.remove("avatarMakerAdminId");
             stored.remove(RoleGrantsDiff.FIELD);
@@ -1947,7 +2039,17 @@ public class OpsAuditCenterService {
                 approve.getCode() == 0 ? null : approve.getCode(), approve.getCode() == 0 ? null : approve.getMessage(),
                 reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage(),
                 objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command), disclosureReview(row, command),
-                commissionReverseEvidence(command), v8PromotionSnapshot(row, command), withdrawalConfigChanges(row, command));
+                commissionReverseEvidence(command), v8PromotionSnapshot(row, command), withdrawalConfigChanges(row, command),
+                approvalFailureReason(row));
+    }
+
+    private String approvalFailureReason(AuditOperationTicketEntity ticket) {
+        if (!STATUS_REJECTED.equals(status(ticket.getStatus())) || !StringUtils.hasText(ticket.getCommandJson())) return null;
+        try {
+            return objectMapper.readTree(ticket.getCommandJson()).path(APPROVAL_FAILURE_REASON).asText(null);
+        } catch (JsonProcessingException invalid) {
+            return null;
+        }
     }
 
     private JsonNode withdrawalConfigChanges(AuditOperationTicketEntity row, AuditReplayCommand command) {
@@ -2199,7 +2301,9 @@ public class OpsAuditCenterService {
                         ticket.getDecidedAt() == null ? LocalDateTime.now().format(ISO) : ticket.getDecidedAt().format(ISO),
                         "原因:" + (StringUtils.hasText(ticket.getDecisionReason())
                                 ? ticket.getDecisionReason()
-                                : ticket.getReason()),
+                                : ticket.getReason()) + (ticketsById.get(ticket.getOperationId()) != null
+                                && ticketsById.get(ticket.getOperationId()).approvalFailureReason() != null
+                                ? " · 复核失败:" + ticketsById.get(ticket.getOperationId()).approvalFailureReason() : ""),
                         ticketsById.get(ticket.getOperationId()) == null
                                 ? null : ticketsById.get(ticket.getOperationId()).operationCode())));
         historyMapper.selectList(new LambdaQueryWrapper<AuditOperationHistoryEntity>()

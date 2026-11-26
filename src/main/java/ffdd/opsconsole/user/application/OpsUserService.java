@@ -2472,12 +2472,19 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         String currentStatus = normalizeAdjustmentStatus(before.status());
         if (!REVIEWABLE_ADJUSTMENT_STATUSES.contains(currentStatus)) {
-            return c3Reject(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name(),
+            String conflict = A2ReplayContext.isReplaying() && "APPROVED".equals(nextStatus)
+                    ? "ASSET_ADJUSTMENT_NOT_REVIEWABLE" : OpsErrorCode.INVALID_STATE_TRANSITION.name();
+            return c3Reject(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), conflict,
                     normalizedNo, before.userId(), operator, idempotencyKey);
         }
         String reason = request.reason().trim();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         BigDecimal amountUsd = before.amountUsd() == null ? before.amount() : before.amountUsd();
+        if (A2ReplayContext.isReplaying() && "APPROVED".equals(nextStatus) && before.credit()
+                && (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
+                    || coverage.redlinePct() == null || coverage.redlinePct().signum() <= 0)) {
+            return c3Reject(503, "C3_COVERAGE_UNRELIABLE", normalizedNo, before.userId(), operator, idempotencyKey);
+        }
         if ("APPROVED".equals(nextStatus) && before.credit()
                 && (!coverage.reliable() || projectedCoverageRatio(coverage, before.direction(), amountUsd)
                         .compareTo(coverage.redlinePct()) < 0)) {

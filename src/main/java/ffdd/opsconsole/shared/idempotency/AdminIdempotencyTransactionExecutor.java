@@ -319,6 +319,22 @@ public class AdminIdempotencyTransactionExecutor {
         }
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public void markA2RecheckFailed(Long recordId, Object response, Runnable finalizeTicket) {
+        var original = recordMapper.selectCurrentByIdForUpdate(recordId);
+        if (original == null || !"A2_COMMAND".equals(original.getScope())
+                || !STATUS_PROCESSING.equals(original.getStatus()) || response == null) {
+            throw conflict("IDEMPOTENCY_FAILURE_STATE_LOST");
+        }
+        markFailed(recordId, "ApprovalRecheckFailed", response);
+        var previous = AdminIdempotencyExecutionContext.enter(original);
+        try {
+            finalizeTicket.run();
+        } finally {
+            AdminIdempotencyExecutionContext.restore(previous);
+        }
+    }
+
     private <T> Claim<T> resolveKnownRecord(
             AdminIdempotencyRecordEntity record,
             String requestHash,

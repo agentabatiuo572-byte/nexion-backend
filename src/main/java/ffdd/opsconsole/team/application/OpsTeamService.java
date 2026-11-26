@@ -666,11 +666,11 @@ public class OpsTeamService implements AuditReplayable {
      */
     private ApiResult<Void> requirePayoutCoverageForUnlock() {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (coverage == null || !coverage.reliable()) {
+        if (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
+                || coverage.redlinePct() == null || coverage.redlinePct().signum() <= 0) {
             return ApiResult.fail(503, "COVERAGE_SNAPSHOT_UNAVAILABLE");
         }
-        if (coverage.coverageRatio() == null || coverage.redlinePct() == null
-                || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+        if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
@@ -2119,10 +2119,13 @@ public class OpsTeamService implements AuditReplayable {
             return ApiResult.fail(400,"F5_EXPECTED_VERSION_REQUIRED");
         }
         Long parsedVersion = parseLongFromMap(oldEvent.get("version"));
-        long currentVersion = parsedVersion == null ? -1L : parsedVersion;
-        if(currentVersion!=request.expectedVersion()) return ApiResult.fail(409,"F5_COMMISSION_VERSION_CONFLICT");
+        if (parsedVersion == null || parsedVersion < 0 || !knownCommissionState(fromCanonical)) {
+            return ApiResult.fail(503, "F5_COMMISSION_STATE_UNAVAILABLE");
+        }
+        if (!parsedVersion.equals(request.expectedVersion())) return ApiResult.fail(409,"F5_COMMISSION_VERSION_CONFLICT");
         if (!isLegalCommissionStateTransition(fromCanonical, toCanonical)) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name());
+            return ApiResult.fail(409, knownCommissionState(toCanonical)
+                    ? "F5_COMMISSION_STATE_CONFLICT" : OpsErrorCode.INVALID_STATE_TRANSITION.name());
         }
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
         if (direct != null && direct.groupForEvent(directEventId) != null) {
@@ -2234,6 +2237,10 @@ public class OpsTeamService implements AuditReplayable {
             "UNLOCKED", Set.of("REJECTED", "SETTLED", "PAID"),
             "FROZEN", Set.of("COOLING", "REJECTED"),
             "SETTLED", Set.of("PAID"));
+
+    private boolean knownCommissionState(String status) {
+        return COMMISSION_STATE_TRANSITIONS.containsKey(status) || "REJECTED".equals(status) || "PAID".equals(status);
+    }
 
     private boolean isLegalCommissionStateTransition(String fromCanonical, String toCanonical) {
         if (fromCanonical.equals(toCanonical)) {
