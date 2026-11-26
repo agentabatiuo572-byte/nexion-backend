@@ -367,6 +367,10 @@ public class OpsAuditCenterService {
             operatorRole = normalizeOptionalText(request.operatorRole(), "operator", 32);
             roleGate = normalizeOptionalText(request.roleGate(), "超管", 255);
             reason = normalizeLimitedText(request.reason(), "REASON_REQUIRED", 512);
+            if (TreasuryThresholdApproval.bankRun(request.command()) && reason.length() == 512
+                    && Character.isHighSurrogate(reason.charAt(511))) {
+                reason = reason.substring(0, 511);
+            }
             sourceDomain = normalizeOptionalText(request.sourceDomain(), "A2", 32);
         } catch (IllegalArgumentException ex) {
             return fail(OpsErrorCode.VALIDATION_FAILED, ex.getMessage());
@@ -571,7 +575,9 @@ public class OpsAuditCenterService {
                     stored.set(CourseRewardReview.PARAM, objectMapper.valueToTree(rewardReview));
                 }
                 if (superAdminProposalCommand(command)) {
-                    ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("proposalReason", reason);
+                    // B5 validates visible characters, so its complete reason can exceed the ticket summary.
+                    String replayReason = TreasuryThresholdApproval.bankRun(command) ? request.reason() : reason;
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("proposalReason", replayReason);
                 }
                 if (E2TaskPricingApproval.supports(command) || TeamFundApproval.supports(command)
                         || G3MarketApproval.supports(command)) {
@@ -2023,6 +2029,9 @@ public class OpsAuditCenterService {
                 ? new BigDecimal(amount.toString()) : null;
         BigDecimal refundAmount = refund.get("refundAmountUsdt") instanceof Number amount
                 ? new BigDecimal(amount.toString()) : null;
+        String reason = TreasuryThresholdApproval.bankRun(command) && command.params() != null
+                && command.params().get("proposalReason") instanceof String proposalReason
+                ? proposalReason : row.getReason();
         return new AuditOperationTicket(
                 row.getOperationId(),
                 row.getAction(),
@@ -2037,7 +2046,7 @@ public class OpsAuditCenterService {
                 row.getCreatedAt() == null ? row.getTimeLabel() : row.getCreatedAt().format(ISO),
                 mine,
                 roleGateText(row.getRoleGate(), command),
-                row.getReason(),
+                reason,
                 status(row.getStatus()), phoneCalibrationProposal(command),
                 OpsKillSwitchService.RESTORE_OPERATION.equals(metadata.operationCode()) && isTrue(row.getAmplifies())
                         || H5GrowthApproval.isEarnMilestoneCreate(command)

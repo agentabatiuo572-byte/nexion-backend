@@ -498,7 +498,8 @@ public class AppTrialLifecycleService {
         }
         return linked("kind", "EXTERNAL", "claimNo", row.claimNo(), "intentNo", payment.intentNo(),
                 "productNo", payment.productNo(), "name", payment.deviceName() == null ? row.deviceName() : payment.deviceName(),
-                "imageUrl", imageUrl, "paymentMethod", payment.paymentMethod(), "expectedAmountUsdt", payment.confirmedAmount(),
+                "imageUrl", imageUrl, "paymentMethod", payment.paymentMethod(),
+                "expectedAmountUsdt", payment.confirmedAmount(), "amountUsdt", payment.amountUsdt(),
                 "deadlineAt", PurchasePaymentService.effectivePaymentDeadline(payment.deadline(), payment.providerDeadline()).toString(),
                 "status", payment.status());
     }

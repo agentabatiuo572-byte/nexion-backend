@@ -2,6 +2,7 @@ package ffdd.opsconsole.risk.application;
 
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.risk.domain.RiskSignalCategory;
 import ffdd.opsconsole.risk.dto.B5AlertSubscriptionRequest;
@@ -46,6 +47,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -63,6 +66,8 @@ public class OpsRiskRadarService {
     private static final String SUBSCRIPTION_VERSION_KEY = "risk.alert-subscription.version";
     private static final String SUBSCRIPTION_ACTOR_KEY = "risk.alert-subscription.subscriber";
     private static final String THRESHOLD_SCOPE = "B5_BANKRUN_THRESHOLDS";
+    private static final Pattern THRESHOLD_REASON_EDGE_SPACE = Pattern.compile(
+            "(?U)\\A[\\s\\x00-\\x20]+|(?<![\\s\\x00-\\x20])[\\s\\x00-\\x20]+\\z");
     private static final String SUBSCRIPTION_SCOPE = "B5_ALERT_SUBSCRIPTION";
     private static final String TRIAGE_SCOPE = "B5_TRIAGE";
     private static final List<String> GATES = List.of("withdraw", "staking", "genesis", "exchange", "trial");
@@ -532,16 +537,17 @@ public class OpsRiskRadarService {
         if (request == null) {
             throw new BizException(400, "BANKRUN_THRESHOLD_REQUIRED");
         }
-        String reason = requireReason(request.reason());
         Thresholds requested = parseThresholds(request.yellowPct(), request.redPct());
         Thresholds thresholds = resolveThresholds(requested);
         String actor = AdminActorResolver.resolve(request.operator());
         requireActor(actor);
+        // Keep the legacy digest so the same request can recover an existing receipt.
         String hash = hash(thresholds.yellow() + "|" + thresholds.red() + "|"
-                + request.expectedVersion() + "|" + reason + "|" + actor);
+                + request.expectedVersion() + "|" + text(request.reason()) + "|" + actor);
+        Supplier<String> reason = thresholdReasonForWrite(idempotencyKey, hash, request.reason());
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 THRESHOLD_SCOPE, idempotencyKey, hash, ApiResult.class,
-                () -> updateThresholdsNew(requested, expectedThresholdVersion(request), reason, actor));
+                () -> updateThresholdsNew(requested, expectedThresholdVersion(request), reason.get(), actor));
     }
 
     private ApiResult<Map<String, Object>> updateThresholdsNew(
@@ -553,7 +559,7 @@ public class OpsRiskRadarService {
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
     public ApiResult<Map<String, Object>> previewThresholdApproval(B5BankRunThresholdRequest request) {
-        requireReason(request.reason());
+        requireThresholdReason(request.reason());
         Thresholds thresholds = parseThresholds(request.yellowPct(), request.redPct());
         long expectedVersion = expectedThresholdVersion(request);
         var change = BankRunThresholdPolicy.previewApproval(
@@ -570,7 +576,7 @@ public class OpsRiskRadarService {
         if (!A2ReplayContext.isReplaying() || approvalOperationId == null) {
             throw new BizException(409, BankRunThresholdPolicy.APPROVAL_REQUIRED);
         }
-        String reason = requireReason(request.reason());
+        String reason = requireThresholdReason(request.reason());
         String actor = AdminActorResolver.resolve(null);
         requireActor(actor);
         Thresholds thresholds = parseThresholds(request.yellowPct(), request.redPct());
@@ -588,7 +594,7 @@ public class OpsRiskRadarService {
                 "role", roleResolver.resolve(),
                 "before", section("yellowPct", change.before().yellowPct(), "redPct", change.before().redlinePct()),
                 "after", section("yellowPct", change.after().yellowPct(), "redPct", change.after().redlinePct()),
-                "reason", reason,
+                "reason", thresholdAuditReason(reason),
                 "version", change.newVersion(),
                 "linkedDomain", "J1:R1");
         if (approvalOperationId != null) detail.put("approvalOperationId", approvalOperationId);
@@ -957,6 +963,34 @@ public class OpsRiskRadarService {
         if (reason == null || reason.length() < 8 || reason.length() > 200) {
             throw new BizException(400, "REASON_REQUIRED");
         }
+        return reason;
+    }
+
+    private String thresholdAuditReason(String reason) {
+        if (reason.length() <= 512) return reason;
+        // Leave room for the threshold facts within the shared structured audit size limit.
+        return reason.substring(0, reason.offsetByCodePoints(0, 100)) + " … "
+                + reason.substring(reason.offsetByCodePoints(reason.length(), -100));
+    }
+
+    private Supplier<String> thresholdReasonForWrite(String key, String hash, String value) {
+        try {
+            String reason = requireThresholdReason(value);
+            return () -> reason;
+        } catch (BizException invalid) {
+            // Reject new invalid requests before claiming their keys. A known success still uses
+            // the normal receipt lookup, including its authenticated origin check.
+            var existing = idempotencyService.activeRequest(THRESHOLD_SCOPE, key);
+            if (existing == null || !existing.hasReceipt() || !hash.equals(existing.requestHash())) throw invalid;
+            return () -> { throw invalid; };
+        }
+    }
+
+    private String requireThresholdReason(String value) {
+        String reason = value == null ? "" : THRESHOLD_REASON_EDGE_SPACE.matcher(value).replaceAll("");
+        int minimum = A2RuntimePolicy.parseReasonMinChars(
+                configFacade.activeValue(A2RuntimePolicy.REASON_MIN_KEY).orElse(null));
+        A2RuntimePolicy.validateReason(reason, minimum);
         return reason;
     }
 

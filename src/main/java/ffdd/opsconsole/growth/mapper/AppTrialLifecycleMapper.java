@@ -117,6 +117,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                    intent_no intentNo,paid_at paidAt,confirmed_at confirmedAt,
                    JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.productNo')) productNo,
                    JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.expectedAmountUsdt')) confirmedAmount,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.businessAmountUsdt')), 'null') amountUsdt,
                    JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialDeviceName')) deviceName,
                    JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialImageSku')) imageSku,
                    JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialImageAssetId')) imageAssetId,
@@ -131,14 +132,14 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
 
     record TrialExternalPayment(String claimNo, String pricingAsOf, String paymentMethod, Instant deadline,
                                 Instant providerDeadline, String reason, String status, String intentNo, Instant paidAt, Instant confirmedAt,
-                                String productNo, String confirmedAmount, String deviceName, String imageSku,
-                                String imageAssetId, String imageObjectKey) {
+                                String productNo, String confirmedAmount, String amountUsdt, String deviceName,
+                                String imageSku, String imageAssetId, String imageObjectKey) {
         @org.apache.ibatis.annotations.AutomapConstructor
         public TrialExternalPayment {}
 
         public TrialExternalPayment(String claimNo, String pricingAsOf, String paymentMethod, Instant deadline, String reason) {
             this(claimNo, pricingAsOf, paymentMethod, deadline, null, reason, null, null,
-                    null, null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null, null, null);
         }
     }
 
