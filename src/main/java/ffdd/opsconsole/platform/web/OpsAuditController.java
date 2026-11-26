@@ -218,25 +218,35 @@ public class OpsAuditController {
         if (!StringUtils.hasText(idempotencyKey)) {
             return jsonFailure(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED);
         }
-        int reasonLength = request == null || request.reason() == null ? 0
-                : request.reason().trim().codePointCount(0, request.reason().trim().length());
-        if (request == null || !StringUtils.hasText(request.reason())
-                || reasonLength < a2RuntimePolicy.reasonMinChars()) {
+        if (request == null || !StringUtils.hasText(request.reason())) {
             return jsonFailure(OpsErrorCode.REASON_REQUIRED);
         }
-        if (reasonLength > 200) {
-            return jsonFailure(OpsErrorCode.VALIDATION_FAILED);
-        }
+        int reasonLength = A2RuntimePolicy.visibleCodePointCount(request.reason());
+        OpsErrorCode reasonError = reasonLength < a2RuntimePolicy.reasonMinChars() ? OpsErrorCode.REASON_REQUIRED
+                : reasonLength > 200 ? OpsErrorCode.VALIDATION_FAILED : null;
 
         String normalizedKey = idempotencyKey.trim();
         String actor = AdminActorResolver.resolve(null);
         AuditExportResult export;
         try {
+            String requestHash = exportHash(actor, request);
             AuditLogQueryRequest query = auditExportQuery(request);
             AuditExportScope currentScope = AuditExportScope.from(query);
-            export = idempotencyService.execute("A2_COMMAND", normalizedKey,
-                    exportHash(actor, request), AuditExportResult.class,
-                    () -> createExport(normalizedKey, actor, request, query, currentScope));
+            if (reasonError == null) {
+                export = idempotencyService.execute("A2_COMMAND", normalizedKey, requestHash, AuditExportResult.class,
+                        () -> createExport(normalizedKey, actor, request, query, currentScope));
+            } else {
+                // Only an active original receipt can bypass new reason validation, without claiming the key.
+                var saved = idempotencyService.activeRequest("A2_COMMAND", normalizedKey);
+                if (saved == null || !saved.hasReceipt() || !requestHash.equals(saved.requestHash())) {
+                    return jsonFailure(reasonError);
+                }
+                var recovered = idempotencyService.recoveryResult("A2_COMMAND", normalizedKey, requestHash,
+                        AuditExportResult.class);
+                if (recovered.status() != AdminIdempotencyService.RecoveryStatus.SUCCEEDED
+                        || recovered.response() == null) return jsonFailure(reasonError);
+                export = recovered.response();
+            }
             if (!currentScope.canRecover(export.scope(), query.getDomain())) {
                 throw new BizException(403, "A2_EXPORT_SCOPE_CHANGED");
             }
@@ -269,7 +279,8 @@ public class OpsAuditController {
                 .action("A2_AUDIT_EXPORTED").resourceType("A2_AUDIT_EXPORT")
                 .resourceId(jobNo).bizNo(jobNo).actorType("ADMIN").actorUsername(actor)
                 .result("SUCCESS").riskLevel("MEDIUM")
-                .detail(Map.of("jobNo", jobNo, "filter", request.filter(), "reason", request.reason().trim(),
+                .detail(Map.of("jobNo", jobNo, "filter", request.filter(),
+                        "reason", A2RuntimePolicy.reasonForAudit(request.reason()),
                         "idempotencyKey", idempotencyKey, "rowCount", csv.rowCount()))
                 .build());
         return new AuditExportResult(jobNo, createdAt, csv.body(), true, scope);

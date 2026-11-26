@@ -311,7 +311,7 @@ public class TaskPoolService {
         String reason = text(value);
         if (reason == null) throw new BizException(422, "REASON_LENGTH_INVALID");
         String normalized = AuthoringWhitespace.trim(reason).trim();
-        int visible = A2RuntimePolicy.visibleCodePointCount(normalized.replaceAll("\\p{Zs}+", ""));
+        int visible = A2RuntimePolicy.visibleCodePointCount(normalized);
         if (visible < 8 || visible > 200) throw new BizException(422, "REASON_LENGTH_INVALID");
         return normalized;
     }

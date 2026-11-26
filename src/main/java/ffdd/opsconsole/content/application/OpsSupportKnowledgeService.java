@@ -17,7 +17,6 @@ import ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
-import java.text.Normalizer;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -182,8 +181,7 @@ public class OpsSupportKnowledgeService {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
         String reason = request == null ? null : request.reason();
-        int visibleReasonLength = reason == null ? 0 : A2RuntimePolicy.visibleCodePointCount(
-                Normalizer.normalize(reason, Normalizer.Form.NFC).replaceAll("\\p{Zs}+", ""));
+        int visibleReasonLength = A2RuntimePolicy.visibleCodePointCount(reason);
         // Directly constructed callers retain the original minimum of eight.
         if (visibleReasonLength < 8 || visibleReasonLength > 200
                 || (reasonPolicy != null && visibleReasonLength < reasonPolicy.reasonMinChars())) {

@@ -1516,7 +1516,7 @@ public class OpsAuditCenterService {
             releaseLock(ticket.getOperationId());
         }
         ticket.setStatus(nextStatus);
-        ticket.setDecisionReason(request.reason().trim());
+        ticket.setDecisionReason(A2RuntimePolicy.reasonExcerpt(request.reason(), 512));
         ticket.setDecidedAt(LocalDateTime.now());
         ticketMapper.updateById(ticket);
         if (promotions != null && lockedRefundOrder != null
@@ -1555,7 +1555,7 @@ public class OpsAuditCenterService {
             throw new IllegalStateException("A2 approval snapshot cannot store its recheck result", invalid);
         }
         ticket.setStatus(STATUS_REJECTED);
-        ticket.setDecisionReason(failure.decisionReason);
+        ticket.setDecisionReason(A2RuntimePolicy.reasonExcerpt(failure.decisionReason, 512));
         ticket.setDecidedAt(LocalDateTime.now());
         if (ticketMapper.updateById(ticket) != 1) {
             throw new IllegalStateException("A2 approval recheck ticket update failed");
@@ -1669,7 +1669,7 @@ public class OpsAuditCenterService {
         detail.put("type", ticket.getOperationType());
         detail.put("amplifies", isTrue(ticket.getAmplifies()));
         detail.put("sos", isTrue(ticket.getSos()));
-        detail.put("reason", reason.trim());
+        detail.put("reason", A2RuntimePolicy.reasonForAudit(reason));
         detail.put("idempotencyKey", idempotencyKey.trim());
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
                 || LearningCourseActivationApproval.supports(command) || OpsI18nLearningService.isCourseRewardAdjustment(command)

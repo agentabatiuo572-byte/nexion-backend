@@ -1277,10 +1277,7 @@ public class SupportPerformanceExportService {
     }
 
     private void validateReason(String reason) {
-        String normalized = java.text.Normalizer.normalize(reason, java.text.Normalizer.Form.NFC);
-        StringBuilder visibleInput = new StringBuilder();
-        normalized.codePoints().filter(point -> !Character.isSpaceChar(point)).forEach(visibleInput::appendCodePoint);
-        int visible = ffdd.opsconsole.platform.application.A2RuntimePolicy.visibleCodePointCount(visibleInput.toString());
+        int visible = ffdd.opsconsole.platform.application.A2RuntimePolicy.visibleCodePointCount(reason);
         if (visible < minReasonChars() || visible > MAX_REASON_CHARS || reason.getBytes(StandardCharsets.UTF_8).length > 65_535) {
             throw new BizException(422, "EXPORT_REASON_INVALID");
         }
