@@ -82,6 +82,8 @@ public class AuditReplayBusinessPermissionGuard {
 
     static final String E4_REFUND_AUTHORITY = "device_e4_order_refund";
     static final String DECISION_SUPER_ADMIN_REQUIRED = "A2_SUPER_ADMIN_APPROVAL_REQUIRED";
+    static final String J4_PLAYBOOK_SNAPSHOT_CHANGED = "J4_PLAYBOOK_SNAPSHOT_CHANGED";
+    private static final String J4_EXECUTE_AUTHORITY = "emergency_j4_playbook_execute";
     private static final String E1_WRITE_AUTHORITY = "device_e1_write";
     private static final Set<String> E1_RELEASE_RULE_OPERATIONS = Set.of(
             "e1_phase_create", "e1_phase_patch", "e1_phase_archive", "e1_gate_create", "e1_gate_patch",
@@ -623,7 +625,7 @@ public class AuditReplayBusinessPermissionGuard {
                 return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e6_flag_toggle");
             }
         }
-        if (isJ4Execution(command, operation)) {
+        if (isJ4Execution(command)) {
             return validateJ4MakerAuthority(command);
         }
         if ("I".equalsIgnoreCase(command.domain())
@@ -827,7 +829,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (WithdrawalConfigApproval.supports(command)) {
             return ApiResult.ok(withdrawalConfigApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
-        if (command == null || !isJ4Execution(command, text(command.op()).toLowerCase(Locale.ROOT))) {
+        if (!isJ4Execution(command)) {
             return ApiResult.ok(command);
         }
         J4AuthorizationSnapshot snapshot = currentJ4AuthorizationSnapshot(command);
@@ -942,11 +944,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation))
             return "E".equals(command.domain()) && hasAuthority("device_e5_write") && hasAuthority("platform_a2_operation_approve")
                     ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e5_write");
-        if (isJ4Execution(command, operation)) {
-            if (!hasAuthority("platform_a2_operation_approve") || !hasAuthority("emergency_j4_playbook_execute"))
-                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:emergency_j4_playbook_execute");
-            return roleAllowed ? validateJ4SnapshotCurrent(command, false) : ApiResult.ok();
-        }
+        if (isJ4Execution(command)) return validateDecisionAuthority(J4_EXECUTE_AUTHORITY);
         boolean genesisParamApproval = "G".equalsIgnoreCase(text(command.domain())) && "g4_genesis_param".equals(operation);
         String authority = genesisParamApproval ? GenesisParamPermissions.forKey(value(command.params(), "paramKey"))
                 : approvalAuthority(command, operation);
@@ -1013,6 +1011,15 @@ public class AuditReplayBusinessPermissionGuard {
         return permission.getCode() != 0 ? permission : validateApprovalPreconditions(command);
     }
 
+    ApiResult<Void> validateCurrentJ4CheckerGrants(long actorId) {
+        return permissions.getPermissionCodes(actorId).containsAll(Set.of("platform_a2_operation_approve", J4_EXECUTE_AUTHORITY))
+                ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + J4_EXECUTE_AUTHORITY);
+    }
+
+    ApiResult<Void> validateJ4DecisionSnapshot(AuditReplayCommand command) {
+        return validateJ4SnapshotCurrent(command, false);
+    }
+
     boolean supersededPurchaseRate(AuditReplayCommand command) {
         if (command == null || !"F".equalsIgnoreCase(command.domain()) || configFacade == null) return false;
         boolean changesBaseRate = switch (text(command.op()).toLowerCase(Locale.ROOT)) {
@@ -1043,8 +1050,7 @@ public class AuditReplayBusinessPermissionGuard {
                 return ApiResult.fail(invalid.getCode(), invalid.getMessage());
             }
         }
-        if (command != null && isJ4Execution(command, text(command.op()).toLowerCase(Locale.ROOT)))
-            return validateJ4SnapshotCurrent(command, true);
+        if (isJ4Execution(command)) return validateJ4SnapshotCurrent(command);
         if (isE4Refund(command) || A4RegistryApproval.isOperation(command) || OpsKillSwitchService.isRestoreCommand(command)
                 || OpsI18nLearningService.isCourseRewardAdjustment(command) || G4CatalogApproval.supports(command)
                 || LearningCourseActivationApproval.supports(command) || H4GrowthApproval.supports(command)
@@ -1163,7 +1169,7 @@ public class AuditReplayBusinessPermissionGuard {
 
     private ApiResult<Void> validateJ4SnapshotCurrent(AuditReplayCommand command, boolean lock) {
         J4AuthorizationSnapshot supplied = snapshotFrom(command);
-        if (supplied == null) {
+        if (supplied == null || !supplied.code().equalsIgnoreCase(value(command.params(), "code"))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
                     "J4_TARGET_AUTHORIZATION_SNAPSHOT_REQUIRED");
         }
@@ -1171,8 +1177,11 @@ public class AuditReplayBusinessPermissionGuard {
         if (current == null) {
             return ApiResult.fail(404, "J4_PLAYBOOK_NOT_FOUND");
         }
+        if (current.requiredAuthorities().isEmpty() || current.version().isBlank()) {
+            return ApiResult.fail(422, "J4_TARGET_AUTHORITY_UNMAPPED");
+        }
         if (!supplied.equals(current)) {
-            return ApiResult.fail(409, "J4_PLAYBOOK_SNAPSHOT_CHANGED");
+            return ApiResult.fail(409, J4_PLAYBOOK_SNAPSHOT_CHANGED);
         }
         return ApiResult.ok();
     }
@@ -1205,7 +1214,7 @@ public class AuditReplayBusinessPermissionGuard {
             String action = text(map.get("action"));
             String ref = text(map.get("ref"));
             String authority = j4TargetAuthority(domain);
-            if (authority == null) {
+            if (authority == null || action.isBlank() || ref.isBlank()) {
                 return new J4AuthorizationSnapshot(code, text(playbook.get("version")), List.of(), "");
             }
             if (!requiredAuthorities.contains(authority)) {
@@ -1228,16 +1237,19 @@ public class AuditReplayBusinessPermissionGuard {
         String version = text(raw.get("version"));
         String hash = text(raw.get("hash"));
         Object rawAuthorities = raw.get("requiredAuthorities");
-        if (!(rawAuthorities instanceof List<?> values) || code.isBlank() || version.isBlank() || hash.isBlank()) {
+        if (!(rawAuthorities instanceof List<?> values) || code.isBlank() || version.isBlank()
+                || !hash.matches("[0-9a-f]{64}")) {
             return null;
         }
-        List<String> authorities = values.stream().map(this::text).filter(value -> !value.isBlank()).toList();
-        return authorities.isEmpty() ? null : new J4AuthorizationSnapshot(code, version, authorities, hash);
+        List<String> authorities = values.stream().map(this::text).toList();
+        return authorities.isEmpty() || authorities.stream().anyMatch(String::isBlank)
+                ? null : new J4AuthorizationSnapshot(code, version, authorities, hash);
     }
 
-    private boolean isJ4Execution(AuditReplayCommand command, String operation) {
-        return command != null && "J".equalsIgnoreCase(text(command.domain()))
-                && "j4_playbook_execute".equals(operation);
+    static boolean isJ4Execution(AuditReplayCommand command) {
+        return command != null && command.domain() != null && command.op() != null
+                && "J".equalsIgnoreCase(command.domain().trim())
+                && "j4_playbook_execute".equalsIgnoreCase(command.op().trim());
     }
 
     private String j4TargetAuthority(String domain) {

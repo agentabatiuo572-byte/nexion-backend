@@ -3,7 +3,10 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
+import ffdd.opsconsole.market.application.G4ParamApproval;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
+import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.team.application.DirectReferralService;
 import ffdd.opsconsole.team.application.OpsTeamService;
 import java.util.Objects;
 import java.util.Set;
@@ -14,15 +17,26 @@ final class AuditApprovalRechecks {
             "B1_COVERAGE_BELOW_REDLINE", "REFERRAL_REWARD_DISABLED", "REFERRAL_REWARD_USER_NOT_ELIGIBLE_OR_SETTLED");
     private static final Set<String> F5_STATUS_REASONS = Set.of("F5_COMMISSION_VERSION_CONFLICT",
             "COMMISSION_EVENT_NOT_FOUND", "COMMISSION_USER_SUSPENDED", "F5_COOLDOWN_DEADLINE_UNRECOVERABLE",
-            "COVERAGE_BELOW_REDLINE", "F5_COMMISSION_STATE_CONFLICT", "DIRECT_REFERRAL_RELEASE_STATE_CONFLICT");
+            "COVERAGE_BELOW_REDLINE", "F5_COMMISSION_STATE_CONFLICT");
 
     private AuditApprovalRechecks() {}
+
+    static boolean confirmed(AuditReplayCommand command, BizException failure) {
+        if (failure instanceof DirectReferralService.LockedStatusConflict) {
+            return command != null && "F".equalsIgnoreCase(command.domain()) && "f_commission_status".equals(command.op());
+        }
+        return confirmed(command, failure.getCode(), failure.getMessage());
+    }
 
     static boolean confirmed(AuditReplayCommand command, int code, String reason) {
         if (command == null || command.op() == null || reason == null || (code != 404 && code != 409 && code != 422)) {
             return false;
         }
         if (G4CatalogApproval.supports(command)) return "G4_CATALOG_SNAPSHOT_CHANGED".equals(reason);
+        if (G4ParamApproval.supports(command)) {
+            return (code == 409 && "G4_GENESIS_PARAM_STALE".equals(reason))
+                    || (code == 422 && "COVERAGE_BELOW_REDLINE".equals(reason));
+        }
         if (A4RegistryApproval.supports(command)) return "A4_SCHEMA_VERSION_STALE".equals(reason);
         if (LearningCourseActivationApproval.supports(command)) {
             return Set.of("LEARNING_ACTIVATION_SNAPSHOT_CHANGED", "COVERAGE_BELOW_REDLINE").contains(reason);
@@ -47,6 +61,8 @@ final class AuditApprovalRechecks {
             case "i4_disclosure_publish", "i5_disclosure_publish" -> Set.of("A2_DISCLOSURE_SNAPSHOT_CHANGED",
                     "DISCLOSURE_DRAFT_VERSION_NOT_FOUND", "DISCLOSURE_DRAFT_SNAPSHOT_CHANGED",
                     "DISCLOSURE_DRAFT_CHANGED_SAVE_BEFORE_PUBLISH").contains(reason);
+            case "j4_playbook_execute" -> code == 409 && "J".equals(command.domain())
+                    && AuditReplayBusinessPermissionGuard.J4_PLAYBOOK_SNAPSHOT_CHANGED.equals(reason);
             default -> false;
         };
     }

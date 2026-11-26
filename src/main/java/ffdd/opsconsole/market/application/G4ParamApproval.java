@@ -22,7 +22,7 @@ import org.springframework.stereotype.Component;
 /**
  * BUG-286: G4 创世参数中放大资金流出的方向必须由另一位超管批准后回放执行。
  *
- * <p>提案时绑定参数键、拟值、当前值快照和现行系列；提案与批准各按 T11 复核覆盖率。
+ * <p>提案时保留发起人确认的旧值，与锁定后的现行系列和参数核对；提案与批准各按 T11 复核覆盖率。
  * 系列或当前值在待审期间变化时，批准作废，不会把一次批准应用到另一条系列或另一个旧值上。</p>
  */
 @Component
@@ -60,22 +60,23 @@ public class G4ParamApproval {
                 text(command.params().get("paramKey")))));
     }
 
-    /** Server binds the old value and the active series; the browser cannot choose either. */
+    /** Preserve the maker's old value and bind the active series on the server. */
     public AuditReplayCommand bindMaker(AuditReplayCommand command, Long maker) {
         if (maker == null || maker <= 0) throw new BizException(403, "G4_PARAM_MAKER_REQUIRED");
         if (!supports(command)) throw new BizException(422, "G4_PARAM_PROPOSAL_INVALID");
         String paramKey = text(command.params().get("paramKey"));
-        String current = market.genesisParamCurrentValue(paramKey);
-        String series = market.genesisParamSeriesKey();
+        if (!(command.params().get("expectedValue") instanceof String expected)
+                || (expected.isBlank() && !("divBase".equals(paramKey) && expected.isEmpty()))) {
+            throw new BizException(422, "G4_PARAM_PROPOSAL_INVALID");
+        }
+        String series = market.genesisParamSeriesKey(false);
         String candidate = market.genesisParamCandidateValue(paramKey, text(command.params().get("value")));
-        if (current == null || series == null) throw new BizException(422, "G4_PARAM_KEY_INVALID");
+        if (series == null) throw new BizException(422, "G4_PARAM_KEY_INVALID");
         if (candidate == null) throw new BizException(422, "G4_PARAM_VALUE_INVALID");
-        if (!market.genesisParamAmplifies(paramKey, current, candidate))
-            throw new BizException(409, "G4_PARAM_APPROVAL_NOT_REQUIRED");
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("paramKey", paramKey);
         params.put("value", candidate);
-        params.put("expectedValue", current);
+        params.put("expectedValue", expected);
         params.put("expectedSeries", series);
         if (decisionRequired(paramKey)) {
             String decisionRef = text(command.params().get("decisionRef"));
@@ -105,22 +106,25 @@ public class G4ParamApproval {
         Map<String, Object> params = values(command);
         requireText(reason, 8, 200, "REASON_LENGTH_INVALID");
         String paramKey = text(params.get("paramKey"));
-        String series = market.genesisParamSeriesKey();
+        String series = market.genesisParamSeriesKey(true);
         if (!text(params.get("expectedSeries")).equals(series))
             throw new BizException(409, "G4_GENESIS_PARAM_STALE");
-        String current = market.genesisParamCurrentValue(paramKey);
-        if (current == null || !text(params.get("expectedValue")).equals(current))
+        String current = market.genesisParamCurrentValue(paramKey, true);
+        String expected = String.valueOf(params.get("expectedValue"));
+        if (current == null || !OpsNexMarketService.matchesGenesisParamSnapshot(expected, current))
             throw new BizException(409, "G4_GENESIS_PARAM_STALE");
         String candidate = market.genesisParamCandidateValue(paramKey, text(params.get("value")));
         if (candidate == null) throw new BizException(422, "G4_PARAM_VALUE_INVALID");
         if (!market.genesisParamAmplifies(paramKey, current, candidate))
             throw new BizException(409, "G4_PARAM_APPROVAL_NOT_REQUIRED");
+        String displayName = OpsNexMarketService.genesisParamDisplayName(paramKey);
+        String before = series + " · " + displayName + " = " + expected;
+        if (before.length() > 1024) throw new BizException(422, "G4_PARAM_PROPOSAL_INVALID");
         BigDecimal delta = market.genesisParamLiabilityIncrease(paramKey, candidate);
         market.requireCoverageRedline(delta);
         Map<String, Object> review = new LinkedHashMap<>();
-        String displayName = OpsNexMarketService.genesisParamDisplayName(paramKey);
         review.put("displayName", displayName);
-        review.put("before", series + " · " + displayName + " = " + current);
+        review.put("before", before);
         review.put("after", series + " · " + displayName + " = " + candidate
                 + " · 确定新增应付 Δ " + delta.toPlainString() + " USDT");
         return review;
@@ -142,16 +146,17 @@ public class G4ParamApproval {
             return ApiResult.fail(403, "G4_PARAM_APPROVAL_FORBIDDEN");
         Map<String, Object> params = values(command);
         String paramKey = text(params.get("paramKey"));
-        String series = market.genesisParamSeriesKey();
-        String current = market.genesisParamCurrentValue(paramKey);
+        String series = market.genesisParamSeriesKey(false);
+        String current = market.genesisParamCurrentValue(paramKey, false);
+        String expectedValue = String.valueOf(params.get("expectedValue"));
         String candidate = market.genesisParamCandidateValue(paramKey, text(params.get("value")));
         if (!text(params.get("expectedSeries")).equals(series) || current == null
-                || !text(params.get("expectedValue")).equals(current)
+                || !OpsNexMarketService.matchesGenesisParamSnapshot(expectedValue, current)
                 || candidate == null || !market.genesisParamAmplifies(paramKey, current, candidate))
             return ApiResult.fail(409, "G4_GENESIS_PARAM_STALE");
         String reason = text(command.params().get(REASON_FIELD));
         NexMarketValueUpdateRequest request = new NexMarketValueUpdateRequest(candidate, reason,
-                context.operator(), text(params.get("decisionRef")), null, null, text(params.get("expectedValue")));
+                context.operator(), text(params.get("decisionRef")), null, null, expectedValue);
         return commands.updateParam(paramKey, context.idempotencyKey(), request);
     }
 

@@ -25,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class DirectReferralService {
     public static final Set<String> KINDS=Set.of("direct_purchase","direct_device_earning");
+    private static final Set<String> CLOSED_GROUP_STATES=Set.of("REJECTED","RECOVERY_PENDING","REVERSED");
     private static final int NEW_REJECTED_EARNING=-1;
     private final DirectReferralMapper mapper;
     private final DirectReferralPolicyService policies;
@@ -125,11 +126,14 @@ public class DirectReferralService {
     private boolean releaseSelected(String no,Long selectedEvent){
         lockPurchaseSource(no);var row=lock(no);String status=text(row,"status");
         boolean networkAsset=selectedEvent!=null&&"network".equals(text(row,"source_type"));
-        if(!(networkAsset?Set.of("COOLING","FROZEN","UNLOCKED"):Set.of("COOLING","UNLOCKED")).contains(status)||flag(row,"reversal_recorded"))throw new BizException(409,"DIRECT_REFERRAL_RELEASE_STATE_CONFLICT");
+        if(flag(row,"reversal_recorded")||CLOSED_GROUP_STATES.contains(status)||(!networkAsset&&"FROZEN".equals(status)))
+            throw new LockedStatusConflict("DIRECT_REFERRAL_RELEASE_STATE_CONFLICT");
+        if(!Set.of("COOLING","FROZEN","UNLOCKED").contains(status))throw new BizException(409,"DIRECT_REFERRAL_RELEASE_STATE_CONFLICT");
         if(time(row,"release_at").isAfter(now()))throw new BizException(409,"DIRECT_REFERRAL_COOLING_ACTIVE");
         if(Set.of("direct_purchase","network").contains(text(row,"source_type"))){
             var source=purchaseSource(text(row,"source_ref"));
-            if(source==null||Integer.valueOf(1).equals(source.refunded()))throw new BizException(409,"DIRECT_REFERRAL_SOURCE_REFUNDED");
+            if(source==null)throw new BizException(409,"DIRECT_REFERRAL_SOURCE_REFUNDED");
+            if(Integer.valueOf(1).equals(source.refunded()))throw new LockedStatusConflict("DIRECT_REFERRAL_SOURCE_REFUNDED");
             var scope=policies.scope();var order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),text(row,"source_ref"));
             if(order!=null&&"CONFLICT".equals(text(order,"settlement_mode")))throw new BizException(409,"UNILEVEL_SOURCE_REQUIRES_REVIEW");
         }
@@ -139,19 +143,28 @@ public class DirectReferralService {
         var events=mapper.lockEvents(number(row,"usdt_event_id"),number(row,"nex_event_id"));
         int expected=(money(row,"amount_usdt").signum()>0?1:0)+(money(row,"amount_nex").signum()>0?1:0);
         if(events.size()!=expected)throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
-        String type=sandbox==1?"MOCK_DIRECT_REFERRAL":"DIRECT_REFERRAL";boolean changed=false,newUsdt=false;
+        record ReleasableAsset(Long eventId, String currency, BigDecimal amount) {}
+        List<ReleasableAsset> releasable=new ArrayList<>();
         for(var event:events){
-            if(selectedEvent!=null&&!selectedEvent.equals(number(event,"id")))continue;
+            Long eventId=number(event,"id");
+            if(selectedEvent!=null&&!selectedEvent.equals(eventId))continue;
             String asset=text(event,"currency"),suffix=("USDT".equals(asset)?"usdt":"nex");BigDecimal amount=money(row,"amount_"+suffix);
             if(amount.signum()<=0||money(row,"cancelled_"+suffix).compareTo(amount)>=0||assetCredited(row,suffix))continue;
-            if(!Set.of("COOLING","PENDING","UNLOCKED").contains(text(event,"status")))throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
+            String eventStatus=text(event,"status");
+            if(!Set.of("COOLING","PENDING","UNLOCKED").contains(eventStatus))
+                throw groupStateConflict(CLOSED_GROUP_STATES.contains(eventStatus)||Set.of("FROZEN","SETTLED","PAID","WITHDRAWN").contains(eventStatus));
+            releasable.add(new ReleasableAsset(eventId,asset,amount));
+        }
+        String type=sandbox==1?"MOCK_DIRECT_REFERRAL":"DIRECT_REFERRAL";boolean changed=false,newUsdt=false;
+        for(var entry:releasable){
+            String asset=entry.currency();BigDecimal amount=entry.amount();
             earnings.creditReward(id,type,no+":"+("USDT".equals(asset)?"USDT":"NEX"),asset,amount,text(row,"source_environment"),no+":"+("USDT".equals(asset)?"USDT":"NEX"));
             if ("USDT".equals(asset)) {
                 ledger.postLedgerEntryWithActualBalance(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
             } else {
                 ledger.postLedgerEntry(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
             }
-            mapper.creditedAsset(no,asset);mapper.recoveredEventStatus(number(event,"id"),"UNLOCKED");changed=true;if("USDT".equals(asset))newUsdt=true;
+            mapper.creditedAsset(no,asset);mapper.recoveredEventStatus(entry.eventId(),"UNLOCKED");changed=true;if("USDT".equals(asset))newUsdt=true;
         }
         var after=mapper.group(no);int credited=0;boolean all=true;
         for(String suffix:List.of("usdt","nex")){
@@ -442,7 +455,8 @@ public class DirectReferralService {
                 if("COOLING".equals(target)&&held(number(row,"beneficiary_user_id"),"network"))throw new BizException(409,"DIRECT_REFERRAL_SPONSOR_FROZEN");
                 mapper.recoveredEventStatus(eventId,target);return;
             }
-            throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
+            throw groupStateConflict(Set.of("FROZEN","COOLING").contains(target)
+                    &&(CLOSED_GROUP_STATES.contains(from)||Set.of("COOLING","PENDING","FROZEN","UNLOCKED").contains(from)));
         }
         if("UNLOCKED".equals(target)){release(no);return;}
         if("REJECTED".equals(target))throw new BizException(409,"DIRECT_REFERRAL_REVERSE_REQUIRES_F5_COMMAND");
@@ -450,7 +464,8 @@ public class DirectReferralService {
             if("COOLING".equals(target)&&held(number(row,"beneficiary_user_id"),text(row,"source_type")))throw new BizException(409,"DIRECT_REFERRAL_SPONSOR_FROZEN");
             mapper.groupStatus(no,target,"F5_GROUP_STATUS");mapper.eventStatus(number(row,"usdt_event_id"),number(row,"nex_event_id"),target);return;
         }
-        throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
+        throw groupStateConflict(Set.of("FROZEN","COOLING").contains(target)
+                &&(CLOSED_GROUP_STATES.contains(current)||Set.of("COOLING","FROZEN","UNLOCKED").contains(current)));
     }
 
     public void refund(String orderNo){
@@ -596,4 +611,14 @@ public class DirectReferralService {
     private static boolean flag(Map<String,Object> row,String key){Object n=row.get(key);return Boolean.TRUE.equals(n)||(n instanceof Number v&&v.intValue()!=0);}
     private static LocalDateTime time(Map<String,Object> row,String key){Object t=row.get(key);return t instanceof java.sql.Timestamp ts?ts.toLocalDateTime():(LocalDateTime)t;}
     private static BizException conflict(){return new BizException(409,"DIRECT_REFERRAL_WRITE_CONFLICT");}
+
+    private static BizException groupStateConflict(boolean confirmed) {
+        String reason = "DIRECT_REFERRAL_GROUP_STATE_CONFLICT";
+        return confirmed ? new LockedStatusConflict(reason) : new BizException(409, reason);
+    }
+
+    /** Positive evidence from a locked row before any commission writes. */
+    public static final class LockedStatusConflict extends BizException {
+        private LockedStatusConflict(String reason) { super(409, reason); }
+    }
 }

@@ -1195,7 +1195,7 @@ public class OpsAuditCenterService {
         var metadata = ticketMetadata(ticket, command);
         return ApiResult.ok(receipt.withViewerMetadata(mine, metadata.operationCode(), metadata.fundEffect(),
                 metadata.refundOrderNo(), retiredOperation(command), roleGateText(receipt.roleGate(), command),
-                decisionQualification(ticket, command, makerId, actorId, true),
+                approvalQualificationForViewer(ticket, command, makerId, actorId),
                 decisionQualification(ticket, command, makerId, actorId, false), disclosureReview(ticket, command),
                 commissionReverseEvidence(command), v8PromotionSnapshot(ticket, command),
                 withdrawalConfigChanges(ticket, command)));
@@ -1210,6 +1210,13 @@ public class OpsAuditCenterService {
     private ApiResult<Void> decisionMakerCheck(Long makerId, Long actorId) {
         if (makerId == null) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
         return makerId.equals(actorId) ? ApiResult.fail(403, "A2_MAKER_CHECKER_REQUIRED") : ApiResult.ok();
+    }
+
+    private ApiResult<Void> approvalQualificationForViewer(AuditOperationTicketEntity ticket, AuditReplayCommand cmd,
+            Long makerId, Long actorId) {
+        var qualification = decisionQualification(ticket, cmd, makerId, actorId, true);
+        return qualification.getCode() == 0 && AuditReplayBusinessPermissionGuard.isJ4Execution(cmd)
+                ? replayBusinessPermissionGuard.validateJ4DecisionSnapshot(cmd) : qualification;
     }
 
     private ApiResult<Void> decisionQualification(AuditOperationTicketEntity ticket, AuditReplayCommand cmd,
@@ -1230,7 +1237,13 @@ public class OpsAuditCenterService {
             }
             var permission = replayBusinessPermissionGuard.validateDecisionPermission(cmd, approving);
             if (!approving) return permission;
-            if (permission.getCode() == 0) return replayDispatcher.validateReplayPermission(cmd);
+            if (permission.getCode() == 0) {
+                if (AuditReplayBusinessPermissionGuard.isJ4Execution(cmd)) {
+                    var currentGrants = replayBusinessPermissionGuard.validateCurrentJ4CheckerGrants(actorId);
+                    if (currentGrants.getCode() != 0) return currentGrants;
+                }
+                return replayDispatcher.validateReplayPermission(cmd);
+            }
             if (AuditReplayBusinessPermissionGuard.DECISION_SUPER_ADMIN_REQUIRED.equals(permission.getMessage())
                     && "A".equals(cmd.domain()) && cmd.op() != null && cmd.op().startsWith("a1_")) {
                 var accountPermission = replayDispatcher.validateReplayPermission(cmd);
@@ -1458,7 +1471,7 @@ public class OpsAuditCenterService {
                 try {
                     replayResult = replayDispatcher.dispatch(cmd, ctx);
                 } catch (BizException failure) {
-                    if (AuditApprovalRechecks.confirmed(cmd, failure.getCode(), failure.getMessage())) {
+                    if (AuditApprovalRechecks.confirmed(cmd, failure)) {
                         throw new ApprovalRecheckRejection(ticket, actorId, authenticatedOperator, idempotencyKey,
                                 request.reason(), ApiResult.fail(failure.getCode(), failure.getMessage(), failure.errorData()));
                     }
@@ -2002,7 +2015,7 @@ public class OpsAuditCenterService {
             Map<Long, String> displayNames) {
         AuditReplayCommand command = deserializeCommand(row.getCommandJson());
         Long viewer = A2ReplayContext.authenticatedAdminId();
-        var approve = decisionQualification(row, command, makerId, viewer, true);
+        var approve = approvalQualificationForViewer(row, command, makerId, viewer);
         var reject = decisionQualification(row, command, makerId, viewer, false);
         var metadata = ticketMetadata(row, command);
         var refund = metadata.refundOrderNo() == null ? Map.<String, Object>of() : command.params();

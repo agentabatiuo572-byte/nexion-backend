@@ -1020,8 +1020,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (permissionGuard != null) {
             return permissionGuard;
         }
-        if (!"dividend".equals(def.key()) && !A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("G", "genesis_param", def.key()) > 0) {
+        boolean ordinaryApproval = G4ParamApproval.AMPLIFY_KEYS.contains(def.key());
+        if (ordinaryApproval && !"supply".equals(def.key())) {
+            // Serialize the value and pending-approval checks with the A2 proposal preview.
+            appGenesisMapper.lockActiveSeries();
+        }
+        if (!"dividend".equals(def.key()) && genesisParamLockedByA2(def.key())) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         GenesisPolicyView policy = marketRepository.activeGenesisPolicy().orElse(null);
@@ -1045,7 +1049,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         } else {
             oldValue = showcase
                     ? configFacade.activeValueForUpdate(def.configKey()).filter(StringUtils::hasText).orElse(def.defaultValue())
-                    : genesisValue(def, policy);
+                    : genesisValue(def, policy, ordinaryApproval);
             newValue = normalizeGenesisParamValue(def, request.value());
             if (!StringUtils.hasText(newValue)) {
                 return validation("G4_GENESIS_PARAM_VALUE_INVALID");
@@ -1088,6 +1092,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
+    private boolean genesisParamLockedByA2(String key) {
+        return !A2ReplayContext.isReplaying() && lockMapper.countActiveByTarget("G", "genesis_param", key) > 0;
+    }
+
     private GenesisSupplyChange updateGenesisSupply(String rawValue, String expectedValue) {
         BigDecimal value = parseRepurchaseNumber(rawValue, null);
         if (value == null || value.signum() < 0 || value.compareTo(BigDecimal.valueOf(GENESIS_MAX_SUPPLY)) > 0) {
@@ -1102,6 +1110,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         List<LockedSeriesRow> series = genesisCatalogMapper.lockActiveSeriesForSupply();
         if (series.isEmpty()) throw new BizException(422, "G4_GENESIS_SERIES_NOT_FOUND");
         if (series.size() != 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
+        if (genesisParamLockedByA2("supply")) throw new BizException(409, "OBJECT_LOCKED_BY_A2");
         LockedSeriesRow current = series.get(0);
         if (StringUtils.hasText(expectedValue)
                 && !expectedValue.trim().equals(String.valueOf(current.totalSupply()))) {
@@ -2587,10 +2596,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (expectedValue == null) {
             return null;
         }
-        if (!expectedValue.trim().equals(currentValue == null ? "" : currentValue.trim())) {
+        if (!matchesGenesisParamSnapshot(expectedValue, currentValue)) {
             return ApiResult.fail(409, staleCode);
         }
         return null;
+    }
+
+    static boolean matchesGenesisParamSnapshot(String expectedValue, String currentValue) {
+        return expectedValue.trim().equals(currentValue == null ? "" : currentValue.trim());
     }
 
     /**
@@ -3385,7 +3398,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private Map<String, Object> genesisParamRow(GenesisParamDef def, GenesisPolicyView policy) {
-        String value = genesisValue(def, policy);
+        String value = genesisValue(def, policy, false);
         return map(
                 "key", def.key(),
                 "configKey", def.configKey(),
@@ -3480,10 +3493,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     /** G4 approval binding: raw current value of one parameter on the active series. */
-    public String genesisParamCurrentValue(String paramKey) {
+    String genesisParamCurrentValue(String paramKey, boolean forUpdate) {
         GenesisParamDef def = genesisParamDef(paramKey);
         if (def == null) return null;
-        return genesisValue(def, marketRepository.activeGenesisPolicy().orElse(null));
+        return genesisValue(def, marketRepository.activeGenesisPolicy().orElse(null), forUpdate);
     }
 
     /** G4 approval binding: normalized candidate, or null when the input is invalid. */
@@ -3517,8 +3530,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     /** Identity of the active series at proposal time; approval must not silently retarget another series. */
-    public String genesisParamSeriesKey() {
-        AppGenesisMapper.SeriesRow series = appGenesisMapper.activeSeries();
+    String genesisParamSeriesKey(boolean forUpdate) {
+        AppGenesisMapper.SeriesRow series = forUpdate ? appGenesisMapper.lockActiveSeries() : appGenesisMapper.activeSeries();
         return series == null ? null : series.id() + ":" + series.seriesCode();
     }
 
@@ -3527,10 +3540,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .multiply(BigDecimal.valueOf(100)).setScale(0, RoundingMode.HALF_UP);
     }
 
-    private String genesisValue(GenesisParamDef def, GenesisPolicyView policy) {
+    private String genesisValue(GenesisParamDef def, GenesisPolicyView policy, boolean forUpdate) {
         if ("airdropPct".equals(def.key()) || "emissionCurve".equals(def.key())
                 || "airdropLockDays".equals(def.key()) || "showcaseEnabled".equals(def.key())) {
-            return configFacade.activeValue(def.configKey()).filter(StringUtils::hasText).orElse(def.defaultValue());
+            return (forUpdate ? configFacade.activeValueForUpdate(def.configKey()) : configFacade.activeValue(def.configKey()))
+                    .filter(StringUtils::hasText).orElse(def.defaultValue());
         }
         if (policy == null) {
             return "";
