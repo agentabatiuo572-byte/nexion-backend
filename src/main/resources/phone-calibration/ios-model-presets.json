@@ -1,6 +1,6 @@
 {
- "catalogVersion": "iphone-models-20261028b",
- "verifiedOn": "2026-10-28",
+ "catalogVersion": "iphone-models-20261127",
+ "verifiedOn": "2026-11-27",
  "scope": "ALL_SOLD_IPHONES_FROM_IPHONE_6",
  "matchBy": "MODEL_ONLY",
  "computeUnit": "platform",
@@ -11,7 +11,14 @@
   "https://everymac.com/devices/by-identifier/all-iphone-model-identifiers.html",
   "https://developer.apple.com/design/human-interface-guidelines/layout (device dimensions table, 2025-10 version)",
   "https://9to5mac.com/2025/07/24/ios-26-supports-these-recent-iphones-but-drops-three-models/",
-  "https://appleinsider.com/articles/26/06/08/ios-27-keeps-iphone-11-and-newer-compatibility"
+  "https://appleinsider.com/articles/26/06/08/ios-27-keeps-iphone-11-and-newer-compatibility",
+  "https://api.appledb.dev/device/iPhone19,4.json",
+  "https://www.apple.com/newsroom/2026/09/apple-unveils-iphone-duo/",
+  "https://www.apple.com/newsroom/2026/09/apple-debuts-iphone-18-pro-and-iphone-18-pro-max/",
+  "https://www.apple.com/iphone-duo/specs/",
+  "https://everymac.com/systems/apple/iphone/specs/apple-iphone-17e-global-a3634-specs.html",
+  "https://iosref.com/res",
+  "Xcode 27.2 CoreSimulator device profiles (iPhone 17e, iPhone 18 Pro, iPhone 18 Pro Max, iPhone Duo)"
  ],
  "notice": "Operator presets, not Apple specifications or measured performance. Device facts (launch iOS major, last supported iOS major, screen scale and default point size) feed the model risk checks; models without verified facts leave them empty. Loading the catalog only fills an E6 draft; it takes effect after A2 approval.",
  "models": [
@@ -935,55 +942,79 @@
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
    "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
-   "minOsVersion": null,
+   "minOsVersion": "26.3",
    "maxOsMajor": null,
-   "scales": [],
-   "screens": []
+   "scales": [
+    3
+   ],
+   "screens": [
+    "390x844"
+   ]
   },
   {
    "id": "ios-iphone-18-pro",
    "model": "iPhone 18 Pro",
-   "aliases": [],
+   "aliases": [
+    "iPhone19,2"
+   ],
    "minComputeValue": 140,
    "maxComputeValue": 160,
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。",
-   "minOsVersion": null,
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "27.0",
    "maxOsMajor": null,
-   "scales": [],
-   "screens": []
+   "scales": [
+    3
+   ],
+   "screens": [
+    "402x874"
+   ]
   },
   {
    "id": "ios-iphone-18-pro-max",
    "model": "iPhone 18 Pro Max",
-   "aliases": [],
+   "aliases": [
+    "iPhone19,3",
+    "iPhone19,7"
+   ],
    "minComputeValue": 145,
    "maxComputeValue": 165,
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。",
-   "minOsVersion": null,
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。",
+   "minOsVersion": "27.0",
    "maxOsMajor": null,
-   "scales": [],
-   "screens": []
+   "scales": [
+    3
+   ],
+   "screens": [
+    "440x956"
+   ]
   },
   {
    "id": "ios-iphone-duo",
    "model": "iPhone Duo",
-   "aliases": [],
+   "aliases": [
+    "iPhone19,4"
+   ],
    "minComputeValue": 130,
    "maxComputeValue": 150,
    "enabled": true,
    "valueSource": "OPERATOR_PRESET",
    "catalogClass": "APPLE_CURRENT_SNAPSHOT",
-   "note": "运营预设区间，非 Apple 性能指标或实测跑分。硬件标识符尚未经两个来源核验，暂只按机型名匹配。",
-   "minOsVersion": null,
+   "note": "运营预设区间，非 Apple 性能指标或实测跑分。折叠屏：外屏 466x678，内屏 669x951（Xcode 模拟器设备描述，Apple 未公布内屏点尺寸）。",
+   "minOsVersion": "27.1",
    "maxOsMajor": null,
-   "scales": [],
-   "screens": []
+   "scales": [
+    3
+   ],
+   "screens": [
+    "466x678",
+    "669x951"
+   ]
   }
  ]
 }
