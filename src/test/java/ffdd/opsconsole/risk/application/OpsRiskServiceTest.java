@@ -2271,7 +2271,8 @@ class OpsRiskServiceTest {
                     scoreUser.effectiveScore(),
                     scoreUser.bandLabel(),
                     scoreUser.bandTone(),
-                    scoreUser.overridden()));
+                    scoreUser.overridden(),
+                    scoreUser.scored()));
         }
 
         @Override

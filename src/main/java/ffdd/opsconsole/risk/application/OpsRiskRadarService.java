@@ -22,8 +22,10 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryEmergencySignalFacade;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectReader;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -64,6 +66,21 @@ public class OpsRiskRadarService {
     private static final List<String> GATES = List.of("withdraw", "staking", "genesis", "exchange", "trial");
     private static final List<String> BACKLOG_STATES = List.of("submitted", "review-passed", "processing");
     private static final ObjectMapper EVIDENCE_JSON = new ObjectMapper();
+    private static final ObjectReader STRICT_EVIDENCE_JSON = EVIDENCE_JSON.reader()
+            .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS, DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY);
+    private static final Map<String, TamperLabels> TAMPER_LABELS = Map.of(
+            "free_trial_state", new TamperLabels("试用资格检查", "阻止已领取的账户重复领取试用。"),
+            "risk_disclosure_ack", new TamperLabels("风险披露确认", "阻止通过无效的确认请求变更风险披露确认状态。"),
+            "two_factor_state", new TamperLabels("账户安全状态检查", "阻止通过虚假的两步验证状态降低账户安全要求。"),
+            "product_phase_override", new TamperLabels("产品阶段检查", "阻止擅自变更当前产品阶段。"),
+            "device_slot_cap", new TamperLabels("设备激活", "阻止超出数量限制的设备激活。"),
+            "dev_seed_state", new TamperLabels("设备收益", "阻止使用无效数据修改设备收益。"),
+            "otp_verification", new TamperLabels("验证码校验", "阻止未通过校验的验证码被接受。"),
+            "bill_client_push", new TamperLabels("钱包账单", "阻止未经确认的账单进入钱包记录。"),
+            "client_minted_id", new TamperLabels("订单创建", "阻止使用未经平台分配的订单号创建订单。"),
+            "charge_fail_rate", new TamperLabels("试用扣款", "阻止用未经核实的结果记录试用扣款。"));
+
+    private record TamperLabels(String endpointName, String effectSummary) {}
     private static final Map<String, String> TRIAGE_TARGETS = Map.of(
             "bankrun", "/finance/withdrawals",
             "abnormal-accounts", "/risk/multi-account",
@@ -334,13 +351,27 @@ public class OpsRiskRadarService {
         String type = signalType.trim().toLowerCase(Locale.ROOT);
         Map<String, Object> facts = new LinkedHashMap<>();
         if ("tamper_detected".equals(type) && signalNo.startsWith("TAMPER-")) {
+            JsonNode node;
+            boolean canonicalJson = true;
             try {
-                JsonNode node = EVIDENCE_JSON.readTree(evidence);
-                putFact(facts, "tamperPath", node.path("tamperPath").asText(null));
-                putFact(facts, "attackEffect", node.path("attackEffect").asText(null));
-                putFact(facts, "blockedAtEndpoint", node.path("blockedAtEndpoint").asText(null));
-            } catch (JsonProcessingException ignored) {
-                // Malformed producer evidence remains unknown; internal errors must still propagate.
+                node = STRICT_EVIDENCE_JSON.readTree(evidence);
+            } catch (JsonProcessingException nonCanonical) {
+                // Preserve technical facts that historical callers could already read.
+                canonicalJson = false;
+                try {
+                    node = EVIDENCE_JSON.readTree(evidence);
+                } catch (JsonProcessingException unreadable) {
+                    return null;
+                }
+            }
+            putFact(facts, "tamperPath", node.path("tamperPath").asText(null));
+            putFact(facts, "attackEffect", node.path("attackEffect").asText(null));
+            putFact(facts, "blockedAtEndpoint", node.path("blockedAtEndpoint").asText(null));
+            TamperLabels labels = canonicalJson ? TAMPER_LABELS.get(node.path("tamperPath").asText("")) : null;
+            if (labels != null && StringUtils.hasText(node.path("blockedAtEndpoint").textValue())
+                    && StringUtils.hasText(node.path("attackEffect").textValue())) {
+                facts.put("blockedAtEndpointName", labels.endpointName());
+                facts.put("attackEffectSummary", labels.effectSummary());
             }
             return facts.isEmpty() ? null : facts;
         }

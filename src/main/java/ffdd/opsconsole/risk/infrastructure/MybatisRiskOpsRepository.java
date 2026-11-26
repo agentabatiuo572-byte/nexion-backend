@@ -770,7 +770,8 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                             effectiveScore,
                             scoreBandLabel(effectiveScore, config),
                             scoreBandTone(effectiveScore, config),
-                            override.isPresent());
+                            override.isPresent(),
+                            RiskScoreUserView.isScoredModel(row.modelVersion()));
                 })
                 .toList();
     }

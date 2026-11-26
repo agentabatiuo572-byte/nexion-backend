@@ -66,7 +66,7 @@ public class K4RiskScorer {
                         + money(input.withdrawalAmount24h()) + "；7 天 "
                         + value(input.withdrawalCount7d()) + " 笔 / $" + money(input.withdrawalAmount7d())
                         + "；历史日均 " + decimal(input.withdrawalBaselineDailyCount()) + " 笔 / $"
-                        + money(input.withdrawalBaselineDailyAmount()), model, input.withdrawalEvidence()));
+                        + money(input.withdrawalBaselineDailyAmount()), model, withdrawalEvidence(input)));
         contributions.add(contribution(
                 "accountAge", "账户年龄", accountAgeScore(input, model),
                 "账户年龄 " + value(input.accountAgeDays()) + " 天", model, null));
@@ -157,6 +157,41 @@ public class K4RiskScorer {
         int signals = value(input.arbitrageSignals());
         if (signals >= mapping(model, "arbitrage.repeatMin")) return mapping(model, "arbitrage.repeatScore");
         return signals == 1 ? mapping(model, "arbitrage.singleScore") : 0;
+    }
+
+    private static Map<String, Object> withdrawalEvidence(RiskScoreRawInput input) {
+        if (input.withdrawalEvidence() == null) {
+            return null;
+        }
+        Map<String, Object> evidence = new LinkedHashMap<>(input.withdrawalEvidence());
+        List<?> assets = (List<?>) evidence.get("assets");
+        evidence.put("summary", Map.of(
+                "last24h", withdrawalWindow(assets, "count24h",
+                        value(input.withdrawalCount24h()), plainDecimal(input.withdrawalAmount24h())),
+                "last7d", withdrawalWindow(assets, "count7d",
+                        value(input.withdrawalCount7d()), plainDecimal(input.withdrawalAmount7d())),
+                "baselineDaily", withdrawalWindow(assets, "baselineCount",
+                        plainDecimal(input.withdrawalBaselineDailyCount()), plainDecimal(input.withdrawalBaselineDailyAmount()))));
+        return evidence;
+    }
+
+    private static Map<String, Object> withdrawalWindow(List<?> assets, String countKey, Object count, String amount) {
+        List<String> currencies = assets.stream()
+                .map(entry -> (Map<?, ?>) entry)
+                .filter(asset -> ((Number) asset.get(countKey)).longValue() > 0)
+                .map(asset -> (String) asset.get("currency"))
+                .limit(2)
+                .toList();
+        String currency = currencies.size() == 1 ? currencies.get(0) : null;
+        Map<String, Object> window = new LinkedHashMap<>();
+        window.put("count", count);
+        window.put("amount", currency != null || (currencies.isEmpty() && "0".equals(amount)) ? amount : null);
+        window.put("currency", currency);
+        return window;
+    }
+
+    private static String plainDecimal(BigDecimal value) {
+        return value == null ? "0" : value.stripTrailingZeros().toPlainString();
     }
 
     private int withdrawalScore(RiskScoreRawInput input, RiskScoreModelView model) {
