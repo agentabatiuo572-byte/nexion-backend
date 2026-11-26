@@ -50,10 +50,6 @@ public class H5GrowthApproval {
                     || EARN_CREATE.equals(command.op()));
     }
 
-    public static boolean isStreakMilestone(AuditReplayCommand command) {
-        return command != null && "H".equals(command.domain()) && STREAK.equals(command.op());
-    }
-
     public static boolean isEarnMilestoneCreate(AuditReplayCommand command) {
         return command != null && "H".equals(command.domain()) && EARN_CREATE.equals(command.op());
     }

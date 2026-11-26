@@ -105,6 +105,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private static final String CHECKIN_BROKEN_HOURS_KEY = "growth.checkin.broken_hours";
     private static final String CHECKIN_REVIVE_CARDS_KEY = "growth.checkin.revive_cards";
     private static final String EARN_TICK_INTERVAL_KEY = "growth.earn_milestone.tick_interval_seconds";
+    private static final BigDecimal EARN_MILESTONE_AMOUNT_MAX = new BigDecimal("100000000");
     private static final String WITHDRAW_MIN_BALANCE_KEY = "growth.withdraw_nex_gate.min_balance_nex";
     private static final String WITHDRAW_HOLD_DAYS_KEY = "growth.withdraw_nex_gate.hold_days";
     private static final String WITHDRAW_MIN_BALANCE_MIRROR_KEY = "withdrawal.nex_gate.min_balance_nex";
@@ -3050,7 +3051,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                     && Objects.equals(request.expectedValue(), expectedBefore.get("reward"))
                     && isCompleteActiveStreakSnapshot(expectedBefore)
                     && isCompleteActiveStreakSnapshot(before)) {
-                throw new StreakMilestoneRecheckFailure(409, "H5_CONFIG_STALE");
+                throw new H5ApprovalRecheckFailure(409, "H5_CONFIG_STALE");
             }
             return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
@@ -3153,8 +3154,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 && new StreakReward(rewardType, new BigDecimal(amount)).isSupported();
     }
 
-    public static final class StreakMilestoneRecheckFailure extends BizException {
-        private StreakMilestoneRecheckFailure(int code, String reason) {
+    public static final class H5ApprovalRecheckFailure extends BizException {
+        private H5ApprovalRecheckFailure(int code, String reason) {
             super(code, reason);
         }
     }
@@ -3312,7 +3313,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         var mapper = questEventMapper.get();
         validateEarnMilestoneCreation(mapper, request);
-        requireH5Coverage();
+        requireH5Coverage(true);
         mapper.insertEarnMilestoneRule(key, request.label(), request.thresholdUsd(), request.rewardNex(),
                 request.sortOrder().intValueExact());
         audit("H5_EARN_MILESTONE_CREATED", "EARN_MILESTONE", key, null, Map.of(
@@ -3361,8 +3362,12 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         BigDecimal oldThreshold = earnMilestoneThreshold(current.get());
         BigDecimal oldReward = earnMilestoneReward(current.get());
+        boolean comparableSnapshot = approved && current.get().get("nex") != null
+                && validEarnMilestoneAmounts(oldThreshold, oldReward)
+                && validEarnMilestoneAmounts(expectedThreshold, expectedReward);
         if (approved && (expectedThreshold == null || expectedReward == null
                 || oldThreshold.compareTo(expectedThreshold) != 0 || oldReward.compareTo(expectedReward) != 0)) {
+            if (comparableSnapshot) throw new H5ApprovalRecheckFailure(409, "H5_CONFIG_STALE");
             return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
         if (request.thresholdUsd() == null || request.rewardNex() == null) {
@@ -3371,14 +3376,14 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (request.thresholdUsd().stripTrailingZeros().scale() > 6 || request.rewardNex().stripTrailingZeros().scale() > 6) {
             return validation("EARN_MILESTONE_AMOUNT_PRECISION_INVALID");
         }
-        BigDecimal newThreshold = bounded(request.thresholdUsd(), BigDecimal.ONE, new BigDecimal("100000000"));
-        BigDecimal newReward = bounded(request.rewardNex(), BigDecimal.ZERO, new BigDecimal("100000000"));
+        BigDecimal newThreshold = bounded(request.thresholdUsd(), BigDecimal.ONE, EARN_MILESTONE_AMOUNT_MAX);
+        BigDecimal newReward = bounded(request.rewardNex(), BigDecimal.ZERO, EARN_MILESTONE_AMOUNT_MAX);
         if (!earnMilestonesRemainOrdered(rows, key, newThreshold)) {
             return validation("EARN_MILESTONE_THRESHOLD_ORDER_INVALID");
         }
         if (newReward.compareTo(oldReward) > 0 || newThreshold.compareTo(oldThreshold) < 0) {
             if (!approved) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
-            requireH5Coverage();
+            requireH5Coverage(comparableSnapshot);
         }
         if (questEventMapper.isEmpty()
                 || questEventMapper.get().updateEarnMilestoneRuleCas(key, newThreshold, newReward, oldThreshold, oldReward) <= 0) {
@@ -3830,8 +3835,18 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         int persistedDay = rowDecimal(current.get(), "day").intValue();
         String persistedNote = String.valueOf(current.get().getOrDefault("note", ""));
+        BigDecimal comparableMultiplier = approved && multiplier && persistedDay >= 1 && persistedDay <= 365
+                && request.expectedDay() >= 1 && request.expectedDay() <= 365
+                ? parsePowerUpMultiplier(persistedNote) : null;
         if (persistedDay != request.expectedDay()
                 || (multiplier && !persistedNote.equals(request.expectedNote()))) {
+            if (comparableMultiplier != null) {
+                BigDecimal expectedMultiplier = parsePowerUpMultiplier(request.expectedNote());
+                if (expectedMultiplier != null && (persistedDay != request.expectedDay()
+                        || comparableMultiplier.compareTo(expectedMultiplier) != 0)) {
+                    throw new H5ApprovalRecheckFailure(409, "H5_CONFIG_STALE");
+                }
+            }
             return ApiResult.fail(409, "H5_CONFIG_STALE");
         }
         int day = bounded(new BigDecimal(request.day()), BigDecimal.ONE, new BigDecimal("365"))
@@ -3840,7 +3855,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         boolean requiresApproval = multiplier && (day < persistedDay || multiplierIncreased);
         if (requiresApproval) {
             if (!approved) return ApiResult.fail(409, "H5_APPROVAL_REQUIRED");
-            requireH5Coverage();
+            requireH5Coverage(comparableMultiplier != null);
         }
         int updated = questEventMapper.isEmpty()
                 ? 0
@@ -3935,8 +3950,8 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         BigDecimal oldReward = earnMilestoneReward(current.get());
         if (expectedThreshold == null || expectedReward == null || oldThreshold.compareTo(expectedThreshold) != 0
                 || oldReward.compareTo(expectedReward) != 0) return ApiResult.fail(409, "H5_CONFIG_STALE");
-        BigDecimal threshold = bounded(request.thresholdUsd(), BigDecimal.ONE, new BigDecimal("100000000"));
-        BigDecimal reward = bounded(request.rewardNex(), BigDecimal.ZERO, new BigDecimal("100000000"));
+        BigDecimal threshold = bounded(request.thresholdUsd(), BigDecimal.ONE, EARN_MILESTONE_AMOUNT_MAX);
+        BigDecimal reward = bounded(request.rewardNex(), BigDecimal.ZERO, EARN_MILESTONE_AMOUNT_MAX);
         if (threshold.stripTrailingZeros().scale() > 6 || reward.stripTrailingZeros().scale() > 6) {
             return ApiResult.fail(422, "EARN_MILESTONE_AMOUNT_PRECISION_INVALID");
         }
@@ -3956,7 +3971,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         requireH5Coverage(false);
     }
 
-    private void requireH5Coverage(boolean confirmedStreakSnapshot) {
+    private void requireH5Coverage(boolean confirmedBusinessSnapshot) {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         if (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null || coverage.redlinePct() == null
                 || coverage.coverageRatio().signum() <= 0 || coverage.redlinePct().signum() <= 0) {
@@ -3964,22 +3979,30 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         if (coverage.redlineBreached()) {
             String reason = "B1_COVERAGE_BELOW_REDLINE";
-            throw confirmedStreakSnapshot ? new StreakMilestoneRecheckFailure(422, reason)
+            throw confirmedBusinessSnapshot ? new H5ApprovalRecheckFailure(422, reason)
                     : new BizException(422, reason);
         }
     }
 
     private boolean powerUpNoteAmplifies(Map<String, Object> current, String note) {
         if (!"CHECKIN_MULTIPLIER".equals(current.get("effectType"))) return false;
-        // The App reads this field as DECIMAL(12,4), not as display copy.
-        if (note == null || !note.matches("[0-9]+(?:\\.[0-9]{1,4})?")) {
-            throw new BizException(422, "POWER_UP_MULTIPLIER_INVALID");
-        }
-        BigDecimal multiplier = new BigDecimal(note);
-        if (multiplier.signum() <= 0 || multiplier.setScale(4).precision() > 12) {
-            throw new BizException(422, "POWER_UP_MULTIPLIER_INVALID");
-        }
+        BigDecimal multiplier = parsePowerUpMultiplier(note);
+        if (multiplier == null) throw new BizException(422, "POWER_UP_MULTIPLIER_INVALID");
         return multiplier.compareTo(new BigDecimal(String.valueOf(current.get("note")))) > 0;
+    }
+
+    private static BigDecimal parsePowerUpMultiplier(String note) {
+        // The App reads this field as DECIMAL(12,4).
+        if (note == null || !note.matches("[0-9]+(?:\\.[0-9]{1,4})?")) return null;
+        BigDecimal multiplier = new BigDecimal(note);
+        return multiplier.signum() > 0 && multiplier.setScale(4).precision() <= 12 ? multiplier : null;
+    }
+
+    private static boolean validEarnMilestoneAmounts(BigDecimal threshold, BigDecimal reward) {
+        return threshold != null && reward != null
+                && threshold.compareTo(BigDecimal.ONE) >= 0 && threshold.compareTo(EARN_MILESTONE_AMOUNT_MAX) <= 0
+                && reward.signum() >= 0 && reward.compareTo(EARN_MILESTONE_AMOUNT_MAX) <= 0
+                && threshold.stripTrailingZeros().scale() <= 6 && reward.stripTrailingZeros().scale() <= 6;
     }
 
     private List<Map<String, Object>> dayOneTaskRows() {

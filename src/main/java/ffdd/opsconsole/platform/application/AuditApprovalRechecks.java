@@ -27,8 +27,8 @@ final class AuditApprovalRechecks {
     private AuditApprovalRechecks() {}
 
     static boolean confirmed(AuditReplayCommand command, BizException failure) {
-        if (failure instanceof OpsGrowthService.StreakMilestoneRecheckFailure) {
-            return H5GrowthApproval.isStreakMilestone(command);
+        if (failure instanceof OpsGrowthService.H5ApprovalRecheckFailure) {
+            return H5GrowthApproval.supports(command);
         }
         if (failure instanceof G2G7ParamApproval.OldValueChangedRecheck) {
             return G2G7ParamApproval.supports(command);
