@@ -234,6 +234,17 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             """)
     List<PolicyRow> policies();
 
+    @Select("""
+            <script>
+            SELECT policy_key policyKey,current_value currentValue
+              FROM nx_growth_trial_policy FORCE INDEX (uk_growth_trial_policy_key)
+             WHERE is_deleted=0 AND policy_key IN
+             <foreach item="key" collection="keys" open="(" separator="," close=")">#{key}</foreach>
+             FOR UPDATE
+            </script>
+            """)
+    List<PolicyRow> lockStartPolicies(@Param("keys") List<String> keys);
+
     @Insert("""
             INSERT INTO nx_growth_trial_daily_quota(quota_date,daily_limit,claimed_count)
             VALUES(#{quotaDate},#{dailyLimit},0)
@@ -252,6 +263,12 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
              WHERE quota_date=#{quotaDate}
             """)
     Integer trialQuotaRemaining(@Param("quotaDate") LocalDate quotaDate);
+
+    @Select("""
+            SELECT GREATEST(daily_limit-claimed_count,0)
+              FROM nx_growth_trial_daily_quota WHERE quota_date=#{quotaDate} FOR UPDATE
+            """)
+    Integer lockedTrialQuotaRemaining(@Param("quotaDate") LocalDate quotaDate);
 
     @Update("""
             UPDATE nx_growth_trial_daily_quota

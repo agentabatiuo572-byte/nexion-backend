@@ -47,9 +47,10 @@ public class AppTrialLifecycleController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        StartRequest body = request == null ? new StartRequest(null, null) : request;
+        StartRequest body = request == null ? new StartRequest(null, null, null, null) : request;
         return userId == null ? forbidden()
-                : service.withProductImage(service.start(userId, body.paymentMethodId(), body.deviceName(), idempotencyKey));
+                : service.withProductImage(service.start(userId, body.paymentMethodId(), body.deviceName(),
+                        body.trialProductId(), body.trialTermsVersion(), idempotencyKey));
     }
 
     @PostMapping("/cancel")
@@ -110,7 +111,7 @@ public class AppTrialLifecycleController {
         return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
     }
 
-    public record StartRequest(Long paymentMethodId, String deviceName) {
+    public record StartRequest(Long paymentMethodId, String deviceName, String trialProductId, String trialTermsVersion) {
     }
 
     public record CancelRequest(String reason, String claimNo) {

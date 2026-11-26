@@ -101,6 +101,9 @@ public class AppTrialLifecycleService {
     private static final BigDecimal MAX_EXPECTED_AMOUNT = new BigDecimal("1000000.00");
     private static final Duration MAX_AUTO_SETTLEMENT_DELAY = Duration.ofHours(24);
     private static final String EXTERNAL_PAYMENT_IN_PROGRESS = "TRIAL_EXTERNAL_PAYMENT_IN_PROGRESS";
+    private static final String TRIAL_TERMS_CHANGED = "TRIAL_TERMS_CHANGED";
+    private static final List<String> START_POLICY_KEYS = List.of(
+            "trialProductId", "trialDays", "graceDays", "extensionDays", "trialOffsetCapUSD", "phaseOpen", "seatsLeftToday");
     private static final List<String> ACTIVE_STATES = List.of("CLAIMED", "ACTIVE", "GRACE", "EXTENDED");
     private static final List<String> RESTARTABLE_STATES = List.of("CANCELLED", "FAILED");
     private static final List<String> PERSISTED_STATES = List.of(
@@ -135,7 +138,7 @@ public class AppTrialLifecycleService {
             return ApiResult.fail(404, "USER_NOT_FOUND");
         }
         LocalDateTime now = businessNow();
-        Map<String, String> policy = policyMap(false, BusinessCalendar.legacy().dateAtStorage(now));
+        Map<String, String> policy = policyMap(BusinessCalendar.legacy().dateAtStorage(now));
         TrialRow row = mapper.trial(userId);
         Map<String, Object> state = project(userId, row, policy, now, false);
         if (row != null && purchaseOptions != null) {
@@ -306,23 +309,40 @@ public class AppTrialLifecycleService {
         return ApiResult.ok(result);
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> start(
             Long userId, Long paymentMethodId, String deviceName, String idempotencyKey) {
-        return once("TRIAL_START", userId, idempotencyKey,
-                linked("paymentMethodId", paymentMethodId, "deviceName", deviceName),
+        return start(userId, paymentMethodId, deviceName, null, null, idempotencyKey);
+    }
+
+    @Transactional(isolation = Isolation.REPEATABLE_READ, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> start(
+            Long userId, Long paymentMethodId, String deviceName, String trialProductId,
+            String trialTermsVersion, String idempotencyKey) {
+        // Preserve the exact hash used by already retained legacy commands.
+        Object request = trialProductId == null && trialTermsVersion == null
+                ? linked("paymentMethodId", paymentMethodId, "deviceName", deviceName)
+                : List.of("confirmed-start", String.valueOf(paymentMethodId),
+                        startFieldHash(deviceName), startFieldHash(trialProductId), startFieldHash(trialTermsVersion));
+        return once("TRIAL_START", userId, idempotencyKey, request,
                 () -> {
                     requireUser(userId);
-                    return startOnce(userId, paymentMethodId, deviceName, idempotencyKey);
+                    return startOnce(userId, paymentMethodId, deviceName, trialProductId,
+                            trialTermsVersion, idempotencyKey);
                 });
     }
 
+    private String startFieldHash(String value) {
+        return value == null ? "" : sha256(value);
+    }
+
     private ApiResult<Map<String, Object>> startOnce(
-            Long userId, Long paymentMethodId, String deviceName, String idempotencyKey) {
+            Long userId, Long paymentMethodId, String deviceName, String trialProductId,
+            String confirmedTermsVersion, String idempotencyKey) {
         if (!trialGateEnabled()) return ApiResult.fail(409, "TRIAL_KILL_SWITCH_DISABLED");
         LocalDateTime now = businessNow();
         LocalDate quotaDate = BusinessCalendar.legacy().dateAtStorage(now);
-        Map<String, String> policy = policyMap(true, quotaDate);
+        Map<String, String> policy = startPolicyMap();
         if (!flag(policy, "phaseOpen", true)) return ApiResult.fail(409, "TRIAL_PHASE_CLOSED");
         if (mapper.trialCycleSignalCount(userId) > 0) return ApiResult.fail(409, "TRIAL_CYCLE_RISK_BLOCKED");
         if (paymentMethodId != null && mapper.lockUsablePaymentMethod(userId, paymentMethodId) == null) {
@@ -343,9 +363,12 @@ public class AppTrialLifecycleService {
         int days = positiveInt(policy, "trialDays", 3);
         int graceDays = nonNegativeInt(policy, "graceDays", 7);
         int extensionDays = nonNegativeInt(policy, "extensionDays", 3);
-        String configuredCap = policy.get("trialOffsetCapUSD");
-        BigDecimal offsetCap = StringUtils.hasText(configuredCap) ? new BigDecimal(configuredCap) : null;
+        BigDecimal offsetCap = trialOffsetCap(policy);
         String productCode = trialProductCode(policy);
+        if (trialProductId == null ? !StringUtils.hasText(deviceName)
+                : !canonicalTrialProductId(trialProductId).equalsIgnoreCase(productCode)) {
+            return ApiResult.fail(409, TRIAL_TERMS_CHANGED);
+        }
         if (productCode == null) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_CONFIG_INVALID");
         }
@@ -353,30 +376,39 @@ public class AppTrialLifecycleService {
         if (!availablePhysicalTrialProduct(product)) {
             return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_AVAILABLE");
         }
+        if (trialProductId == null && !deviceName.trim().equals(product.name().trim())) {
+            return ApiResult.fail(409, TRIAL_TERMS_CHANGED);
+        }
         if (!productReleased(product)) return ApiResult.fail(409, "TRIAL_PRODUCT_NOT_RELEASED");
         BigDecimal dailyUsdt = positiveOrNull(productDailyUsdt(product));
         BigDecimal dailyNex = positiveOrNull(product.dailyNex());
+        if (confirmedTermsVersion != null && !confirmedTermsVersion.equals(
+                trialTermsVersion(product, days, offsetCap, dailyUsdt, dailyNex))) {
+            return ApiResult.fail(409, TRIAL_TERMS_CHANGED);
+        }
         if (dailyUsdt == null || dailyNex == null) {
             return ApiResult.fail(409, "TRIAL_DAILY_YIELD_INVALID");
         }
         if (!withinPhysicalSlotCapacity(userId, product, true)) return ApiResult.fail(409, "TRIAL_CAPACITY_FULL");
         String normalizedDevice = product.name();
         BigDecimal price = product.priceUsdt();
-        int seatsBeforeClaim = nonNegativeInt(policy, "seatsLeftToday", 0);
-        if (seatsBeforeClaim <= 0 || mapper.consumeTrialQuota(quotaDate) != 1) {
+        int dailyLimit = nonNegativeInt(policy, "seatsLeftToday", 0);
+        if (dailyLimit <= 0) return ApiResult.fail(409, "TRIAL_QUOTA_EXHAUSTED");
+        mapper.ensureTrialQuotaDay(quotaDate, dailyLimit);
+        if (mapper.consumeTrialQuota(quotaDate) != 1) {
             return ApiResult.fail(409, "TRIAL_QUOTA_EXHAUSTED");
         }
-        Integer seatsAfterClaimValue = mapper.trialQuotaRemaining(quotaDate);
+        Integer seatsAfterClaimValue = mapper.lockedTrialQuotaRemaining(quotaDate);
         if (seatsAfterClaimValue == null || seatsAfterClaimValue < 0) {
             throw new BizException(503, "TRIAL_QUOTA_STATE_UNAVAILABLE");
         }
         int seatsAfterClaim = seatsAfterClaimValue;
+        int seatsBeforeClaim = seatsAfterClaim + 1;
         String claimNo = "TRIAL-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String snapshot = "paymentRail=UVEL_USDT_WALLET,productCode=" + productCode
                 + ",trialDays=" + days
                 + ",graceDays=" + graceDays + ",extensionDays=" + extensionDays
-                + ",dailyUsdtSource=" + (product.monthlyTargetUsdt() == null
-                        ? "nx_product.estimated_daily_usdt" : "nx_product.monthly_target_usdt")
+                + ",dailyUsdtSource=" + dailyUsdtSource(product)
                 + ",dailyNexSource=nx_product.daily_nex"
                 + ",dailyUsdt=" + dailyUsdt + ",dailyNex=" + dailyNex
                 + ",offsetCapUsdt=" + (offsetCap == null ? "UNLIMITED" : offsetCap) + ",priceUsdt=" + price
@@ -1073,6 +1105,40 @@ public class AppTrialLifecycleService {
                 ? product.estimatedDailyUsdt() : MonthlyTargetProjection.daily(product.monthlyTargetUsdt());
     }
 
+    private static String dailyUsdtSource(AppTrialLifecycleMapper.ConversionProduct product) {
+        return product.monthlyTargetUsdt() == null ? "nx_product.estimated_daily_usdt" : "nx_product.monthly_target_usdt";
+    }
+
+    private static BigDecimal trialOffsetCap(Map<String, String> policy) {
+        String configuredCap = policy.get("trialOffsetCapUSD");
+        return StringUtils.hasText(configuredCap) ? new BigDecimal(configuredCap).setScale(6, RoundingMode.HALF_UP) : null;
+    }
+
+    private String trialTermsVersion(AppTrialLifecycleMapper.ConversionProduct product, int days, BigDecimal offsetCap,
+                                     BigDecimal dailyUsdt, BigDecimal dailyNex) {
+        return sha256(linked("trialProductId", product.productNo(), "trialDays", days,
+                "dailyUsdtSource", dailyUsdtSource(product), "monthlyTargetUsdt", decimalTerm(product.monthlyTargetUsdt()),
+                "dailyUsdt", decimalTerm(dailyUsdt), "dailyNex", decimalTerm(dailyNex),
+                "offsetCapUsdt", decimalTerm(offsetCap), "priceUsdt", decimalTerm(product.priceUsdt())).toString());
+    }
+
+    private static String decimalTerm(BigDecimal amount) {
+        return amount == null ? null : amount.stripTrailingZeros().toPlainString();
+    }
+
+    private void addTrialTermsVersion(Map<String, Object> config, Map<String, String> policy,
+                                      AppTrialLifecycleMapper.ConversionProduct product,
+                                      BigDecimal dailyUsdt, BigDecimal dailyNex) {
+        try {
+            BigDecimal offsetCap = trialOffsetCap(policy);
+            config.put("trialOffsetCapUSD", decimalTerm(offsetCap));
+            config.put("trialTermsVersion", trialTermsVersion(product, positiveInt(policy, "trialDays", 3),
+                    offsetCap, dailyUsdt, dailyNex));
+        } catch (NumberFormatException ignored) {
+            // Keep state readable when a stored offset cap cannot be used by start.
+        }
+    }
+
     private boolean validExpectedAmount(BigDecimal expected) {
         return expected != null && expected.signum() >= 0 && expected.scale() <= 2
                 && expected.compareTo(MAX_EXPECTED_AMOUNT) <= 0;
@@ -1130,10 +1196,12 @@ public class AppTrialLifecycleService {
             result.put("version", 0L);
             putCanonicalProvenance(result, "nx_trial_claim");
             result.put("paymentRail", "UVEL_USDT_WALLET");
-            result.put("config", safePolicy(policy, configuredProductCode,
+            Map<String, Object> config = safePolicy(policy, configuredProductCode,
                     catalogProduct == null ? mapper.configuredProductName(configuredProductCode) : catalogProduct.name(),
                     catalogProduct == null ? null : catalogProduct.priceUsdt(),
-                    catalogDailyUsdt, catalogDailyNex));
+                    catalogDailyUsdt, catalogDailyNex);
+            if (productAvailable) addTrialTermsVersion(config, policy, catalogProduct, catalogDailyUsdt, catalogDailyNex);
+            result.put("config", config);
             return result;
         }
         String effectiveState = effectiveState(row, now);
@@ -1205,6 +1273,8 @@ public class AppTrialLifecycleService {
             config.put("graceDays", Integer.toString(row.graceDaysSnapshot()));
             config.put("extensionDays", Integer.toString(row.extensionDaysSnapshot()));
             config.put("trialOffsetCapUSD", row.offsetCapUsdt()==null?null:row.offsetCapUsdt().stripTrailingZeros().toPlainString());
+        } else if (productAvailable) {
+            addTrialTermsVersion(config, policy, catalogProduct, catalogDailyUsdt, catalogDailyNex);
         }
         result.put("config", config);
         return result;
@@ -1437,17 +1507,24 @@ public class AppTrialLifecycleService {
     }
 
     private Map<String, String> policyMap() {
-        return policyMap(false, businessDate());
+        return policyMap(businessDate());
     }
 
-    private Map<String, String> policyMap(boolean initializeQuota, LocalDate quotaDate) {
+    private Map<String, String> policyMap(LocalDate quotaDate) {
         Map<String, String> policy = configuredPolicyMap();
         int dailyLimit = nonNegativeInt(policy, "seatsLeftToday", 0);
-        // Read endpoints must not create or update quota rows. Only a start command
-        // initializes the day's counter before the atomic quota consumption.
-        if (initializeQuota) mapper.ensureTrialQuotaDay(quotaDate, dailyLimit);
         Integer remaining = mapper.trialQuotaRemaining(quotaDate);
         policy.put("seatsLeftToday", Integer.toString(remaining == null ? dailyLimit : Math.max(remaining, 0)));
+        return policy;
+    }
+
+    private Map<String, String> startPolicyMap() {
+        Map<String, String> policy = configuredPolicyMap();
+        // Lock current policy before the claim and product so starts cannot contend on the same claim gap.
+        START_POLICY_KEYS.forEach(policy::remove);
+        for (PolicyRow row : mapper.lockStartPolicies(START_POLICY_KEYS)) {
+            policy.put(row.policyKey(), row.currentValue());
+        }
         return policy;
     }
 
