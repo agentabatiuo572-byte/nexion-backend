@@ -38,7 +38,10 @@ final class AuditApprovalRechecks {
             return false;
         }
         if (G4CatalogApproval.supports(command)) return "G4_CATALOG_SNAPSHOT_CHANGED".equals(reason);
-        if (G4DividendApproval.supports(command)) return code == 409 && "G4_DIVIDEND_STALE".equals(reason);
+        if (G4DividendApproval.supports(command)) {
+            return (code == 409 && "G4_DIVIDEND_STALE".equals(reason))
+                    || (code == 422 && "COVERAGE_BELOW_REDLINE".equals(reason));
+        }
         if (G4ParamApproval.supports(command)) {
             return (code == 409 && "G4_GENESIS_PARAM_STALE".equals(reason))
                     || (code == 422 && "COVERAGE_BELOW_REDLINE".equals(reason));
