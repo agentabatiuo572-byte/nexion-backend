@@ -9,6 +9,7 @@ import ffdd.opsconsole.risk.dto.B5BankRunThresholdRequest;
 import ffdd.opsconsole.risk.dto.B5ThresholdPreviewRequest;
 import ffdd.opsconsole.risk.dto.B5TriageRequest;
 import ffdd.opsconsole.risk.dto.B5SignalStatusRequest;
+import ffdd.opsconsole.risk.facade.TamperDetectionPublisher.ServerFinding;
 import ffdd.opsconsole.risk.mapper.B5RiskRadarMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -70,11 +71,11 @@ public class OpsRiskRadarService {
     private static final ObjectReader STRICT_EVIDENCE_JSON = EVIDENCE_JSON.reader()
             .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS, DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY);
     private static final Map<String, TamperLabels> TAMPER_LABELS = Map.of(
-            "free_trial_state", new TamperLabels("试用资格检查", "阻止已领取的账户重复领取试用。"),
+            "free_trial_state", new TamperLabels("试用资格检查", "拦截与平台记录不一致的试用资格请求。"),
             "risk_disclosure_ack", new TamperLabels("风险披露确认", "阻止通过无效的确认请求变更风险披露确认状态。"),
             "two_factor_state", new TamperLabels("账户安全状态检查", "阻止通过虚假的两步验证状态降低账户安全要求。"),
             "product_phase_override", new TamperLabels("产品阶段检查", "阻止擅自变更当前产品阶段。"),
-            "device_slot_cap", new TamperLabels("设备激活", "阻止超出数量限制的设备激活。"),
+            "device_slot_cap", new TamperLabels("设备激活", "拦截不符合平台设备数量规则的设备激活。"),
             "dev_seed_state", new TamperLabels("设备收益", "阻止使用无效数据修改设备收益。"),
             "otp_verification", new TamperLabels("验证码校验", "阻止未通过校验的验证码被接受。"),
             "bill_client_push", new TamperLabels("钱包账单", "阻止未经确认的账单进入钱包记录。"),
@@ -383,7 +384,7 @@ public class OpsRiskRadarService {
             if (labels != null && StringUtils.hasText(node.path("blockedAtEndpoint").textValue())
                     && StringUtils.hasText(node.path("attackEffect").textValue())) {
                 facts.put("blockedAtEndpointName", labels.endpointName());
-                facts.put("attackEffectSummary", labels.effectSummary());
+                facts.put("attackEffectSummary", tamperEffectSummary(node, labels));
             }
             return facts.isEmpty() ? null : facts;
         }
@@ -409,6 +410,20 @@ public class OpsRiskRadarService {
             return null;
         }
         return facts.isEmpty() ? null : facts;
+    }
+
+    private String tamperEffectSummary(JsonNode evidence, TamperLabels labels) {
+        if ("risk.tamper_detected".equals(evidence.path("objectAction").textValue())) {
+            String path = evidence.path("tamperPath").textValue();
+            String finding = evidence.path("serverFinding").textValue();
+            if ("free_trial_state".equals(path) && ServerFinding.TRIAL_ALREADY_CLAIMED.name().equals(finding)) {
+                return "阻止已领取的账户重复领取试用。";
+            }
+            if ("device_slot_cap".equals(path) && ServerFinding.DEVICE_SLOT_CAP_REACHED.name().equals(finding)) {
+                return "阻止超出数量限制的设备激活。";
+            }
+        }
+        return labels.effectSummary();
     }
 
     private Map<String, Object> d1ChargebackFacts(String evidence) {

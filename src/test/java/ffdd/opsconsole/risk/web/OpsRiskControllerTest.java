@@ -121,6 +121,9 @@ class OpsRiskControllerTest {
 
     @Test
     void scoreOverrideEndpointPassesIdempotencyKey() {
+        when(riskService.overrideScore(eq("usr_55B1"), eq("idem-k"), any(RiskScoreOverrideRequest.class)))
+                .thenReturn(ApiResult.ok(null));
+
         controller.overrideScore("usr_55B1", "idem-k", new RiskScoreOverrideRequest(35, "false positive", "superadmin"));
 
         verify(riskService).overrideScore(eq("usr_55B1"), eq("idem-k"), any(RiskScoreOverrideRequest.class));

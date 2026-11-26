@@ -100,6 +100,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditReplayable {
+    public static final String K4_SCORE_NOT_YET_SCORED = "K4_SCORE_NOT_YET_SCORED";
+
     private static final Set<String> FINAL_DECISIONS = Set.of("ALLOW", "BLOCK", "REJECT", "DENY");
     private static final Set<String> MANUAL_DECISIONS = Set.of("ALLOW", "BLOCK", "HOLD");
     private static final Set<String> SEVERITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
@@ -1898,6 +1900,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     if (before == null) {
                         return rejectK4Write("override", normalized, actor, 404,
                                 "SCORE_USER_NOT_FOUND", request.reason(), idempotencyKey);
+                    }
+                    if (!before.scored()) {
+                        return rejectK4Write("override", normalized, actor, 409,
+                                K4_SCORE_NOT_YET_SCORED, request.reason(), idempotencyKey);
                     }
                     RiskScoreOverrideView updated = riskRepository.overrideScore(
                             normalized, request.expectedVersion(), score, request.reason().trim(), actor).orElse(null);

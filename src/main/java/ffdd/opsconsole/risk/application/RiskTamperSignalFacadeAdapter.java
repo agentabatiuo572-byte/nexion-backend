@@ -28,7 +28,8 @@ public class RiskTamperSignalFacadeAdapter implements RiskTamperSignalFacade {
             String attackEffect,
             String blockedAtEndpoint,
             int eventCount,
-            boolean feedK4) {
+            boolean feedK4,
+            String serverFinding) {
         Map<String, Object> evidence = new LinkedHashMap<>();
         evidence.put("objectAction", "risk.tamper_detected");
         evidence.put("eventId", eventId);
@@ -36,6 +37,7 @@ public class RiskTamperSignalFacadeAdapter implements RiskTamperSignalFacade {
         evidence.put("tamperPath", tamperPath);
         evidence.put("attackEffect", attackEffect);
         evidence.put("blockedAtEndpoint", blockedAtEndpoint);
+        if (serverFinding != null) evidence.put("serverFinding", serverFinding);
         RiskOpsRepository.TamperProjection projection = riskRepository.projectTamperSignal(
                 "TAMPER-" + eventId.substring(0, Math.min(eventId.length(), 40)),
                 userId,

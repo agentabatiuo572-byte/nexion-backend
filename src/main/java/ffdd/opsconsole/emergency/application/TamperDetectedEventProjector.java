@@ -55,8 +55,12 @@ public class TamperDetectedEventProjector {
         boolean feedK4 = repository.settingValue("emergency.tamper.alert.feedK4")
                 .map(Boolean::parseBoolean)
                 .orElse(true);
-        TamperProjectionResult projection = riskFacade.recordTamperSignal(
-                message.getEventId(), userId, userNo, path, attackEffect, endpoint, eventCount, feedK4);
+        String serverFinding = text(payload.get("serverFinding"));
+        TamperProjectionResult projection = serverFinding.isEmpty()
+                ? riskFacade.recordTamperSignal(
+                        message.getEventId(), userId, userNo, path, attackEffect, endpoint, eventCount, feedK4)
+                : riskFacade.recordTamperSignal(
+                        message.getEventId(), userId, userNo, path, attackEffect, endpoint, eventCount, feedK4, serverFinding);
         repository.recordTamperEvent(new TamperEventRecord(
                 message.getEventId(), userId, userNo, path, pathName(path), attackEffect, endpoint,
                 projection.k4Accepted(), projection.k4Delta(), projection.b5Accepted(), eventCount,

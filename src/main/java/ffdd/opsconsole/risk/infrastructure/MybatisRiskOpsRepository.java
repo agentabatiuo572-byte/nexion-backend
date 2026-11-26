@@ -118,6 +118,9 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         mapper.createScoreContributionTable();
         mapper.createScoreHistoryTable();
         mapper.createScoreOverrideTable();
+        if (!mapper.hasScoreOverrideModelScoredBeforeColumn()) {
+            mapper.addScoreOverrideModelScoredBeforeColumn();
+        }
         tryAlter(mapper::addScoreUserRowVersionColumn);
         tryAlter(mapper::addScoreUserAsOfColumn);
         tryAlter(mapper::addScoreContributionDimKeyColumn);
@@ -307,6 +310,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         // Serialize per-user score projection so each event receipt reports only its own applied delta.
         mapper.ensureTamperScoreUser(canonicalUserNo);
         int before = Optional.ofNullable(mapper.lockTamperScoreValue(canonicalUserNo)).orElse(0);
+        mapper.preserveUnscoredOverrideHistory(canonicalUserNo, null, userId);
         int requestedPoints = Math.max(1, Math.min(20, eventCount));
         mapper.applyTamperScore(canonicalUserNo, requestedPoints);
         int after = Optional.ofNullable(mapper.scoreValue(canonicalUserNo)).orElse(before);
@@ -781,12 +785,12 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     public Optional<RiskScoreOverrideView> overrideScore(String userNo, int score, String reason, String operator) {
         Long userId = mapper.scoreUserId(userNo);
         mapper.lockScoreUserForUpdate(userNo, userId);
-        Optional<RiskScoreUserView> user = findScoreUser(userNo);
-        if (user.isEmpty()) {
+        RiskScoreUserView user = findScoreUser(userNo).orElse(null);
+        if (user == null || !user.scored() || user.modelScore() == null) {
             return Optional.empty();
         }
         mapper.deactivateScoreOverrides(userNo);
-        mapper.insertScoreOverride(userNo, user.get().modelScore(), score, reason, operator, "刚刚", true);
+        mapper.insertScoreOverride(userNo, user.modelScore(), score, reason, operator, "刚刚", true);
         return Optional.ofNullable(mapper.activeScoreOverride(userNo));
     }
 
@@ -795,18 +799,19 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
             String userNo, long expectedVersion, int score, String reason, String operator) {
         Long userId = mapper.scoreUserId(userNo);
         mapper.lockScoreUserForUpdate(userNo, userId);
-        Optional<RiskScoreUserView> user = findScoreUser(userNo);
-        if (user.isEmpty() || mapper.bumpScoreUserVersion(userNo, expectedVersion, userId) == 0) {
+        RiskScoreUserView user = findScoreUser(userNo).orElse(null);
+        if (user == null || !user.scored() || user.modelScore() == null
+                || mapper.bumpScoreUserVersion(userNo, expectedVersion, userId) == 0) {
             return Optional.empty();
         }
         mapper.deactivateScoreOverrides(userNo);
         mapper.insertScoreOverride(
-                userNo, user.get().modelScore(), score, reason, operator,
+                userNo, user.modelScore(), score, reason, operator,
                 java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")), true);
         long modelVersion = activeScoringModel().map(RiskScoreModelView::version).orElse(0L);
         mapper.insertScoreHistory(
-                userNo, modelVersion, user.get().modelScore(), score, "manually-overridden",
-                json(user.get().contributions()), reason, operator);
+                userNo, modelVersion, user.modelScore(), score, "manually-overridden",
+                json(user.contributions()), reason, operator);
         return Optional.ofNullable(mapper.activeScoreOverride(userNo));
     }
 
@@ -851,6 +856,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         Long userId = mapper.scoreUserId(userNo);
         mapper.lockScoreUserForUpdate(userNo, userId);
         RiskScoreOverrideView activeOverride = mapper.activeScoreOverride(userNo);
+        mapper.preserveUnscoredOverrideHistory(userNo, expectedVersion, userId);
         if (mapper.updateScoreUserModelIfVersion(
                 userNo, expectedVersion, modelScore, "k4-v" + model.version(), userId) == 0) {
             return Optional.empty();

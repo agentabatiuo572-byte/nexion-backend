@@ -389,11 +389,16 @@ public class OpsRiskController {
 
     @PostMapping("/scoring/users/{userNo}/override")
     @PreAuthorize("hasAuthority('risk_k4_user_override')")
-    public ApiResult<RiskScoreUserView> overrideScore(
+    public ApiResult<?> overrideScore(
             @PathVariable String userNo,
             @RequestHeader(value = OpsAdminApi.IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @RequestBody RiskScoreOverrideRequest request) {
-        return riskService.overrideScore(userNo, idempotencyKey, request);
+        ApiResult<RiskScoreUserView> result = riskService.overrideScore(userNo, idempotencyKey, request);
+        if (OpsRiskService.K4_SCORE_NOT_YET_SCORED.equals(result.getMessage())) {
+            return ApiResult.fail(result.getCode(), result.getMessage(),
+                    Map.of("reason", "这个账户还没有评分，评分后才能改分。"));
+        }
+        return result;
     }
 
     @PostMapping("/scoring/users/{userNo}/recompute")

@@ -342,6 +342,18 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     void createScoreHistoryTable();
 
+    @Select("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_admin_risk_score_override'
+                   AND COLUMN_NAME='model_scored_before'
+            )
+            """)
+    boolean hasScoreOverrideModelScoredBeforeColumn();
+
+    @Update("ALTER TABLE nx_admin_risk_score_override ADD COLUMN model_scored_before TINYINT NULL")
+    void addScoreOverrideModelScoredBeforeColumn();
+
     @Update("ALTER TABLE nx_admin_risk_score_override ADD COLUMN active_user_key VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN active = 1 AND is_deleted = 0 THEN user_no ELSE NULL END) STORED")
     void addScoreOverrideActiveKeyColumn();
 
@@ -431,6 +443,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               id BIGINT PRIMARY KEY AUTO_INCREMENT,
               user_no VARCHAR(64) NOT NULL,
               model_score INT NOT NULL,
+              model_scored_before TINYINT NULL,
               override_score INT NOT NULL,
               reason VARCHAR(500) NOT NULL,
               operator VARCHAR(64) NOT NULL,
@@ -716,7 +729,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             VALUES (#{userNo},0,'tamper-v1','刚刚',0)
             ON DUPLICATE KEY UPDATE
               model_score = IF(is_deleted = 1, 0, model_score),
-              model_version = 'tamper-v1', updated_text = '刚刚',
+              updated_text = '刚刚',
               updated_at = NOW(), is_deleted = 0
             """)
     int ensureTamperScoreUser(@Param("userNo") String userNo);
@@ -2482,32 +2495,58 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("SELECT COUNT(*) FROM nx_admin_risk_score_override WHERE is_deleted = 0 AND active = 1")
     long countActiveScoreOverrides();
 
-    @Select("""
-            SELECT user_no AS userNo,model_score AS modelScore,override_score AS overrideScore,reason,operator,time_text AS timeText,active
-              FROM nx_admin_risk_score_override
-             WHERE is_deleted = 0
-             ORDER BY active DESC, created_at DESC, id DESC
+    // A pending row always starts at zero and never returns to pending after its first score.
+    // A strict timestamp comparison excludes overrides older than a later backfilled pending row.
+    String OVERRIDE_PENDING_SCORE_PROOF = """
+            s.user_no=o.user_no AND s.is_deleted=0 AND s.model_version='pending'
+            AND s.model_score=0 AND s.created_at<o.created_at
+            """;
+
+    String SCORE_OVERRIDE_PROJECTION = """
+            SELECT o.user_no AS userNo,o.model_score AS modelScore,o.override_score AS overrideScore,
+                   o.reason,o.operator,o.time_text AS timeText,o.active,
+                   CASE WHEN o.model_scored_before=1 THEN 'SCORED'
+                        WHEN o.model_scored_before=0 THEN 'UNSCORED'
+                        WHEN o.model_score<>0 THEN 'SCORED'
+                        WHEN s.id IS NOT NULL THEN 'UNSCORED'
+                        ELSE 'UNKNOWN' END AS systemScoreState
+              FROM nx_admin_risk_score_override o
+              LEFT JOIN nx_admin_risk_score_user s ON
+            """ + OVERRIDE_PENDING_SCORE_PROOF;
+
+    @Select(SCORE_OVERRIDE_PROJECTION + """
+             WHERE o.is_deleted = 0
+             ORDER BY o.active DESC, o.created_at DESC, o.id DESC
              LIMIT 20
             """)
     List<RiskScoreOverrideView> scoreOverrides();
 
-    @Select("""
-            SELECT user_no AS userNo,model_score AS modelScore,override_score AS overrideScore,reason,operator,time_text AS timeText,active
-              FROM nx_admin_risk_score_override
-             WHERE is_deleted = 0
-             ORDER BY active DESC, created_at DESC, id DESC
+    @Select(SCORE_OVERRIDE_PROJECTION + """
+             WHERE o.is_deleted = 0
+             ORDER BY o.active DESC, o.created_at DESC, o.id DESC
              LIMIT #{limit} OFFSET #{offset}
             """)
     List<RiskScoreOverrideView> scoreOverridesPage(@Param("offset") int offset, @Param("limit") int limit);
 
-    @Select("""
-            SELECT user_no AS userNo,model_score AS modelScore,override_score AS overrideScore,reason,operator,time_text AS timeText,active
-              FROM nx_admin_risk_score_override
-             WHERE user_no = #{userNo} AND active = 1 AND is_deleted = 0
-             ORDER BY created_at DESC, id DESC
+    @Select(SCORE_OVERRIDE_PROJECTION + """
+             WHERE o.user_no = #{userNo} AND o.active = 1 AND o.is_deleted = 0
+             ORDER BY o.created_at DESC, o.id DESC
              LIMIT 1
             """)
     RiskScoreOverrideView activeScoreOverride(@Param("userNo") String userNo);
+
+    @Update("""
+            UPDATE nx_admin_risk_score_override o
+              JOIN nx_admin_risk_score_user s ON
+            """ + OVERRIDE_PENDING_SCORE_PROOF + """
+              JOIN nx_user u ON u.id=#{userId,jdbcType=BIGINT} AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+               SET o.model_scored_before=0,o.updated_at=o.updated_at
+             WHERE o.user_no=#{userNo} AND o.is_deleted=0 AND o.model_scored_before IS NULL
+               AND o.model_score=0
+               AND (#{expectedVersion,jdbcType=BIGINT} IS NULL OR s.row_version=#{expectedVersion,jdbcType=BIGINT})
+            """)
+    int preserveUnscoredOverrideHistory(@Param("userNo") String userNo, @Param("expectedVersion") Long expectedVersion,
+                                        @Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_admin_risk_score_override
@@ -2517,8 +2556,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     int deactivateScoreOverrides(@Param("userNo") String userNo);
 
     @Insert("""
-            INSERT INTO nx_admin_risk_score_override (user_no,model_score,override_score,reason,operator,time_text,active,is_deleted)
-            VALUES (#{userNo},#{modelScore},#{overrideScore},#{reason},#{operator},#{timeText},#{active},0)
+            INSERT INTO nx_admin_risk_score_override
+                (user_no,model_score,model_scored_before,override_score,reason,operator,time_text,active,is_deleted)
+            VALUES (#{userNo},#{modelScore},1,#{overrideScore},#{reason},#{operator},#{timeText},#{active},0)
             """)
     int insertScoreOverride(@Param("userNo") String userNo, @Param("modelScore") int modelScore,
                             @Param("overrideScore") int overrideScore, @Param("reason") String reason,

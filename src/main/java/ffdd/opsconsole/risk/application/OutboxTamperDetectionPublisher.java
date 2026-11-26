@@ -24,7 +24,8 @@ public class OutboxTamperDetectionPublisher implements TamperDetectionPublisher 
     private final EventOutboxService outboxService;
 
     @Override
-    public String publish(Long userId, String tamperPath, String attackEffect, String blockedAtEndpoint) {
+    public String publish(Long userId, String tamperPath, String attackEffect, String blockedAtEndpoint,
+                          ServerFinding serverFinding) {
         if (userId == null || userId <= 0) {
             throw new IllegalArgumentException("TAMPER_USER_ID_REQUIRED");
         }
@@ -38,6 +39,7 @@ public class OutboxTamperDetectionPublisher implements TamperDetectionPublisher 
         payload.put("tamperPath", path);
         payload.put("attackEffect", normalize(attackEffect, 300, "TAMPER_ATTACK_EFFECT_REQUIRED"));
         payload.put("blockedAtEndpoint", normalize(blockedAtEndpoint, 255, "TAMPER_ENDPOINT_REQUIRED"));
+        if (serverFinding != null) payload.put("serverFinding", serverFinding.name());
         payload.put("eventCount", 1);
         payload.put("occurredAt", LocalDateTime.now().toString());
         payload.put("isServerAuthoritative", true);

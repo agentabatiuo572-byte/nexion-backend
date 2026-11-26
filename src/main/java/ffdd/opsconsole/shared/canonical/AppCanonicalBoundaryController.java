@@ -52,7 +52,11 @@ public class AppCanonicalBoundaryController {
         if (clientStatus != null && result.getData() != null) {
             String serverState = String.valueOf(result.getData().get("state"));
             if (!serverState.equalsIgnoreCase(clientStatus.trim())) {
-                return service.rejectTrialStateTamper(userId);
+                String reason = String.valueOf(result.getData().get("eligibilityReason"));
+                return switch (reason) {
+                    case "in-progress", "converted", "used" -> service.rejectTrialStateTamper(userId, true);
+                    default -> service.rejectTrialStateTamper(userId);
+                };
             }
         }
         return result;

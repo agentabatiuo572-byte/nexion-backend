@@ -4,6 +4,7 @@ import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.DeviceSlotReplacementCompletion;
 import ffdd.opsconsole.device.mapper.DeviceSlotReplacementMapper;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
+import ffdd.opsconsole.risk.facade.TamperDetectionPublisher.ServerFinding;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher.UserAttribution;
 import ffdd.opsconsole.growth.application.AppGrowthLifecyclePublisher.VoucherRedemption;
@@ -137,9 +138,14 @@ public class AppCanonicalBoundaryService {
      * so J3 never has to infer the current trial state from a second projection.
      */
     public ApiResult<Map<String, Object>> rejectTrialStateTamper(Long userId) {
+        return rejectTrialStateTamper(userId, false);
+    }
+
+    public ApiResult<Map<String, Object>> rejectTrialStateTamper(Long userId, boolean claimBlocksRestart) {
         return reject(userId, "free_trial_state",
                 "客户端试用状态与服务器领取记录不一致，服务器拒绝按客户端状态重新领取",
-                "/api/trial/eligibility", "TRIAL_STATE_CONFLICT");
+                "/api/trial/eligibility", "TRIAL_STATE_CONFLICT",
+                claimBlocksRestart ? ServerFinding.TRIAL_ALREADY_CLAIMED : null);
     }
 
     public ApiResult<Map<String, Object>> securityState(Long userId, Boolean clientTwoFactorEnabled) {
@@ -245,11 +251,12 @@ public class AppCanonicalBoundaryService {
         int active = Math.max(0, mapper.lockActiveDeviceCount(userId, false));
         int trial = mapper.lockReservedTrialSlotCount(userId);
         int reservedOrders = Math.max(0, mapper.lockReservedDeviceOrderCount(userId, false));
-        if ((clientMaxDevices != null && clientMaxDevices > cap)
-                || (long) active + reservedOrders + trial >= cap) {
+        boolean capReached = (long) active + reservedOrders + trial >= cap;
+        if ((clientMaxDevices != null && clientMaxDevices > cap) || capReached) {
             return reject(userId, "device_slot_cap",
                     "客户端设备槽位上限高于服务器配置或账户已达上限，服务器拒绝激活",
-                    "/api/devices/activate", "DEVICE_SLOT_CAP_EXCEEDED");
+                    "/api/devices/activate", "DEVICE_SLOT_CAP_EXCEEDED",
+                    capReached ? ServerFinding.DEVICE_SLOT_CAP_REACHED : null);
         }
         CanonicalStateMapper.UserEventAttribution attribution = mapper.userEventAttribution(userId);
         if (attribution == null || attribution.accountAgeMonths() == null || !StringUtils.hasText(attribution.cohort())) {
@@ -1810,7 +1817,16 @@ public class AppCanonicalBoundaryService {
 
     private ApiResult<Map<String, Object>> reject(
             Long userId, String tamperPath, String effect, String endpoint, String code) {
-        tamperPublisher.publish(userId, tamperPath, effect, endpoint);
+        return reject(userId, tamperPath, effect, endpoint, code, null);
+    }
+
+    private ApiResult<Map<String, Object>> reject(
+            Long userId, String tamperPath, String effect, String endpoint, String code, ServerFinding serverFinding) {
+        if (serverFinding == null) {
+            tamperPublisher.publish(userId, tamperPath, effect, endpoint);
+        } else {
+            tamperPublisher.publish(userId, tamperPath, effect, endpoint, serverFinding);
+        }
         return ApiResult.fail(409, code);
     }
 
