@@ -111,6 +111,13 @@ public class AdminIdempotencyTransactionExecutor {
     }
 
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public <T> T replayActiveSuccess(String scope, String key, String requestHash, Class<T> responseType) {
+        var record = recordMapper.selectActive(scope, key);
+        if (recoveryStatus(record, requestHash) != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) return null;
+        return resolveKnownRecord(record, requestHash, null, responseType, AdminCommandOrigin.current(scope)).replayResponse();
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
     public String retainedRequestHash(String scope, String idempotencyKey) {
         var record = recordMapper.selectCurrent(scope, idempotencyKey);
         return record == null || !Integer.valueOf(0).equals(record.getIsDeleted()) ? null : record.getRequestHash();

@@ -47,7 +47,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.Supplier;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -66,7 +66,7 @@ public class OpsRiskRadarService {
     private static final String SUBSCRIPTION_VERSION_KEY = "risk.alert-subscription.version";
     private static final String SUBSCRIPTION_ACTOR_KEY = "risk.alert-subscription.subscriber";
     private static final String THRESHOLD_SCOPE = "B5_BANKRUN_THRESHOLDS";
-    private static final Pattern THRESHOLD_REASON_EDGE_SPACE = Pattern.compile(
+    private static final Pattern REASON_EDGE_SPACE = Pattern.compile(
             "(?U)\\A[\\s\\x00-\\x20]+|(?<![\\s\\x00-\\x20])[\\s\\x00-\\x20]+\\z");
     private static final String SUBSCRIPTION_SCOPE = "B5_ALERT_SUBSCRIPTION";
     private static final String TRIAGE_SCOPE = "B5_TRIAGE";
@@ -531,7 +531,6 @@ public class OpsRiskRadarService {
                 "expectedVersion", currentVersion));
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     public ApiResult<Map<String, Object>> updateThresholds(
             String idempotencyKey, B5BankRunThresholdRequest request) {
         if (request == null) {
@@ -544,10 +543,8 @@ public class OpsRiskRadarService {
         // Keep the legacy digest so the same request can recover an existing receipt.
         String hash = hash(thresholds.yellow() + "|" + thresholds.red() + "|"
                 + request.expectedVersion() + "|" + text(request.reason()) + "|" + actor);
-        Supplier<String> reason = thresholdReasonForWrite(idempotencyKey, hash, request.reason());
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
-                THRESHOLD_SCOPE, idempotencyKey, hash, ApiResult.class,
-                () -> updateThresholdsNew(requested, expectedThresholdVersion(request), reason.get(), actor));
+        return executeWithReason(THRESHOLD_SCOPE, idempotencyKey, hash, request.reason(),
+                reason -> updateThresholdsNew(requested, expectedThresholdVersion(request), reason, actor));
     }
 
     private ApiResult<Map<String, Object>> updateThresholdsNew(
@@ -559,7 +556,7 @@ public class OpsRiskRadarService {
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ, propagation = Propagation.REQUIRES_NEW)
     public ApiResult<Map<String, Object>> previewThresholdApproval(B5BankRunThresholdRequest request) {
-        requireThresholdReason(request.reason());
+        requireB5Reason(request.reason());
         Thresholds thresholds = parseThresholds(request.yellowPct(), request.redPct());
         long expectedVersion = expectedThresholdVersion(request);
         var change = BankRunThresholdPolicy.previewApproval(
@@ -576,7 +573,7 @@ public class OpsRiskRadarService {
         if (!A2ReplayContext.isReplaying() || approvalOperationId == null) {
             throw new BizException(409, BankRunThresholdPolicy.APPROVAL_REQUIRED);
         }
-        String reason = requireThresholdReason(request.reason());
+        String reason = requireB5Reason(request.reason());
         String actor = AdminActorResolver.resolve(null);
         requireActor(actor);
         Thresholds thresholds = parseThresholds(request.yellowPct(), request.redPct());
@@ -741,7 +738,6 @@ public class OpsRiskRadarService {
                 });
     }
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     public ApiResult<Map<String, Object>> updateSignalStatus(
             String idempotencyKey, String signalNo, B5SignalStatusRequest request) {
         if (!StringUtils.hasText(idempotencyKey)) throw new BizException(400, "IDEMPOTENCY_KEY_REQUIRED");
@@ -757,15 +753,14 @@ public class OpsRiskRadarService {
         if (request.expectedVersion() == null || request.expectedVersion() < 0) {
             throw new BizException(400, "B5_SIGNAL_VERSION_REQUIRED");
         }
-        String reason = requireReason(request.reason());
         String actor = AdminActorResolver.resolve(request.operator());
         requireActor(actor);
         String normalizedSignal = signalNo.trim();
+        // The previous receipt used the legacy trim, even for reasons the new rule rejects.
         String hash = hash(normalizedSignal + "|" + expected + "|" + target + "|"
-                + request.expectedVersion() + "|" + reason + "|" + actor);
-        return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
-                "B5_SIGNAL_STATUS:" + normalizedSignal, idempotencyKey.trim(), hash, ApiResult.class,
-                () -> updateSignalStatusOnce(normalizedSignal, expected, target,
+                + request.expectedVersion() + "|" + text(request.reason()) + "|" + actor);
+        return executeWithReason("B5_SIGNAL_STATUS:" + normalizedSignal, idempotencyKey.trim(), hash, request.reason(),
+                reason -> updateSignalStatusOnce(normalizedSignal, expected, target,
                         request.expectedVersion(), reason, actor));
     }
 
@@ -780,13 +775,14 @@ public class OpsRiskRadarService {
             throw new BizException(409, "B5_SIGNAL_VERSION_CONFLICT");
         }
         if (mapper.updateSignalDisposition(
-                signalNo, targetStatus, expectedStatus, expectedVersion, actor, reason) != 1) {
+                signalNo, targetStatus, expectedStatus, expectedVersion, actor,
+                A2RuntimePolicy.reasonExcerpt(reason, 255)) != 1) {
             throw new BizException(409, "B5_SIGNAL_VERSION_CONFLICT");
         }
         auditRequired("B5_SIGNAL_STATUS_CHANGED", "B5_RISK_SIGNAL", signalNo, actor, section(
                 "before", expectedStatus, "after", targetStatus,
                 "beforeVersion", expectedVersion, "afterVersion", expectedVersion + 1,
-                "reason", reason));
+                "reason", A2RuntimePolicy.reasonForAudit(reason)));
         return ApiResult.ok(section("signalNo", signalNo, "handlingStatus", targetStatus,
                 "handlingVersion", expectedVersion + 1));
     }
@@ -958,14 +954,6 @@ public class OpsRiskRadarService {
         }
     }
 
-    private String requireReason(String value) {
-        String reason = text(value);
-        if (reason == null || reason.length() < 8 || reason.length() > 200) {
-            throw new BizException(400, "REASON_REQUIRED");
-        }
-        return reason;
-    }
-
     private String thresholdAuditReason(String reason) {
         if (reason.length() <= 512) return reason;
         // Leave room for the threshold facts within the shared structured audit size limit.
@@ -973,21 +961,24 @@ public class OpsRiskRadarService {
                 + reason.substring(reason.offsetByCodePoints(reason.length(), -100));
     }
 
-    private Supplier<String> thresholdReasonForWrite(String key, String hash, String value) {
+    @SuppressWarnings("unchecked")
+    private ApiResult<Map<String, Object>> executeWithReason(String scope, String key, String hash, String value,
+            Function<String, ApiResult<Map<String, Object>>> action) {
+        String reason;
         try {
-            String reason = requireThresholdReason(value);
-            return () -> reason;
+            reason = requireB5Reason(value);
         } catch (BizException invalid) {
-            // Reject new invalid requests before claiming their keys. A known success still uses
-            // the normal receipt lookup, including its authenticated origin check.
-            var existing = idempotencyService.activeRequest(THRESHOLD_SCOPE, key);
-            if (existing == null || !existing.hasReceipt() || !hash.equals(existing.requestHash())) throw invalid;
-            return () -> { throw invalid; };
+            // Recover the same actor's successful response without reserving a key for invalid input.
+            ApiResult<Map<String, Object>> receipt = idempotencyService.replayActiveSuccess(
+                    scope, key, hash, ApiResult.class);
+            if (receipt == null) throw invalid;
+            return receipt;
         }
+        return idempotencyService.execute(scope, key, hash, ApiResult.class, () -> action.apply(reason));
     }
 
-    private String requireThresholdReason(String value) {
-        String reason = value == null ? "" : THRESHOLD_REASON_EDGE_SPACE.matcher(value).replaceAll("");
+    private String requireB5Reason(String value) {
+        String reason = value == null ? "" : REASON_EDGE_SPACE.matcher(value).replaceAll("");
         int minimum = A2RuntimePolicy.parseReasonMinChars(
                 configFacade.activeValue(A2RuntimePolicy.REASON_MIN_KEY).orElse(null));
         A2RuntimePolicy.validateReason(reason, minimum);

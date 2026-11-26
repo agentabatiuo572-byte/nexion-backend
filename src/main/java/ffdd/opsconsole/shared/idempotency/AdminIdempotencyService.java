@@ -139,6 +139,14 @@ public class AdminIdempotencyService {
         return transactionExecutor.activeRequest(normalizeScope(scope), idempotencyKey.trim());
     }
 
+    /** Replays an active success without claiming a key. Callers must bind the request hash to the actor. */
+    public <T> T replayActiveSuccess(String scope, String key, String requestHash, Class<T> responseType) {
+        if (!StringUtils.hasText(key) || key.trim().length() > MAX_IDEMPOTENCY_KEY_LENGTH) {
+            return null;
+        }
+        return transactionExecutor.replayActiveSuccess(normalizeScope(scope), key.trim(), requestHash, responseType);
+    }
+
     private <T> T execute(String scope, String idempotencyKey, String requestHash, Class<T> responseType,
                           Supplier<T> action, boolean retainSuccess) {
         return execute(scope, idempotencyKey, requestHash, responseType, action, retainSuccess, false);
