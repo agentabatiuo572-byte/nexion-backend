@@ -362,6 +362,15 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     @Transactional
     public ApiResult<PageResult<UserAccountView>> supportWorkbenchProfilePage(UserQueryRequest request) {
+        String keyword = request == null ? "" : text(request.keyword()).trim();
+        if (keyword.matches("[1-9][0-9]{9,11}") && request.userId() == null) {
+            // In this workbench a long numeric UID is an exact account lookup, never a phone keyword.
+            request = new UserQueryRequest(null, request.status(), request.riskMin(), request.pageNum(),
+                    request.pageSize(), request.limit(), Long.parseLong(keyword), request.phoneHash(),
+                    request.phoneMasked(), request.tier(), request.vRank(), request.referralCode(),
+                    request.depositMin(), request.depositMax(), request.walletUsdtMin(), request.walletUsdtMax(),
+                    request.walletNexMin(), request.walletNexMax(), request.riskBand(), request.joinedFrom(), request.joinedTo());
+        }
         return profilePage(request, false, true);
     }
 

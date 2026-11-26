@@ -2191,7 +2191,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                     OR EXISTS (SELECT 1 FROM nx_admin_risk_arbitrage_row k2
                                 WHERE k2.updated_at > COALESCE(s.as_of,'1970-01-01')
                                   AND CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
-                                      LIKE CONCAT('%',s.user_no,'%'))
+                                      REGEXP CONCAT(s.user_no,'([^0-9]|$)'))
                     OR EXISTS (SELECT 1 FROM nx_withdrawal_order withdraw_fact
                                 WHERE withdraw_fact.user_id=u.id
                                   AND withdraw_fact.updated_at > COALESCE(s.as_of,'1970-01-01'))
@@ -2235,7 +2235,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                     OR EXISTS (SELECT 1 FROM nx_admin_risk_arbitrage_row k2
                                 WHERE k2.updated_at > COALESCE(s.as_of,'1970-01-01')
                                   AND CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
-                                      LIKE CONCAT('%',s.user_no,'%'))
+                                      REGEXP CONCAT(s.user_no,'([^0-9]|$)'))
                     OR EXISTS (SELECT 1 FROM nx_withdrawal_order withdraw_fact
                                 WHERE withdraw_fact.user_id=u.id
                                   AND withdraw_fact.updated_at > COALESCE(s.as_of,'1970-01-01'))
@@ -2286,11 +2286,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                      AS multiAccountFraud,
                    (SELECT COUNT(*) FROM nx_admin_risk_arbitrage_row a
                      WHERE a.is_deleted=0 AND CONCAT_WS('|',a.cell1,a.cell2,a.cell3,a.cell4,a.cell5,a.cell6)
-                       LIKE CONCAT('%',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),'%')) AS arbitrageSignals,
+                       REGEXP CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'),'([^0-9]|$)')) AS arbitrageSignals,
                    EXISTS(SELECT 1 FROM nx_admin_risk_arbitrage_row a
                            WHERE a.is_deleted=0 AND a.disposition IN ('cluster_frozen','gift_blocked','account_flagged')
                              AND CONCAT_WS('|',a.cell1,a.cell2,a.cell3,a.cell4,a.cell5,a.cell6)
-                               LIKE CONCAT('%',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),'%')) AS severeArbitrage,
+                               REGEXP CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'),'([^0-9]|$)')) AS severeArbitrage,
                    (SELECT COUNT(*) FROM nx_withdrawal_order w
                      WHERE w.user_id=u.id AND w.is_deleted=0 AND w.created_at>=NOW()-INTERVAL 24 HOUR)
                      AS withdrawalCount24h,
@@ -2465,7 +2465,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    COALESCE((SELECT MAX(k2.updated_at)
                                FROM nx_admin_risk_arbitrage_row k2
                               WHERE CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
-                                    LIKE CONCAT('%',s.user_no,'%')),'1970-01-01'),
+                                    REGEXP CONCAT(s.user_no,'([^0-9]|$)')),'1970-01-01'),
                    COALESCE((SELECT MAX(withdraw_fact.updated_at) FROM nx_withdrawal_order withdraw_fact
                               WHERE withdraw_fact.user_id=u.id),'1970-01-01'),
                    COALESCE((SELECT MAX(j3.updated_at) FROM nx_risk_signal j3

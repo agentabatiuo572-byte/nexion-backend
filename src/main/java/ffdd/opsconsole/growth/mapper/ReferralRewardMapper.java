@@ -18,9 +18,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                     AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                           REGEXP CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'), '([^0-9]|$)')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+                           REGEXP CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'), '([^0-9]|$)'))
                )
                AND NOT EXISTS (
                  SELECT 1
@@ -47,9 +47,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                    SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
                     WHERE review_risk.is_deleted = 0
                       AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                             REGEXP CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'), '([^0-9]|$)')
                         OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+                             REGEXP CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'), '([^0-9]|$)'))
                  )
                  AND NOT EXISTS (
                    SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
@@ -573,9 +573,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                AND (
                  CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                   LIKE CONCAT('%', target.invitedNo, '%')
+                   REGEXP CONCAT(target.invitedNo, '([^0-9]|$)')
                  OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                   LIKE CONCAT('%', target.inviterNo, '%')
+                   REGEXP CONCAT(target.inviterNo, '([^0-9]|$)')
                )
                AND NOT COALESCE(
                  CONCAT('|', CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6), '|')
@@ -793,9 +793,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                     AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                           REGEXP CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'), '([^0-9]|$)')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+                           REGEXP CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'), '([^0-9]|$)'))
                ) OR EXISTS (
                  SELECT 1
                    FROM nx_admin_risk_arbitrage_row risk
@@ -819,9 +819,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                    SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
                     WHERE review_risk.is_deleted = 0
                       AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                             REGEXP CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'), '([^0-9]|$)')
                         OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+                             REGEXP CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'), '([^0-9]|$)'))
                  ) OR EXISTS (
                    SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
                     WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
