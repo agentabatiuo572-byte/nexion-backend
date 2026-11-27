@@ -37,19 +37,12 @@ UPDATE nx_config_item
    SET config_value = CAST(@d5_small_version AS UNSIGNED) + 1
  WHERE config_key = 'withdrawal.d5.version' AND @d5_small_changed;
 
--- B142 can advance the aggregate without advancing an existing quote revision.
--- With no small-amount change, use its execution window to identify the revision
--- B142 left behind. Address-only saves may legitimately advance only the aggregate.
+-- The normal D5 writer publishes the aggregate and the quote revision together.
 UPDATE nx_config_item quote
 JOIN nx_config_item revision ON revision.config_key = 'withdrawal.d5.version'
    SET quote.config_value = revision.config_value
- WHERE @d5_small_open AND quote.config_key = 'withdrawal.d5.quote_version'
-   AND CAST(quote.config_value AS BINARY) <> CAST(revision.config_value AS BINARY)
-   AND (@d5_small_changed OR EXISTS (
-     SELECT 1 FROM nx_schema_migration_state b142
-      WHERE b142.migration_key = '20261127_b142_finance_launch_defaults' AND b142.phase = 'FINAL'
-        AND revision.updated_at BETWEEN b142.created_at AND b142.updated_at
-   ));
+ WHERE @d5_small_changed AND quote.config_key = 'withdrawal.d5.quote_version'
+   AND quote.status = 1 AND quote.is_deleted = 0;
 
 UPDATE nx_schema_migration_state SET phase = 'FINAL'
  WHERE migration_key = '20261127_d5_small_amount_launch_default' AND phase = 'PENDING';
