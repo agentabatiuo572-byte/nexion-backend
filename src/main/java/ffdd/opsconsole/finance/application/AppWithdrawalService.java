@@ -51,6 +51,15 @@ public class AppWithdrawalService {
     private static final String WITHDRAW_KILLSWITCH_KEY = "killswitch.withdraw";
     private static final String WITHDRAW_LEGACY_KILLSWITCH_KEY = "emergency.killswitch.withdraw";
 
+    public record ConfirmedQuote(BigDecimal networkFee, BigDecimal nexBurned, BigDecimal netReceive) {
+        private Map<String, String> amounts() {
+            return Map.of("networkFee", networkFee.toPlainString(), "nexBurned", nexBurned.toPlainString(),
+                    "netReceive", netReceive.toPlainString());
+        }
+    }
+
+    private record FeeBreakdown(ConfirmedQuote quote, BigDecimal feeWaived, BigDecimal actualFee) { }
+
     private final AppWithdrawalMapper mapper;
     private final PlatformConfigFacade config;
     private final GrowthRhythmFacade growthRhythmFacade;
@@ -204,6 +213,12 @@ public class AppWithdrawalService {
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> eligibility(Long userId, BigDecimal amount, String chain, String address,
                                                       String requestedPolicyVersion) {
+        return eligibility(userId, amount, chain, address, requestedPolicyVersion, null);
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> eligibility(Long userId, BigDecimal amount, String chain, String address,
+                                                      String requestedPolicyVersion, Boolean useNexFeeOffset) {
         WithdrawalDayWindow day = WithdrawalDayWindow.at(clock);
         requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.findActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
@@ -281,12 +296,19 @@ public class AppWithdrawalService {
         List<String> waived = fast ? List.of("first-withdrawal-review") : List.of();
         boolean canSubmit = requested.signum() > 0 && requested.compareTo(policy.requireMinUsdt()) >= 0 && requested.compareTo(max) <= 0
                 && !dailyLimitReached && payoutAddressReady && withdrawGateEnabled();
-        return ApiResult.ok(linked("canSubmit", canSubmit, "maxWithdrawableUsdt", max, "route", route,
+        Map<String, Object> data = linked("canSubmit", canSubmit, "maxWithdrawableUsdt", max, "route", route,
                 "riskReasons", reasons, "fastLaneApplied", fast, "waivedGates", waived,
                 "dailyLimitReached", dailyLimitReached, "dailyCountResetAt", day.resetAt(),
                 "complianceReviewRequired", complianceReviewRequired,
                 "complianceHoldApplies", complianceHoldApplies, "complianceHoldDays", complianceHoldDays,
-                "configVersion", policy.policyVersion()));
+                "configVersion", policy.policyVersion());
+        if (useNexFeeOffset != null) {
+            ConfirmedQuote quote = feeBreakdown(requested, policy.networkConfirmFeeUsd().get(networkKey(normalizedChain)),
+                    policy.nexFeeOffsetRate(), wallet.nexAvailable(), useNexFeeOffset).quote();
+            data.put("quote", quote.amounts());
+            if (quote.netReceive().signum() <= 0) data.put("canSubmit", false);
+        }
+        return ApiResult.ok(data);
     }
 
     /** Reads inside BankWithdrawalService.config's transaction, without marking recoverable reads rollback-only. */
@@ -334,14 +356,23 @@ public class AppWithdrawalService {
     public ApiResult<Map<String, Object>> submit(
             Long userId, BigDecimal amount, String chain, String address, String policyVersion,
             boolean useNexFeeOffset, String idempotencyKey) {
+        return submit(userId, amount, chain, address, policyVersion, useNexFeeOffset, idempotencyKey, null);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public ApiResult<Map<String, Object>> submit(
+            Long userId, BigDecimal amount, String chain, String address, String policyVersion,
+            boolean useNexFeeOffset, String idempotencyKey, ConfirmedQuote confirmedQuote) {
         requireProductionWithdrawalSubject(userId);
         networkPolicy.lockBeforeUser();
         if (userId == null || mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         BigDecimal normalizedAmount = money(amount);
         String normalizedChain = normalizeChain(chain);
         String normalizedAddress = normalizeAddress(address);
+        ConfirmedQuote quote = normalizeConfirmedQuote(confirmedQuote);
         String requestHash = withdrawalAttemptHash(userId, normalizedAmount, normalizedChain, normalizedAddress,
-                policyVersion, useNexFeeOffset);
+                policyVersion, useNexFeeOffset, quote);
         String key = requireKey(idempotencyKey);
         mapper.insertWithdrawalAttempt(userId, key, requestHash, "ACTIVE");
         AppWithdrawalMapper.WithdrawalAttemptRow attempt = mapper.lockWithdrawalAttempt(userId, key);
@@ -354,7 +385,7 @@ public class AppWithdrawalService {
         ApiResult<Map<String, Object>> result = (ApiResult<Map<String, Object>>) (ApiResult) idempotency.execute(
                 "USER_WITHDRAWAL_SUBMIT", key, requestHash, ApiResult.class,
                 () -> submitOnce(userId, normalizedAmount, normalizedChain, normalizedAddress,
-                        policyVersion, useNexFeeOffset, key));
+                        policyVersion, useNexFeeOffset, key, quote, null));
         if (result.getCode() == 0 && result.getData() != null
                 && StringUtils.hasText(String.valueOf(result.getData().get("withdrawalNo")))) {
             String withdrawalNo = String.valueOf(result.getData().get("withdrawalNo"));
@@ -414,6 +445,13 @@ public class AppWithdrawalService {
     public ApiResult<Map<String, Object>> abandonAttempt(
             Long userId, String idempotencyKey, BigDecimal amount, String chain, String address,
             String policyVersion, boolean useNexFeeOffset) {
+        return abandonAttempt(userId, idempotencyKey, amount, chain, address, policyVersion, useNexFeeOffset, null);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> abandonAttempt(
+            Long userId, String idempotencyKey, BigDecimal amount, String chain, String address,
+            String policyVersion, boolean useNexFeeOffset, ConfirmedQuote confirmedQuote) {
         requireProductionWithdrawalSubject(userId);
         if (userId == null || mapper.lockActiveUser(userId) == null) throw new BizException(404, "USER_NOT_FOUND");
         BigDecimal normalizedAmount = money(amount);
@@ -421,7 +459,7 @@ public class AppWithdrawalService {
         String normalizedAddress = normalizeAddress(address);
         String key = requireKey(idempotencyKey);
         String requestHash = withdrawalAttemptHash(userId, normalizedAmount, normalizedChain, normalizedAddress,
-                policyVersion, useNexFeeOffset);
+                policyVersion, useNexFeeOffset, normalizeConfirmedQuote(confirmedQuote));
         mapper.insertWithdrawalAttempt(userId, key, requestHash, "ABANDONED");
         AppWithdrawalMapper.WithdrawalAttemptRow attempt = mapper.lockWithdrawalAttempt(userId, key);
         if (attempt == null || !requestHash.equals(attempt.requestHash())) {
@@ -458,21 +496,50 @@ public class AppWithdrawalService {
     }
 
     private String withdrawalAttemptHash(Long userId, BigDecimal amount, String chain, String address,
-                                         String policyVersion, boolean useNexFeeOffset) {
-        return hash(userId + "|" + amount + "|" + chain + "|" + address + "|" + policyVersion + "|"
-                + useNexFeeOffset);
+                                         String policyVersion, boolean useNexFeeOffset, ConfirmedQuote quote) {
+        String payload = userId + "|" + amount + "|" + chain + "|" + address + "|" + policyVersion + "|"
+                + useNexFeeOffset;
+        if (quote != null) {
+            payload += "|" + quote.networkFee() + "|" + quote.nexBurned() + "|" + quote.netReceive();
+        }
+        return hash(payload);
     }
 
     String withdrawalAttemptHashForTest(Long userId, BigDecimal amount, String chain, String address,
                                         String policyVersion, boolean useNexFeeOffset) {
         return withdrawalAttemptHash(userId, money(amount), normalizeChain(chain), normalizeAddress(address),
-                policyVersion, useNexFeeOffset);
+                policyVersion, useNexFeeOffset, null);
     }
 
-    private ApiResult<Map<String, Object>> submitOnce(
-            Long userId, BigDecimal amount, String chain, String address, String requestedPolicyVersion,
-            boolean useNexFeeOffset, String idempotencyKey) {
-        return submitOnce(userId, amount, chain, address, requestedPolicyVersion, useNexFeeOffset, idempotencyKey, null);
+    private ConfirmedQuote normalizeConfirmedQuote(ConfirmedQuote quote) {
+        if (quote == null) return null;
+        ConfirmedQuote normalized = new ConfirmedQuote(quoteValue(quote.networkFee()), quoteValue(quote.nexBurned()),
+                quoteValue(quote.netReceive()));
+        if (normalized.netReceive().signum() <= 0) throw new BizException(422, "WITHDRAWAL_CONFIRMED_QUOTE_INVALID");
+        return normalized;
+    }
+
+    private BigDecimal quoteValue(BigDecimal value) {
+        if (value == null || value.signum() < 0 || value.stripTrailingZeros().scale() > 6
+                || (long) value.precision() - value.scale() > 12) {
+            throw new BizException(422, "WITHDRAWAL_CONFIRMED_QUOTE_INVALID");
+        }
+        return value.setScale(6, RoundingMode.UNNECESSARY);
+    }
+
+    private FeeBreakdown feeBreakdown(BigDecimal amount, BigDecimal networkFee, BigDecimal nexOffsetRate,
+                                      BigDecimal nexAvailable, boolean useNexFeeOffset) {
+        BigDecimal fee = networkFee.setScale(6, RoundingMode.UNNECESSARY);
+        BigDecimal nexBurned = BigDecimal.ZERO.setScale(6);
+        BigDecimal feeWaived = BigDecimal.ZERO.setScale(6);
+        if (useNexFeeOffset) {
+            BigDecimal requiredNex = fee.divide(nexOffsetRate, 0, RoundingMode.CEILING);
+            nexBurned = safe(nexAvailable).min(requiredNex).setScale(6, RoundingMode.DOWN);
+            feeWaived = nexBurned.multiply(nexOffsetRate).min(fee).setScale(6, RoundingMode.DOWN);
+        }
+        BigDecimal actualFee = fee.subtract(feeWaived).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        BigDecimal netReceive = amount.subtract(actualFee).setScale(6, RoundingMode.DOWN);
+        return new FeeBreakdown(new ConfirmedQuote(fee, nexBurned, netReceive), feeWaived, actualFee);
     }
 
     /** Internal adapter only: the owned, locked bank quote and its order link share the caller's transaction. */
@@ -482,12 +549,13 @@ public class AppWithdrawalService {
         if (quote == null || !userId.equals(quote.userId()) || mapper.lockActiveUser(userId) == null)
             throw new BizException(404, "BANK_QUOTE_NOT_FOUND");
         return submitOnce(userId, quote.amountUsdt(), "BANK-VND", "BANK-VND:" + quote.beneficiaryNo(),
-                quote.d5Version(), false, key, quote);
+                quote.d5Version(), false, key, null, quote);
     }
 
     private ApiResult<Map<String, Object>> submitOnce(
             Long userId, BigDecimal amount, String chain, String address, String requestedPolicyVersion,
-            boolean useNexFeeOffset, String idempotencyKey, ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote bankQuote) {
+            boolean useNexFeeOffset, String idempotencyKey, ConfirmedQuote confirmedQuote,
+            ffdd.opsconsole.finance.mapper.BankWithdrawalMapper.Quote bankQuote) {
         if (!withdrawGateEnabled()) {
             return ApiResult.fail(409, "WITHDRAWAL_KILL_SWITCH_DISABLED");
         }
@@ -544,22 +612,23 @@ public class AppWithdrawalService {
         boolean complianceHoldApplies = bankQuote == null && compliance.holdApplies(chain, amount);
         int complianceHoldDays = bankQuote == null ? compliance.holdDays(chain, amount) : 0;
         // Legacy D2 fee snapshot columns also carry the bank channel fee; posting uses a distinct BANK_FEE type.
-        BigDecimal networkFee = (bankQuote == null ? policy.networkConfirmFeeUsd().get(networkKey(chain)) : bankQuote.feeUsdt())
-                .setScale(6, RoundingMode.UNNECESSARY);
+        BigDecimal configuredFee = bankQuote == null
+                ? policy.networkConfirmFeeUsd().get(networkKey(chain)) : bankQuote.feeUsdt();
+        BigDecimal nexOffsetRate = policy.nexFeeOffsetRate();
+        FeeBreakdown fees = feeBreakdown(amount, configuredFee, nexOffsetRate, wallet.nexAvailable(), useNexFeeOffset);
+        ConfirmedQuote currentQuote = fees.quote();
+        if (confirmedQuote != null && !confirmedQuote.equals(currentQuote)) {
+            return ApiResult.fail(409, "WITHDRAWAL_QUOTE_CHANGED",
+                    Map.of("policyVersion", acceptedPolicyVersion, "quote", currentQuote.amounts()));
+        }
+        BigDecimal networkFee = currentQuote.networkFee();
+        BigDecimal nexBurned = currentQuote.nexBurned();
+        BigDecimal netReceive = currentQuote.netReceive();
         BigDecimal penaltyPct = BigDecimal.ZERO.setScale(6);
         BigDecimal penaltyFee = BigDecimal.ZERO.setScale(6);
         BigDecimal grossFee = networkFee;
-        BigDecimal nexOffsetRate = policy.nexFeeOffsetRate();
-        BigDecimal requiredNex = useNexFeeOffset
-                ? networkFee.divide(nexOffsetRate, 0, RoundingMode.CEILING).setScale(6)
-                : BigDecimal.ZERO.setScale(6);
-        BigDecimal nexBurned = useNexFeeOffset
-                ? safe(wallet.nexAvailable()).min(requiredNex).setScale(6, RoundingMode.DOWN)
-                : BigDecimal.ZERO.setScale(6);
-        BigDecimal feeWaived = useNexFeeOffset
-                ? nexBurned.multiply(nexOffsetRate).min(networkFee).setScale(6, RoundingMode.DOWN)
-                : BigDecimal.ZERO.setScale(6);
-        BigDecimal actualFee = grossFee.subtract(feeWaived).max(BigDecimal.ZERO).setScale(6, RoundingMode.DOWN);
+        BigDecimal feeWaived = fees.feeWaived();
+        BigDecimal actualFee = fees.actualFee();
         BigDecimal penaltyFeeWaived = BigDecimal.ZERO.setScale(6);
         BigDecimal networkFeeWaived = feeWaived;
         BigDecimal actualPenaltyFee = BigDecimal.ZERO.setScale(6);
@@ -567,7 +636,6 @@ public class AppWithdrawalService {
         if (actualNetworkFee.add(actualPenaltyFee).compareTo(actualFee) != 0) {
             throw new BizException(503, "D5_FEE_COMPONENT_INVARIANT_BROKEN");
         }
-        BigDecimal netReceive = amount.subtract(actualFee).setScale(6, RoundingMode.DOWN);
         if (netReceive.signum() <= 0) return ApiResult.fail(422, "WITHDRAWAL_NET_AMOUNT_INVALID");
 
         String withdrawalNo = "WD-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
