@@ -223,7 +223,7 @@ public class H4GrowthApproval {
         if (!current.equals(expected)) {
             if (expected instanceof Map<?, ?> snapshot && command.params().get("proposalReason") instanceof String
                     && confirmedSnapshotChange(command, target, snapshot, current)) {
-                throw new ConfirmedSnapshotChange();
+                throw new ConfirmedRecheckFailure(409, "H4_CONFIG_STALE");
             }
             return ApiResult.fail(409, "H4_CONFIG_STALE");
         }
@@ -284,9 +284,9 @@ public class H4GrowthApproval {
         };
     }
 
-    public static final class ConfirmedSnapshotChange extends BizException {
-        private ConfirmedSnapshotChange() {
-            super(409, "H4_CONFIG_STALE");
+    public static final class ConfirmedRecheckFailure extends BizException {
+        ConfirmedRecheckFailure(int code, String reason) {
+            super(code, reason);
         }
     }
 
@@ -297,6 +297,19 @@ public class H4GrowthApproval {
             String after = verifiedWheelSignature(current);
             return before != null && after != null && !before.equals(after)
                     && before.equals(values(command).get("expectedSignature"));
+        }
+        if (GUARD_UPDATE.equals(command.op()) && "budget".equals(target.id())) {
+            if (!"true".equals(expected.get("exists")) || !"true".equals(current.get("exists"))
+                    || !target.id().equals(expected.get("guard_key")) || !target.id().equals(current.get("guard_key"))
+                    || !"1".equals(expected.get("status")) || !"1".equals(current.get("status"))
+                    || !(expected.get("id") instanceof String id) || !id.matches("[1-9][0-9]{0,18}")
+                    || !id.equals(current.get("id")) || !(expected.get("guard_value") instanceof String oldValue)
+                    || !oldValue.trim().equals(values(command).get("expectedValue"))) {
+                return false;
+            }
+            BigDecimal before = growth.wheelBudgetAmount(oldValue);
+            BigDecimal after = growth.wheelBudgetAmount(current.get("guard_value"));
+            return before != null && after != null && before.compareTo(after) != 0;
         }
         String identity;
         String payloadKey;

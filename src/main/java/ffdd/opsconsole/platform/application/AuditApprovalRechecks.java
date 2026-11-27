@@ -45,7 +45,7 @@ final class AuditApprovalRechecks {
         if (failure instanceof H3GrowthApproval.ConfirmedRecheckFailure) {
             return H3GrowthApproval.supports(command);
         }
-        if (failure instanceof H4GrowthApproval.ConfirmedSnapshotChange) {
+        if (failure instanceof H4GrowthApproval.ConfirmedRecheckFailure) {
             return H4GrowthApproval.supports(command);
         }
         if (failure instanceof OpsTreasuryService.ThresholdVersionAdvanced) {

@@ -2465,9 +2465,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         if (!approved) return ApiResult.fail(409, "H4_APPROVAL_REQUIRED");
         TreasuryCoverageSnapshot snapshot = coverageFacade.snapshot();
         if (snapshot == null || !snapshot.reliable() || snapshot.coverageRatio() == null
-                || snapshot.redlinePct() == null || snapshot.coverageRatio().signum() <= 0
-                || snapshot.redlinePct().signum() <= 0 || snapshot.redlineBreached()) return coverageRedline();
-        return null;
+                || snapshot.redlinePct() == null || snapshot.redlinePct().signum() <= 0) return coverageRedline();
+        if (snapshot.redlineBreached() && A2ReplayContext.isReplaying()
+                && snapshot.ratioLiabilitiesUsd() != null && snapshot.ratioLiabilitiesUsd().signum() > 0) {
+            OpsErrorCode failure = OpsErrorCode.COVERAGE_BELOW_REDLINE;
+            throw new H4GrowthApproval.ConfirmedRecheckFailure(failure.httpStatus(), failure.name());
+        }
+        return snapshot.coverageRatio().signum() <= 0 || snapshot.redlineBreached() ? coverageRedline() : null;
     }
 
     private static BigDecimal h3Decimal(String raw, int scale) {
@@ -6471,16 +6475,19 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
         String value = normalizeQuestValue("wheel.guards." + key, raw);
         if ("budget".equals(key)) {
-            if (!WHEEL_BUDGET_VALUE_PATTERN.matcher(value).matches()) {
-                throw new IllegalArgumentException("WHEEL_BUDGET_INVALID");
-            }
-            BigDecimal budget = numericToken(value);
-            if (budget.signum() <= 0 || budget.compareTo(new BigDecimal("1000000000")) > 0) {
+            BigDecimal budget = wheelBudgetAmount(value);
+            if (budget == null) {
                 throw new IllegalArgumentException("WHEEL_BUDGET_INVALID");
             }
             return "$" + budget.stripTrailingZeros().toPlainString();
         }
         return value;
+    }
+
+    BigDecimal wheelBudgetAmount(String raw) {
+        if (raw == null || !WHEEL_BUDGET_VALUE_PATTERN.matcher(raw.trim()).matches()) return null;
+        BigDecimal budget = numericToken(raw);
+        return budget.signum() > 0 && budget.compareTo(new BigDecimal("1000000000")) <= 0 ? budget : null;
     }
 
     private String normalizePlainText(String raw, int maxLength) {
