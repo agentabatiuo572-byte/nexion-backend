@@ -14,6 +14,36 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
     String SUPPORT_PROCESSING_WITHDRAWAL_STATUSES =
             "('SUBMITTED','PENDING','REVIEW_PENDING','REVIEWING','EXTENDED_HOLD','DELAYED',"
                     + "'REVIEW_PASSED','PENDING_CHAIN','PROCESSING','SENT','CHAIN_SUBMITTED') ";
+    String D2_RISK_HIT_JOIN = """
+              LEFT JOIN (
+                    SELECT withdrawal_no,
+                           GROUP_CONCAT(CONCAT(h.rule_id, ':', h.action, '@', h.time_text) ORDER BY h.id DESC SEPARATOR ', ') AS hit_rules,
+                           GROUP_CONCAT(
+                               COALESCE(
+                                   CONCAT(h.dimension, '规则命中:', r.condition_text, ' -> ', h.action),
+                                   CONCAT(h.dimension, '规则命中:', h.rule_id, ' -> ', h.action)
+                               )
+                               ORDER BY h.id DESC SEPARATOR ' | '
+                           ) AS hit_reasons
+                      FROM nx_admin_risk_withdraw_hit h
+                      LEFT JOIN nx_admin_risk_withdraw_rule r
+                        ON r.rule_id = h.rule_id AND r.is_deleted = 0
+                     WHERE h.is_deleted = 0
+                     GROUP BY h.withdrawal_no
+              ) hit ON (hit.withdrawal_no = w.withdrawal_no)
+            """;
+    String D2_KEYWORD_FILTER = """
+             <if test='keyword != null and keyword != ""'>
+               AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
+                    OR w.target_address LIKE CONCAT('%', #{keyword}, '%')
+                    OR w.chain_tx_hash LIKE CONCAT('%', #{keyword}, '%')
+                    OR CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
+                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
+                    OR hit.hit_rules LIKE CONCAT('%', #{keyword}, '%')
+                    OR hit.hit_reasons LIKE CONCAT('%', #{keyword}, '%')
+                    OR rd.reason LIKE CONCAT('%', #{keyword}, '%'))
+             </if>
+            """;
 
     @Select("""
       SELECT asset currency,
@@ -59,14 +89,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                 ON k4m.state = 'active' AND k4m.is_deleted = 0
                AND k4.model_version = CONCAT('k4-v', k4m.model_version)
               LEFT JOIN nx_admin_risk_score_override k4o ON k4o.user_no = k4.user_no AND k4o.active = 1 AND k4o.is_deleted = 0
-              LEFT JOIN (
-                    SELECT withdrawal_no,
-                           GROUP_CONCAT(CONCAT(rule_id, ':', action) ORDER BY id DESC SEPARATOR ', ') AS hit_rules,
-                           GROUP_CONCAT(CONCAT(dimension, '规则命中:', rule_id, ' -> ', action) ORDER BY id DESC SEPARATOR ' | ') AS hit_reasons
-                      FROM nx_admin_risk_withdraw_hit
-                     WHERE is_deleted = 0
-                     GROUP BY withdrawal_no
-              ) hit ON (hit.withdrawal_no = w.withdrawal_no)
+            """ + D2_RISK_HIT_JOIN + """
              WHERE w.is_deleted = 0
              <if test='status != null and status != ""'>
                AND (CASE w.status
@@ -89,16 +112,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
              <if test='minRiskScore != null'>
                AND COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= #{minRiskScore}
              </if>
-             <if test='keyword != null and keyword != ""'>
-               AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR w.target_address LIKE CONCAT('%', #{keyword}, '%')
-                    OR w.chain_tx_hash LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
-                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
-                    OR hit.hit_rules LIKE CONCAT('%', #{keyword}, '%')
-                    OR hit.hit_reasons LIKE CONCAT('%', #{keyword}, '%')
-                    OR rd.reason LIKE CONCAT('%', #{keyword}, '%'))
-             </if>
+            """ + D2_KEYWORD_FILTER + """
              <if test='ipSegment != null and ipSegment != ""'>
                AND EXISTS (
                  SELECT 1 FROM nx_user_session ips
@@ -253,22 +267,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                 ON k4m.state = 'active' AND k4m.is_deleted = 0
                AND k4.model_version = CONCAT('k4-v', k4m.model_version)
               LEFT JOIN nx_admin_risk_score_override k4o ON k4o.user_no = k4.user_no AND k4o.active = 1 AND k4o.is_deleted = 0
-              LEFT JOIN (
-                    SELECT withdrawal_no,
-                           GROUP_CONCAT(CONCAT(h.rule_id, ':', h.action, '@', h.time_text) ORDER BY h.id DESC SEPARATOR ', ') AS hit_rules,
-                           GROUP_CONCAT(
-                               COALESCE(
-                                   CONCAT(h.dimension, '规则命中:', r.condition_text, ' -> ', h.action),
-                                   CONCAT(h.dimension, '规则命中:', h.rule_id, ' -> ', h.action)
-                               )
-                               ORDER BY h.id DESC SEPARATOR ' | '
-                           ) AS hit_reasons
-                      FROM nx_admin_risk_withdraw_hit h
-                      LEFT JOIN nx_admin_risk_withdraw_rule r
-                        ON r.rule_id = h.rule_id AND r.is_deleted = 0
-                     WHERE h.is_deleted = 0
-                     GROUP BY h.withdrawal_no
-              ) hit ON (hit.withdrawal_no = w.withdrawal_no)
+            """ + D2_RISK_HIT_JOIN + """
               LEFT JOIN (
                     SELECT resource_id,
                            GROUP_CONCAT(CONCAT(action, '@', DATE_FORMAT(created_at, '%m-%d %H:%i')) ORDER BY created_at DESC SEPARATOR ' | ') AS audit_trail
@@ -293,16 +292,7 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
              <if test='minRiskScore != null'>
                AND COALESCE(w.d2_k4_risk_score, k4o.override_score, k4.model_score) &gt;= #{minRiskScore}
              </if>
-             <if test='keyword != null and keyword != ""'>
-               AND (w.withdrawal_no LIKE CONCAT('%', #{keyword}, '%')
-                    OR w.target_address LIKE CONCAT('%', #{keyword}, '%')
-                    OR w.chain_tx_hash LIKE CONCAT('%', #{keyword}, '%')
-                    OR CONCAT('U', LPAD(w.user_id, GREATEST(8, CHAR_LENGTH(CAST(w.user_id AS CHAR))), '0')) LIKE CONCAT('%', #{keyword}, '%')
-                    OR u.nickname LIKE CONCAT('%', #{keyword}, '%')
-                    OR hit.hit_rules LIKE CONCAT('%', #{keyword}, '%')
-                    OR hit.hit_reasons LIKE CONCAT('%', #{keyword}, '%')
-                    OR rd.reason LIKE CONCAT('%', #{keyword}, '%'))
-             </if>
+            """ + D2_KEYWORD_FILTER + """
              <if test='ipSegment != null and ipSegment != ""'>
                AND EXISTS (SELECT 1 FROM nx_user_session ips WHERE ips.user_id=w.user_id AND ips.is_deleted=0 AND ips.client_ip LIKE CONCAT(#{ipSegment}, '%'))
              </if>
