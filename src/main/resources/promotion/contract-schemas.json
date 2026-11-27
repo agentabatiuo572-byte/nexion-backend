@@ -2424,7 +2424,7 @@
             ]
           },
           "expectedAmountUsdt": {
-            "description": "Maximum net USDT amount confirmed at checkout. Required for new ordinary single-product orders without a promotion quote. Same-key historical requests may replay without this field.",
+            "description": "Maximum net USDT amount confirmed at checkout. Current clients send it for ordinary single-product orders without a promotion quote. Older clients may omit this field during rollout.",
             "anyOf": [
               {
                 "type": "number",

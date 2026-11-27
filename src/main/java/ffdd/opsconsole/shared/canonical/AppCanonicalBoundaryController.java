@@ -314,7 +314,7 @@ public class AppCanonicalBoundaryController {
 
         @Override
         public BigDecimal getAbsentValue(DeserializationContext context) {
-            // An omitted amount can still replay an original legacy request.
+            // Older App builds omit the amount, while explicit null is invalid.
             return null;
         }
     }

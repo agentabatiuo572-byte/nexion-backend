@@ -819,26 +819,28 @@ public class AppCanonicalBoundaryService {
             Long userId, String clientOrderId, Long productId, String productNo,
             Integer quantity, String voucherId, String promotionQuoteId, String idempotencyKey) {
         return createOrder(userId, clientOrderId, productId, productNo, quantity, voucherId, promotionQuoteId,
-                null, idempotencyKey, false);
+                null, idempotencyKey);
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> createOrder(
             Long userId, String clientOrderId, Long productId, String productNo, Integer quantity,
             String voucherId, String promotionQuoteId, BigDecimal expectedAmountUsdt, String idempotencyKey) {
-        if (promotionQuoteId == null && expectedAmountUsdt != null
-                && (expectedAmountUsdt.signum() < 0 || expectedAmountUsdt.scale() > 6
-                    || expectedAmountUsdt.compareTo(MAX_ORDER_AMOUNT_USDT) > 0)) {
-            return ApiResult.fail(400, ORDER_EXPECTED_AMOUNT_INVALID);
+        BigDecimal confirmedAmount = null;
+        if (promotionQuoteId == null && expectedAmountUsdt != null) {
+            if (expectedAmountUsdt.signum() < 0 || expectedAmountUsdt.scale() > 6
+                    || expectedAmountUsdt.compareTo(MAX_ORDER_AMOUNT_USDT) > 0) {
+                return ApiResult.fail(400, ORDER_EXPECTED_AMOUNT_INVALID);
+            }
+            confirmedAmount = expectedAmountUsdt.stripTrailingZeros();
         }
         return createOrder(userId, clientOrderId, productId, productNo, quantity, voucherId, promotionQuoteId,
-                promotionQuoteId == null && expectedAmountUsdt != null ? expectedAmountUsdt.stripTrailingZeros() : null, idempotencyKey, true);
+                idempotencyKey, confirmedAmount);
     }
 
     private ApiResult<Map<String, Object>> createOrder(
             Long userId, String clientOrderId, Long productId, String productNo, Integer quantity,
-            String voucherId, String promotionQuoteId, BigDecimal expectedAmountUsdt, String idempotencyKey,
-            boolean requireExpectedAmount) {
+            String voucherId, String promotionQuoteId, String idempotencyKey, BigDecimal expectedAmountUsdt) {
         if (promotionQuoteId != null && !StringUtils.hasText(promotionQuoteId)) return ApiResult.fail(422, "PROMOTION_QUOTE_INVALID");
         Map<String, Object> payload = linked("clientOrderId", clientOrderId, "productId", productId,
                 "productNo", productNo, "quantity", quantity, "voucherId", voucherId);
@@ -846,16 +848,14 @@ public class AppCanonicalBoundaryService {
         // Keep both legacy fingerprints intact. With a confirmed cap, prefix it outside the old payload.
         Object fingerprint = expectedAmountUsdt == null ? payload
                 : "expectedAmountUsdt=" + expectedAmountUsdt.toPlainString() + "|" + payload;
-        boolean missingExpectedAmount = requireExpectedAmount && promotionQuoteId == null && expectedAmountUsdt == null;
         boolean developmentRuntime = false;
         // Acceptance checkout has its own catalogue/order/inventory facts. Do this
         // before touching canonical order, product, voucher, or outbox boundaries.
         if (!developmentRuntime && commerceSandboxProfile()) {
             if (promotionQuoteId != null) return ApiResult.fail(409, "PROMOTION_RUNTIME_UNAVAILABLE");
             if (!isCommerceSandboxUser(userId)) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_REQUIRED");
-            return exactCreatedAmount(executeSandboxOrderOnce(userId, idempotencyKey, fingerprint, () -> missingExpectedAmount
-                    ? ApiResult.fail(400, ORDER_EXPECTED_AMOUNT_INVALID)
-                    : createSandboxOrderInternal(userId, clientOrderId, productId, productNo, quantity, voucherId,
+            return exactCreatedAmount(executeSandboxOrderOnce(userId, idempotencyKey, fingerprint,
+                    () -> createSandboxOrderInternal(userId, clientOrderId, productId, productNo, quantity, voucherId,
                             expectedAmountUsdt)));
         }
         if (!developmentRuntime && !fundsSandboxProfileGuard.isStrictProductionRuntime()) {
@@ -871,7 +871,6 @@ public class AppCanonicalBoundaryService {
             if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
         }
         return exactCreatedAmount(executeOnce("ORDER_CREATE", userId, idempotencyKey, fingerprint, () -> {
-            if (missingExpectedAmount) return ApiResult.fail(400, ORDER_EXPECTED_AMOUNT_INVALID);
             if (promotionQuoteId != null && promotions == null) throw new BizException(503, "PROMOTION_UNAVAILABLE");
             var quote = promotionQuoteId == null ? null : promotions.lockCreateQuote(userId, promotionQuoteId);
             int units = quantity == null ? 1 : quantity;
