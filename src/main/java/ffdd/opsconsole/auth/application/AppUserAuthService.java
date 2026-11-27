@@ -255,7 +255,8 @@ public class AppUserAuthService {
             userMapper.invalidateOpenLoginOtpChallenges(user.getId());
             return ApiResult.fail(503, "USER_OTP_DELIVERY_FAILED");
         }
-        return ApiResult.ok(new UserOtpLoginChallengeResponse(challengeNo, policy.cooldownSeconds(), maskPhone(phone)));
+        return ApiResult.ok(new UserOtpLoginChallengeResponse(
+                challengeNo, policy.cooldownSeconds(), maskPhone(phone), policy.ttlSeconds()));
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -917,7 +918,8 @@ public class AppUserAuthService {
         return new UserOtpLoginChallengeResponse(
                 "LOGIN-" + UUID.randomUUID().toString().replace("-", ""),
                 policy.cooldownSeconds(),
-                maskPhone(phone));
+                maskPhone(phone),
+                policy.ttlSeconds());
     }
 
     private String maskPhone(String phone) {

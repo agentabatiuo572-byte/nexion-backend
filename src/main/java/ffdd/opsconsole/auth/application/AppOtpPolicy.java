@@ -16,6 +16,10 @@ record AppOtpPolicy(int ttlMinutes, int cooldownSeconds, int max24h, int maxVeri
         return read(configs, "auth.risk.otp_send_cooldown_seconds", 60, 30, 300);
     }
 
+    int ttlSeconds() {
+        return ttlMinutes * 60;
+    }
+
     private static int read(PlatformConfigFacade configs, String key, int fallback, int min, int max) {
         String raw = configs.activeValue(key).orElse(null);
         if (raw == null) return fallback;

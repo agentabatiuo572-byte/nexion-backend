@@ -94,7 +94,8 @@ public class AppUserPasswordResetService {
         UserEntity user = findUser(audience, countryCode, phone);
         String challengeNo = "RESET-" + UUID.randomUUID().toString().replace("-", "");
         if (!eligible(user)) {
-            return ApiResult.ok(new UserOtpLoginChallengeResponse(challengeNo, policy.cooldownSeconds(), maskPhone(phone)));
+            return ApiResult.ok(new UserOtpLoginChallengeResponse(
+                    challengeNo, policy.cooldownSeconds(), maskPhone(phone), policy.ttlSeconds()));
         }
         String code = otpDeliveryService.verificationCode(countryCode);
         userMapper.invalidateOpenPasswordResetChallenges(user.getId());
@@ -108,7 +109,7 @@ public class AppUserPasswordResetService {
             return ApiResult.fail(503, "USER_OTP_DELIVERY_FAILED");
         }
         return ApiResult.ok(new UserOtpLoginChallengeResponse(
-                challengeNo, policy.cooldownSeconds(), maskPhone(phone)));
+                challengeNo, policy.cooldownSeconds(), maskPhone(phone), policy.ttlSeconds()));
     }
 
     @Transactional

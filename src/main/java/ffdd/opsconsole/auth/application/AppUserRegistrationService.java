@@ -227,7 +227,8 @@ public class AppUserRegistrationService {
         return ApiResult.ok(new UserRegistrationOtpResponse(
                 challengeNo,
                 policy.cooldownSeconds(),
-                maskPhone(phone)));
+                maskPhone(phone),
+                policy.ttlSeconds()));
     }
 
     @Transactional
