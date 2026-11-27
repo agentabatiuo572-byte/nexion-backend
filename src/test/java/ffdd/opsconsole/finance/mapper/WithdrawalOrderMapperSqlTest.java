@@ -3,6 +3,7 @@ package ffdd.opsconsole.finance.mapper;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
@@ -48,7 +49,9 @@ class WithdrawalOrderMapperSqlTest {
                         BigDecimal.class,
                         BigDecimal.class,
                         Integer.class,
-                        String.class)
+                        String.class,
+                        LocalDateTime.class,
+                        LocalDateTime.class)
                 .getAnnotation(Select.class)
                 .value());
         String pageSql = String.join("\n", WithdrawalOrderMapper.class
@@ -64,7 +67,9 @@ class WithdrawalOrderMapperSqlTest {
                         String.class,
                         String.class,
                         int.class,
-                        int.class)
+                        int.class,
+                        LocalDateTime.class,
+                        LocalDateTime.class)
                 .getAnnotation(Select.class)
                 .value());
 
@@ -87,7 +92,9 @@ class WithdrawalOrderMapperSqlTest {
                         String.class,
                         String.class,
                         int.class,
-                        int.class)
+                        int.class,
+                        LocalDateTime.class,
+                        LocalDateTime.class)
                 .getAnnotation(Select.class)
                 .value());
         String detailSql = String.join("\n", WithdrawalOrderMapper.class
@@ -128,7 +135,9 @@ class WithdrawalOrderMapperSqlTest {
                         String.class,
                         String.class,
                         int.class,
-                        int.class)
+                        int.class,
+                        LocalDateTime.class,
+                        LocalDateTime.class)
                 .getAnnotation(Select.class)
                 .value());
         String detailSql = String.join("\n", WithdrawalOrderMapper.class
@@ -157,7 +166,9 @@ class WithdrawalOrderMapperSqlTest {
                         BigDecimal.class,
                         BigDecimal.class,
                         Integer.class,
-                        String.class)
+                        String.class,
+                        LocalDateTime.class,
+                        LocalDateTime.class)
                 .getAnnotation(Select.class)
                 .value());
         String pageSql = String.join("\n", WithdrawalOrderMapper.class
@@ -173,7 +184,9 @@ class WithdrawalOrderMapperSqlTest {
                         String.class,
                         String.class,
                         int.class,
-                        int.class)
+                        int.class,
+                        LocalDateTime.class,
+                        LocalDateTime.class)
                 .getAnnotation(Select.class)
                 .value());
         String detailSql = String.join("\n", WithdrawalOrderMapper.class
@@ -261,7 +274,9 @@ class WithdrawalOrderMapperSqlTest {
                         String.class,
                         String.class,
                         int.class,
-                        int.class)
+                        int.class,
+                        LocalDateTime.class,
+                        LocalDateTime.class)
                 .getAnnotation(Select.class)
                 .value());
         String normalized = pageSql.replaceAll("\\s+", " ").trim();

@@ -32,6 +32,27 @@ public interface WithdrawalOrderRepository {
         return page(status, userId, keyword, minAmount, maxAmount, minRiskScore, pageNum, pageSize);
     }
 
+    default PageResult<WithdrawalOrderView> page(
+            String status,
+            Long userId,
+            String keyword,
+            BigDecimal minAmount,
+            BigDecimal maxAmount,
+            Integer minRiskScore,
+            String ipSegment,
+            String sortBy,
+            String sortDirection,
+            int pageNum,
+            int pageSize,
+            LocalDateTime createdAtFrom,
+            LocalDateTime createdAtToExclusive) {
+        if (createdAtFrom != null || createdAtToExclusive != null) {
+            throw new UnsupportedOperationException("Withdrawal date filtering requires repository support");
+        }
+        return page(status, userId, keyword, minAmount, maxAmount, minRiskScore,
+                ipSegment, sortBy, sortDirection, pageNum, pageSize);
+    }
+
     Optional<WithdrawalOrderView> findByWithdrawalNo(String withdrawalNo);
 
     Optional<String> findUserCountryCode(Long userId);
