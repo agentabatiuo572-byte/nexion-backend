@@ -18,21 +18,21 @@ class AppDayOnePageObservationControllerTest {
 
     @Test
     void usesOnlyTheAuthenticatedUserSubject() {
-        when(service.observe(42L, "earn")).thenReturn(ApiResult.ok(Map.of("accepted", true, "recorded", true)));
+        when(service.observe(42L, "earn", "stellarbox-s1")).thenReturn(ApiResult.ok(Map.of("accepted", true, "recorded", true)));
 
-        var result = controller.observe("earn", auth("42", "USER"));
+        var result = controller.observe("earn", null, auth("42", "USER"));
 
         assertThat(result.getCode()).isZero();
-        verify(service).observe(42L, "earn");
+        verify(service).observe(42L, "earn", "stellarbox-s1");
     }
 
     @Test
     void rejectsAdminSubjectsBeforeTheyReachTheObservationService() {
-        var result = controller.observe("store", auth("7", "ADMIN"));
+        var result = controller.observe("store", null, auth("7", "ADMIN"));
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("USER_SUBJECT_REQUIRED");
-        verify(service, never()).observe(7L, "store");
+        verify(service, never()).observe(7L, "store", "stellarbox-s1");
     }
 
     private UsernamePasswordAuthenticationToken auth(String id, String subjectType) {
