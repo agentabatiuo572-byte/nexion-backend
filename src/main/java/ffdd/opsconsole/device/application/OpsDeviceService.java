@@ -1364,6 +1364,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (before == null) {
                 return ApiResult.fail(404, "PHONE_TIER_NOT_FOUND");
             }
+            boolean reviewedTier = holdsE2ApprovalLock(new AuditLockTarget("E", "phone_tier", String.valueOf(tier)));
+            if (reviewedTier && before.revision() != null && before.revision() > trusted.expectedRevision()) {
+                throw new E2TaskPricingApproval.ConfirmedPricingRecheck(409, "PHONE_TIER_VERSION_CONFLICT");
+            }
             BigDecimal nextUsdt = trusted.dailyUsdt() == null ? before.dailyUsdt() : trusted.dailyUsdt();
             BigDecimal nextNex = trusted.dailyNex() == null ? before.dailyNex() : trusted.dailyNex();
             List<DevicePhoneTierRewardView> tiers = catalogRepository.listPhoneTierRewards();
@@ -1371,10 +1375,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     || !isMonotonicPhoneTier(tiers, tier, nextNex, DevicePhoneTierRewardView::dailyNex)) {
                 return ApiResult.fail(400, "PHONE_TIER_MONOTONICITY_INVALID");
             }
-            if ((nextUsdt.compareTo(before.dailyUsdt()) > 0 || nextNex.compareTo(before.dailyNex()) > 0)
-                    && coverageBelowRedline()) {
-                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+            if (nextUsdt.compareTo(before.dailyUsdt()) > 0 || nextNex.compareTo(before.dailyNex()) > 0) {
+                TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+                boolean unavailable = e2CoverageUnavailable(coverage);
+                if (unavailable || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+                    var failure = OpsErrorCode.COVERAGE_BELOW_REDLINE;
+                    if (!unavailable && reviewedTier && trusted.expectedRevision().equals(before.revision())) {
+                        throw new E2TaskPricingApproval.ConfirmedPricingRecheck(failure.httpStatus(), failure.name());
+                    }
+                    return ApiResult.fail(failure.httpStatus(), failure.name());
+                }
             }
             DevicePhoneTierRewardView updated = catalogRepository
                     .updatePhoneTierReward(tier, trusted, LocalDateTime.now(clock))
@@ -2431,7 +2441,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         var prepared = prepareE2TaskPricingApproval(request, expectedTarget);
         if (prepared.getCode() != 0) {
-            return ApiResult.fail(prepared.getCode(), prepared.getMessage());
+            int code = prepared.getCode();
+            String reason = prepared.getMessage();
+            if (code == 409 && "E2_TASK_PRICING_STALE".equals(reason)) {
+                throw new E2TaskPricingApproval.ConfirmedPricingRecheck(code, reason);
+            }
+            return ApiResult.fail(code, reason);
         }
         return applyE2TaskPricing(prepared.getData(), trustedE2TaskPricingRequest(request), idempotencyKey);
     }
@@ -2456,9 +2471,14 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (!prepared.getData().requiresApproval()) {
             return ApiResult.fail(422, "E2_TASK_PRICING_APPROVAL_NOT_REQUIRED");
         }
-        if (e2TaskPricingCoverageBelowRedline()) {
-            return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                    OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
+        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        boolean unavailable = e2CoverageUnavailable(coverage);
+        if (unavailable || coverage.redlineBreached()) {
+            var failure = OpsErrorCode.COVERAGE_BELOW_REDLINE;
+            if (!unavailable && expectedTarget != null) {
+                throw new E2TaskPricingApproval.ConfirmedPricingRecheck(failure.httpStatus(), failure.name());
+            }
+            return ApiResult.fail(failure.httpStatus(), failure.name());
         }
         return prepared;
     }
@@ -2632,8 +2652,12 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     private boolean e2TaskPricingCoverageBelowRedline() {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
+        return e2CoverageUnavailable(coverage) || coverage.redlineBreached();
+    }
+
+    private boolean e2CoverageUnavailable(TreasuryCoverageSnapshot coverage) {
         return coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
-                || coverage.redlinePct() == null || coverage.redlineBreached();
+                || coverage.redlinePct() == null;
     }
 
     public ApiResult<Map<String, Object>> e2PhoneTiers() {

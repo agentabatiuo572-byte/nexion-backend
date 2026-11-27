@@ -45,6 +45,12 @@ public class E2TaskPricingApproval {
         return command != null && "E".equals(command.domain()) && LIFECYCLE_OP.equals(command.op());
     }
 
+    public static final class ConfirmedPricingRecheck extends BizException {
+        ConfirmedPricingRecheck(int code, String reason) {
+            super(code, reason);
+        }
+    }
+
     public boolean shouldBindLifecycle(AuditReplayCommand command) {
         return isLifecycle(command) || command != null && "E".equals(command.domain()) && command.op() != null
                 && LEGACY_LIFECYCLE_OPS.contains(command.op())

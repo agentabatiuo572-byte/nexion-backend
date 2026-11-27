@@ -2,6 +2,7 @@ package ffdd.opsconsole.platform.application;
 
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
+import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.emergency.application.OpsEmergencyControlService;
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
@@ -42,6 +43,10 @@ final class AuditApprovalRechecks {
     private AuditApprovalRechecks() {}
 
     static boolean confirmed(AuditReplayCommand command, BizException failure) {
+        if (failure instanceof E2TaskPricingApproval.ConfirmedPricingRecheck) {
+            return command != null && "E".equals(command.domain())
+                    && ("e2_task_pricing_change".equals(command.op()) || "e2_phone_tier".equals(command.op()));
+        }
         if (failure instanceof H3GrowthApproval.ConfirmedRecheckFailure) {
             return H3GrowthApproval.supports(command);
         }
