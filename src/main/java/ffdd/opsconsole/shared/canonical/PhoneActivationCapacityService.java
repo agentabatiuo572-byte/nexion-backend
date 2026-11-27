@@ -71,7 +71,7 @@ public class PhoneActivationCapacityService implements PhoneActivationCapacityCo
         if (owner == null || owner.sandbox()) return;
         var device = mapper.lockDeviceForUserCommand(deviceId);
         if (!occupiesPhoneSlot(userId, device) || !device.pendingDeactivate() || mapper.hasActiveTask(userId, deviceId)
-                || computeLifecycle.hasOtherWorkAfterPhoneTaskCancellation(userId, deviceId, device.instanceNo())) return;
+                || computeLifecycle.hasOtherWorkBeforePendingDeactivation(userId, deviceId, device.instanceNo())) return;
         if (mapper.deactivatePendingComputeV2Device(userId, deviceId, device.rowVersion()) != 1)
             throw new BizException(409, "DEVICE_VERSION_CONFLICT");
         mapper.markDeviceRuntimeDeactivated(deviceId);

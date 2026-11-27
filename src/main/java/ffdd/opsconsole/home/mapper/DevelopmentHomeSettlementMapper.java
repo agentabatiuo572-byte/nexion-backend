@@ -1,5 +1,7 @@
 package ffdd.opsconsole.home.mapper;
 
+import static ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.ACTIVE_CANONICAL_COMPUTE_TASK;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -313,12 +315,8 @@ public interface DevelopmentHomeSettlementMapper extends BaseMapper<Object> {
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=d.user_id AND u.sandbox=0
                            AND UPPER(COALESCE(u.status, 'ACTIVE'))='ACTIVE' AND u.is_deleted=0)
                AND NOT EXISTS (
-                   SELECT 1 FROM nx_compute_task active
-                    WHERE active.user_id=d.user_id AND active.user_device_id=d.id
-                      AND active.source_environment='PRODUCTION'
-                      AND active.status IN ('CLAIMED','RUNNING') AND active.is_deleted=0
-               )
-            """)
+                   SELECT 1 FROM nx_compute_task t WHERE t.user_id=d.user_id AND t.user_device_id=d.id AND
+            """ + ACTIVE_CANONICAL_COMPUTE_TASK + ")")
     int deactivatePendingDevelopmentDevice(@Param("userId") Long userId,
                                            @Param("userDeviceId") Long userDeviceId,
                                            @Param("expectedRowVersion") Long expectedRowVersion,

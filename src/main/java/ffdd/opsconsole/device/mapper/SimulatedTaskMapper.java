@@ -1,5 +1,7 @@
 package ffdd.opsconsole.device.mapper;
 
+import static ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper.ACTIVE_CANONICAL_COMPUTE_TASK;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -199,9 +201,11 @@ public interface SimulatedTaskMapper {
             """)
     List<Candidate> initialDevices(@Param("afterId")long afterId,@Param("limit")int limit,@Param("now")LocalDateTime now);
     @Select("""
-            SELECT (SELECT COUNT(*) FROM nx_compute_task WHERE user_id=#{userId} AND user_device_id=#{deviceId}
-              AND source_environment='PRODUCTION' AND is_deleted=0 AND status IN ('CLAIMED','RUNNING','PAUSED')
-              AND task_no NOT LIKE 'CV2-%' AND task_no NOT LIKE 'SIM-%')
+            SELECT (SELECT COUNT(*) FROM nx_compute_task t WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId}
+              AND (
+            """ + ACTIVE_CANONICAL_COMPUTE_TASK + """
+                OR t.source_environment='PRODUCTION' AND t.is_deleted=0 AND t.status='PAUSED')
+              AND t.task_no NOT LIKE 'CV2-%' AND t.task_no NOT LIKE 'SIM-%')
               +(SELECT COUNT(*) FROM nx_test_cloud_request r WHERE r.owner_id=#{userId} AND r.device_id=#{deviceId}
                 AND r.state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS (
             """+LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+"))")

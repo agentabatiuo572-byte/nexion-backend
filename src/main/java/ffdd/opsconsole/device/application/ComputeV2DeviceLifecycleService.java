@@ -169,8 +169,8 @@ public class ComputeV2DeviceLifecycleService {
         if (runtimeToStop != null) simulated.stopForH5Login(runtimeToStop);
     }
 
-    /** An uncertain Redis read leaves the swap pending without blocking native session revocation. */
-    public boolean hasOtherWorkAfterPhoneTaskCancellation(long userId, long deviceId, String instanceNo) {
+    /** An uncertain runtime read leaves the swap pending after a legacy task exits. */
+    public boolean hasOtherWorkBeforePendingDeactivation(long userId, long deviceId, String instanceNo) {
         boolean enrolledInV2 = runtime.isPresent() && enrolled.contains(deviceId);
         if (enrolledInV2) {
             try {
@@ -351,7 +351,7 @@ public class ComputeV2DeviceLifecycleService {
                     || !device.pendingDeactivate() || !"OWNED".equals(device.ownershipStatus())) return;
             String taskNo = mapper.cancelledPendingSlotPhoneTask(userId, deviceId);
             if (taskNo == null || mapper.hasActiveTask(userId, deviceId)
-                    || hasOtherWorkAfterPhoneTaskCancellation(userId, deviceId, device.instanceNo())) return;
+                    || hasOtherWorkBeforePendingDeactivation(userId, deviceId, device.instanceNo())) return;
             finishLocked(userId, device, taskNo, "USER_DEVICE_DEFERRED_DEACTIVATED");
         });
     }

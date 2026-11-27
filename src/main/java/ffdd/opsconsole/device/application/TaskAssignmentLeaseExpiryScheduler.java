@@ -43,7 +43,7 @@ public class TaskAssignmentLeaseExpiryScheduler {
         for (AppTaskAssignmentMapper.LeaseExpiryCandidate candidate : candidates) {
             if (candidate == null || candidate.userId() == null || candidate.userId() <= 0
                     || candidate.deviceId() == null || candidate.deviceId() <= 0
-                    || candidate.taskNo() == null || candidate.taskNo().isBlank()) continue;
+                    || candidate.taskNo() == null) continue;
             try {
                 service.expirePendingLease(candidate.userId(), candidate.deviceId(), candidate.taskNo());
             } catch (BizException expectedStateChange) {

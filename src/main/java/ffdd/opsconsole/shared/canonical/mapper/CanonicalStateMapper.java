@@ -364,20 +364,25 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             """)
     UserDeviceCommandRow lockDeviceForUserCommand(@Param("deviceId") Long deviceId);
 
+    String ACTIVE_CANONICAL_COMPUTE_TASK = """
+            t.is_deleted=0 AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+            AND (t.source_environment='PRODUCTION' OR NULLIF(TRIM(t.source_environment),'') IS NULL)
+            """;
+
     @Select("""
-            SELECT COUNT(1) FROM nx_compute_task
-             WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND is_deleted=0
+            SELECT EXISTS(SELECT 1 FROM nx_compute_task t
+             WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId}
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0)
-               AND UPPER(COALESCE(source_environment,'PRODUCTION'))='PRODUCTION'
-               AND UPPER(status) IN ('CLAIMED','RUNNING')
-            """)
+               AND
+            """ + ACTIVE_CANONICAL_COMPUTE_TASK + ")")
     boolean hasActiveTask(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Select("SELECT EXISTS(SELECT 1 FROM nx_test_cloud_request r WHERE owner_id=#{userId} AND device_id=#{deviceId} AND state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS ("
             +ffdd.opsconsole.device.mapper.LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+"))")
     boolean hasUnresolvedComputeV1Request(@Param("userId") long userId,@Param("deviceId") long deviceId);
 
-    @Select("SELECT EXISTS(SELECT 1 FROM nx_compute_task WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND is_deleted=0 AND source_environment='PRODUCTION' AND status IN ('CLAIMED','RUNNING') AND task_no NOT LIKE 'CV2-%')")
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_compute_task t WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId} AND "
+            + ACTIVE_CANONICAL_COMPUTE_TASK + " AND t.task_no NOT LIKE 'CV2-%')")
     boolean hasActiveComputeV1Task(@Param("userId") long userId,@Param("deviceId") long deviceId);
 
     @Select("SELECT EXISTS(SELECT 1 FROM nx_compute_v2_event WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND task_no=#{taskNo} AND generation=#{generation} AND deployment_scope=#{scope} AND kind='EXITED')")
@@ -416,7 +421,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             AND d.status IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE') AND d.pending_deactivate=1
             AND d.activated_at IS NOT NULL AND d.row_version=#{expectedVersion}
             AND NOT EXISTS(SELECT 1 FROM nx_compute_task t WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId}
-                AND t.is_deleted=0 AND t.source_environment='PRODUCTION' AND t.status IN ('CLAIMED','RUNNING') AND t.task_no NOT LIKE 'CV2-%')
+                AND
+        """ + ACTIVE_CANONICAL_COMPUTE_TASK + """
+                AND t.task_no NOT LIKE 'CV2-%')
             AND NOT EXISTS(SELECT 1 FROM nx_simulated_device_runtime s WHERE s.user_device_id=d.id
                 AND s.current_task_no IS NOT NULL)
             AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_request r WHERE r.owner_id=#{userId} AND r.device_id=#{deviceId}
