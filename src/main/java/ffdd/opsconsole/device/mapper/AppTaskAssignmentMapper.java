@@ -864,24 +864,33 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
                           @Param("sourceEnvironment") String sourceEnvironment,
                           @Param("now") LocalDateTime now);
 
+    String NO_ASSIGNMENT_SETTLEMENT_EVIDENCE = """
+            AND t.completed_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM nx_compute_receipt r
+                WHERE r.task_no=t.task_no OR (r.user_id=t.user_id AND r.user_device_id=t.user_device_id
+                    AND r.receipt_no=CONCAT('CTR-',RIGHT(t.task_no,32))))
+            AND NOT EXISTS (SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=t.user_id AND l.biz_type='COMPUTE_TASK_REWARD'
+                AND (l.biz_no=t.task_no OR l.biz_no=CONCAT('CTR-',RIGHT(t.task_no,32))))
+            AND NOT EXISTS (SELECT 1 FROM nx_earning_event e WHERE e.user_id=t.user_id
+                AND (e.user_device_id IS NULL OR e.user_device_id=t.user_device_id)
+                AND (e.event_no=CONCAT('EARN-',t.task_no) OR e.receipt_no=CONCAT('CTR-',RIGHT(t.task_no,32))))
+            """;
+
     String STANDARD_APP_EXPIRY = """
             t.is_deleted=0 AND t.status IN ('CLAIMED','RUNNING') AND t.source_environment='PRODUCTION'
             AND t.task_no LIKE 'CTA-%' AND t.lease_expires_at<=#{now} AND t.proof_consumed_at IS NULL
-            AND NOT EXISTS (SELECT 1 FROM nx_compute_receipt r WHERE r.task_no=t.task_no)
-            """;
+            AND REGEXP_LIKE(t.task_no,'^CTA-[A-Za-z0-9._:-]{1,92}\\\\z','c')
+            """ + NO_ASSIGNMENT_SETTLEMENT_EVIDENCE;
 
     // Older task numbers can complete with a valid proof. A missing lease alone is insufficient.
     String LEGACY_APP_EXPIRY = ACTIVE_CANONICAL_COMPUTE_TASK + """
             AND t.task_no NOT LIKE 'CV2-%' AND t.task_no NOT LIKE 'SIM-%' AND t.task_no NOT LIKE 'DEV-TASK-%'
-            AND t.completed_at IS NULL
             AND (t.proof_consumed_at IS NOT NULL
                  OR NULLIF(TRIM(t.source_environment),'') IS NULL
                  OR t.lease_expires_at<=#{now}
                  OR t.lease_expires_at IS NULL AND (t.proof_expires_at IS NULL OR t.proof_expires_at<#{now}
                      OR NULLIF(TRIM(t.completion_nonce),'') IS NULL))
-            AND NOT EXISTS (SELECT 1 FROM nx_compute_receipt r WHERE r.task_no=t.task_no)
-            AND NOT EXISTS (SELECT 1 FROM nx_wallet_ledger l WHERE l.biz_no=t.task_no
-                AND l.user_id=t.user_id AND l.biz_type='COMPUTE_TASK_REWARD')
+            """ + NO_ASSIGNMENT_SETTLEMENT_EVIDENCE + """
             AND NOT EXISTS (SELECT 1 FROM nx_test_cloud_execution e WHERE e.task_no=t.task_no)
             AND NOT EXISTS (SELECT 1 FROM nx_test_cloud_request r WHERE r.owner_id=t.user_id
                 AND r.device_id=t.user_device_id AND r.state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS (
