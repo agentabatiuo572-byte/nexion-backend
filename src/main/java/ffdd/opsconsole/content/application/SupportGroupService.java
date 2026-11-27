@@ -136,7 +136,9 @@ public class SupportGroupService {
         return command("RENAME",key,List.of(id,r),r.reason(),()-> {
             lockAccounts(ownership.actorId());Group g=readable(mapper.lockGroup(id)); expected(g.version(),r.expectedVersion());
             if("ARCHIVED".equals(g.status())) throw new BizException(409,"SUPPORT_GROUP_ARCHIVED");
-            changed(mapper.rename(id,r.name().trim(),r.expectedVersion(),mapper.now()));record("RENAMED",id,key,Map.of("request",r,"before",g,"after",mapper.group(id)));
+            changed(mapper.rename(id,r.name().trim(),r.expectedVersion(),mapper.now()));
+            var auditedRequest = new Rename(r.name(), r.expectedVersion(), reasonForAudit(r.reason()));
+            record("RENAMED",id,key,Map.of("request",auditedRequest,"before",g,"after",mapper.group(id)));
             return ApiResult.ok(mapper.group(id));
         });
     }
@@ -155,8 +157,10 @@ public class SupportGroupService {
             if("ENABLED".equals(r.status())) requireSupervisor(g.supervisorAdminId());
             else if(mapper.memberCount(id)!=0 || mapper.routeCount(id)!=0 || mapper.pendingGroupOperations(id)!=0)
                 throw new BizException(409,"SUPPORT_GROUP_HANDOVER_REQUIRED");
-            changed(mapper.status(id,r.status(),r.expectedVersion(),mapper.now()));record("STATUS_CHANGED",id,key,Map.of("request",r,"before",g,"after",mapper.group(id)));
-            invalidate(r.reason(),g.supervisorAdminId());
+            changed(mapper.status(id,r.status(),r.expectedVersion(),mapper.now()));
+            var auditedRequest = new Status(r.status(), r.expectedVersion(), reasonForAudit(r.reason()));
+            record("STATUS_CHANGED",id,key,Map.of("request",auditedRequest,"before",g,"after",mapper.group(id)));
+            invalidate(reasonForHistory(r.reason()),g.supervisorAdminId());
             return ApiResult.ok(mapper.group(id));
         });
     }
@@ -173,10 +177,13 @@ public class SupportGroupService {
             if(g.supervisorAdminId().equals(r.supervisorAdminId()))throw new BizException(409,"SUPPORT_GROUP_OWNER_UNCHANGED");
             LocalDateTime at=mapper.now();changed(mapper.closeOwner(id,g.supervisorAdminId(),at));
             changed(mapper.owner(id,r.supervisorAdminId(),r.expectedVersion(),at));
-            changed(mapper.insertOwner(id,r.supervisorAdminId(),at,g.version()+1,ownership.actorId(),r.reason().trim(),operation(key)));
-            record("OWNER_CHANGED",id,key,Map.of("request",r,"before",g,"after",mapper.group(id)));
+            String historyReason = reasonForHistory(r.reason());
+            changed(mapper.insertOwner(id,r.supervisorAdminId(),at,g.version()+1,ownership.actorId(),historyReason,operation(key)));
+            var auditedRequest = new ffdd.opsconsole.content.dto.SupportGroupRequests.Owner(
+                    r.supervisorAdminId(), r.expectedVersion(), reasonForAudit(r.reason()));
+            record("OWNER_CHANGED",id,key,Map.of("request",auditedRequest,"before",g,"after",mapper.group(id)));
             var affected=new TreeSet<Long>(mapper.candidateIdsSnapshot(id));affected.add(g.supervisorAdminId());affected.add(r.supervisorAdminId());
-            events.publishEvent(new ScopeChanged(affected,r.reason().trim()));return ApiResult.ok(mapper.group(id));
+            events.publishEvent(new ScopeChanged(affected,historyReason));return ApiResult.ok(mapper.group(id));
         });
     }
 
@@ -214,11 +221,14 @@ public class SupportGroupService {
             }
             long nextVersion=nextVersion(old==null?0L:old.version());
             LocalDateTime at=mapper.now();if(old!=null)changed(mapper.closeMember(old.id(),old.version(),at));
-            changed(mapper.insertMember(agent,r.targetGroupId(),at,nextVersion,ownership.actorId(),r.reason().trim(),operation(key)));
+            String historyReason = reasonForHistory(r.reason());
+            changed(mapper.insertMember(agent,r.targetGroupId(),at,nextVersion,ownership.actorId(),historyReason,operation(key)));
             for(Group group:groups.values())changed(mapper.touch(group.id(),group.version(),at));
-            record("MEMBER_MOVED",agent,key,Map.of("request",r,"before",old==null?"UNPROVEN":old,"after",mapper.member(agent)));
+            var auditedRequest = new Move(r.targetGroupId(), r.expectedMemberVersion(), r.sourceGroupVersion(),
+                    r.targetGroupVersion(), reasonForAudit(r.reason()));
+            record("MEMBER_MOVED",agent,key,Map.of("request",auditedRequest,"before",old==null?"UNPROVEN":old,"after",mapper.member(agent)));
             var affected=new TreeSet<Long>();affected.add(agent);for(Group g:groups.values())affected.add(g.supervisorAdminId());
-            events.publishEvent(new ScopeChanged(affected,r.reason().trim()));
+            events.publishEvent(new ScopeChanged(affected,historyReason));
             return ApiResult.ok(Map.of("member",mapper.member(agent),"boundCustomers",mapper.boundCount(agent)));
         });
     }
@@ -238,11 +248,15 @@ public class SupportGroupService {
             if(!"ENABLED".equals(r.state()))guardQualificationExit(admin,r.qualificationKind());
             if(old!=null&&old.state().equals(r.state()))throw new BizException(409,"SUPPORT_QUALIFICATION_UNCHANGED");
             boolean initializeMember="SERVICE".equals(r.qualificationKind()) && "ENABLED".equals(r.state()) && writableMember(admin)==null;
-            LocalDateTime at=mapper.now();replaceQualification(admin,r.qualificationKind(),r.state(),old,at,key,r.reason());
+            String historyReason = reasonForHistory(r.reason());
+            LocalDateTime at=mapper.now();replaceQualification(admin,r.qualificationKind(),r.state(),old,at,key,historyReason);
             if(initializeMember)
-                changed(mapper.insertMember(admin,null,at,1L,ownership.actorId(),r.reason().trim(),operation(key)));
-            record("QUALIFICATION_CHANGED",admin,key,Map.of("request",r,"before",old==null?"UNPROVEN":old,"after",mapper.qualification(admin,r.qualificationKind())));
-            invalidate(r.reason(),admin);return ApiResult.ok(mapper.qualifications(admin));
+                changed(mapper.insertMember(admin,null,at,1L,ownership.actorId(),historyReason,operation(key)));
+            var auditedRequest = new ffdd.opsconsole.content.dto.SupportGroupRequests.Qualification(
+                    r.qualificationKind(), r.state(), r.expectedQualificationVersion(),
+                    r.expectedAccountVersion(), reasonForAudit(r.reason()));
+            record("QUALIFICATION_CHANGED",admin,key,Map.of("request",auditedRequest,"before",old==null?"UNPROVEN":old,"after",mapper.qualification(admin,r.qualificationKind())));
+            invalidate(historyReason,admin);return ApiResult.ok(mapper.qualifications(admin));
         });
     }
 
@@ -282,12 +296,16 @@ public class SupportGroupService {
             }
             long nextVersion=nextVersion(old==null?0L:old.version());
             LocalDateTime at=mapper.now();if(old!=null)changed(mapper.closeRoute(old.id(),old.version(),at));
-            changed(mapper.insertRoute(customer,r.targetGroupId(),at,nextVersion,ownership.actorId(),r.reason().trim(),operation(key)));
+            String historyReason = reasonForHistory(r.reason());
+            changed(mapper.insertRoute(customer,r.targetGroupId(),at,nextVersion,ownership.actorId(),historyReason,operation(key)));
             for(Group g:locked.values())changed(mapper.touch(g.id(),g.version(),at));
             var after=mapper.routeCurrent(customer);
-            record("ROUTE_CHANGED",customer,key,Map.of("request",r,"before",old==null?"UNROUTED":old,"after",after));
+            var auditedRequest = new ffdd.opsconsole.content.dto.SupportGroupRequests.Route(
+                    r.targetGroupId(), r.expectedRouteVersion(), r.sourceGroupVersion(), r.targetGroupVersion(),
+                    reasonForAudit(r.reason()));
+            record("ROUTE_CHANGED",customer,key,Map.of("request",auditedRequest,"before",old==null?"UNROUTED":old,"after",after));
             var affected=new HashSet<Long>();for(Group g:locked.values())affected.add(g.supervisorAdminId());affected.add(ownership.actorId());
-            events.publishEvent(new ScopeChanged(affected,r.reason().trim()));return ApiResult.ok(after);
+            events.publishEvent(new ScopeChanged(affected,historyReason));return ApiResult.ok(after);
         });
     }
 
@@ -405,26 +423,23 @@ public class SupportGroupService {
     }
     @SuppressWarnings("unchecked") private <T> ApiResult<T> command(String scope,String key,Object request,String reason,Supplier<ApiResult<T>> action){
         if(key==null||key.isBlank()||key.length()>96)invalid();
-        boolean createsGroup = request instanceof Create;
-        if (!createsGroup) {
-            if (reason == null) invalid();
-            String cleanReason = reason.trim();
-            int reasonLength = cleanReason.codePointCount(0, cleanReason.length());
-            if (reasonLength < 8 || reasonLength > 200) invalid();
-        }
         String hash;try{hash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(request.toString().getBytes(StandardCharsets.UTF_8)));}catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
         String actorScope = "SUPPORT_GROUP_" + scope + ":" + ownership.actorId();
-        if (createsGroup) {
-            try {
-                reasonPolicy.validateReason(reason);
-            } catch (BizException rejection) {
-                // Return an exact prior receipt without letting a rejected new request claim its key.
-                var prior = idempotency.replayActiveSuccess(actorScope, key, hash, ApiResult.class);
-                if (prior != null) return prior;
-                throw rejection;
-            }
+        try {
+            reasonPolicy.validateReason(reason);
+        } catch (BizException rejection) {
+            // Return an exact prior receipt without letting a rejected new request claim its key.
+            var prior = idempotency.replayActiveSuccess(actorScope, key, hash, ApiResult.class);
+            if (prior != null) return prior;
+            throw rejection;
         }
         return idempotency.execute(actorScope,key,hash,ApiResult.class,action::get);
+    }
+    private static String reasonForHistory(String reason) {
+        return A2RuntimePolicy.reasonExcerpt(A2RuntimePolicy.compactOversizedReason(reason, 200), 200);
+    }
+    private static String reasonForAudit(String reason) {
+        return A2RuntimePolicy.reasonForAudit(A2RuntimePolicy.compactOversizedReason(reason, 200));
     }
     private String operation(String key){return ownership.actorId()+":"+key;}
     private static void authority(String p){if(!SupportOwnershipService.hasAuthority(p))forbidden();}
