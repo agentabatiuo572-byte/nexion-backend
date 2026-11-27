@@ -1986,8 +1986,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             return rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
                     rejected.rejection());
         } catch (BizException rejected) {
-            return rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
+            var rejection = rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
                     ApiResult.fail(rejected.getCode(), rejected.getMessage()));
+            if (rejected instanceof OpsKillSwitchService.J4GateOwnershipRecheck) throw rejected;
+            return rejection;
         }
         Map<String, Object> response = sopOverview().getData();
         response.put("updated", map(

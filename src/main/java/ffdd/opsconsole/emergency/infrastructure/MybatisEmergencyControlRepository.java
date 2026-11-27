@@ -216,6 +216,11 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
+    public Optional<String> settingValueForUpdate(String settingKey) {
+        return Optional.ofNullable(mapper.settingValueForUpdate(settingKey));
+    }
+
+    @Override
     public void upsertSetting(
             String settingKey,
             String settingValue,

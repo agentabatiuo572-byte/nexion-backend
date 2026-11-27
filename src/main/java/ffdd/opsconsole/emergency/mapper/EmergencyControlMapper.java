@@ -582,6 +582,13 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             """)
     String settingValue(@Param("settingKey") String settingKey);
 
+    @Select("""
+            SELECT setting_value FROM nx_emergency_control_setting
+             WHERE setting_key = #{settingKey} AND is_deleted = 0
+             FOR UPDATE
+            """)
+    String settingValueForUpdate(@Param("settingKey") String settingKey);
+
     @Update("""
             UPDATE nx_emergency_control_setting
                SET setting_value = CONCAT(

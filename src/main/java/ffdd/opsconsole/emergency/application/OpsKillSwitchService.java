@@ -528,9 +528,19 @@ public class OpsKillSwitchService {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "J4_GATE_OWNERSHIP_MISSING");
         }
         gateSeed(normalizedKey);
-        String claim = expectedOwnershipToken.trim() + " · 回滚中 " + normalizedExecutionId;
+        String ownershipKey = lastChangeConfigKey(normalizedKey);
+        String expectedToken = expectedOwnershipToken.trim();
+        String claim = expectedToken + " · 回滚中 " + normalizedExecutionId;
         if (!emergencyRepository.compareAndSetSetting(
-                lastChangeConfigKey(normalizedKey), expectedOwnershipToken.trim(), claim, actor)) {
+                ownershipKey, expectedToken, claim, actor)) {
+            if (A2ReplayContext.isReplaying()
+                    && expectedToken.equals(j4OwnershipToken(normalizedExecutionId, normalizedKey))) {
+                String currentToken = emergencyRepository.settingValueForUpdate(ownershipKey).orElse("");
+                if (!currentToken.equals(expectedToken)
+                        && currentToken.matches(j4OwnershipToken("[A-Z0-9_-]+-[0-9A-F]{8}", normalizedKey))) {
+                    throw new J4GateOwnershipRecheck();
+                }
+            }
             return ApiResult.fail(409, "J4_GATE_OWNERSHIP_LOST");
         }
         ApiResult<Map<String, Object>> restored = restoreFromLinkedDomain(normalizedKey, actor, reason, "J4");
@@ -621,11 +631,21 @@ public class OpsKillSwitchService {
     private String writeOwnershipToken(String key, String operator, String idempotencyKey) {
         String[] parts = idempotencyKey.split(":", 3);
         String executionId = parts.length > 1 ? parts[1] : "";
-        String token = "J4_OWNERSHIP:" + executionId + ":" + key;
+        String token = j4OwnershipToken(executionId, key);
         emergencyRepository.upsertSetting(
                 lastChangeConfigKey(key), token, "STRING", GROUP_KILL_SWITCH,
                 "J4 execution ownership marker", operator);
         return token;
+    }
+
+    private static String j4OwnershipToken(String executionId, String key) {
+        return "J4_OWNERSHIP:" + executionId + ":" + key;
+    }
+
+    public static final class J4GateOwnershipRecheck extends BizException {
+        private J4GateOwnershipRecheck() {
+            super(409, "J4_GATE_OWNERSHIP_LOST");
+        }
     }
 
     @Transactional

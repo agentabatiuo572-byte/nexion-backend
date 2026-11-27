@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.content.application.LearningCourseActivationApproval;
 import ffdd.opsconsole.content.application.OpsI18nLearningService;
 import ffdd.opsconsole.emergency.application.OpsEmergencyControlService;
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 import ffdd.opsconsole.finance.application.EarningsReleaseService;
 import ffdd.opsconsole.finance.application.OpsFinanceService;
 import ffdd.opsconsole.finance.application.OpsVietnamPaymentService;
@@ -80,7 +81,8 @@ final class AuditApprovalRechecks {
         if (failure instanceof OpsEmergencyControlService.ExpiredDrillRecheck) {
             return AuditReplayBusinessPermissionGuard.isJ4Execution(command);
         }
-        if (failure instanceof OpsEmergencyControlService.DrillRollbackRecheck) {
+        if (failure instanceof OpsEmergencyControlService.DrillRollbackRecheck
+                || failure instanceof OpsKillSwitchService.J4GateOwnershipRecheck) {
             return command != null && "J".equalsIgnoreCase(command.domain())
                     && "j4_playbook_rollback".equalsIgnoreCase(command.op());
         }
