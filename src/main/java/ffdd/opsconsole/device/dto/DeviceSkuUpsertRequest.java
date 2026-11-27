@@ -55,7 +55,8 @@ public record DeviceSkuUpsertRequest(
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, Boolean clearMonthlyTarget, String seriesCode,
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode taglineTranslations,
         @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode displaySoldBase,
-        @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode liveActivityVisible) {
+        @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode liveActivityVisible,
+        @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode storeSortOrder) {
     public DeviceSkuUpsertRequest(
         String skuId,
         String name,
@@ -102,7 +103,7 @@ public record DeviceSkuUpsertRequest(
         String operator,
         String inventoryMode,
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, Boolean clearMonthlyTarget) {
-        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, reason, operator, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl, computePoints, allowedPoolCodes, monthlyTargetUsdt, monthlyTargetBandPct, clearMonthlyTarget, null, null, null, null);
+        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, reason, operator, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl, computePoints, allowedPoolCodes, monthlyTargetUsdt, monthlyTargetBandPct, clearMonthlyTarget, null, null, null, null, null);
     }
 
     @com.fasterxml.jackson.annotation.JsonAnySetter
@@ -120,6 +121,13 @@ public record DeviceSkuUpsertRequest(
         if (liveActivityVisible != null && !liveActivityVisible.isBoolean()) {
             throw new BizException(422, "SKU_LIVE_ACTIVITY_VISIBLE_INVALID");
         }
+        if (storeSortOrder != null && (!storeSortOrder.isIntegralNumber() || !storeSortOrder.canConvertToInt())) {
+            throw new BizException(422, "SKU_STORE_SORT_ORDER_INVALID");
+        }
+    }
+
+    public Integer proposedStoreSortOrder() {
+        return storeSortOrder == null ? null : storeSortOrder.intValue();
     }
 
     public Integer proposedDisplaySoldBase() {
@@ -182,6 +190,6 @@ public record DeviceSkuUpsertRequest(
                 allowedPoolCodes,
                 target,
                 band,
-                clearMonthlyTarget, series, taglineTranslations, displaySoldBase, liveActivityVisible);
+                clearMonthlyTarget, series, taglineTranslations, displaySoldBase, liveActivityVisible, storeSortOrder);
     }
 }

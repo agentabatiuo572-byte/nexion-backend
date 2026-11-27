@@ -314,7 +314,9 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    p.inventory_mode AS inventoryMode,
                    s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,
                    p.compute_points AS computePoints,p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct,
-                   p.display_sold_base AS displaySoldBase,p.live_activity_visible AS liveActivityVisible
+                   p.display_sold_base AS displaySoldBase,p.live_activity_visible AS liveActivityVisible,
+                   ROW_NUMBER() OVER (ORDER BY p.store_featured DESC,
+                       COALESCE(p.storefront_sort_order,p.sort_order) ASC,p.id ASC) AS storeSortRank
               FROM nx_product p
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0 AND p.store_visible=1
@@ -713,7 +715,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                                 String imageAssetId, String imageObjectKey,
                                 String inventoryMode, String specDocumentTitle, String specDocumentUrl, Long computePoints,
                                 BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct,
-                                Integer displaySoldBase, Boolean liveActivityVisible) {
+                                Integer displaySoldBase, Boolean liveActivityVisible, Long storeSortRank) {
         @org.apache.ibatis.annotations.AutomapConstructor
         public CatalogTargetProduct { }
 
@@ -732,7 +734,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                     warranty, phoneDailyEarn, phoneDailyEarnNex, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec,
                     aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson, imageAssetId, imageObjectKey,
                     inventoryMode, specDocumentTitle, specDocumentUrl, computePoints, monthlyTargetUsdt,
-                    monthlyTargetBandPct, 0, true);
+                    monthlyTargetBandPct, 0, true, null);
         }
 
     public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,

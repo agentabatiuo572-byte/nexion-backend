@@ -96,6 +96,7 @@ public class AppProductCatalogService {
                 }
                 var item=product(target, sold, releases.get(target.productNo()), taglineTranslations.get(target.productNo()), locale);
                 item.put("liveActivityVisible", target.liveActivityVisible());
+                item.put("storeSortRank", target.storeSortRank());
                 item.put("taskLevels",taskLevels.get(target.productNo()));
                 products.add(item);
                 if (target.updatedAt() != null && (revision == null || target.updatedAt().isAfter(revision))) {

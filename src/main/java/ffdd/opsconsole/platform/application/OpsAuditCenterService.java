@@ -641,6 +641,7 @@ public class OpsAuditCenterService {
                     ticket.setAmplifies(review.amplifies()?1:0);
                     var metadata = stored.putObject("skuReview");
                     metadata.put("storeDisplayControlsReviewed", true);
+                    metadata.put("storeSortOrderReviewed", true);
                     metadata.put("before", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(before));
                     metadata.put("after", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(after));
                 }
@@ -1888,6 +1889,11 @@ public class OpsAuditCenterService {
                             skuReview.path("storeDisplayControlsReviewed")))) {
                 command.params().remove("displaySoldBase");
                 command.params().remove("liveActivityVisible");
+            }
+            if (isSkuReviewCommand(command) && command.params() != null
+                    && (skuReview == null || !com.fasterxml.jackson.databind.node.BooleanNode.TRUE.equals(
+                            skuReview.path("storeSortOrderReviewed")))) {
+                command.params().remove("storeSortOrder");
             }
             if (OpsI18nLearningService.isCourseRewardAdjustment(command) && command.params() != null) {
                 command.params().remove(CourseRewardReview.PARAM);

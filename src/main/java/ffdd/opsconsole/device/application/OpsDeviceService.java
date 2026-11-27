@@ -446,7 +446,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         var classes=simulationPolicies.writePools(skuId,writeRequest.allowedPoolCodes(),List.of());
         if ((!classes.isEmpty() || writeRequest.monthlyTargetUsdt() != null
-                || storeDisplayControlsChanged(writeRequest, 0, true)) && !A2ReplayContext.isReplaying()) {
+                || storeDisplayControlsChanged(writeRequest, 0, true, 0)) && !A2ReplayContext.isReplaying()) {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         simulationPolicies.validateProductScope(skuId,writeRequest.seriesCode(),classes,false,writeRequest.monthlyTargetUsdt(),writeRequest.monthlyTargetBandPct(),"on".equals(writeRequest.status()),Boolean.TRUE.equals(writeRequest.clearMonthlyTarget()));
@@ -546,7 +546,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         boolean seriesChanged = !Objects.equals(before.seriesCode(), effectiveWriteRequest.seriesCode());
         if (seriesChanged && before.seriesLocked()) return ApiResult.fail(409, "SKU_SERIES_LOCKED");
         if ((scopeChanged || newlyListed || targetChanged || seriesChanged || storeDisplayControlsChanged(
-                effectiveWriteRequest, before.displaySoldBase(), before.liveActivityVisible())) && !A2ReplayContext.isReplaying()) {
+                effectiveWriteRequest, before.displaySoldBase(), before.liveActivityVisible(), before.storeSortOrder())) && !A2ReplayContext.isReplaying()) {
             return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
         }
         if (!"on".equals(before.status()) && "on".equals(nextStatus)) {
@@ -2079,6 +2079,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         response.put("skuReviewContractVersion", 1);
         response.put("taskClassPolicySupported", true);
         response.put("storeDisplayControlsSupported", true);
+        response.put("storeSortOrderSupported", true);
         response.put("phaseOrder", phaseOrder);
         response.put("phases", phases.stream()
                 .map(phase -> new DevicePhaseView(
@@ -3938,11 +3939,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return skuRequestWithPhaseId(request, runtimeSold, unlockPhase);
     }
 
-    private static boolean storeDisplayControlsChanged(DeviceSkuUpsertRequest request, int base, boolean visible) {
+    private static boolean storeDisplayControlsChanged(DeviceSkuUpsertRequest request, int base, boolean visible, int sortOrder) {
         Integer proposedBase = request.proposedDisplaySoldBase();
         Boolean proposedVisibility = request.proposedLiveActivityVisible();
+        Integer proposedSortOrder = request.proposedStoreSortOrder();
         return (proposedBase != null && proposedBase != base)
-                || (proposedVisibility != null && proposedVisibility != visible);
+                || (proposedVisibility != null && proposedVisibility != visible)
+                || (proposedSortOrder != null && proposedSortOrder != sortOrder);
     }
 
     private DeviceSkuUpsertRequest skuRequestWithPhaseId(
@@ -3994,7 +3997,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 operator(request.operator()),
                 inventoryMode.name(),
                 request.trialEligible(), request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode(), request.taglineTranslations(),
-                request.displaySoldBase(), request.liveActivityVisible());
+                request.displaySoldBase(), request.liveActivityVisible(), request.storeSortOrder());
     }
 
     private DeviceSkuUpsertRequest withTrialEligible(DeviceSkuUpsertRequest request, boolean trialEligible) {
@@ -4010,7 +4013,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 request.purchaseGate(), request.imageAssetId(), request.imageObjectKey(), request.imagePreviewUrl(),
                 request.tag(), request.status(), request.reason(), request.operator(), request.inventoryMode(),
                 trialEligible, request.specDocumentTitle(), request.specDocumentUrl(), request.computePoints(), request.allowedPoolCodes(), request.monthlyTargetUsdt(), request.monthlyTargetBandPct(), request.clearMonthlyTarget(), request.seriesCode(), request.taglineTranslations(),
-                request.displaySoldBase(), request.liveActivityVisible());
+                request.displaySoldBase(), request.liveActivityVisible(), request.storeSortOrder());
     }
 
     private ProductInventoryMode inventoryMode(String raw) {
@@ -5721,7 +5724,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     private boolean matchesLegacySkuHash(String scope, String skuId, DeviceSkuUpsertRequest request,
             String revision, AdminIdempotencyService.ActiveRequest active) {
         if (request == null || request.displaySoldBase() != null || request.liveActivityVisible() != null
-                || inventoryMode(request.inventoryMode()) == null) return false;
+                || request.storeSortOrder() != null || inventoryMode(request.inventoryMode()) == null) return false;
         boolean share = "Share".equals(normalizeExact(request.tier()));
         String phase = share ? "" : normalizeText(request.unlockPhase());
         if (matchesLegacySkuHash(scope, skuId, request, revision, phase, active.requestHash())) return true;
@@ -5737,7 +5740,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         DeviceSkuUpsertRequest normalized = skuRequestWithPhaseId(request, 0L, phaseId);
         // Restore the tail of the old record representation for pre-JSON fingerprints.
         String suffix = normalized.taglineTranslations() == null ? ", taglineTranslations=null" : "";
-        suffix += ", displaySoldBase=null, liveActivityVisible=null]";
+        suffix += ", displaySoldBase=null, liveActivityVisible=null, storeSortOrder=null]";
         String legacy = normalized.toString();
         legacy = legacy.substring(0, legacy.length() - suffix.length()) + "]";
         if (revision == null) {
@@ -6445,7 +6448,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 str(p, "imageObjectKey"), str(p, "imagePreviewUrl"), str(p, "tag"),
                 str(p, "status"), reason, operator, str(p, "inventoryMode"),
                 boolVal(p, "trialEligible"), str(p, "specDocumentTitle"), str(p, "specDocumentUrl"), longVal(p, "computePoints"), poolCodesParam(p),decimal(p,"monthlyTargetUsdt"),decimal(p,"monthlyTargetBandPct"),boolVal(p,"clearMonthlyTarget"),str(p,"seriesCode"),
-                skuJsonParam(p, "taglineTranslations"), skuJsonParam(p, "displaySoldBase"), skuJsonParam(p, "liveActivityVisible"));
+                skuJsonParam(p, "taglineTranslations"), skuJsonParam(p, "displaySoldBase"), skuJsonParam(p, "liveActivityVisible"),
+                skuJsonParam(p, "storeSortOrder"));
     }
 
     private static JsonNode skuJsonParam(Map<String, Object> params, String key) {
