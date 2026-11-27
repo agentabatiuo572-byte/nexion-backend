@@ -14,6 +14,7 @@ import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -1348,11 +1349,11 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         "status", Integer.toString(canonical.status()), "deleted", Integer.toString(canonical.deleted())));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    @SuppressWarnings("unchecked")
     public ApiResult<RiskArbitrageRowView> executeArbitrageAction(String rowId, String action, String idempotencyKey, RiskArbitrageActionRequest request) {
-        ApiResult<RiskArbitrageRowView> guard = requireK2Command(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
         String normalizedRowId = trimmed(rowId);
         String normalizedAction = trimmed(action).toLowerCase(Locale.ROOT);
@@ -1367,13 +1368,27 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         ApiResult<RiskArbitrageRowView> permissionGuard = requireK2ActionAuthority(spec.requiredAuthority());
         if (permissionGuard != null) return permissionGuard;
+        String reason = request == null ? null : request.reason();
+        String scope = "K2_ACTION:" + normalizedRowId;
+        String hash = request == null ? null : requestHash(normalizedRowId, normalizedAction,
+                String.valueOf(request.expectedVersion()), String.valueOf(request.clusterExpectedVersion()), reason);
+        try {
+            int minimum = A2RuntimePolicy.parseReasonMinChars(
+                    configFacade.activeValue(A2RuntimePolicy.REASON_MIN_KEY).orElse(null));
+            A2RuntimePolicy.validateReason(reason, minimum);
+        } catch (BizException invalidReason) {
+            if (hash != null) {
+                ApiResult<RiskArbitrageRowView> prior = idempotencyService.replayActiveSuccess(
+                        scope, idempotencyKey, hash, ApiResult.class);
+                if (prior != null) return prior;
+            }
+            return ApiResult.fail(invalidReason.getCode(), invalidReason.getMessage());
+        }
         if (request.expectedVersion() == null || request.expectedVersion() < 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_ROW_EXPECTED_VERSION_REQUIRED");
         }
         String actor = authenticatedOperator();
-        return idempotentCommand("K2_ACTION:" + normalizedRowId, idempotencyKey,
-                requestHash(normalizedRowId, normalizedAction, String.valueOf(request.expectedVersion()),
-                        String.valueOf(request.clusterExpectedVersion()), request.reason()), () -> {
+        return idempotentCommand(scope, idempotencyKey, hash, () -> {
                     RiskArbitrageRowView before = riskRepository.findArbitrageRow(normalizedRowId).orElse(null);
                     if (before == null) return ApiResult.fail(404, "K2_ROW_NOT_FOUND");
                     if (!request.expectedVersion().equals(before.version())) {
@@ -1390,6 +1405,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     if (subjectUserIds.isEmpty()) {
                         return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_SIGNAL_SUBJECT_NOT_RESOLVED");
                     }
+                    String auditReason = A2RuntimePolicy.reasonForAudit(reason);
                     boolean linkedClusterFrozen = false;
                     if ("freeze-cluster".equals(normalizedAction)) {
                         String clusterId = trimmed(before.clusterId());
@@ -1412,14 +1428,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         if (!K1_CLUSTER_TRANSITIONS.getOrDefault(clusterBefore.status(), Set.of()).contains("frozen")) {
                             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_FLAG_REQUIRED");
                         }
+                        // The account freeze also writes the linked withdrawal failure_reason VARCHAR(255).
+                        String freezeReason = A2RuntimePolicy.reasonExcerpt(reason, 255);
                         userAccountControlFacade.lockUsersByUserNos(clusterBefore.affectedUserIds());
                         if (!riskRepository.updateMultiAccountClusterStatus(
                                 clusterId, clusterBefore.status(), clusterBefore.version(), "frozen",
-                                request.reason().trim(), actor)) {
+                                freezeReason, actor)) {
                             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
                         }
                         int accountsFrozen = userAccountControlFacade.freezeActiveUsersByUserNos(
-                                clusterBefore.affectedUserIds(), request.reason().trim(), actor, clusterId);
+                                clusterBefore.affectedUserIds(), freezeReason, actor, clusterId);
                         linkedClusterFrozen = true;
                         auditRequired("K1_CLUSTER_STATUS_CHANGED_BY_K2", "RISK_MULTI_ACCOUNT_CLUSTER", clusterId, actor, Map.of(
                                 "clusterId", clusterId,
@@ -1427,7 +1445,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                                 "after", Map.of("status", "frozen", "version", clusterBefore.version() + 1),
                                 "accountsFrozen", accountsFrozen,
                                 "sourceRowId", normalizedRowId,
-                                "reason", request.reason().trim(),
+                                "reason", auditReason,
                                 "idempotencyKey", idempotencyKey.trim()));
                     }
                     RiskArbitrageRowView updated = riskRepository.updateArbitrageDisposition(
@@ -1440,7 +1458,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             "before", k2RowSnapshot(before),
                             "after", k2RowSnapshot(updated),
                             "linkedClusterFrozen", linkedClusterFrozen,
-                            "reason", request.reason().trim(),
+                            "reason", auditReason,
                             "idempotencyKey", idempotencyKey.trim()));
                     return ApiResult.ok(updated);
                 });

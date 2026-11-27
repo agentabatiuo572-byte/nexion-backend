@@ -120,14 +120,7 @@ public class A2RuntimePolicy {
         for (int offset = 0; offset < normalized.length();) {
             int codePoint = normalized.codePointAt(offset);
             offset += Character.charCount(codePoint);
-            int type = Character.getType(codePoint);
-            if (Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint)
-                    || Character.isISOControl(codePoint)
-                    || type == Character.FORMAT || type == Character.NON_SPACING_MARK
-                    || type == Character.ENCLOSING_MARK || type == Character.COMBINING_SPACING_MARK) {
-                continue;
-            }
-            visible++;
+            if (!isInvisibleReasonCodePoint(codePoint)) visible++;
         }
         return visible;
     }
@@ -135,6 +128,9 @@ public class A2RuntimePolicy {
     /** Bounds a stored reason summary without splitting a Unicode character. */
     public static String reasonExcerpt(String value, int maxCodePoints) {
         String reason = value.trim();
+        if (reason.codePointCount(0, reason.length()) <= maxCodePoints) return reason;
+        // Ignore oversized edge padding before choosing a readable excerpt.
+        reason = stripReasonPadding(Normalizer.normalize(reason, Normalizer.Form.NFC));
         if (reason.codePointCount(0, reason.length()) <= maxCodePoints) return reason;
         int head = maxCodePoints / 2;
         int tail = maxCodePoints - head - 1;
@@ -145,9 +141,29 @@ public class A2RuntimePolicy {
     public static String reasonForAudit(String value) {
         String reason = value.trim();
         // Keep ordinary reasons intact and reserve space for the other structured audit fields.
-        if (reason.length() <= 512
-                || reason.length() <= 768 && reason.chars().noneMatch(c -> c < ' ')) return reason;
+        if (reason.length() <= 768
+                && reason.length() + 5 * reason.chars().filter(c -> c < ' ').count() <= 768) return reason;
         return reasonExcerpt(reason, 256);
+    }
+
+    private static boolean isInvisibleReasonCodePoint(int codePoint) {
+        int type = Character.getType(codePoint);
+        return Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint)
+                || Character.isISOControl(codePoint) || type == Character.FORMAT
+                || type == Character.NON_SPACING_MARK || type == Character.ENCLOSING_MARK
+                || type == Character.COMBINING_SPACING_MARK;
+    }
+
+    private static String stripReasonPadding(String reason) {
+        int start = 0;
+        int end = reason.length();
+        while (start < end && isInvisibleReasonCodePoint(reason.codePointAt(start))) {
+            start += Character.charCount(reason.codePointAt(start));
+        }
+        while (end > start && isInvisibleReasonCodePoint(reason.codePointBefore(end))) {
+            end -= Character.charCount(reason.codePointBefore(end));
+        }
+        return reason.substring(start, end);
     }
 
     private int boundedInteger(

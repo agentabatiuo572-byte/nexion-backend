@@ -5,6 +5,7 @@ import ffdd.opsconsole.content.domain.SupportAssignment;
 import ffdd.opsconsole.content.domain.SupportMaintenance.*;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportMaintenanceMapper;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -28,6 +29,7 @@ public class SupportMaintenanceService {
     private final SupportOwnershipService ownership;
     private final AdminIdempotencyService idempotency;
     private final AuditLogService audit;
+    private final A2RuntimePolicy reasonPolicy;
 
     public Preference preference(Long customer) {
         ownership.requireRead(customer);
@@ -103,21 +105,29 @@ public class SupportMaintenanceService {
     @SuppressWarnings({"unchecked","rawtypes"})
     public ApiResult<Map<String,Object>> change(Long customer, Boolean enabled, String reason,
             Long expectedAssignmentId, Long expectedVersion, String key) {
-        SupportBindingService.validateCommand(key,reason);
+        SupportBindingService.validateCommandKey(key);
         if(enabled==null || !safeId(customer) || !safeId(expectedAssignmentId) || !safeId(expectedVersion))
             throw new BizException(422,"SUPPORT_MAINTENANCE_EXPECTATION_REQUIRED");
         ownership.requireWriter(customer,false); // Recheck current scope even when returning an old receipt.
-        String request=customer+"|"+enabled+"|"+expectedAssignmentId+"|"+expectedVersion+"|"+reason.trim();
+        String scope="M3_MAINTENANCE:"+ownership.actorId();
+        String request=customer+"|"+enabled+"|"+expectedAssignmentId+"|"+expectedVersion+"|"+(reason==null ? "" : reason.trim());
         String digest;
         try {digest=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(request.getBytes(StandardCharsets.UTF_8)));}
         catch(java.security.NoSuchAlgorithmException ex){throw new IllegalStateException(ex);}
-        return (ApiResult<Map<String,Object>>)idempotency.executeRetained("M3_MAINTENANCE:"+ownership.actorId(),key,digest,ApiResult.class,()->{
+        try {
+            reasonPolicy.validateReason(reason);
+        } catch (BizException invalidReason) {
+            var prior=idempotency.recoveryResult(scope,key,digest,ApiResult.class);
+            if(prior.status()==AdminIdempotencyService.RecoveryStatus.SUCCEEDED) return prior.response();
+            throw invalidReason;
+        }
+        return (ApiResult<Map<String,Object>>)idempotency.executeRetained(scope,key,digest,ApiResult.class,()->{
             SupportAssignment assignment=ownership.requireWriter(customer,true);
             if(!assignment.id().equals(expectedAssignmentId)) throw new BizException(409,"SUPPORT_ASSIGNMENT_CHANGED");
             mapper.initializePreference(customer);
             Preference before=currentPreference(customer);
             if(!before.version().equals(expectedVersion)) throw new BizException(409,"SUPPORT_MAINTENANCE_VERSION_CONFLICT");
-            if(mapper.changePreference(customer,enabled,ownership.actorId(),reason.trim(),expectedVersion)!=1)
+            if(mapper.changePreference(customer,enabled,ownership.actorId(),A2RuntimePolicy.reasonExcerpt(reason,200),expectedVersion)!=1)
                 throw new BizException(409,"SUPPORT_MAINTENANCE_VERSION_CONFLICT");
             Cycle open=mapper.openCycle(customer);
             if(!enabled && open!=null) mapper.closeCycle(open.id(),"STOPPED",captureTime(),null);
@@ -125,7 +135,7 @@ public class SupportMaintenanceService {
             audit.recordRequired(AuditLogWriteRequest.builder().action(enabled?"SUPPORT_MAINTENANCE_RESUMED":"SUPPORT_MAINTENANCE_STOPPED")
                     .resourceType("SUPPORT_MAINTENANCE").resourceId(String.valueOf(customer)).bizNo(String.valueOf(customer))
                     .actorType("ADMIN").actorUsername(String.valueOf(ownership.actorId())).result("SUCCESS").riskLevel("HIGH")
-                    .detail(Map.of("before",before,"after",after,"reason",reason.trim(),"commandKey",key.trim(),"assignmentId",assignment.id())).build());
+                    .detail(Map.of("before",before,"after",after,"reason",A2RuntimePolicy.reasonForAudit(reason),"commandKey",key.trim(),"assignmentId",assignment.id())).build());
             return ApiResult.ok(SupportWorkbenchService.wire(Map.of("customerId",customer,"assignmentId",assignment.id(),"enabled",after.enabled(),"version",after.version())));
         });
     }

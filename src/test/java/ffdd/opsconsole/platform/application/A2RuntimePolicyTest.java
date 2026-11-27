@@ -53,6 +53,24 @@ class A2RuntimePolicyTest {
                 .hasMessage("A2_RETENTION_POLICY_INVALID");
     }
 
+    @Test
+    void oversizedExcerptKeepsVisibleTextBetweenInvisibleMarks() {
+        String padding = "\u0301".repeat(400);
+        String reason = padding + "Review confirmed" + padding;
+
+        assertThat(A2RuntimePolicy.visibleCodePointCount(reason)).isEqualTo(15);
+        assertThat(A2RuntimePolicy.reasonExcerpt(reason, 200)).isEqualTo("Review confirmed");
+        assertThat(A2RuntimePolicy.reasonForAudit(reason)).isEqualTo("Review confirmed");
+    }
+
+    @Test
+    void auditExcerptBoundsTheCostOfEscapedControls() {
+        String reason = "first" + Character.toString(0).repeat(502) + "last!";
+        String audit = A2RuntimePolicy.reasonForAudit(reason);
+
+        assertThat(audit).startsWith("first").endsWith("last!").contains("…").hasSize(256);
+    }
+
     private Optional<PlatformConfigItem> item(String value) {
         LocalDateTime now = LocalDateTime.now();
         return Optional.of(new PlatformConfigItem(1L, "key", value, "STRING", "admin_a2",
