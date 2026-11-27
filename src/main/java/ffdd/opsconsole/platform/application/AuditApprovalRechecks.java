@@ -80,6 +80,10 @@ final class AuditApprovalRechecks {
         if (failure instanceof OpsEmergencyControlService.ExpiredDrillRecheck) {
             return AuditReplayBusinessPermissionGuard.isJ4Execution(command);
         }
+        if (failure instanceof OpsEmergencyControlService.DrillRollbackRecheck) {
+            return command != null && "J".equalsIgnoreCase(command.domain())
+                    && "j4_playbook_rollback".equalsIgnoreCase(command.op());
+        }
         if (failure instanceof DirectReferralService.LockedStatusConflict) {
             return command != null && "F".equalsIgnoreCase(command.domain()) && "f_commission_status".equals(command.op());
         }

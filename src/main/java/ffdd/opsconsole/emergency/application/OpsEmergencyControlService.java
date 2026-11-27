@@ -1883,8 +1883,15 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         if ("drill".equals(stringValue(execution.get("mode"), ""))) {
             // A drill is a validation-only terminal record. Never funnel it through
             // the J1 recovery boundary, even if a caller bypasses the hidden UI action.
-            return rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
+            var rejection = rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
                     ApiResult.fail(409, "J4_DRILL_ROLLBACK_NOT_APPLICABLE:" + execId));
+            if (A2ReplayContext.isReplaying() && StringUtils.hasText(requestedCode)
+                    && execId.equals(execution.get("executionId"))
+                    && J4_DRILL_ROLLBACK_NOT_REQUIRED.equals(execution.get("rollbackStatus"))
+                    && J4_DRILL_VALIDATION_ONLY_REASON.equals(execution.get("rollbackReason"))) {
+                throw new DrillRollbackRecheck(rejection.getMessage());
+            }
+            return rejection;
         }
         String effectiveCode = StringUtils.hasText(requestedCode)
                 ? requestedCode
@@ -2665,6 +2672,12 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
     public static final class ExpiredDrillRecheck extends BizException {
         private ExpiredDrillRecheck() {
             super(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), J4_PLAYBOOK_NOT_READY);
+        }
+    }
+
+    public static final class DrillRollbackRecheck extends BizException {
+        private DrillRollbackRecheck(String reason) {
+            super(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), reason);
         }
     }
 

@@ -30,6 +30,7 @@ public class DeviceSlotReplacementCompletion {
     /** The new bound phone takes the original slot, so the planned successor stays in inventory. */
     @Transactional(propagation = Propagation.MANDATORY)
     public void cancelAfterPhoneRebind(long userId, long oldDeviceId) {
+        simulatedTasks.recordPhoneDeactivation(userId, oldDeviceId);
         replacements.unbind(userId, oldDeviceId);
     }
 

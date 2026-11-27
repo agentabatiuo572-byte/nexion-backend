@@ -140,7 +140,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
             var runtime=mapper.lockRuntime(deviceId);
             if(runtime!=null) {
                 requireIdentity(device,runtime);
-                if(runtime.phoneValidUntil()!=null && !received.isBefore(runtime.phoneValidUntil())) {
+                var previousCutoff=earlier(runtime.stopAt(),runtime.phoneValidUntil());
+                if(previousCutoff!=null && !received.isBefore(previousCutoff)) {
                     runtime=advance(device,runtime,received,false);
                     if(runtime.currentTaskNo()!=null || runtime.nextActionAt()!=null)
                         return new PhoneOnlineResult(false,30,runtime);

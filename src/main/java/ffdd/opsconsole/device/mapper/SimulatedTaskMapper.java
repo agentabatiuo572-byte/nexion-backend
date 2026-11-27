@@ -240,6 +240,20 @@ public interface SimulatedTaskMapper {
     int updateRuntime(@Param("r")RuntimeRow row);
 
     @Update("""
+            UPDATE nx_simulated_device_runtime r
+            JOIN nx_user_device d ON d.id=r.user_device_id AND d.user_id=r.user_id
+                                 AND CAST(d.instance_no AS BINARY)=CAST(r.instance_no AS BINARY)
+               SET r.stop_at=LEAST(COALESCE(r.stop_at,d.deactivated_at),d.deactivated_at),
+                   r.next_action_at=LEAST(COALESCE(r.next_action_at,d.deactivated_at),d.deactivated_at)
+             WHERE r.user_id=#{userId} AND r.user_device_id=#{deviceId} AND r.phone=1
+               AND r.state IN ('RUNNING','CLOSING','WAITING_CONFIG','ERROR')
+               AND d.source_channel='ONBOARDING' AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND d.ownership_status='OWNED' AND d.is_deleted=0
+               AND d.status='DEACTIVATED' AND d.deactivated_at IS NOT NULL
+            """)
+    int recordPhoneDeactivation(long userId, long deviceId);
+
+    @Update("""
             UPDATE nx_simulated_device_runtime
                SET stop_after_current=0,finish_after_at=NULL,state='RUNNING'
              WHERE user_id=#{userId} AND user_device_id=#{deviceId}
