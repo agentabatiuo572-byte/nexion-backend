@@ -2397,7 +2397,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         E2TaskPricingUpdateRequest trusted = trustedE2TaskPricingRequest(request);
         return deviceIdempotent("E2_TASK_PRICING_UPDATE", idempotencyKey, trusted.taskClass(), trusted, () -> {
-            var prepared = prepareE2TaskPricing(trusted, null);
+            var prepared = prepareE2TaskPricing(trusted, null, null);
             if (prepared.getCode() != 0) {
                 return ApiResult.fail(prepared.getCode(), prepared.getMessage());
             }
@@ -2413,15 +2413,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         });
     }
 
-    public record E2TaskPricingReview(AuditLockTarget target, String before, String after) {}
+    public record E2TaskPricingReview(AuditLockTarget target, String before, String after, String materialRevision) {}
 
     private record E2TaskPricingChange(
             AuditLockTarget target, String taskClass, Map<String, Object> before, Map<String, Object> after,
             DeviceTaskUpsertRequest taskWrite, boolean requiresApproval, boolean resumesDispatch,
-            boolean queueWasUnconfigured) {}
+            boolean queueWasUnconfigured, String materialRevision) {}
 
     public ApiResult<E2TaskPricingReview> previewTaskPricingApproval(E2TaskPricingUpdateRequest request) {
-        var prepared = prepareE2TaskPricingApproval(request, null);
+        var prepared = prepareE2TaskPricingApproval(request, null, null);
         if (prepared.getCode() != 0) {
             return ApiResult.fail(prepared.getCode(), prepared.getMessage());
         }
@@ -2431,22 +2431,18 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (before.length() > 128 || after.length() > 128) {
             return ApiResult.fail(422, "E2_TASK_PRICING_PROPOSAL_INVALID");
         }
-        return ApiResult.ok(new E2TaskPricingReview(change.target(), before, after));
+        return ApiResult.ok(new E2TaskPricingReview(change.target(), before, after, change.materialRevision()));
     }
 
     public ApiResult<Map<String, Object>> executeApprovedTaskPricing(
-            String idempotencyKey, E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget) {
+            String idempotencyKey, E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget,
+            String expectedMaterialRevision) {
         if (!holdsE2ApprovalLock(expectedTarget)) {
             return ApiResult.fail(403, "E2_TASK_PRICING_APPROVAL_FORBIDDEN");
         }
-        var prepared = prepareE2TaskPricingApproval(request, expectedTarget);
+        var prepared = prepareE2TaskPricingApproval(request, expectedTarget, expectedMaterialRevision);
         if (prepared.getCode() != 0) {
-            int code = prepared.getCode();
-            String reason = prepared.getMessage();
-            if (code == 409 && "E2_TASK_PRICING_STALE".equals(reason)) {
-                throw new E2TaskPricingApproval.ConfirmedPricingRecheck(code, reason);
-            }
-            return ApiResult.fail(code, reason);
+            return ApiResult.fail(prepared.getCode(), prepared.getMessage());
         }
         return applyE2TaskPricing(prepared.getData(), trustedE2TaskPricingRequest(request), idempotencyKey);
     }
@@ -2460,11 +2456,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private ApiResult<E2TaskPricingChange> prepareE2TaskPricingApproval(
-            E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget) {
+            E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget, String expectedMaterialRevision) {
         if (request == null || !StringUtils.hasText(request.expectedRevision())) {
             return ApiResult.fail(422, "E2_TASK_PRICING_REVISION_REQUIRED");
         }
-        var prepared = prepareE2TaskPricing(trustedE2TaskPricingRequest(request), expectedTarget);
+        var prepared = prepareE2TaskPricing(trustedE2TaskPricingRequest(request), expectedTarget, expectedMaterialRevision);
         if (prepared.getCode() != 0) {
             return prepared;
         }
@@ -2491,7 +2487,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private ApiResult<E2TaskPricingChange> prepareE2TaskPricing(
-            E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget) {
+            E2TaskPricingUpdateRequest request, AuditLockTarget expectedTarget, String expectedMaterialRevision) {
         if (request.queueSaturation() != null) {
             if (StringUtils.hasText(request.taskClass()) || request.minReward() != null || request.maxReward() != null
                     || request.minVram() != null || request.enabled() != null) {
@@ -2512,7 +2508,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             return ApiResult.ok(new E2TaskPricingChange(E2_QUEUE_PRICING_TARGET, "GLOBAL",
                     Map.of("QUEUE_SATURATION", before.stripTrailingZeros()), Map.of("QUEUE_SATURATION", next), null,
-                    direction > 0, false, queueConfig == null));
+                    direction > 0, false, queueConfig == null, null));
         }
 
         if (!TASK_CLASSES.contains(request.taskClass())) {
@@ -2542,7 +2538,13 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     : ApiResult.fail(409, "E2_TASK_PRICING_STALE");
         }
         AuditLockTarget target = new AuditLockTarget("E", E2_PRICING_LOCK_TYPE, before.taskId());
+        String materialRevision = e2TaskPricingMaterialRevision(before);
         if (e2TaskPricingStale(request, expectedTarget, target, e2TaskPricingRevision(before))) {
+            if (target.equals(expectedTarget) && request.expectedRevision().matches("[0-9a-f]{64}")
+                    && expectedMaterialRevision != null && expectedMaterialRevision.matches("[0-9a-f]{64}")
+                    && materialRevision != null && !materialRevision.equals(expectedMaterialRevision)) {
+                throw new E2TaskPricingApproval.ConfirmedPricingRecheck(409, "E2_TASK_PRICING_STALE");
+            }
             return ApiResult.fail(409, "E2_TASK_PRICING_STALE");
         }
         if (lockMapper.countActiveByTarget("E", "device_task", before.taskId()) > 0) {
@@ -2582,7 +2584,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 before.taskClass(), before.model(), nextMin, nextMax, request.minVram() == null ? before.minVram() : nextVram + "GB",
                 nextKillInit, request.reason(), request.operator(),null,null,null,null,null,null,null,null,null);
         return ApiResult.ok(new E2TaskPricingChange(target, request.taskClass(), beforeValues, afterValues,
-                write, requiresApproval, resumesDispatch, false));
+                write, requiresApproval, resumesDispatch, false, materialRevision));
     }
 
     private ApiResult<Map<String, Object>> applyE2TaskPricing(
@@ -2644,6 +2646,19 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         return e1RequestHash("E2_TASK_PRICING_REVISION", task.taskId(), detail(
                 "taskClass", task.taskClass(), "minReward", task.minReward(), "maxReward", task.maxReward(),
                 "minVram", task.minVram(), "status", task.status(), "killInit", task.killInit(), "updatedAt", task.updatedAt()));
+    }
+
+    private String e2TaskPricingMaterialRevision(DeviceTaskView task) {
+        BigDecimal min = task.minReward();
+        BigDecimal max = task.maxReward();
+        int vram = parseVram(task.minVram());
+        if (min == null || max == null || min.signum() < 0 || min.compareTo(max) > 0 || vram < 0
+                || !taskRewardPrecisionValid(min) || !taskRewardPrecisionValid(max)) {
+            return null;
+        }
+        return e1RequestHash("E2_TASK_PRICING_MATERIAL_REVISION", task.taskId(), detail(
+                "minReward", min.stripTrailingZeros(), "maxReward", max.stripTrailingZeros(),
+                "minVRAM", vram, "enabled", e2TaskEnabled(task)));
     }
 
     private String e2QueueSaturationRevision(String raw) {

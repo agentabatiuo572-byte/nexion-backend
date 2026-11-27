@@ -593,6 +593,10 @@ public class OpsAuditCenterService {
                         || G3MarketApproval.supports(command)) {
                     ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params")).put("targetId", target.id());
                 }
+                if (descriptor != null && descriptor.e2PricingMaterialRevision() != null) {
+                    ((com.fasterxml.jackson.databind.node.ObjectNode) stored.get("params"))
+                            .put(E2TaskPricingApproval.MATERIAL_REVISION_FIELD, descriptor.e2PricingMaterialRevision());
+                }
                 if (descriptor != null && descriptor.teamReview() != null && descriptor.teamReview().beforeFields() != null) {
                     var review = stored.putObject(TeamFundApproval.isVRank(command)
                             ? "vrankPolicyReview" : "ambassadorPolicyReview");

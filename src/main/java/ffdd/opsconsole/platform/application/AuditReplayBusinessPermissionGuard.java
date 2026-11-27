@@ -270,7 +270,15 @@ public class AuditReplayBusinessPermissionGuard {
             AuditLockTarget target,
             TeamFundApproval.Review teamReview,
             G3MarketApproval.Review marketReview,
-            JsonNode withdrawalConfigChanges) {
+            JsonNode withdrawalConfigChanges,
+            String e2PricingMaterialRevision) {
+        public DelegatedProposalDescriptor(
+                String action, String objectId, String beforeValue, String afterValue,
+                String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target,
+                TeamFundApproval.Review teamReview, G3MarketApproval.Review marketReview, JsonNode withdrawalConfigChanges) {
+            this(action, objectId, beforeValue, afterValue, sourceDomain, operationType, amplifies,
+                    target, teamReview, marketReview, withdrawalConfigChanges, null);
+        }
         public DelegatedProposalDescriptor(
                 String action, String objectId, String beforeValue, String afterValue,
                 String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target,
@@ -1676,7 +1684,8 @@ public class AuditReplayBusinessPermissionGuard {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             }
             return ApiResult.ok(new DelegatedProposalDescriptor(
-                    "放宽任务定价", target.id(), review.before(), review.after(), "E2", "fund", true, target));
+                    "放宽任务定价", target.id(), review.before(), review.after(), "E2", "fund", true, target,
+                    null, null, null, review.materialRevision()));
         }
         if (TreasuryThresholdApproval.supports(command)) {
             String source = TreasuryThresholdApproval.source(command);
