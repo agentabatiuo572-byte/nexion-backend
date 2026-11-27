@@ -20,6 +20,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
@@ -288,6 +289,11 @@ public class H4GrowthApproval {
         ConfirmedRecheckFailure(int code, String reason) {
             super(code, reason);
         }
+    }
+
+    static boolean confirmedCoverageBreach(TreasuryCoverageSnapshot snapshot) {
+        return snapshot.redlineBreached() && snapshot.redlinePct().signum() > 0
+                && snapshot.ratioLiabilitiesUsd() != null && snapshot.ratioLiabilitiesUsd().signum() > 0;
     }
 
     private boolean confirmedSnapshotChange(AuditReplayCommand command, AuditLockTarget target,

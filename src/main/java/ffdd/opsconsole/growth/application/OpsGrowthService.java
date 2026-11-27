@@ -2466,8 +2466,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         TreasuryCoverageSnapshot snapshot = coverageFacade.snapshot();
         if (snapshot == null || !snapshot.reliable() || snapshot.coverageRatio() == null
                 || snapshot.redlinePct() == null || snapshot.redlinePct().signum() <= 0) return coverageRedline();
-        if (snapshot.redlineBreached() && A2ReplayContext.isReplaying()
-                && snapshot.ratioLiabilitiesUsd() != null && snapshot.ratioLiabilitiesUsd().signum() > 0) {
+        if (A2ReplayContext.isReplaying() && H4GrowthApproval.confirmedCoverageBreach(snapshot)) {
             OpsErrorCode failure = OpsErrorCode.COVERAGE_BELOW_REDLINE;
             throw new H4GrowthApproval.ConfirmedRecheckFailure(failure.httpStatus(), failure.name());
         }
