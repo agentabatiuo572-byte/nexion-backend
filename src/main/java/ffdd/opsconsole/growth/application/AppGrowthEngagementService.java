@@ -52,6 +52,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -318,6 +319,7 @@ public class AppGrowthEngagementService {
                     quest.put("nameLocale", selected != null ? contentLocale(locale) : english != null ? "en" : "und");
                     return quest;
                 }).toList();
+        projectWeeklyCredits(userId, quests);
         BigDecimal responseMultiplier = weekly != null ? weekly.effectiveQuestBonusMultiplier() : liveRhythmAvailable
                 ? positiveOrOne(rhythm.questBonusMultiplier())
                 : positive(dayOneSnapshot.questBonusMultiplier());
@@ -568,8 +570,7 @@ public class AppGrowthEngagementService {
             BigDecimal baseReward = reward.rewardNex();
             BigDecimal amount = positive(baseReward).multiply(multiplier)
                     .setScale(6, RoundingMode.DOWN);
-            String rewardReference = code;
-            creditNex(userId, "QUEST:" + rewardReference + ":" + userId + ":" + reward.instanceKey(),
+            creditNex(userId, questRewardBizNo(userId, code, reward.instanceKey()),
                     "QUEST_REWARD", amount, "H3 quest claim");
             Map<String, Object> detail = linked(
                     "layer", reward.layer(), "rewardNex", amount, "multiplier", multiplier,
@@ -588,6 +589,47 @@ public class AppGrowthEngagementService {
         if (state.definitionStatus() == null || state.definitionStatus() != 1) return "QUEST_DEFINITION_INACTIVE";
         if (state.expired() != null && state.expired() == 1) return "QUEST_EXPIRED";
         return "QUEST_NOT_COMPLETED";
+    }
+
+    private void projectWeeklyCredits(Long userId, List<Map<String, Object>> quests) {
+        Map<String, List<Map<String, Object>>> claimed = new LinkedHashMap<>();
+        Set<String> bizNos = new LinkedHashSet<>();
+        String accountWeekSeparator = ":" + userId + ":WEEK:";
+        for (Map<String, Object> quest : quests) {
+            Object layer = quest.get("layer");
+            if (("WEEKLY_T1".equals(layer) || "WEEKLY_T2".equals(layer))
+                    && "CLAIMED".equals(quest.get("status"))
+                    && quest.get("questCode") instanceof String code && StringUtils.hasText(code)
+                    && quest.get("instanceKey") instanceof String instanceKey && instanceKey.startsWith("WEEK:")) {
+                String bizNo = questRewardBizNo(userId, code, instanceKey);
+                bizNos.add(bizNo);
+                String lookupKey = weeklyCreditLookupKey(bizNo, accountWeekSeparator);
+                claimed.computeIfAbsent(lookupKey, key -> new ArrayList<>()).add(quest);
+            }
+        }
+        if (bizNos.isEmpty()) return;
+        for (var credit : mapper.weeklyQuestCredits(userId, List.copyOf(bizNos))) {
+            var matchingQuests = claimed.get(weeklyCreditLookupKey(credit.bizNo(), accountWeekSeparator));
+            if (matchingQuests != null) {
+                String amount = credit.amount().setScale(6, RoundingMode.UNNECESSARY).toPlainString();
+                matchingQuests.forEach(quest -> quest.put("creditedRewardNex", amount));
+            }
+        }
+    }
+
+    /** Older claims write the request's ASCII quest code after a case-insensitive mission lookup. */
+    private static String weeklyCreditLookupKey(String bizNo, String accountWeekSeparator) {
+        String prefix = "QUEST:";
+        int accountStart = bizNo.lastIndexOf(accountWeekSeparator);
+        if (!bizNo.startsWith(prefix) || accountStart <= prefix.length()) return bizNo;
+        String code = bizNo.substring(prefix.length(), accountStart);
+        return code.matches("[A-Za-z0-9._:-]+")
+                ? prefix + code.toLowerCase(Locale.ROOT) + bizNo.substring(accountStart)
+                : bizNo;
+    }
+
+    private static String questRewardBizNo(Long userId, String code, String instanceKey) {
+        return "QUEST:" + code + ":" + userId + ":" + instanceKey;
     }
 
     /**

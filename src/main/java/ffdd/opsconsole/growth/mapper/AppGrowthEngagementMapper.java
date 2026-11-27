@@ -415,6 +415,19 @@ public interface AppGrowthEngagementMapper {
             """)
     List<Map<String, Object>> questState(@Param("userId") Long userId, @Param("locale") String locale);
 
+    @Select("""
+            <script>
+            SELECT biz_no bizNo,amount
+              FROM nx_wallet_ledger
+             WHERE user_id=#{userId}
+               AND biz_no IN
+                 <foreach collection="bizNos" item="bizNo" open="(" separator="," close=")">#{bizNo}</foreach>
+               AND BINARY biz_type='QUEST_REWARD' AND BINARY asset='UVT' AND BINARY direction='IN'
+               AND BINARY status='POSTED' AND is_deleted=0 AND amount&gt;0
+            </script>
+            """)
+    List<WeeklyQuestCredit> weeklyQuestCredits(@Param("userId") Long userId, @Param("bizNos") List<String> bizNos);
+
     String EVENT_STATE_SELECT = """
             SELECT q.quest_code eventCode,
                    LOWER(q.target_type) kind,
@@ -1103,6 +1116,8 @@ public interface AppGrowthEngagementMapper {
 
     record SandboxVoucherClaim(String grantId, String grantStatus, String idempotencyKey) {
     }
+
+    record WeeklyQuestCredit(String bizNo, BigDecimal amount) {}
 
     record QuestReward(
             Long missionId, String questCode, String layer, BigDecimal rewardNex, String instanceKey,
