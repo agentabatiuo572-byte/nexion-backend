@@ -35,6 +35,7 @@ public class PayoutVndConfigService {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
     private static final BigDecimal HUNDRED = new BigDecimal("100");
     private static final String APPROVAL_REQUIRED = "D7_PAYOUT_VND_CONFIG_APPROVAL_REQUIRED";
+    private static final String TREASURY_COVERAGE_BLOCKED = "D7_TREASURY_COVERAGE_BLOCKED";
 
     private final PlatformConfigFacade config;
     private final VietnamPaymentMapper vietnam;
@@ -101,7 +102,11 @@ public class PayoutVndConfigService {
             if (amplifies) return ApiResult.fail(409, APPROVAL_REQUIRED);
         } else {
             if (!amplifies) return ApiResult.fail(422, "D7_PAYOUT_VND_CONFIG_NOT_AMPLIFYING");
-            if (!coverageHealthy()) return ApiResult.fail(409, "D7_TREASURY_COVERAGE_BLOCKED");
+            TreasuryCoverageSnapshot snapshot = validCoverageSnapshot();
+            if (snapshot == null || snapshot.redlineBreached()) {
+                if (mode == UpdateMode.REPLAY && snapshot != null) throw new ConfirmedCoverageBreach();
+                return ApiResult.fail(409, TREASURY_COVERAGE_BLOCKED);
+            }
             if (mode == UpdateMode.PREVIEW) {
                 boolean forced = Boolean.TRUE.equals(request.forceInverted());
                 List<Map<String, Object>> changes = new ArrayList<>();
@@ -324,18 +329,25 @@ public class PayoutVndConfigService {
 
     /** Shared D7 funding gate; D6 base-price increases must meet the same reliability requirements. */
     public boolean coverageHealthy() {
+        TreasuryCoverageSnapshot snapshot = validCoverageSnapshot();
+        return snapshot != null && !snapshot.redlineBreached();
+    }
+
+    private TreasuryCoverageSnapshot validCoverageSnapshot() {
         try {
             TreasuryCoverageSnapshot snapshot = coverage.snapshot();
-            return snapshot != null && snapshot.reliable() && snapshot.coverageRatio() != null
+            if (snapshot != null && snapshot.reliable() && snapshot.coverageRatio() != null
                     && snapshot.redlinePct() != null
                     && snapshot.ratioLiabilitiesUsd() != null
                     && snapshot.ratioLiabilitiesUsd().signum() > 0
                     && snapshot.ratioReserveUsd() != null
-                    && snapshot.ratioReserveUsd().signum() >= 0
-                    && !snapshot.redlineBreached();
-        } catch (RuntimeException ex) {
-            return false;
+                    && snapshot.ratioReserveUsd().signum() >= 0) {
+                return snapshot;
+            }
+        } catch (RuntimeException unavailable) {
+            return null;
         }
+        return null;
     }
 
     private boolean isInverted(FxSource fx, BigDecimal sellSpread) {
@@ -414,6 +426,12 @@ public class PayoutVndConfigService {
     public static final class ConfigVersionAdvanced extends BizException {
         private ConfigVersionAdvanced() {
             super(409, "D7_CONFIG_VERSION_CONFLICT");
+        }
+    }
+
+    public static final class ConfirmedCoverageBreach extends BizException {
+        private ConfirmedCoverageBreach() {
+            super(409, TREASURY_COVERAGE_BLOCKED);
         }
     }
 

@@ -54,7 +54,8 @@ final class AuditApprovalRechecks {
         if (failure instanceof BankRunThresholdPolicy.ThresholdVersionAdvanced) {
             return TreasuryThresholdApproval.supports(command) && "B5".equals(TreasuryThresholdApproval.source(command));
         }
-        if (failure instanceof PayoutVndConfigService.ConfigVersionAdvanced) {
+        if (failure instanceof PayoutVndConfigService.ConfigVersionAdvanced
+                || failure instanceof PayoutVndConfigService.ConfirmedCoverageBreach) {
             return WithdrawalConfigApproval.supports(command) && "d7_payout_vnd_config".equals(command.op());
         }
         if (failure instanceof OpsFinanceService.WithdrawalLimitsVersionAdvanced) {
@@ -120,6 +121,8 @@ final class AuditApprovalRechecks {
             return "LEARNING_COURSE_REWARD_SNAPSHOT_CHANGED".equals(reason);
         }
         return switch (command.op()) {
+            case "h2_trial_cancel" -> code == 409 && "H".equals(command.domain())
+                    && "TRIAL_SESSION_ALREADY_TERMINAL".equals(reason);
             case "h8_referral_settlement", "h8_referral_settlement_user" -> H8_SETTLEMENT_REASONS.contains(reason);
             case "h8_reward_param_change" -> Set.of("H8_CONFIG_VERSION_CONFLICT", "H8_PARAM_APPROVAL_NOT_REQUIRED",
                     "B1_COVERAGE_BELOW_REDLINE").contains(reason);

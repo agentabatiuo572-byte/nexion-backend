@@ -60,6 +60,8 @@ import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -705,31 +707,22 @@ class OpsGrowthServiceTest {
         assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_SESSION_CANCELLED");
     }
 
-    @Test
-    void chargeTerminalTrialSessionReturns409() {
-        seedTrialSession("usr_77D4", "redeemed");
+    @ParameterizedTest
+    @ValueSource(strings = {"cancelled", "redeemed", "failed"})
+    void replayH2CancelRejectsLockedTerminalSessionWithoutSideEffects(String state) {
+        seedTrialSession("usr_9921", state);
 
-        ApiResult<Map<String, Object>> result = service.chargeTrialSession(
-                "idem-h2-charge",
-                "usr_77D4",
-                new GrowthConfigUpdateRequest("charge", "redeemed", "force charge", "superadmin"));
-
-        assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
-        assertThat(result.getMessage()).isEqualTo("TRIAL_SESSION_ALREADY_TERMINAL");
-    }
-
-    @Test
-    void failedTrialSessionIsTerminalForAdminIntervention() {
-        seedTrialSession("usr_failed", "failed");
-
-        ApiResult<Map<String, Object>> result = service.chargeTrialSession(
-                "idem-h2-failed",
-                "usr_failed",
-                new GrowthConfigUpdateRequest("charge", "redeemed", "must stay terminal", "superadmin"));
+        ApiResult<?> result = service.replay(
+                new AuditReplayCommand("H", "h2_trial_cancel", Map.of("sid", "usr_9921")),
+                new AuditReplayContext("superadmin", "replay trial cancel", "idem-replay-h2-cancel"));
 
         assertThat(result.getCode()).isEqualTo(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus());
         assertThat(result.getMessage()).isEqualTo("TRIAL_SESSION_ALREADY_TERMINAL");
+        assertThat(findRow(trialSessions, "sid", "usr_9921")).containsEntry("state", state);
+        verify(questEventMapper).lockTrialSession("usr_9921");
+        verify(questEventMapper, never()).transitionTrialSessionStatus(anyString(), anyString());
         verify(questEventMapper, never()).debitWalletUsdt(anyLong(), any(BigDecimal.class));
+        verify(auditLogService, never()).recordRequired(any());
     }
 
     @Test
@@ -2715,7 +2708,7 @@ class OpsGrowthServiceTest {
     }
 
     @Test
-    void replayH2TrialChargePostsUsdtOutLedgerEntry() {
+    void replayRetiredH2TrialChargeReturns410WithoutCharging() {
         seedTrialPolicies();
         seedTrialSession("usr_9921", "active");
 
@@ -2723,14 +2716,12 @@ class OpsGrowthServiceTest {
                 new AuditReplayCommand("H", "h2_trial_charge", Map.of("sid", "usr_9921")),
                 new AuditReplayContext("superadmin", "replay trial charge", "idem-replay-h2-charge"));
 
-        assertThat(result.getCode()).isZero();
-        verify(questEventMapper).debitWalletUsdt(9921L, new BigDecimal("1299"));
-        verify(questEventMapper).insertTrialChargeLedger(
-                9921L, "H2-TRIAL-CHARGE-usr_9921", new BigDecimal("1299"), new BigDecimal("3701"), "usr_9921");
-
-        ArgumentCaptor<AuditLogWriteRequest> captor = ArgumentCaptor.forClass(AuditLogWriteRequest.class);
-        verify(auditLogService).recordRequired(captor.capture());
-        assertThat(captor.getValue().getAction()).isEqualTo("H2_TRIAL_SESSION_CHARGED");
+        assertThat(result.getCode()).isEqualTo(410);
+        assertThat(result.getMessage()).isEqualTo("TRIAL_EXPLICIT_PURCHASE_REQUIRED");
+        assertThat(findRow(trialSessions, "sid", "usr_9921")).containsEntry("state", "active");
+        verify(questEventMapper, never()).debitWalletUsdt(anyLong(), any(BigDecimal.class));
+        verify(questEventMapper, never()).insertTrialChargeLedger(anyLong(), anyString(), any(), any(), anyString());
+        verify(auditLogService, never()).recordRequired(any());
     }
 
     @Test
