@@ -2423,6 +2423,21 @@
               }
             ]
           },
+          "expectedAmountUsdt": {
+            "description": "Maximum net USDT amount confirmed at checkout. Required for new ordinary single-product orders without a promotion quote. Same-key historical requests may replay without this field.",
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 999999999999.999999,
+                "multipleOf": 0.000001
+              },
+              {
+                "type": "string",
+                "minLength": 1
+              }
+            ]
+          },
           "promotionQuoteId": {
             "$ref": "#/components/schemas/Id"
           }

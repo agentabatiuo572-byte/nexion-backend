@@ -80,7 +80,9 @@ try {
     $createKey = "TEAM-PAY-CREATE-$($state.runId)-V4"
     $createHeaders = $headers.Clone()
     $createHeaders['Idempotency-Key'] = $createKey
-    $created = Invoke-RestMethod -Uri "$baseUrl/api/orders" -Method Post -Headers $createHeaders -ContentType 'application/json' -Body (@{ productId = $ProductId; quantity = 1 } | ConvertTo-Json)
+    $priceRow = Invoke-MySql "SELECT price_usdt FROM ``$database``.nx_product WHERE id=$ProductId AND is_deleted=0;"
+    $confirmedAmount = [decimal]::Parse([string]($priceRow | Select-Object -First 1), [Globalization.CultureInfo]::InvariantCulture)
+    $created = Invoke-RestMethod -Uri "$baseUrl/api/orders" -Method Post -Headers $createHeaders -ContentType 'application/json' -Body (@{ productId = $ProductId; quantity = 1; expectedAmountUsdt = $confirmedAmount } | ConvertTo-Json)
     if ([int]$created.code -ne 0 -or -not $created.data.orderNo) { throw "Java order creation failed: $($created.message)" }
     $orderNo = [string]$created.data.orderNo
 
