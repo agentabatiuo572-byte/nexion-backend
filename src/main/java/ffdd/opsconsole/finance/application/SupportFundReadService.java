@@ -258,6 +258,20 @@ public class SupportFundReadService {
                                 require(earningsPhases.add(earning.coveredPhase()) &&parties.equals(List.of(source.path("entry").path("userId").longValue())),Gap.SOURCE);
                                 stamp=earning.stamp();checkpoints=earning.checkpoints();
                             }
+                            case B140TestWalletResetEvidence.BUSINESS_TYPE -> {
+                                String entryNo=text(row,"sourceKey");
+                                var reset=mapper.b140ResetSource(entryNo);
+                                require(reset!=null,Gap.SOURCE);
+                                long creditId=number(reset,"originalOperationId");
+                                var credit=componentOps.stream().filter(op->number(op,"id")==creditId).findFirst().orElseThrow(()->bad(Gap.SOURCE));
+                                var entry=earnings.stream().filter(e->entryNo.equals(e.get("entryNo"))).findFirst().orElseThrow(()->bad(Gap.SOURCE));
+                                require(earningsRecoveries.stream().noneMatch(r->entryNo.equals(r.get("entryNo"))),Gap.SOURCE);
+                                sourcePoints=points(opLegs,proof,componentRaw,events);
+                                try {
+                                    stamp=B140TestWalletResetEvidence.verify(codec,row,source,proof,events,sourcePoints,reset,
+                                            credit,decodedReceipts.get(credit),entry,parties,parties(creditId,partyIndex),legs(creditId,legIndex));
+                                } catch(IllegalArgumentException ex) {throw bad(Gap.SOURCE);}
+                            }
                             case "SUPPORT_GENESIS" -> {
                                 SupportFundGenesisEvidence.Verified consumption;
                                 try {consumption=genesisEvidence.verify(row,source,proof,events,genesisInput);}
@@ -940,7 +954,7 @@ public class SupportFundReadService {
             &&walletEquals(proof.path("cashAfter"),walletSnapshot(last,"new",number(last,"revision"))),Gap.CASH_TRACE);
         return List.copyOf(result);
     }
-    private static Map<String,Object> walletSnapshot(Map<String,Object> row,String prefix,long revision) {
+    static Map<String,Object> walletSnapshot(Map<String,Object> row,String prefix,long revision) {
         var wallet=new LinkedHashMap<String,Object>();
         for(String field:List.of("id","userId","usdtAvailable","nexAvailable","pendingWithdraw","cregisRiskHeld","version","sandbox","isDeleted","createdAt"))
             wallet.put(field,row.get(prefix+Character.toUpperCase(field.charAt(0))+field.substring(1)));

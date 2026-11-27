@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the explicit local/TEST B140 cutover for the MySQL batch client."""
+"""Render the B140 cutover for a restored local/TEST candidate database."""
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -66,9 +66,16 @@ def render(server_uuid):
          "AND NOT EXISTS (SELECT 1 FROM nx_hdpay_payin_order) AND NOT EXISTS (SELECT 1 FROM nx_withdrawal_payout_ledger) "
          "AND NOT EXISTS (SELECT 1 FROM nx_user_wallet WHERE pending_withdraw<>0 OR cregis_risk_held<>0)",
          "external wallet history needs a reconciliation boundary"),
-        ("NOT EXISTS (SELECT 1 FROM nx_support_fund_operation WHERE source_table IN "
+        ("NOT EXISTS (SELECT 1 FROM nx_support_fund_operation o WHERE o.source_table IN "
          "('nx_earnings_release_entry','nx_earnings_source_recovery','nx_order','nx_order_item','nx_user_device',"
-         "'nx_trial_claim','nx_promotion_reward','nx_wallet_ledger','nx_wallet_bill')) AND "
+         "'nx_trial_claim','nx_promotion_reward','nx_wallet_ledger','nx_wallet_bill') AND NOT EXISTS ("
+         "SELECT 1 FROM nx_b140_test_wallet_reset r JOIN nx_support_fund_operation cleared "
+         "ON cleared.op_key=CONCAT('B140:WALLET_RESET:',r.entry_no) "
+         "AND cleared.business_type='SUPPORT_B140_TEST_WALLET_RESET' AND cleared.phase='RESET' "
+         "AND cleared.source_table='nx_b140_test_wallet_reset' AND cleared.source_key=r.entry_no "
+         "WHERE r.original_operation_id=o.id AND r.original_receipt_sha256=o.receipt_sha256 "
+         "AND o.business_type='SUPPORT_EARNINGS' AND o.phase='CREDIT' "
+         "AND o.source_table='nx_earnings_release_entry' AND o.source_key=r.entry_no)) AND "
          "NOT EXISTS (SELECT 1 FROM nx_user_wallet w JOIN nx_support_fund_operation_party p ON p.customer_id=w.user_id "
          "WHERE w.usdt_available<>0 OR w.nex_available<>0 OR w.pending_withdraw<>0 OR w.cregis_risk_held<>0)",
          "verified Support wallet history needs an auditable reset"),

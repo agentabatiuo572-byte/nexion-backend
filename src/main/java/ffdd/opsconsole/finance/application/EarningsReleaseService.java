@@ -144,6 +144,9 @@ public class EarningsReleaseService {
                 || !BUCKETS.contains(entry.bucket())) {
             throw new BizException(409, "EARNINGS_RECOVERY_SOURCE_MISMATCH");
         }
+        if ("QUEST_REWARD".equals(entry.sourceType()) && mapper.b140ResetReward(entry.entryNo())) {
+            throw new BizException(409, "EARNINGS_RECOVERY_EXCEEDS_ORIGINAL");
+        }
         BigDecimal remaining = entry.amount().subtract(entry.recoveredAmount());
         if (command.amount().compareTo(remaining) > 0) {
             throw new BizException(409, "EARNINGS_RECOVERY_EXCEEDS_ORIGINAL");

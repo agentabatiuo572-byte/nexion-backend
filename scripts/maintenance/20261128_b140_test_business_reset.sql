@@ -146,7 +146,11 @@ DELETE FROM nx_earning_milestone;
 DELETE FROM nx_earning_event;
 DELETE FROM nx_earning_summary;
 DELETE FROM nx_earnings_source_recovery;
-DELETE FROM nx_earnings_release_entry;
+-- The verified test reset still replays the original earnings credit. Keep its
+-- source row alongside the append-only reset and original receipt records.
+DELETE e FROM nx_earnings_release_entry e
+LEFT JOIN nx_b140_test_wallet_reset r ON r.entry_no=e.entry_no COLLATE utf8mb4_bin
+WHERE r.entry_no IS NULL;
 DELETE FROM nx_wallet_bill;
 DELETE FROM nx_wallet_ledger;
 

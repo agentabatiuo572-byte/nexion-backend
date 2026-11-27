@@ -154,6 +154,9 @@ public interface SupportFundReadMapper {
     @Select("<script>"+EarningsReleaseMapper.FUND_ENTRY+" WHERE user_id IN "+IDS+" ORDER BY user_id,id</script>")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> earningsSources(@Param("ids") List<Long> ids);
+    @Select(B140TestWalletResetMapper.SOURCE + " WHERE entry_no=#{entryNo}")
+    @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
+    Map<String,Object> b140ResetSource(@Param("entryNo") String entryNo);
     @Select("<script>"+EarningsReleaseMapper.FUND_RECOVERY+" WHERE user_id IN "+IDS+" ORDER BY user_id,id</script>")
     @Options(useCache=false,flushCache=Options.FlushCachePolicy.TRUE)
     List<Map<String,Object>> earningsRecoveries(@Param("ids") List<Long> ids);
