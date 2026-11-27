@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 /** Authenticated boundary for the fixed Day One read-only page observations. */
@@ -16,10 +17,15 @@ public class AppDayOnePageObservationController {
     private final H3DayOnePageObservationService service;
 
     @PostMapping("/api/growth/day-one/page-observations/{surface}")
-    public ApiResult<Map<String, Object>> observe(@PathVariable String surface, Authentication authentication) {
+    public ApiResult<Map<String, Object>> observe(@PathVariable String surface,
+            @RequestBody(required = false) ProductObservation observation, Authentication authentication) {
         Long userId = userId(authentication);
-        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED") : service.observe(userId, surface);
+        // Existing App and Lite builds only send this request from the original S1 detail.
+        String productNo = observation == null ? "stellarbox-s1" : observation.productNo();
+        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED") : service.observe(userId, surface, productNo);
     }
+
+    public record ProductObservation(String productNo) { }
 
     private Long userId(Authentication authentication) {
         if (authentication == null || !authentication.isAuthenticated() || authentication.getPrincipal() == null

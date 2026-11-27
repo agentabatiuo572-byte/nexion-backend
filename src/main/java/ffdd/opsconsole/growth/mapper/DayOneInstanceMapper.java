@@ -147,6 +147,22 @@ public interface DayOneInstanceMapper {
             @Param("occurredAt") LocalDateTime occurredAt);
 
     @Select("""
+            SELECT i.id instanceId,i.user_id userId,i.instance_key instanceKey,
+                   item.source_mission_id sourceMissionId,item.quest_code questCode,
+                   'S1_ROI_OBSERVATION' bindingCode,'SYSTEM' producer,'H3_DAY_ONE_S1_ROI_VIEWED' eventType,
+                   'user_id' userIdField,JSON_OBJECT('bindingCode','S1_ROI_OBSERVATION','producer','SYSTEM',
+                       'eventType','H3_DAY_ONE_S1_ROI_VIEWED','userIdField','user_id') ruleJson
+              FROM nx_growth_day_one_instance i
+              JOIN nx_growth_day_one_instance_item item ON item.instance_id=i.id AND item.is_deleted=0
+             WHERE i.user_id=#{userId} AND i.snapshot_status='SNAPSHOT' AND i.is_deleted=0
+               AND item.quest_code='view_product_roi'
+               AND i.entered_at<=#{occurredAt} AND #{occurredAt}<i.eligible_until
+             ORDER BY i.id DESC LIMIT 1
+            """)
+    DayOneSnapshotBinding findInWindowRoiItem(@Param("userId") Long userId,
+                                             @Param("occurredAt") LocalDateTime occurredAt);
+
+    @Select("""
             SELECT id,user_id userId,instance_key instanceKey,snapshot_status snapshotStatus,
                    entered_at enteredAt,eligibility_hours eligibilityHours,full_reward_hours fullRewardHours,
                    eligible_until eligibleUntil,tri_reward triReward,

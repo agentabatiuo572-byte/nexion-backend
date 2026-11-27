@@ -187,6 +187,16 @@ public class QuestCanonicalEventProjector {
     private List<DayOneSnapshotBinding> matchingSnapshotBindings(
             EventOutboxMessage message, Map<String, Object> payload) {
         if (dayOneInstanceMapper == null || message.getEventTs() == null) return List.of();
+        if ("H3_DAY_ONE_S1_ROI_VIEWED".equals(message.getEventType())) {
+            Long userId = positiveLong(payload.get("user_id"));
+            Object instance = payload.get("instanceKey");
+            if (!"H3_DAY_ONE_PAGE".equals(message.getAggregateType()) || userId == null
+                    || !(instance instanceof String instanceKey)
+                    || !"s1-roi".equals(payload.get("surface"))
+                    || !(userId + ":" + instanceKey + ":s1-roi").equals(message.getAggregateId())) return List.of();
+            var item = dayOneInstanceMapper.findInWindowRoiItem(userId, message.getEventTs());
+            return item != null && instanceKey.equals(item.instanceKey()) ? List.of(item) : List.of();
+        }
         List<Long> userIds = snapshotCandidateUserIds(payload);
         if (userIds.isEmpty()) return List.of();
         List<DayOneSnapshotBinding> candidates = dayOneInstanceMapper.listInWindowSnapshotBindings(

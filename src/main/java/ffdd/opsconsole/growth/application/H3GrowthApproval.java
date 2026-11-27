@@ -6,11 +6,13 @@ import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.H3MissionTarget;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.math.BigInteger;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -41,8 +43,22 @@ public class H3GrowthApproval {
     public AuditReplayCommand bindMaker(AuditReplayCommand command, Long adminId) {
         if (adminId == null || adminId <= 0) throw new BizException(403, "H3_MAKER_REQUIRED");
         AuditLockTarget target = target(command);
-        return new AuditReplayCommand("H", command.op(), Map.of("values", values(command),
+        Map<?, ?> requestedValues = values(command);
+        Map<String, Object> params = new LinkedHashMap<>(Map.of("values", requestedValues,
                 "makerAdminId", adminId, "expectedState", growth.h3ApprovalState(target)));
+        if (CREATE.equals(command.op())) {
+            var product = growth.h3ProductTarget(text(requestedValues, "actionRoute"));
+            if (product != null) params.put("targetProductName", product.name());
+        }
+        return new AuditReplayCommand("H", command.op(), params);
+    }
+
+    public static H3MissionTarget missionTarget(AuditReplayCommand command) {
+        if (!supports(command) || !CREATE.equals(command.op()) || command.params() == null
+                || !(command.params().get("values") instanceof Map<?, ?> values)
+                || !(values.get("actionRoute") instanceof String route)) return null;
+        String name = command.params().get("targetProductName") instanceof String frozenName ? frozenName : null;
+        return new H3MissionTarget(route, name);
     }
 
     public ApiResult<Void> validateChecker(AuditReplayCommand command, Long checkerId) {

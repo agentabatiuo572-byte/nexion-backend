@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.canonical.H3StorefrontTargets;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -128,7 +129,6 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             "/pages/me/devices",
             "/pages/earn/earn",
             "/pages/store/store",
-            "/pages/store/detail?id=stellarbox-s1",
             "/pages/team/team",
             "/pages/team/commissions",
             "/pages/learn/courses",
@@ -242,6 +242,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     private final ffdd.opsconsole.promotion.application.PromotionAdminService promotionAdmin;
     private ApplicationEventPublisher publicConfigEvents;
     private PendingApprovalProjection pendingApprovalProjection;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private H3StorefrontTargets h3StorefrontTargets;
 
     @org.springframework.beans.factory.annotation.Autowired
     void setPendingApprovalProjection(PendingApprovalProjection projection) {
@@ -845,7 +848,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     /** GET-only task read: attaches pending H3 config approvals without changing mutation receipts. */
     public ApiResult<Map<String, Object>> questTasksForRead() {
-        return ApiResult.ok(withPendingH3Approvals(questTasksWithOperatingStats().getData()));
+        var response = withPendingH3Approvals(questTasksWithOperatingStats().getData());
+        response.put("productActionTargets", h3StorefrontTargets.list());
+        return ApiResult.ok(response);
     }
 
     @SuppressWarnings("unchecked")
@@ -1331,7 +1336,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 throw new IllegalArgumentException("H3_DAY_ONE_STAKING_MISSION_REFUSED");
             }
             String category = normalizeMissionCategory(request.category());
-            String actionRoute = normalizeMissionActionRoute(request.actionRoute());
+            String actionRoute = normalizeMissionActionRoute(request.actionRoute(), code);
             int rewardPoints = request.rewardPoints() == null ? 0 : request.rewardPoints();
             if (rewardPoints < 0) {
                 throw new IllegalArgumentException("MISSION_REWARD_INVALID");
@@ -1418,7 +1423,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             String expectedCategory = normalizeMissionCategory(request.expectedCategory());
             String expectedActionRoute = normalizePlainText(request.expectedActionRoute(), 255);
             String actionRoute = expectedActionRoute.equals(request.actionRoute())
-                    ? expectedActionRoute : normalizeMissionActionRoute(request.actionRoute());
+                    ? expectedActionRoute : normalizeMissionActionRoute(request.actionRoute(), code);
             Map<String, Object> current = questEventMapper.get().lockMission(code);
             if (current == null) return validation("H3_MISSION_NOT_FOUND");
             if (intValue(current.get("status"), -1) == 2) return invalidMissionTransition();
@@ -1607,13 +1612,21 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         return category;
     }
 
-    private String normalizeMissionActionRoute(String raw) {
+    private String normalizeMissionActionRoute(String raw, String missionCode) {
         String route = normalizePlainText(raw, 255);
-        if (!route.matches("^/pages/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*(?:\\?[A-Za-z0-9._~%=&-]+)?$")
-                || !MISSION_ACTION_ROUTES.contains(route)) {
-            throw new IllegalArgumentException("MISSION_ACTION_ROUTE_INVALID");
+        boolean needsRoi = "view_product_roi".equalsIgnoreCase(missionCode);
+        if (route.startsWith(H3StorefrontTargets.PRODUCT_DETAIL)) {
+            var target = h3ProductTarget(route);
+            if (target != null && target.openable() && (!needsRoi || target.roiEligible())) return route;
+        } else if (!needsRoi && MISSION_ACTION_ROUTES.contains(route)) {
+            return route;
         }
-        return route;
+        throw new IllegalArgumentException("MISSION_ACTION_ROUTE_INVALID");
+    }
+
+    H3StorefrontTargets.Target h3ProductTarget(String route) {
+        String prefix = H3StorefrontTargets.PRODUCT_DETAIL;
+        return route.startsWith(prefix) ? h3StorefrontTargets.byProductNo(route.substring(prefix.length())) : null;
     }
 
     private int missionStatusCode(String status) {

@@ -75,7 +75,8 @@ public record AuditCenterOverview(
             @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode changes,
             @JsonInclude(JsonInclude.Include.NON_NULL) String approvalFailureReason,
             @JsonInclude(JsonInclude.Include.NON_NULL) F4SettlementResult businessResult,
-            @JsonInclude(JsonInclude.Include.NON_NULL) F4SettlementResult lastApprovalAttemptResult) {
+            @JsonInclude(JsonInclude.Include.NON_NULL) F4SettlementResult lastApprovalAttemptResult,
+            @JsonInclude(JsonInclude.Include.NON_NULL) H3MissionTarget missionTarget) {
         public AuditOperationTicket(
                 String id, String action, String obj, String beforeValue, String afterValue, String operator,
                 String operatorRole, String type, boolean amplifies, boolean sos, String ts, boolean mine, String roleGate,
@@ -127,7 +128,7 @@ public record AuditCenterOverview(
                     fundEffect, refundOrderNo, retiredOperation, ruleTaskAction, ambassadorMaterialProposal,
                     originalAmountUsdt, refundAmountUsdt, canApprove, canReject, approveDeniedCode, approveDeniedMessage,
                     rejectDeniedCode, rejectDeniedMessage, objDisplayName, roleGrantsDiff, disclosureReview, evidence,
-                    v8PromotionSnapshot, changes, approvalFailureReason, null, null);
+                    v8PromotionSnapshot, changes, approvalFailureReason, null, null, null);
         }
 
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
@@ -149,9 +150,11 @@ public record AuditCenterOverview(
                     reject.getCode() == 0 ? null : reject.getCode(),
                     reject.getCode() == 0 ? null : reject.getMessage(), objDisplayName, roleGrantsDiff,
                     authorizedDisclosureReview, authorizedEvidence, authorizedV8PromotionSnapshot, authorizedChanges,
-                    approvalFailureReason, businessResult, authorizedLastApprovalAttemptResult);
+                    approvalFailureReason, businessResult, authorizedLastApprovalAttemptResult, missionTarget);
         }
     }
+
+    public record H3MissionTarget(String actionRoute, String productName) {}
 
     public record CommissionReverseEvidence(String type, String value) {}
 

@@ -6,6 +6,7 @@ import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper;
 import ffdd.opsconsole.growth.mapper.QuestCompletionFactMapper.MissionDefinition;
 import ffdd.opsconsole.growth.mapper.H3DayOnePageObservationReceiptMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.canonical.H3StorefrontTargets;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -29,6 +30,9 @@ public class H3DayOnePageObservationService {
     private final EventOutboxService outboxService;
     private final Clock clock;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private H3StorefrontTargets storefront;
+
     public H3DayOnePageObservationService(
             DayOneInstanceMapper dayOneInstanceMapper,
             QuestCompletionFactMapper completionFactMapper,
@@ -44,15 +48,26 @@ public class H3DayOnePageObservationService {
 
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> observe(Long userId, String surface) {
+        return observe(userId, surface, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> observe(Long userId, String surface, String productNo) {
         H3DayOnePageObservationContract.Rule rule = H3DayOnePageObservationContract.forSurface(surface);
         if (rule == null) return ApiResult.fail(422, "H3_DAY_ONE_PAGE_OBSERVATION_INVALID");
         if (userId == null || userId <= 0) return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        boolean roi = "s1-roi".equals(rule.surface());
+        if (roi) {
+            var target = storefront.byProductNo(productNo);
+            if (target == null || !target.roiEligible()) return ignored();
+        }
 
         if (completionFactMapper.lockActiveUser(userId) == null) {
             return ignored();
         }
         LocalDateTime observedAt = LocalDateTime.now(clock);
-        DayOneSnapshotBinding binding = matchingSnapshotBinding(userId, rule, observedAt);
+        DayOneSnapshotBinding binding = roi ? dayOneInstanceMapper.findInWindowRoiItem(userId, observedAt)
+                : matchingSnapshotBinding(userId, rule, observedAt);
         if (binding == null) return ignored();
         // This verifies the frozen item and window under lock. Current PC
         // mission/binding rows are deliberately never consulted here.
@@ -74,9 +89,9 @@ public class H3DayOnePageObservationService {
         if (receiptMapper.insertIfAbsent(userId, mission.instanceKey(), rule.surface()) != 1) {
             return ignored();
         }
-        outboxService.publishUserEvent(
+        outboxService.publishUserEventAt(
                 "H3_DAY_ONE_PAGE", userId + ":" + mission.instanceKey() + ":" + rule.surface(),
-                rule.eventType(), userId, normalizePhase(attribution.get("phase")), accountAgeMonths, cohort,
+                rule.eventType(), userId, normalizePhase(attribution.get("phase")), accountAgeMonths, cohort, observedAt,
                 Map.of("surface", rule.surface(), "questCode", rule.questCode(), "instanceKey", mission.instanceKey()));
         return ApiResult.ok(Map.of("accepted", true, "recorded", true));
     }

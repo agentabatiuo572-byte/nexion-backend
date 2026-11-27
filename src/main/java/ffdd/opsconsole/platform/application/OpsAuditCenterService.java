@@ -2165,7 +2165,8 @@ public class OpsAuditCenterService {
                 reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage(),
                 objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command), disclosureReview(row, command),
                 commissionReverseEvidence(command), v8PromotionSnapshot(row, command), withdrawalConfigChanges(row, command),
-                approvalFailureReason(row), f4BusinessResult(row, command), lastF4ApprovalAttemptResult(row, command));
+                approvalFailureReason(row), f4BusinessResult(row, command), lastF4ApprovalAttemptResult(row, command),
+                H3GrowthApproval.missionTarget(command));
     }
 
     private F4SettlementResult f4BusinessResult(AuditOperationTicketEntity ticket, AuditReplayCommand command) {
