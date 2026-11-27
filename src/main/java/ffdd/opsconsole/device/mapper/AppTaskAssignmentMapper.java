@@ -867,7 +867,7 @@ public interface AppTaskAssignmentMapper extends BaseMapper<UserDeviceEntity> {
     String NO_ASSIGNMENT_SETTLEMENT_EVIDENCE = """
             AND t.completed_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM nx_compute_receipt r
-                WHERE r.task_no=t.task_no OR (r.user_id=t.user_id AND r.user_device_id=t.user_device_id
+                WHERE r.task_no=t.task_no OR (r.user_id=t.user_id AND (r.user_device_id IS NULL OR r.user_device_id=t.user_device_id)
                     AND r.receipt_no=CONCAT('CTR-',RIGHT(t.task_no,32))))
             AND NOT EXISTS (SELECT 1 FROM nx_wallet_ledger l WHERE l.user_id=t.user_id AND l.biz_type='COMPUTE_TASK_REWARD'
                 AND (l.biz_no=t.task_no OR l.biz_no=CONCAT('CTR-',RIGHT(t.task_no,32))))
