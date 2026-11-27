@@ -6,6 +6,7 @@ import ffdd.opsconsole.content.dto.SupportGroupRequests.*;
 import ffdd.opsconsole.content.dto.SupportGroupManagementViews.*;
 import ffdd.opsconsole.content.mapper.SupportGroupMapper;
 import ffdd.opsconsole.content.mapper.SupportAgentMapper;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -31,6 +32,7 @@ public class SupportGroupService {
     private final AuditLogService audit;
     private final ApplicationEventPublisher events;
     private final SupportAgentMapper profiles;
+    private final A2RuntimePolicy reasonPolicy;
 
     @Transactional
     public List<GroupDirectory> groups() {
@@ -119,9 +121,12 @@ public class SupportGroupService {
             LocalDateTime at=mapper.now();
             Map<String,Object> values=new HashMap<>(); values.put("name",r.name().trim());values.put("owner",r.supervisorAdminId());values.put("at",at);
             mapper.insertGroup(values);Long group=((Number)values.get("id")).longValue();
-            changed(mapper.insertOwner(group,r.supervisorAdminId(),at,1L,ownership.actorId(),r.reason().trim(),operation(key)));
-            record("CREATED",group,key,Map.of("request",r,"before","ABSENT","after",mapper.group(group)));
-            invalidate(r.reason(),r.supervisorAdminId());
+            String reasonText = A2RuntimePolicy.compactOversizedReason(r.reason(), 200);
+            String ownerReason = A2RuntimePolicy.reasonExcerpt(reasonText, 200);
+            changed(mapper.insertOwner(group,r.supervisorAdminId(),at,1L,ownership.actorId(),ownerReason,operation(key)));
+            var auditedRequest = new Create(r.name(), r.supervisorAdminId(), A2RuntimePolicy.reasonForAudit(reasonText));
+            record("CREATED",group,key,Map.of("request",auditedRequest,"before","ABSENT","after",mapper.group(group)));
+            invalidate(ownerReason,r.supervisorAdminId());
             return ApiResult.ok(mapper.group(group));
         });
     }
@@ -399,12 +404,27 @@ public class SupportGroupService {
         audit.recordRequired(AuditLogWriteRequest.builder().action("SUPPORT_GROUP_"+action).resourceType(resource).resourceId(String.valueOf(id)).actorId(ownership.actorId()).result("SUCCESS").detail(Map.of("operationId",key,"change",detail)).build());
     }
     @SuppressWarnings("unchecked") private <T> ApiResult<T> command(String scope,String key,Object request,String reason,Supplier<ApiResult<T>> action){
-        if(key==null||key.isBlank()||key.length()>96||reason==null)invalid();
-        String cleanReason=reason.trim();
-        int reasonLength=cleanReason.codePointCount(0,cleanReason.length());
-        if(reasonLength<8||reasonLength>200)invalid();
+        if(key==null||key.isBlank()||key.length()>96)invalid();
+        boolean createsGroup = request instanceof Create;
+        if (!createsGroup) {
+            if (reason == null) invalid();
+            String cleanReason = reason.trim();
+            int reasonLength = cleanReason.codePointCount(0, cleanReason.length());
+            if (reasonLength < 8 || reasonLength > 200) invalid();
+        }
         String hash;try{hash=HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(request.toString().getBytes(StandardCharsets.UTF_8)));}catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
-        return idempotency.execute("SUPPORT_GROUP_"+scope+":"+ownership.actorId(),key,hash,ApiResult.class,action::get);
+        String actorScope = "SUPPORT_GROUP_" + scope + ":" + ownership.actorId();
+        if (createsGroup) {
+            try {
+                reasonPolicy.validateReason(reason);
+            } catch (BizException rejection) {
+                // Return an exact prior receipt without letting a rejected new request claim its key.
+                var prior = idempotency.replayActiveSuccess(actorScope, key, hash, ApiResult.class);
+                if (prior != null) return prior;
+                throw rejection;
+            }
+        }
+        return idempotency.execute(actorScope,key,hash,ApiResult.class,action::get);
     }
     private String operation(String key){return ownership.actorId()+":"+key;}
     private static void authority(String p){if(!SupportOwnershipService.hasAuthority(p))forbidden();}

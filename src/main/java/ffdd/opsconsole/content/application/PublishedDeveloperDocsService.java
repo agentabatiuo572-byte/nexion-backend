@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.application;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -28,6 +29,7 @@ public class PublishedDeveloperDocsService {
     private final PlatformConfigFacade config;
     private final Environment environment;
     private final AuditLogService audit;
+    private final A2RuntimePolicy reasonPolicy;
     private final ObjectMapper mapper = new ObjectMapper();
     private final String defaultDocument = PublishedContentDefaults.read(DEFAULT_RESOURCE);
     private final Map<String, Object> defaultPublication = parse(defaultDocument);
@@ -73,12 +75,14 @@ public class PublishedDeveloperDocsService {
     @Transactional(rollbackFor = Exception.class)
     public ApiResult<Map<String, Object>> update(String version, String status, Map<String, Object> locales,
                                                   Long expectedRevision, String reason) {
+        boolean draft = "DRAFT".equals(status);
         if (version == null || version.isBlank() || version.length() > 64
-                || (!"PUBLISHED".equals(status) && !"DRAFT".equals(status))
+                || (!"PUBLISHED".equals(status) && !draft)
                 || locales == null || locales.isEmpty() || locales.size() > 10
                 || expectedRevision == null || expectedRevision < 0
-                || reason == null || reason.trim().length() < 8 || reason.trim().length() > 500)
+                || (!draft && (reason == null || reason.trim().length() < 8 || reason.trim().length() > 500)))
             return ApiResult.fail(422, "DEVELOPER_DOCS_CONTENT_INVALID");
+        if (draft) reasonPolicy.validateReason(reason);
         for (Map.Entry<String, Object> entry : locales.entrySet()) {
             if (!entry.getKey().matches("(?:[a-z]{2}|fil)(?:-[a-z0-9]{2,8})?")) return ApiResult.fail(422, "DEVELOPER_DOCS_CONTENT_INVALID");
             Map<String, Object> locale = map(entry.getValue());
@@ -97,11 +101,14 @@ public class PublishedDeveloperDocsService {
             String serialized = mapper.writeValueAsString(document);
             if (serialized.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > PublishedContentSnapshot.MAX_STORED_BYTES)
                 return ApiResult.fail(422, "DEVELOPER_DOCS_CONTENT_TOO_LARGE");
-            config.upsertAdminValue(CONFIG_KEY, serialized, "JSON", "published_content", reason.trim());
+            String reasonText = draft ? A2RuntimePolicy.compactOversizedReason(reason, 255) : reason.trim();
+            config.upsertAdminValue(CONFIG_KEY, serialized, "JSON", "published_content",
+                    draft ? A2RuntimePolicy.reasonExcerpt(reasonText, 255) : reasonText);
             audit.recordRequired(AuditLogWriteRequest.builder().action("DEVELOPER_DOCS_PUBLISHED_CONTENT_CHANGED")
                     .resourceType("PUBLISHED_CONTENT").resourceId(CONFIG_KEY).result("SUCCESS").riskLevel("MEDIUM")
                     .detail(Map.of("beforeRevision",currentRevision,"afterRevision",currentRevision+1,
-                            "status",status,"version",version.trim(),"reason",reason.trim())).build());
+                            "status",status,"version",version.trim(),
+                            "reason",draft ? A2RuntimePolicy.reasonForAudit(reasonText) : reasonText)).build());
             return ApiResult.ok(PublishedContentSnapshot.admin(document));
         } catch (RuntimeException ex) {
             throw ex;

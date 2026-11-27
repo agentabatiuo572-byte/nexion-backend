@@ -125,6 +125,13 @@ public class A2RuntimePolicy {
         return visible;
     }
 
+    /** Preserves words separated by long runs of invisible padding before bounding a stored reason. */
+    public static String compactOversizedReason(String reason, int maxCodePoints) {
+        if (reason.codePointCount(0, reason.length()) <= maxCodePoints) return reason;
+        return stripReasonPadding(Normalizer.normalize(reason, Normalizer.Form.NFC))
+                .replaceAll("[\\p{javaWhitespace}\\p{Z}\\p{Cc}\\p{Cf}]{2,}", " ");
+    }
+
     /** Bounds a stored reason summary without splitting a Unicode character. */
     public static String reasonExcerpt(String value, int maxCodePoints) {
         String reason = value.trim();
