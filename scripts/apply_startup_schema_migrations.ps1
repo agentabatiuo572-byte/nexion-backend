@@ -598,6 +598,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261124_d5_min_withdrawal.sql"),
   (Join-Path $root "scripts\migrations\20261127_b142_finance_launch_defaults.sql")
   (Join-Path $root "scripts\migrations\20261127_d5_small_amount_launch_default.sql")
+  (Join-Path $root "scripts\migrations\20261127_h3_quest_claim_reward_tier_event.sql")
   (Join-Path $root "scripts\migrations\20261124_h1_compliance_threshold.sql")
   (Join-Path $root "scripts\migrations\20261124_d5_payout_address_protection.sql")
   # B80-BE-06: M performance export permissions and task/token tables.

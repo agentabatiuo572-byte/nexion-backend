@@ -1031,13 +1031,16 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
             String expectedUserIdField = null;
             int expectedStatus = -1;
             if (exists) {
-                expectedProducer = normalizePlainText(request.expectedProducer(), 32).toUpperCase(Locale.ROOT);
+                String currentProducer = stringValue(current.get("producer"), "");
+                String requestedProducer = normalizePlainText(request.expectedProducer(), 32);
+                expectedProducer = currentProducer.equals(requestedProducer)
+                        ? currentProducer : requestedProducer.toUpperCase(Locale.ROOT);
                 expectedEventType = normalizePlainText(request.expectedEventType(), 128);
                 expectedQuestCode = normalizeMissionCode(request.expectedQuestCode());
                 expectedUserIdField = normalizePlainText(request.expectedUserIdField(), 64);
                 if (request.expectedEnabled() == null) throw new IllegalArgumentException("H3_BINDING_EXPECTED_STATUS_REQUIRED");
                 expectedStatus = request.expectedEnabled() ? 1 : 0;
-                if (!expectedProducer.equals(stringValue(current.get("producer"), ""))
+                if (!expectedProducer.equals(currentProducer)
                         || !expectedEventType.equals(stringValue(current.get("eventType"), ""))
                         || !expectedQuestCode.equals(stringValue(current.get("questCode"), ""))
                         || !expectedUserIdField.equals(stringValue(current.get("userIdField"), ""))
@@ -1048,7 +1051,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
             Map<String, Object> before = exists ? bindingSnapshot(current) : Map.of();
             if (deleting) {
-                requireDayOneBindingRetained(mapper, expectedQuestCode, expectedStatus, true);
+                requireDayOneBindingRetained(mapper, current);
                 if (mapper.deleteQuestEventBindingCas(code, expectedProducer, expectedEventType, expectedQuestCode,
                         expectedUserIdField, expectedStatus) != 1) return ApiResult.fail(409, "H3_BINDING_STALE");
             } else {
@@ -1057,8 +1060,13 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 String questCode = normalizeMissionCode(request.questCode());
                 String userIdField = normalizePlainText(request.userIdField(), 64);
                 int status = Boolean.TRUE.equals(request.enabled()) ? 1 : 0;
-                if (!H3_BINDING_EVENT_TYPES.getOrDefault(producer, Set.of()).contains(eventType)
-                        || !H3_BINDING_USER_FIELDS.contains(userIdField)) {
+                String dayOneError = H3DayOneBindingPolicy.mismatch(producer, eventType, questCode, userIdField);
+                if (status == 1 && dayOneError != null) throw new IllegalArgumentException(dayOneError);
+                boolean disablingLegacyMismatch = status == 0 && expectedStatus == 1 && dayOneError != null
+                        && producer.equalsIgnoreCase(expectedProducer) && eventType.equals(expectedEventType)
+                        && questCode.equals(expectedQuestCode) && userIdField.equals(expectedUserIdField);
+                if (!disablingLegacyMismatch && (!H3_BINDING_EVENT_TYPES.getOrDefault(producer, Set.of()).contains(eventType)
+                        || !H3_BINDING_USER_FIELDS.contains(userIdField))) {
                     throw new IllegalArgumentException("H3_BINDING_EVENT_INVALID");
                 }
                 if (status == 1 && "H3_STOREFRONT_THREE_PRODUCTS_VIEWED".equals(eventType)
@@ -1072,18 +1080,10 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                         && eventType.equals(WEEKLY_SYSTEM_EVENTS.get(questCode)))) {
                     throw new IllegalArgumentException("H3_WEEKLY_BINDING_INVALID");
                 }
-                if (status == 1 && H3DayOnePageObservationContract.forEventType(eventType) != null
-                        && !H3DayOnePageObservationContract.matches(
-                                producer, eventType, questCode, userIdField)) {
-                    throw new IllegalArgumentException("H3_DAY_ONE_PAGE_OBSERVATION_BINDING_INVALID");
+                if (exists && (status != 1 || !questCode.equalsIgnoreCase(expectedQuestCode))) {
+                    requireDayOneBindingRetained(mapper, current);
                 }
-                var businessRule = H3DayOneBusinessFactContract.forEventType(eventType);
-                if (status == 1 && businessRule != null && !businessRule.matches(producer, questCode, userIdField)) {
-                    throw new IllegalArgumentException("H3_DAY_ONE_BUSINESS_BINDING_INVALID");
-                }
-                if (exists) requireDayOneBindingRetained(mapper, expectedQuestCode, expectedStatus,
-                        status != 1 || !questCode.equals(expectedQuestCode));
-                if (mapper.activatableMissionByCode(questCode) != 1) {
+                if (!disablingLegacyMismatch && mapper.activatableMissionByCode(questCode) != 1) {
                     throw new IllegalArgumentException("H3_BINDING_TARGET_NOT_ACTIVATABLE");
                 }
                 if (status == 1 && mapper.activeBindingSlotCount(producer, eventType, userIdField, code) > 0) {
@@ -1107,12 +1107,30 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
         }
     }
 
-    private void requireDayOneBindingRetained(GrowthQuestEventMapper mapper, String questCode,
-                                              int previousStatus, boolean removing) {
-        if (removing && previousStatus == 1 && mapper.activeDayOneMissionCount(questCode) > 0
-                && mapper.activeBindingCountByQuestCode(questCode) <= 1) {
+    private void requireDayOneBindingRetained(GrowthQuestEventMapper mapper, Map<String, Object> current) {
+        String questCode = stringValue(current.get("questCode"), "");
+        if (intValue(current.get("status"), -1) != 1 || mapper.activeDayOneMissionCount(questCode) == 0) return;
+        boolean legacyMismatch = H3DayOneBindingPolicy.hasFixedQuest(questCode) && !H3DayOneBindingPolicy.permits(
+                stringValue(current.get("producer"), ""), stringValue(current.get("eventType"), ""),
+                questCode, stringValue(current.get("userIdField"), ""));
+        // Startup replay requires a raw row even when a legacy fixed task only has wrong bindings.
+        int retainedCount = legacyMismatch ? mapper.activeBindingCountByQuestCode(questCode)
+                : activeMissionBindingCount(mapper, questCode);
+        if (retainedCount <= 1) {
             throw new IllegalArgumentException("H3_ACTIVE_DAY_ONE_BINDING_REQUIRED");
         }
+    }
+
+    private int activeMissionBindingCount(GrowthQuestEventMapper mapper, String questCode) {
+        return H3DayOneBindingPolicy.hasFixedQuest(questCode)
+                ? activeFixedDayOneBindings(mapper, List.of(questCode)).size()
+                : mapper.activeBindingCountByQuestCode(questCode);
+    }
+
+    private List<GrowthQuestEventMapper.ActiveBindingRule> activeFixedDayOneBindings(
+            GrowthQuestEventMapper mapper, List<String> questCodes) {
+        return mapper.activeBindingRules(questCodes).stream().filter(binding -> H3DayOneBindingPolicy.permits(
+                binding.producer(), binding.eventType(), binding.questCode(), binding.userIdField())).toList();
     }
 
     private Map<String, Object> bindingSnapshot(Map<String, Object> binding) {
@@ -1456,7 +1474,7 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
                 return validation("H3_MISSION_VERIFIED_COMPLETION_UNAVAILABLE");
             }
             if ("MISSION".equals(kind) && target == 1
-                    && questEventMapper.get().activeBindingCountByQuestCode(code) < 1) {
+                    && activeMissionBindingCount(questEventMapper.get(), code) < 1) {
                 return validation("H3_MISSION_ACTIVE_BINDING_REQUIRED");
             }
             if ("MISSION".equals(kind) && target == 1 && "weekly_t2_browse_store".equals(code)
@@ -4027,7 +4045,24 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
     }
 
     private List<Map<String, Object>> dayOneTaskRows() {
-        return requiredMissionRows("DAY_ONE");
+        List<Map<String, Object>> rows = requiredMissionRows("DAY_ONE");
+        List<String> fixedCodes = rows.stream().map(row -> stringValue(row.get("taskCode"), ""))
+                .filter(H3DayOneBindingPolicy::hasFixedQuest).toList();
+        if (fixedCodes.isEmpty()) return rows;
+        Map<String, List<String>> effectiveEvents = new LinkedHashMap<>();
+        for (var binding : activeFixedDayOneBindings(questEventMapper.get(), fixedCodes)) {
+            effectiveEvents.computeIfAbsent(binding.questCode().toLowerCase(Locale.ROOT), key -> new ArrayList<>())
+                    .add(binding.eventType());
+        }
+        return rows.stream().map(row -> {
+            String code = stringValue(row.get("taskCode"), "");
+            if (!H3DayOneBindingPolicy.hasFixedQuest(code)) return row;
+            List<String> events = effectiveEvents.getOrDefault(code.toLowerCase(Locale.ROOT), List.of());
+            Map<String, Object> display = new LinkedHashMap<>(row);
+            display.put("completionType", events.isEmpty() ? "unbound" : "event");
+            display.put("completionEvent", String.join(", ", events));
+            return display;
+        }).toList();
     }
 
     /** Strict H3 projection used by the public platform config; missing H3 data must fail closed. */

@@ -87,7 +87,7 @@ public class H3DayOnePageObservationService {
                 List.of(userId), rule.eventType(), observedAt);
         if (bindings == null) return null;
         return bindings.stream().filter(binding -> binding != null && userId.equals(binding.userId())
-                && rule.questCode().equals(binding.questCode())
+                && rule.eventType().equals(binding.eventType())
                 && H3DayOnePageObservationContract.matches(
                         binding.producer(), binding.eventType(), binding.questCode(), binding.userIdField()))
                 .findFirst().orElse(null);
