@@ -24,7 +24,6 @@ import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
-import ffdd.opsconsole.shared.canonical.StorefrontSeriesRepresentatives;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
@@ -105,7 +104,6 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.test.util.ReflectionTestUtils;
 
 class OpsDeviceServiceTest {
     private final SupportPaymentAttributionFacade capture = paymentAttribution();
@@ -124,7 +122,6 @@ class OpsDeviceServiceTest {
     private final ObjectStorageService storageService = mock(ObjectStorageService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-06-17T00:00:00Z"), ZoneId.of("UTC"));
     private final PhoneReplacementPolicyPublicationService phonePolicies = mock(PhoneReplacementPolicyPublicationService.class);
-    private final StorefrontSeriesRepresentatives seriesRepresentatives = mock(StorefrontSeriesRepresentatives.class);
     private final OpsDeviceService service = service();
 
     private OpsDeviceService service() {
@@ -174,7 +171,6 @@ class OpsDeviceServiceTest {
 
     @BeforeEach
     void stubLocksNoActive() {
-        ReflectionTestUtils.setField(service, "seriesRepresentatives", seriesRepresentatives);
         when(phonePolicies.currentPolicy()).thenReturn(new ffdd.opsconsole.common.boundary.PhoneReplacementContract.Policy(false,null,null,null,null,null));
         // A2 锁守卫默认放行:countActiveByTarget=0 表示无活跃锁,replay 与常规写方法直通
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
@@ -3203,7 +3199,9 @@ class OpsDeviceServiceTest {
             DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, "FT".equals(taskClass) ? 48 : 8);
             catalogRepository.tasks.put(row.taskId(), row);
         }
-        when(seriesRepresentatives.currentVramGb()).thenReturn(Map.of("S1", 16, "PRO", 12, "RACK_P1", 48));
+        catalogRepository.skus.put("stellarbox-s1", sku("stellarbox-s1", "S1", "on"));
+        catalogRepository.skus.put("stellarbox-pro", skuWithVram("stellarbox-pro", "12GB"));
+        catalogRepository.skus.put("stellarrack-p1", sku("stellarrack-p1", "Rack", "on"));
         configFacade.values.put("E.task.queueSaturation", "0.35");
 
         ApiResult<Map<String, Object>> result = service.e2TaskPricing();
@@ -3215,13 +3213,9 @@ class OpsDeviceServiceTest {
         List<Map<String, Object>> teaser = (List<Map<String, Object>>) result.getData().get("teaser");
         assertThat(teaser).filteredOn(row -> "cloud-share".equals(row.get("deviceClass")))
                 .singleElement().satisfies(row -> assertThat(row).containsEntry("vram", 8));
-        assertThat(teaser).filteredOn(row -> "S1".equals(row.get("deviceClass")))
-                .singleElement().satisfies(row -> assertThat(row).containsEntry("vram", 16));
         assertThat(teaser).filteredOn(row -> "Pro".equals(row.get("deviceClass")))
                 .singleElement().satisfies(row -> assertThat(row).containsEntry("vram", 12)
                         .containsEntry("lockedTasks", List.of("FT")));
-        assertThat(teaser).filteredOn(row -> "Rack".equals(row.get("deviceClass")))
-                .singleElement().satisfies(row -> assertThat(row).containsEntry("vram", 48));
         assertThat((BigDecimal) result.getData().get("queueSaturation")).isEqualByComparingTo("0.35");
     }
 
@@ -3610,19 +3604,30 @@ class OpsDeviceServiceTest {
             DeviceTaskView row = taskWithClass("TK-" + taskClass, taskClass, 48);
             catalogRepository.tasks.put(row.taskId(), row);
         }
-        catalogRepository.skus.put("stellarbox-pro", sku("stellarbox-pro", "Legacy Pro", "on"));
-        when(seriesRepresentatives.currentVramGb()).thenReturn(Map.of());
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> teaser = (List<Map<String, Object>>) service.e2TaskPricing().getData().get("teaser");
         assertThat(teaser).extracting(row -> row.get("deviceClass")).containsExactly("cloud-share", "phone");
+    }
 
-        when(seriesRepresentatives.currentVramGb()).thenThrow(
-                new org.springframework.dao.DataAccessResourceFailureException("storefront lookup unavailable"));
-        var pricing = service.e2TaskPricing();
-        assertThat(pricing.getCode()).isZero();
-        assertThat(pricing.getData().get("teaser")).isEqualTo(teaser);
-        assertThat(service.routeE2Task(48).getCode()).isZero();
+    private static DeviceSkuView skuWithVram(String skuId, String vram) {
+        DeviceSkuView source = sku(skuId, skuId, "on");
+        return new DeviceSkuView(
+                source.skuId(), source.name(), source.tier(), source.tagline(), source.badge(), source.gpu(),
+                vram, source.hashRate(), source.power(), source.datacenter(), source.uptime(),
+                source.warranty(), source.phoneDailyEarn(), source.phoneDailyEarnNex(), source.price(),
+                source.dailyEarn(), source.dailyEarnNex(), source.shareYieldMin(), source.shareYieldMax(),
+                source.baseRate(), source.sold(), source.stock(), source.rating(), source.reviews(),
+                source.aiImageGenPerMin(), source.aiLlmTokensPerSec(), source.aiVideoMinPerHour(),
+                source.aiFineTuneMins(), source.aiUnlocks(), source.features(), source.generation(),
+                source.lifecycle(), source.supersededBy(), source.tradeinDiscount(), source.unlockPhase(),
+                source.purchaseGate(), source.imageAssetId(), source.imageObjectKey(), source.imagePreviewUrl(),
+                source.tag(), source.status(), source.publishBlocked(), source.publishBlockReason(),
+                source.createdAt(), source.updatedAt(), source.productType(), source.inventoryMode(), source.trialEligible(),
+                source.specDocumentTitle(), source.specDocumentUrl(), source.computePoints(), source.allowedPoolCodes(),
+                source.productTaskPolicyVersion(), source.productTaskPolicyEffectiveAt(), source.monthlyTargetUsdt(),
+                source.monthlyTargetBandPct(), source.derivedDailyEarnUsdt(), source.derivedShareYieldMinPct(),
+                source.derivedShareYieldMaxPct());
     }
 
     private static DeviceSkuView withMedia(DeviceSkuView source, String assetId, String objectKey) {

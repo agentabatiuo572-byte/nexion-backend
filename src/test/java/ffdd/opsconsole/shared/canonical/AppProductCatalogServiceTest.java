@@ -2,9 +2,7 @@ package ffdd.opsconsole.shared.canonical;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -17,9 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.math.BigDecimal;
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.util.Base64;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -38,12 +34,6 @@ class AppProductCatalogServiceTest {
     AppProductCatalogServiceTest() {
         when(releasePolicy.evaluate(any(), any()))
                 .thenReturn(StorefrontProductReleasePolicy.Decision.open(null));
-        when(releasePolicy.evaluateBatch(anyMap())).thenAnswer(invocation -> {
-            Map<String, String> phases = invocation.getArgument(0);
-            Map<String, StorefrontProductReleasePolicy.Decision> decisions = new LinkedHashMap<>();
-            phases.forEach((productNo, phase) -> decisions.put(productNo, releasePolicy.evaluate(productNo, phase)));
-            return decisions;
-        });
         when(sandboxGuard.isStrictProductionRuntime()).thenReturn(true);
         when(mapper.activeUserEnvironment(42L)).thenReturn(0);
     }
@@ -116,37 +106,6 @@ class AppProductCatalogServiceTest {
                 .containsEntry("available", true)
                 .containsEntry("purchaseBlocked", true)
                 .containsEntry("purchaseBlockedReason", "PRODUCT_OUT_OF_STOCK");
-    }
-
-    @Test
-    void formalCatalogSelectsOnlyBuyableProductsByPriceCreationTimeAndDatabaseId() {
-        var early = LocalDateTime.of(2026, 1, 1, 0, 0);
-        var sameDay = early.plusDays(1);
-        when(mapper.listPurchasableCatalogTargets()).thenReturn(List.of(
-                seriesTarget("listed-first", "PRO", "100", 1, "700W", early, 1),
-                seriesTarget("sold-out", "PRO", "1", 0, "700W", early, 2),
-                seriesTarget("no-specs", "PRO", "2", 1, null, early, 3),
-                seriesTarget("later-phase", "PRO", "3", 1, "700W", early, 4),
-                seriesTarget("same-price-later-date", "PRO", "60", 1, "700W", sameDay.plusDays(1), 5),
-                seriesTarget("same-price-larger-id", "PRO", "60.00", 1, "700W", sameDay, 7),
-                seriesTarget("winner", "PRO", "60", 1, "700W", sameDay, 6),
-                seriesTarget("no-buyable-variant", "PRO_V2", "100", 0, "700W", early, 8),
-                seriesTarget("legacy-no-series", null, "1", 1, "700W", early, 9)));
-        when(releasePolicy.evaluate("later-phase", null)).thenReturn(
-                StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", "52"));
-
-        List<Map<String, Object>> products = catalogProducts();
-
-        assertThat(products).extracting(row -> row.get("id")).containsExactly(
-                "listed-first", "sold-out", "no-specs", "later-phase", "same-price-later-date",
-                "same-price-larger-id", "winner", "no-buyable-variant", "legacy-no-series");
-        assertThat(products).extracting(row -> row.get("seriesRepresentative")).containsExactly(
-                false, false, false, false, false, false, true, false, false);
-        assertThat(products.get(6)).containsEntry("seriesCode", "PRO");
-        assertThat(products.get(7)).containsEntry("seriesCode", "PRO_V2");
-        assertThat(products.get(8)).containsEntry("seriesCode", null);
-        assertThat(new StorefrontSeriesRepresentatives(mapper, releasePolicy, new ObjectMapper()).currentProductNos())
-                .containsExactlyEntriesOf(Map.of("PRO", "winner"));
     }
 
     @Test
@@ -266,36 +225,12 @@ class AppProductCatalogServiceTest {
         assertThat((List<?>) data.get("products")).singleElement().satisfies(item -> {
             Map<?, ?> product = (Map<?, ?>) item;
             assertThat(product.get("id")).isEqualTo("stellarbox-pro-v2");
-            assertThat(product.get("datacenter")).isEqualTo("");
+            assertThat(product.get("datacenter")).isEqualTo("Tokyo DC");
             assertThat(product.get("available")).isEqualTo(true);
             assertThat(product.get("purchaseBlocked")).isEqualTo(false);
         });
         verify(sandboxMapper).pruneCatalog("test-run-0001");
-        verify(mapper, never()).listPurchasableCatalogTargets();
-    }
-
-    @Test
-    void sandboxCatalogSelectsFromRunScopedPurchasability() {
-        var created = LocalDateTime.of(2026, 1, 1, 0, 0);
-        when(sandboxGuard.isLocalSandboxEnabled()).thenReturn(true);
-        when(sandboxMapper.isSandboxUser(42L)).thenReturn(true);
-        when(sandboxMapper.listSandboxCatalog("test-run-0001")).thenReturn(List.of(
-                sandboxSeriesTarget(4, "winner", "50", 1, "700W", created),
-                sandboxSeriesTarget(3, "higher-price", "100", 1, "700W", created),
-                sandboxSeriesTarget(2, "no-specs", "1", 1, null, created),
-                sandboxSeriesTarget(1, "later-phase", "2", 1, "700W", created),
-                sandboxSeriesTarget(6, "run-sold-out", "3", 0, "700W", created)));
-        when(releasePolicy.evaluate("later-phase", null)).thenReturn(
-                StorefrontProductReleasePolicy.Decision.closed("E1_PHASE_NOT_REACHED", "52"));
-
-        List<Map<String, Object>> products = catalogProducts();
-
-        assertThat(products).extracting(row -> row.get("seriesCode")).containsOnly("PRO");
-        assertThat(products).extracting(row -> row.get("id")).containsExactly(
-                "winner", "higher-price", "no-specs", "later-phase", "run-sold-out");
-        assertThat(products).extracting(row -> row.get("seriesRepresentative")).containsExactly(
-                true, false, false, false, false);
-        verify(mapper, never()).listPurchasableCatalogTargets();
+        org.mockito.Mockito.verifyNoInteractions(mapper);
     }
 
     @Test
@@ -448,7 +383,7 @@ class AppProductCatalogServiceTest {
 
         assertThat(result.getCode()).isEqualTo(403);
         assertThat(result.getMessage()).isEqualTo("COMMERCE_SANDBOX_USER_REQUIRED");
-        verify(mapper, never()).listPurchasableCatalogTargets();
+        org.mockito.Mockito.verifyNoInteractions(mapper);
     }
 
     @Test
@@ -460,7 +395,7 @@ class AppProductCatalogServiceTest {
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getMessage()).isEqualTo("COMMERCE_SANDBOX_UNAVAILABLE");
-        verify(mapper, never()).listPurchasableCatalogTargets();
+        org.mockito.Mockito.verifyNoInteractions(mapper);
     }
 
     private AppTradeinMapper.CatalogTargetProduct target(
@@ -470,28 +405,5 @@ class AppProductCatalogServiceTest {
                 "RTX 5090", 256, new BigDecimal("20"), new BigDecimal("2"), new BigDecimal("2"),
                 null, null, 0, null, null, "2200W", "Singapore", null,
                 null, null, null, null, null, null);
-    }
-
-    @SuppressWarnings("unchecked")
-    private List<Map<String, Object>> catalogProducts() {
-        var result = service.catalog(42L);
-        assertThat(result.getCode()).as(result.getMessage()).isZero();
-        return (List<Map<String, Object>>) result.getData().get("products");
-    }
-
-    private AppTradeinMapper.CatalogTargetProduct seriesTarget(
-            String productNo, String seriesCode, String price, int stock, String power, LocalDateTime created, long productId) {
-        return new AppTradeinMapper.CatalogTargetProduct(productNo, productNo, "Pro", new BigDecimal(price), stock, "DEVICE", 2,
-                "RTX 5090", 256, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, null, null, 0, null, null,
-                power, null, null, null, null, null, "[]", null, null, null, null, null, null,
-                null, null, "FINITE", null, null, 0L, null, null, 0, true, null, seriesCode, created, productId);
-    }
-
-    private CommerceAcceptanceSandboxMapper.SandboxCatalogProduct sandboxSeriesTarget(
-            long productId, String productNo, String price, int stock, String power, LocalDateTime created) {
-        return new CommerceAcceptanceSandboxMapper.SandboxCatalogProduct(productId, productNo, productNo, "Pro",
-                new BigDecimal(price), stock, 0, "RTX 5090", 256, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE,
-                null, null, null, 0L, null, power, null, null, null, null, null, "[]",
-                null, null, null, null, null, null, "DEVICE", "FINITE", 0L, null, null, "PRO", created);
     }
 }

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
+import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
 import ffdd.opsconsole.device.mapper.AppTradeinMapper;
 import ffdd.opsconsole.shared.canonical.StorefrontSeriesRepresentatives;
 import java.io.IOException;
@@ -54,6 +55,13 @@ public class RagNovaAiGateway implements NovaAiGateway {
         this.knowledgeRepository = knowledgeRepository;
         this.tradeinMapper = tradeinMapper;
         this.seriesRepresentatives = seriesRepresentatives;
+    }
+
+    /** Compatibility for in-process callers that supply the legacy E1 repository. */
+    public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper,
+                            SupportKnowledgeRepository knowledgeRepository,
+                            DeviceCatalogRepository legacyCatalogRepository) {
+        this(properties, objectMapper, knowledgeRepository);
     }
 
     public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper,
