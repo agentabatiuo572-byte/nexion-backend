@@ -6333,10 +6333,34 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     public void skuStatusReview(Map<String,Object> params) {
         poolCodesParam(params); // refuse retired class/ID scope params
         var before=catalogRepository.findSku(hardwarePolicyTarget(str(params,"skuId"))).orElseThrow(()->new BizException(404,"SKU_NOT_FOUND"));
-        boolean listing="on".equals(normalizeSkuStatus(str(params,"status")));
+        validateSkuStatusReview(before, normalizeSkuStatus(str(params, "status")));
+    }
+
+    public SkuLifecycleReview skuLifecycleReview(AuditReplayCommand command) {
+        Map<String, Object> params = command.params();
+        if (!(params.get("skuId") instanceof String skuId)) throw new BizException(422, "SKU_ID_REQUIRED");
+        var revision = parseSkuRevision(str(params, "expectedUpdatedAt"));
+        if (revision.error() != null) throw new BizException(409, revision.error());
+        var before = catalogRepository.findSku(hardwarePolicyTarget(skuId))
+                .orElseThrow(() -> new BizException(404, "SKU_NOT_FOUND"));
+        if (!Objects.equals(before.updatedAt(), revision.value())) throw new BizException(409, "SKU_VERSION_CONFLICT");
+        if ("e1_sku_delete".equals(command.op())) return new SkuLifecycleReview(before, "deleted");
+
+        if (!(params.get("status") instanceof String rawStatus)) throw new BizException(422, "SKU_STATUS_INVALID");
+        String status = normalizeSkuStatus(rawStatus);
+        if (status == null) throw new BizException(422, "SKU_STATUS_INVALID");
+        poolCodesParam(params); // refuse retired class/ID scope params
+        validateSkuStatusReview(before, status);
+        return new SkuLifecycleReview(before, status);
+    }
+
+    private void validateSkuStatusReview(DeviceSkuView before, String status) {
+        boolean listing = "on".equals(status);
         if (listing && !"on".equals(before.status())) requireStoreSkuSeries(before.seriesCode(),before.productType());
         simulationPolicies.validateProductScope(before.skuId(),before.seriesCode(),before.allowedPoolCodes(),false,before.monthlyTargetUsdt(),before.monthlyTargetBandPct(),listing,false);
     }
+
+    public record SkuLifecycleReview(DeviceSkuView before, String status) { }
 
     public record SkuProposalReview(String skuId,DeviceSkuView before,DeviceSkuUpsertRequest after,List<String> classes) {
         public boolean amplifies() { return MonthlyTargetProjection.amplifies(before==null?null:before.monthlyTargetUsdt(),

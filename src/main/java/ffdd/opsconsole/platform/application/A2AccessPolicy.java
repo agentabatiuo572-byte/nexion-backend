@@ -252,7 +252,7 @@ public class A2AccessPolicy {
     boolean canRecoverOwnWriteProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command,
             OriginalKeyReader reader) {
         Set<String> grants = reader.grants();
-        if (canRecoverOwnE1ReleaseProposal(ticket, command, reader)) return true;
+        if (canRecoverOwnE1Proposal(ticket, command, reader)) return true;
         if (command == null || !grants.contains("platform_a2_write") || grants.contains("platform_a2_read")
                 || !StringUtils.hasText(ticket.getSourceDomain())) return false;
         String domain = ticket.getSourceDomain().trim().substring(0, 1).toUpperCase(Locale.ROOT);
@@ -262,11 +262,12 @@ public class A2AccessPolicy {
     }
 
     /** The caller has already matched the key and the ticket maker. */
-    boolean canRecoverOwnE1ReleaseProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command,
+    boolean canRecoverOwnE1Proposal(AuditOperationTicketEntity ticket, AuditReplayCommand command,
             OriginalKeyReader reader) {
         Set<String> grants = reader.grants();
         return ("E".equals(ticket.getSourceDomain()) || "E1".equals(ticket.getSourceDomain()))
-                && AuditReplayBusinessPermissionGuard.isE1ReleaseRuleOperation(command)
+                && (AuditReplayBusinessPermissionGuard.isE1ReleaseRuleOperation(command)
+                    || AuditReplayBusinessPermissionGuard.isE1CatalogChangeOperation(command))
                 && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"))
                 && replayBusinessPermissionGuard.hasMappedProposalGrant(command, "E", reader.actorId(), grants);
     }

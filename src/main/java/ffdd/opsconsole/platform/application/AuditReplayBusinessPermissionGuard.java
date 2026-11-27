@@ -88,6 +88,8 @@ public class AuditReplayBusinessPermissionGuard {
     private static final Set<String> E1_RELEASE_RULE_OPERATIONS = Set.of(
             "e1_phase_create", "e1_phase_patch", "e1_phase_archive", "e1_gate_create", "e1_gate_patch",
             "e1_gate_archive", "e1_gate_field", "e1_bundle_discount", "e1_early_access_update");
+    private static final Set<String> E1_CATALOG_CHANGE_OPERATIONS = Set.of(
+            "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy");
     public static final Set<String> F5_ACTION_AUTHORITIES = Set.of(
             "network_f5_commission_freeze", "network_f5_commission_suspend", "network_f5_commission_release",
             "network_f5_commission_reverse", "network_f5_commission_reissue");
@@ -296,6 +298,11 @@ public class AuditReplayBusinessPermissionGuard {
     static boolean isE1ReleaseRuleOperation(AuditReplayCommand command) {
         return command != null && "E".equals(command.domain()) && command.op() != null
                 && E1_RELEASE_RULE_OPERATIONS.contains(command.op());
+    }
+
+    static boolean isE1CatalogChangeOperation(AuditReplayCommand command) {
+        return command != null && "E".equals(command.domain()) && command.op() != null
+                && E1_CATALOG_CHANGE_OPERATIONS.contains(command.op());
     }
 
     static boolean isUserSessionRevocation(AuditReplayCommand command) {
@@ -768,6 +775,11 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (command != null && "E".equalsIgnoreCase(text(command.domain()))
+                && E1_CATALOG_CHANGE_OPERATIONS.contains(text(command.op()).toLowerCase(Locale.ROOT))
+                && !isE1CatalogChangeOperation(command)) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
         if (isF5StatusUiAlias(command)) {
             return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
         }
@@ -1486,6 +1498,11 @@ public class AuditReplayBusinessPermissionGuard {
         if(command!=null && "E".equals(command.domain()) && Set.of("e1_sku_create","e1_sku_update").contains(command.op()))
             return ApiResult.ok(delegatedDescriptor(command)); // E1 derives its lock target from the typed SKU, including generated create ids.
 
+        if (isE1CatalogChangeOperation(command)
+                && superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            return ApiResult.ok(null); // Keep the existing super-admin proposal path.
+        }
+
         if (command != null && "E".equals(command.domain()) && HostingCenterService.OPERATION.equals(command.op())) {
             if (!hasAuthority("device_e1_read")) return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e1_read");
             var target = new AuditLockTarget("E", "hosting_centers", "default");
@@ -2168,6 +2185,13 @@ public class AuditReplayBusinessPermissionGuard {
                 yield new DelegatedProposalDescriptor(verb + " · " + name,review.skuId(),"以服务器型号快照为准","批准后新任务生效","E1",
                         review.amplifies()?"fund":"param",review.amplifies(),new AuditLockTarget("E","device_sku",review.skuId()));
             }
+            case "e1_sku_status", "e1_sku_delete" -> e1SkuLifecycleDescriptor(operation, params);
+            case "e1_phone_task_policy" -> {
+                var review = devices.phoneClassReview(new AuditReplayCommand("E", operation, params));
+                yield new DelegatedProposalDescriptor("发布手机可跑任务", "phone",
+                        review.before().isEmpty() ? "未配置" : review.before(), review.after(), "E1", "param", false,
+                        new AuditLockTarget("E", "device_sku", "phone"));
+            }
             case "e1_legacy_unknown_zero_credit_cancel" -> legacyUnknownDescriptor(params);
             case "e3_config" -> e3ConfigDescriptor(params);
             case "e3_config_batch" -> e3ConfigBatchDescriptor(params);
@@ -2179,6 +2203,30 @@ public class AuditReplayBusinessPermissionGuard {
             case "e6_phone_calibration" -> phoneCalibrationDescriptor(params);
             case "e6_compute_config_batch" -> computeConfigBatchDescriptor(params);
             default -> null;
+        };
+    }
+
+    private DelegatedProposalDescriptor e1SkuLifecycleDescriptor(String operation, Map<String, Object> params) {
+        var review = devices.skuLifecycleReview(new AuditReplayCommand("E", operation, params));
+        var before = review.before();
+        String name = org.springframework.util.StringUtils.hasText(before.name()) ? before.name().trim() : before.skuId();
+        String verb = switch (review.status()) {
+            case "on" -> "上架";
+            case "off" -> "下架";
+            case "deleted" -> "删除商品";
+            default -> "设为待上架";
+        };
+        return new DelegatedProposalDescriptor(verb + " · " + name, before.skuId(), e1SkuStatusLabel(before.status()),
+                e1SkuStatusLabel(review.status()), "E1", "deleted".equals(review.status()) ? "sos" : "param", false,
+                new AuditLockTarget("E", "device_sku", before.skuId()));
+    }
+
+    private static String e1SkuStatusLabel(String status) {
+        return switch (status) {
+            case "on" -> "在售";
+            case "off" -> "下架";
+            case "deleted" -> "已移除";
+            default -> "待上架";
         };
     }
 

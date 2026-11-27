@@ -200,16 +200,21 @@ public class OpsAuditCenterService {
         if (!Long.valueOf(actorId).equals(ticketMakerId(ticket, command))) {
             return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
         }
+        if (!canReadOriginalKeyProposal(ticket, command, reader)) {
+            return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
+        }
+        return ApiResult.ok(toTicket(ticket, true));
+    }
+
+    private boolean canReadOriginalKeyProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command,
+            A2AccessPolicy.OriginalKeyReader reader) {
         boolean pageRead = accessPolicy.canReadPageProposal(command, reader.grants());
         boolean verifiedMakerPageRead = pageRead && (A4RegistryApproval.supports(command)
                 || AuditReplayBusinessPermissionGuard.isVRankOverride(command));
         boolean existingRead = reader.access() != A2AccessPolicy.OriginalKeyAccess.WRITE_ONLY
                 && (reader.access() != A2AccessPolicy.OriginalKeyAccess.BUSINESS_PAGE || pageRead)
-                && (verifiedMakerPageRead || canReadOwnProposal(ticket, command, actorId));
-        if (!existingRead && !accessPolicy.canRecoverOwnWriteProposal(ticket, command, reader)) {
-            return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
-        }
-        return ApiResult.ok(toTicket(ticket, true));
+                && (verifiedMakerPageRead || canReadOwnProposal(ticket, command, reader.actorId()));
+        return existingRead || accessPolicy.canRecoverOwnWriteProposal(ticket, command, reader);
     }
 
     @Transactional(readOnly = true)
@@ -433,6 +438,7 @@ public class OpsAuditCenterService {
         if (descriptor != null) {
             boolean j1Restore = OpsKillSwitchService.isRestoreCommand(command);
             boolean e1ReleaseRule = AuditReplayBusinessPermissionGuard.isE1ReleaseRuleOperation(command);
+            boolean e1CatalogChange = AuditReplayBusinessPermissionGuard.isE1CatalogChangeOperation(command);
             boolean superAdminProposal = j1Restore || "A1".equals(descriptor.sourceDomain())
                     || superAdminProposalCommand(command) || A4RegistryApproval.supports(command)
                     || AuditReplayBusinessPermissionGuard.isE4Refund(command);
@@ -463,7 +469,7 @@ public class OpsAuditCenterService {
             }
             ticket.setOperationType(descriptor.operationType());
             ticket.setAmplifies(descriptor.amplifies() ? 1 : 0);
-            ticket.setSos(j1Restore || (e1ReleaseRule && "sos".equals(descriptor.operationType())) ? 1 : 0);
+            ticket.setSos(j1Restore || ((e1ReleaseRule || e1CatalogChange) && "sos".equals(descriptor.operationType())) ? 1 : 0);
             ticket.setRoleGate(superAdminProposal || e1ReleaseRule ? "超管" : ROLE_GATE_DELEGATED_APPROVER);
             sourceDomain = descriptor.sourceDomain();
             ticket.setSourceDomain(normalizeDomain(sourceDomain));
@@ -602,7 +608,7 @@ public class OpsAuditCenterService {
                 boolean phonePolicy="E".equals(command.domain()) && "e1_phone_task_policy".equals(command.op());
                 if((skuStatus || phonePolicy || isSkuReviewCommand(command)) && request.targets()!=null && !request.targets().isEmpty())
                     return fail(OpsErrorCode.VALIDATION_FAILED,"E1_POLICY_TARGET_INVALID");
-                if(skuStatus) {
+                if(skuStatus && descriptor == null) {
                     devices.skuStatusReview(command.params());
                     Object id=command.params().get("skuId");
                     target=new AuditLockTarget("E","device_sku",devices.hardwarePolicyTarget(id instanceof String key?key:null));
@@ -634,7 +640,7 @@ public class OpsAuditCenterService {
                     metadata.put("before", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(before));
                     metadata.put("after", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(after));
                 }
-                if(phonePolicy) {
+                if(phonePolicy && descriptor == null) {
                     var review=devices.phoneClassReview(command);
                     target=new AuditLockTarget("E","device_sku","phone");
                     ticket.setAction("发布手机可跑任务"); ticket.setObjectText("phone");
@@ -1190,10 +1196,14 @@ public class OpsAuditCenterService {
             if (makerCheck.getCode() != 0) return ApiResult.fail(makerCheck.getCode(), makerCheck.getMessage());
             var role = replayBusinessPermissionGuard.validateDecisionRole(command);
             if (role.getCode() != 0) return ApiResult.fail(role.getCode(), role.getMessage());
+        } else if ("PROPOSE".equals(verb) && AuditReplayBusinessPermissionGuard.isE1CatalogChangeOperation(command)) {
+            if (!mine || !canReadOriginalKeyProposal(ticket, command, accessPolicy.requireOriginalKeyProposalReader())) {
+                return ApiResult.fail(404, "OPERATION_RESULT_UNKNOWN");
+            }
         } else if (!"WITHDRAW".equals(verb) && !accessPolicy.canAccessTicket(ticket, makerId)
                 && !("PROPOSE".equals(verb) && (accessPolicy.canAccessOwnBusinessProposal(command, actorId)
                         || (AuditReplayBusinessPermissionGuard.isE1ReleaseRuleOperation(command)
-                            && accessPolicy.canRecoverOwnE1ReleaseProposal(ticket, command,
+                            && accessPolicy.canRecoverOwnE1Proposal(ticket, command,
                                     accessPolicy.requireOriginalKeyProposalReader()))))) {
             return fail(OpsErrorCode.FORBIDDEN, OpsErrorCode.FORBIDDEN.name());
         }
