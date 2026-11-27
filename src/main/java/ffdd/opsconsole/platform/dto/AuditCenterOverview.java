@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import ffdd.opsconsole.team.domain.F4SettlementResult;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
@@ -72,7 +73,9 @@ public record AuditCenterOverview(
             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
             V8PromotionSnapshot v8PromotionSnapshot,
             @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode changes,
-            @JsonInclude(JsonInclude.Include.NON_NULL) String approvalFailureReason) {
+            @JsonInclude(JsonInclude.Include.NON_NULL) String approvalFailureReason,
+            @JsonInclude(JsonInclude.Include.NON_NULL) F4SettlementResult businessResult,
+            @JsonInclude(JsonInclude.Include.NON_NULL) F4SettlementResult lastApprovalAttemptResult) {
         public AuditOperationTicket(
                 String id, String action, String obj, String beforeValue, String afterValue, String operator,
                 String operatorRole, String type, boolean amplifies, boolean sos, String ts, boolean mine, String roleGate,
@@ -109,6 +112,24 @@ public record AuditCenterOverview(
                     v8PromotionSnapshot, changes, null);
         }
 
+        public AuditOperationTicket(
+                String id, String action, String obj, String beforeValue, String afterValue, String operator,
+                String operatorRole, String type, boolean amplifies, boolean sos, String ts, boolean mine, String roleGate,
+                String reason, String status, String phoneCalibrationProposal, boolean coverageCheckOnApproval,
+                String operationCode, FundEffect fundEffect, String refundOrderNo, boolean retiredOperation,
+                String ruleTaskAction, Map<String,Object> ambassadorMaterialProposal, BigDecimal originalAmountUsdt,
+                BigDecimal refundAmountUsdt, boolean canApprove, boolean canReject, Integer approveDeniedCode,
+                String approveDeniedMessage, Integer rejectDeniedCode, String rejectDeniedMessage, String objDisplayName,
+                RoleGrantsDiff roleGrantsDiff, JsonNode disclosureReview, CommissionReverseEvidence evidence,
+                V8PromotionSnapshot v8PromotionSnapshot, JsonNode changes, String approvalFailureReason) {
+            this(id, action, obj, beforeValue, afterValue, operator, operatorRole, type, amplifies, sos, ts, mine,
+                    roleGate, reason, status, phoneCalibrationProposal, coverageCheckOnApproval, operationCode,
+                    fundEffect, refundOrderNo, retiredOperation, ruleTaskAction, ambassadorMaterialProposal,
+                    originalAmountUsdt, refundAmountUsdt, canApprove, canReject, approveDeniedCode, approveDeniedMessage,
+                    rejectDeniedCode, rejectDeniedMessage, objDisplayName, roleGrantsDiff, disclosureReview, evidence,
+                    v8PromotionSnapshot, changes, approvalFailureReason, null, null);
+        }
+
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
                                                        String orderNo, boolean retired, String displayedRoleGate,
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> approve,
@@ -116,7 +137,8 @@ public record AuditCenterOverview(
                                                        com.fasterxml.jackson.databind.JsonNode authorizedDisclosureReview,
                                                        CommissionReverseEvidence authorizedEvidence,
                                                        V8PromotionSnapshot authorizedV8PromotionSnapshot,
-                                                       JsonNode authorizedChanges) {
+                                                       JsonNode authorizedChanges,
+                                                       F4SettlementResult authorizedLastApprovalAttemptResult) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
                     type, amplifies, sos, ts, ownedByViewer, displayedRoleGate, reason, status, phoneCalibrationProposal,
                     coverageCheckOnApproval, code, effect, orderNo, retired, ruleTaskAction, ambassadorMaterialProposal,
@@ -127,7 +149,7 @@ public record AuditCenterOverview(
                     reject.getCode() == 0 ? null : reject.getCode(),
                     reject.getCode() == 0 ? null : reject.getMessage(), objDisplayName, roleGrantsDiff,
                     authorizedDisclosureReview, authorizedEvidence, authorizedV8PromotionSnapshot, authorizedChanges,
-                    approvalFailureReason);
+                    approvalFailureReason, businessResult, authorizedLastApprovalAttemptResult);
         }
     }
 

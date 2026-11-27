@@ -74,6 +74,7 @@ import ffdd.opsconsole.team.application.BinaryCommissionSettlementService.Settle
 import ffdd.opsconsole.team.application.OpsTeamService;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.team.application.HardwareQuotaApproval;
+import ffdd.opsconsole.team.domain.F4SettlementResult;
 import ffdd.opsconsole.market.application.G2G7ParamApproval;
 import ffdd.opsconsole.market.application.G3MarketApproval;
 import ffdd.opsconsole.market.application.G4CatalogApproval;
@@ -83,6 +84,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
@@ -118,6 +120,8 @@ public class OpsAuditCenterService {
     private static final String E4_ORDER_REFUND = "e4_order_refund";
     private static final String WITHDRAWAL_CONFIG_CHANGES = "withdrawalConfigChanges";
     private static final String APPROVAL_FAILURE_REASON = "approvalFailureReason";
+    private static final String F4_BUSINESS_RESULT = "f4BusinessResult";
+    private static final String LAST_F4_APPROVAL_ATTEMPT_RESULT = "lastApprovalAttemptResult";
     private static final String EXECUTED_DECISION_REASON = "即时执行·已生效(单人确认)";
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_APPROVED, STATUS_REJECTED, "withdrawn", "expired");
     private static final Set<String> A1_ACCOUNT_OBJECT_OPS = Set.of(
@@ -1080,8 +1084,7 @@ public class OpsAuditCenterService {
                     : "APPROVE".equals(verb)
                     ? idempotencyService.executeA2Approval(idempotencyKey, requestHash, AuditOperationTicket.class,
                             actorId, originAuthority, originTargets, () -> requireSuccess(action.get()),
-                            failure -> failure instanceof ApprovalRecheckRejection recheck
-                                    ? () -> finalizeApprovalRecheck(recheck) : null)
+                            this::approvalRollbackFinalizer)
                     : idempotencyService.executeOwned(A2_COMMAND, idempotencyKey, requestHash,
                             AuditOperationTicket.class, actorId, originAuthority, originTargets, () -> requireSuccess(action.get()));
             if (catalogProposal || (proposal && receipt.v8PromotionSnapshot() != null)) {
@@ -1214,7 +1217,7 @@ public class OpsAuditCenterService {
                 approvalQualificationForViewer(ticket, command, makerId, actorId),
                 decisionQualification(ticket, command, makerId, actorId, false), disclosureReview(ticket, command),
                 commissionReverseEvidence(command), v8PromotionSnapshot(ticket, command),
-                withdrawalConfigChanges(ticket, command)));
+                withdrawalConfigChanges(ticket, command), lastF4ApprovalAttemptResult(ticket, command)));
     }
 
     private ApiResult<Void> decisionAccess(AuditOperationTicketEntity ticket, Long makerId, Long actorId) {
@@ -1443,6 +1446,7 @@ public class OpsAuditCenterService {
             ticket.setAfterValue("配置已失效：第 1、2 层按受益人等级，请在团队等级晋升设置调整。");
         }
         AuditReplayCommand cmd = STATUS_APPROVED.equals(nextStatus) ? ticketCommand : null;
+        boolean f4Settlement = isF4Settlement(cmd);
         Long avatarMaker = A2ReplayContext.isAvatarCommand(cmd)
                 ? boundMakerId(ticket.getCommandJson(), "avatarMakerAdminId") : null;
         // Refund participants were locked before the ticket; qualifications only read this locked transaction.
@@ -1452,6 +1456,9 @@ public class OpsAuditCenterService {
                 if (AuditApprovalRechecks.confirmed(cmd, preconditions.getCode(), preconditions.getMessage())) {
                     throw new ApprovalRecheckRejection(ticket, actorId, authenticatedOperator, idempotencyKey,
                             request.reason(), preconditions);
+                }
+                if (isF4BlockedAttempt(cmd, preconditions.getCode(), preconditions.getMessage())) {
+                    throw new F4ApprovalBlocked(ticket, cmd, actorId, preconditions.getCode(), preconditions.getMessage());
                 }
                 return ApiResult.fail(preconditions.getCode(), preconditions.getMessage());
             }
@@ -1491,6 +1498,9 @@ public class OpsAuditCenterService {
                         throw new ApprovalRecheckRejection(ticket, actorId, authenticatedOperator, idempotencyKey,
                                 request.reason(), ApiResult.fail(failure.getCode(), failure.getMessage(), failure.errorData()));
                     }
+                    if (isF4BlockedAttempt(cmd, failure.getCode(), failure.getMessage())) {
+                        throw new F4ApprovalBlocked(ticket, cmd, actorId, failure.getCode(), failure.getMessage());
+                    }
                     throw failure;
                 }
                 if (replayResult.getCode() != 0) {
@@ -1500,7 +1510,16 @@ public class OpsAuditCenterService {
                         throw new ApprovalRecheckRejection(ticket, actorId, authenticatedOperator, idempotencyKey,
                                 request.reason(), replayResult);
                     }
+                    if (isF4BlockedAttempt(cmd, replayResult.getCode(), replayResult.getMessage())) {
+                        throw new F4ApprovalBlocked(ticket, cmd, actorId, replayResult.getCode(), replayResult.getMessage());
+                    }
                     return ApiResult.fail(replayResult.getCode(), replayResult.getMessage());
+                }
+                if (f4Settlement) {
+                    if (!(replayResult.getData() instanceof F4SettlementResult actual)) {
+                        throw new IllegalStateException("F4_APPROVAL_RESULT_MISSING");
+                    }
+                    storeF4Result(ticket, F4_BUSINESS_RESULT, actual);
                 }
                 if (TeamFundApproval.isSettlement(cmd) && replayResult.getData() instanceof SettlementResult settlement) {
                     ticket.setAfterValue((settlement.replayed() ? "此结算日已有结果" :
@@ -1528,7 +1547,8 @@ public class OpsAuditCenterService {
         ticket.setStatus(nextStatus);
         ticket.setDecisionReason(A2RuntimePolicy.reasonExcerpt(request.reason(), 512));
         ticket.setDecidedAt(LocalDateTime.now());
-        ticketMapper.updateById(ticket);
+        int updated = ticketMapper.updateById(ticket);
+        if (f4Settlement && updated != 1) throw new IllegalStateException("F4_APPROVAL_RESULT_UPDATE_FAILED");
         if (promotions != null && lockedRefundOrder != null
                 && (STATUS_REJECTED.equals(nextStatus) || "withdrawn".equals(nextStatus))) {
             promotions.clearA2Refund(ticket.getOperationId(), lockedRefundOrder);
@@ -1536,6 +1556,50 @@ public class OpsAuditCenterService {
         recordDecision(ticket, auditAction, authenticatedOperator,
                 decisionDetail(ticket, nextStatus, idempotencyKey, request.reason()));
         return ApiResult.ok(toTicket(ticket, makerMatches));
+    }
+
+    private static boolean isF4Settlement(AuditReplayCommand command) {
+        return command != null && "F".equals(command.domain())
+                && ("f4_leaderboard_period_payout".equals(command.op()) || "f4_pool_settle".equals(command.op()));
+    }
+
+    private static boolean isF4BlockedAttempt(AuditReplayCommand command, int code, String reason) {
+        return isF4Settlement(command) && ((code == 409 && "F4_LEADERBOARD_PAUSED".equals(reason))
+                || (code == 422 && "COVERAGE_BELOW_REDLINE".equals(reason)));
+    }
+
+    private void storeF4Result(AuditOperationTicketEntity ticket, String field, F4SettlementResult result) {
+        try {
+            var stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(ticket.getCommandJson());
+            if (F4_BUSINESS_RESULT.equals(field)) stored.remove(LAST_F4_APPROVAL_ATTEMPT_RESULT);
+            stored.set(field, objectMapper.valueToTree(result));
+            ticket.setCommandJson(objectMapper.writeValueAsString(stored));
+        } catch (JsonProcessingException invalid) {
+            throw new IllegalStateException("F4_APPROVAL_RESULT_WRITE_FAILED", invalid);
+        }
+    }
+
+    private Runnable approvalRollbackFinalizer(RuntimeException failure) {
+        if (failure instanceof ApprovalRecheckRejection recheck) return () -> finalizeApprovalRecheck(recheck);
+        if (failure instanceof F4ApprovalBlocked blocked) return () -> finalizeF4BlockedApproval(blocked);
+        return null;
+    }
+
+    private void finalizeF4BlockedApproval(F4ApprovalBlocked failure) {
+        Long actorId = A2ReplayContext.authenticatedAdminId();
+        if (!Objects.equals(actorId, failure.actorId)) throw new IllegalStateException("F4 approval actor changed");
+        var ticket = ticketForUpdate(failure.operationId).orElse(null);
+        if (ticket == null || !STATUS_PENDING.equals(ticket.getStatus())) return;
+        var command = deserializeCommand(ticket.getCommandJson());
+        if (!isF4Settlement(command) || !Objects.equals(command, failure.command)) return;
+        if (decisionQualification(ticket, command, ticketMakerId(ticket, command), actorId, true).getCode() != 0) return;
+
+        // The ticket lock was released on rollback. A later attempt may have recorded its result first.
+        var previous = lastF4ApprovalAttemptResult(ticket, command);
+        if (previous != null && previous.attemptedAt() != null
+                && !Instant.parse(failure.result.attemptedAt()).isAfter(Instant.parse(previous.attemptedAt()))) return;
+        storeF4Result(ticket, LAST_F4_APPROVAL_ATTEMPT_RESULT, failure.result);
+        if (ticketMapper.updateById(ticket) != 1) throw new IllegalStateException("F4 approval attempt update failed");
     }
 
     private void finalizeApprovalRecheck(ApprovalRecheckRejection failure) {
@@ -1609,6 +1673,27 @@ public class OpsAuditCenterService {
             this.operator = operator;
             this.idempotencyKey = idempotencyKey;
             this.decisionReason = decisionReason.trim();
+        }
+    }
+
+    private static final class F4ApprovalBlocked extends AdminCommandBusinessRejection {
+        private final String operationId;
+        private final AuditReplayCommand command;
+        private final Long actorId;
+        private final F4SettlementResult result;
+
+        private F4ApprovalBlocked(AuditOperationTicketEntity ticket, AuditReplayCommand command, Long actorId,
+                int code, String reason) {
+            this(ticket, command, actorId, code, F4SettlementResult.blockedAttempt(reason, Instant.now()));
+        }
+
+        private F4ApprovalBlocked(AuditOperationTicketEntity ticket, AuditReplayCommand command, Long actorId,
+                int code, F4SettlementResult result) {
+            super(code, result.reasonCode(), ApiResult.fail(code, result.reasonCode(), Map.of("businessResult", result)));
+            this.operationId = ticket.getOperationId();
+            this.command = command;
+            this.actorId = actorId;
+            this.result = result;
         }
     }
 
@@ -1775,6 +1860,8 @@ public class OpsAuditCenterService {
         try {
             com.fasterxml.jackson.databind.node.ObjectNode stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.readTree(commandJson);
             stored.remove(APPROVAL_FAILURE_REASON);
+            stored.remove(F4_BUSINESS_RESULT);
+            stored.remove(LAST_F4_APPROVAL_ATTEMPT_RESULT);
             if ("E".equals(stored.path("domain").asText())
                     && Set.of("e1_bundle_discount", E4_ORDER_REFUND).contains(stored.path("op").asText())) {
                 return objectMapper.treeToValue(stored, AuditReplayCommand.class);
@@ -2072,7 +2159,27 @@ public class OpsAuditCenterService {
                 reject.getCode() == 0 ? null : reject.getCode(), reject.getCode() == 0 ? null : reject.getMessage(),
                 objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command), disclosureReview(row, command),
                 commissionReverseEvidence(command), v8PromotionSnapshot(row, command), withdrawalConfigChanges(row, command),
-                approvalFailureReason(row));
+                approvalFailureReason(row), f4BusinessResult(row, command), lastF4ApprovalAttemptResult(row, command));
+    }
+
+    private F4SettlementResult f4BusinessResult(AuditOperationTicketEntity ticket, AuditReplayCommand command) {
+        return f4Result(ticket, command, STATUS_APPROVED, F4_BUSINESS_RESULT);
+    }
+
+    private F4SettlementResult lastF4ApprovalAttemptResult(AuditOperationTicketEntity ticket, AuditReplayCommand command) {
+        return f4Result(ticket, command, STATUS_PENDING, LAST_F4_APPROVAL_ATTEMPT_RESULT);
+    }
+
+    private F4SettlementResult f4Result(AuditOperationTicketEntity ticket, AuditReplayCommand command,
+            String expectedStatus, String field) {
+        if (!isF4Settlement(command) || !expectedStatus.equals(ticket.getStatus())) return null;
+        try {
+            var stored = objectMapper.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                    .readTree(ticket.getCommandJson()).path(field);
+            return stored.isObject() ? objectMapper.treeToValue(stored, F4SettlementResult.class) : null;
+        } catch (JsonProcessingException invalid) {
+            return null;
+        }
     }
 
     private String approvalFailureReason(AuditOperationTicketEntity ticket) {

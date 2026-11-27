@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.team.domain.F4SettlementResult;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.domain.LeaderboardComputePoints;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
@@ -73,6 +74,10 @@ public class LeadershipPoolService {
     private static final String COMMISSION_LEADERBOARD_PRIZE = "leaderboard_prize";
     private static final String CURRENCY_USDT = "USDT";
     private static final String STATUS_UNLOCKED = "UNLOCKED";
+    private static final String POOL_ALREADY_SETTLED = "F4_POOL_ALREADY_SETTLED";
+    private static final String POOL_NO_VOLUME = "F4_POOL_NO_VOLUME";
+    private static final String POOL_MONTHLY_CAP_REACHED = "F4_POOL_MONTHLY_CAP_REACHED";
+    private static final String POOL_NO_PAYABLE_AMOUNT = "F4_POOL_NO_PAYABLE_AMOUNT";
 
     private final TeamCommissionMapper teamCommissionMapper;
     private final TeamCommissionRepository commissionRepository;
@@ -87,8 +92,8 @@ public class LeadershipPoolService {
     /** Scheduler entry point: resolve the database-canonical ISO week at execution time. */
     @Transactional(rollbackFor = Exception.class)
     public int injectAndSettleCurrentWeek() {
-        return injectAndSettleTrusted(
-                teamCommissionMapper.currentYearWeek(), null, "SYSTEM", "SYSTEM", "系统周期结算");
+        return legacyPoolCount(injectAndSettleTrusted(
+                teamCommissionMapper.currentYearWeek(), null, "SYSTEM", "SYSTEM", "系统周期结算"));
     }
 
     /** Automatic schedule settles only the latest closed week, never the live week or pre-cutover backlog. */
@@ -98,12 +103,17 @@ public class LeadershipPoolService {
         if (monday.plusWeeks(1).isBefore(VietnamBusinessPeriod.FIRST_VIETNAM_BOUNDARY)) return -1;
         int weekCode = monday.get(java.time.temporal.IsoFields.WEEK_BASED_YEAR) * 100
                 + monday.get(java.time.temporal.IsoFields.WEEK_OF_WEEK_BASED_YEAR);
-        return injectAndSettleTrusted(weekCode, null, "SYSTEM", "SYSTEM", "系统已结束周结算");
+        return legacyPoolCount(injectAndSettleTrusted(weekCode, null, "SYSTEM", "SYSTEM", "系统已结束周结算"));
     }
 
     /** F4 提前结算是资金动作,必须由 A2 双人审批后的 replay 调用。 */
     @Transactional(rollbackFor = Exception.class)
     public int injectAndSettleApprovedCurrentWeek(String operator, String reason) {
+        return legacyPoolCount(settleApprovedCurrentWeekResult(operator, reason));
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public F4SettlementResult settleApprovedCurrentWeekResult(String operator, String reason) {
         if (!A2ReplayContext.isReplaying()) {
             throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
         }
@@ -129,10 +139,17 @@ public class LeadershipPoolService {
      */
     @Transactional(rollbackFor = Exception.class)
     public int injectAndSettle(int weekCode) {
-        return injectAndSettleTrusted(weekCode, null, "SYSTEM", "SYSTEM", "测试/补偿结算");
+        return legacyPoolCount(injectAndSettleTrusted(weekCode, null, "SYSTEM", "SYSTEM", "测试/补偿结算"));
     }
 
-    private int injectAndSettleTrusted(
+    private static int legacyPoolCount(F4SettlementResult result) {
+        if (POOL_ALREADY_SETTLED.equals(result.reasonCode()) || POOL_NO_VOLUME.equals(result.reasonCode())
+                || POOL_MONTHLY_CAP_REACHED.equals(result.reasonCode())
+                || POOL_NO_PAYABLE_AMOUNT.equals(result.reasonCode())) return -1;
+        return result.creditedCount();
+    }
+
+    private F4SettlementResult injectAndSettleTrusted(
             int weekCode, Long actorId, String actorType, String actorUsername, String reason) {
         LeadershipPoolConfigGuard.SettlementConfig settlementConfig = requireSettlementConfig("settlement");
         String weekKey = String.valueOf(weekCode);
@@ -140,36 +157,29 @@ public class LeadershipPoolService {
         if (teamCommissionMapper.lockLeadershipSettlementMutex(weekCode) == null) {
             throw new IllegalStateException("F4_SETTLEMENT_MUTEX_UNAVAILABLE");
         }
-        int leadershipSettled = 0;
-        boolean leadershipSkipped = teamCommissionMapper.countLeadershipByWeek(weekKey) > 0;
-        if (!leadershipSkipped) {
-            BigDecimal weeklyVolume = teamCommissionMapper.weeklyPlatformVolume(weekCode);
-            if (weeklyVolume == null || weeklyVolume.signum() <= 0) {
-                leadershipSkipped = true;
-                log.info("F4 leadership pool week={} no platform volume, skip leadership settlement", weekKey);
-            } else {
-                BigDecimal injectRate = settlementConfig.injectRate();
-                BigDecimal poolAmount = weeklyVolume.multiply(injectRate).setScale(SCALE, RoundingMode.HALF_UP);
-                BigDecimal monthPaid = safe(teamCommissionMapper.monthlyLeadershipAmount());
-                BigDecimal remaining = settlementConfig.monthlyCap().subtract(monthPaid).max(BigDecimal.ZERO);
-                poolAmount = poolAmount.min(remaining).setScale(SCALE, RoundingMode.DOWN);
-                if (poolAmount.signum() <= 0) {
-                    leadershipSkipped = true;
-                    log.info("F4 leadership pool week={} blocked by monthly cap", weekKey);
-                } else {
-                    log.info("F4 leadership pool inject: week={} weeklyVolume={} × {} = poolAmount={}",
-                            weekKey, weeklyVolume, injectRate, poolAmount);
-                    leadershipSettled = settleTrusted(
-                            poolAmount, weekKey, actorId, actorType, actorUsername, reason, settlementConfig);
-                }
-            }
-        } else {
+        if (teamCommissionMapper.countLeadershipByWeek(weekKey) > 0) {
             log.info("F4 leadership pool week={} already settled, skip leadership settlement", weekKey);
+            return F4SettlementResult.notExecuted(weekKey, POOL_ALREADY_SETTLED);
         }
-        if (leadershipSettled == 0 && leadershipSkipped) {
-            return -1;
+        BigDecimal weeklyVolume = teamCommissionMapper.weeklyPlatformVolume(weekCode);
+        if (weeklyVolume == null || weeklyVolume.signum() <= 0) {
+            log.info("F4 leadership pool week={} no platform volume, skip leadership settlement", weekKey);
+            return F4SettlementResult.notExecuted(weekKey, POOL_NO_VOLUME);
         }
-        return leadershipSettled;
+        BigDecimal injectRate = settlementConfig.injectRate();
+        BigDecimal poolAmount = weeklyVolume.multiply(injectRate).setScale(SCALE, RoundingMode.HALF_UP);
+        BigDecimal monthPaid = safe(teamCommissionMapper.monthlyLeadershipAmount());
+        BigDecimal remaining = settlementConfig.monthlyCap().subtract(monthPaid).max(BigDecimal.ZERO);
+        poolAmount = poolAmount.min(remaining).setScale(SCALE, RoundingMode.DOWN);
+        if (poolAmount.signum() <= 0) {
+            String reasonCode = remaining.setScale(SCALE, RoundingMode.DOWN).signum() == 0
+                    ? POOL_MONTHLY_CAP_REACHED : POOL_NO_PAYABLE_AMOUNT;
+            log.info("F4 leadership pool week={} skip settlement: {}", weekKey, reasonCode);
+            return F4SettlementResult.notExecuted(weekKey, reasonCode);
+        }
+        log.info("F4 leadership pool inject: week={} weeklyVolume={} × {} = poolAmount={}",
+                weekKey, weeklyVolume, injectRate, poolAmount);
+        return settleTrusted(poolAmount, weekKey, actorId, actorType, actorUsername, reason, settlementConfig);
     }
 
     /** 每分钟补齐所有已结束周期；持久化 checkpoint 使午夜停机后仍可追赶。 */
@@ -192,7 +202,7 @@ public class LeadershipPoolService {
         for (LocalDate period = last.plusDays(1); !period.isAfter(latestClosed); period = period.plusDays(1)) {
             settled += settleLeaderboardPrize("today", "today:" + period,
                     VietnamBusinessPeriod.storageBoundary(period), VietnamBusinessPeriod.storageBoundary(period.plusDays(1)),
-                    null, "SYSTEM", "SYSTEM", "排行榜日榜自动/补偿结算");
+                    null, "SYSTEM", "SYSTEM", "排行榜日榜自动/补偿结算").creditedCount();
             persistLastSettled("today", period.toString());
         }
         return settled;
@@ -208,7 +218,7 @@ public class LeadershipPoolService {
         for (LocalDate period = last.plusWeeks(1); !period.isAfter(latestClosed); period = period.plusWeeks(1)) {
             settled += settleLeaderboardPrize("week", "week:" + period,
                     VietnamBusinessPeriod.storageBoundary(period), VietnamBusinessPeriod.storageBoundary(period.plusWeeks(1)),
-                    null, "SYSTEM", "SYSTEM", "排行榜周榜自动/补偿结算");
+                    null, "SYSTEM", "SYSTEM", "排行榜周榜自动/补偿结算").creditedCount();
             persistLastSettled("week", period.toString());
         }
         return settled;
@@ -224,7 +234,7 @@ public class LeadershipPoolService {
             LocalDate start = period.atDay(1);
             settled += settleLeaderboardPrize("month", "month:" + period,
                     VietnamBusinessPeriod.storageBoundary(start), VietnamBusinessPeriod.storageBoundary(period.plusMonths(1).atDay(1)),
-                    null, "SYSTEM", "SYSTEM", "排行榜月榜自动/补偿结算");
+                    null, "SYSTEM", "SYSTEM", "排行榜月榜自动/补偿结算").creditedCount();
             persistLastSettled("month", period.toString());
         }
         return settled;
@@ -251,6 +261,12 @@ public class LeadershipPoolService {
 
     @Transactional(rollbackFor = Exception.class)
     public int settleApprovedLeaderboardPeriod(String period, String requestedPeriodKey, String operator, String reason) {
+        return settleApprovedLeaderboardResult(period, requestedPeriodKey, operator, reason).creditedCount();
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public F4SettlementResult settleApprovedLeaderboardResult(
+            String period, String requestedPeriodKey, String operator, String reason) {
         if (!A2ReplayContext.isReplaying()) throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
         String normalizedReason = reason == null ? "" : reason.trim();
         LeaderboardPeriod settledPeriod = resolveClosedLeaderboardPeriod(period, requestedPeriodKey);
@@ -274,7 +290,7 @@ public class LeadershipPoolService {
         }
     }
 
-    private int settleLeaderboardPrize(
+    private F4SettlementResult settleLeaderboardPrize(
             String period,
             String settlementKey,
             LocalDateTime fromInclusive,
@@ -290,19 +306,23 @@ public class LeadershipPoolService {
                     .orElse(false);
             if (paused) throw new BizException(409, "F4_LEADERBOARD_PAUSED");
         } else if (configBoolean(CONFIG_KEY_LEADERBOARD_PAUSED, false)) {
-            return 0;
+            return F4SettlementResult.notExecuted(settlementKey, "F4_LEADERBOARD_PAUSED");
         }
         if (teamCommissionMapper.countLeaderboardBySettlementKey(settlementKey) > 0) {
-            return 0;
+            return F4SettlementResult.notExecuted(settlementKey, "F4_LEADERBOARD_ALREADY_SETTLED");
         }
         int mutexKey = settlementKey.hashCode() & Integer.MAX_VALUE;
         teamCommissionMapper.ensureLeadershipSettlementMutex(mutexKey);
         if (teamCommissionMapper.lockLeadershipSettlementMutex(mutexKey) == null) {
             throw new IllegalStateException("F4_LEADERBOARD_MUTEX_UNAVAILABLE");
         }
-        if (teamCommissionMapper.countLeaderboardBySettlementKey(settlementKey) > 0) return 0;
+        if (teamCommissionMapper.countLeaderboardBySettlementKey(settlementKey) > 0) {
+            return F4SettlementResult.notExecuted(settlementKey, "F4_LEADERBOARD_ALREADY_SETTLED");
+        }
         BigDecimal prizePool = leaderboardPrizePool(period);
-        if (prizePool.signum() <= 0) return 0;
+        if (prizePool.signum() <= 0) {
+            return F4SettlementResult.notExecuted(settlementKey, "F4_LEADERBOARD_POOL_NOT_CONFIGURED");
+        }
         BigDecimal minPoints = LeaderboardComputePoints.minimum(
                 configFacade.activeValue(LeaderboardComputePoints.CONFIG_KEY).orElse(null));
         int topN = switch (period) {
@@ -312,7 +332,9 @@ public class LeadershipPoolService {
         };
         List<Map<String, Object>> candidates = commissionRepository.leaderboardCandidates(
                 period, fromInclusive, toExclusive, minPoints, topN);
-        if (candidates.isEmpty()) return 0;
+        if (candidates.isEmpty()) {
+            return F4SettlementResult.notExecuted(settlementKey, "F4_LEADERBOARD_NO_CANDIDATES");
+        }
         for (Map<String, Object> candidate : candidates) {
             LeaderboardComputePoints.require(asBigDecimal(candidate.get("computePoints")));
         }
@@ -354,7 +376,8 @@ public class LeadershipPoolService {
                         "rankingMetric", LeaderboardComputePoints.METRIC,
                         "minComputePoints", minPoints, "settledUsers", settled, "reason", reason))
                 .build());
-        return settled;
+        return settled == 0 ? F4SettlementResult.notExecuted(settlementKey, "F4_LEADERBOARD_NO_PAYABLE_AMOUNT")
+                : F4SettlementResult.credited(settlementKey, settled, CURRENCY_USDT, allocated);
     }
 
     /** A closed leaderboard period: the settlement key and the business window it covers. */
@@ -610,10 +633,10 @@ public class LeadershipPoolService {
     public int settle(BigDecimal poolAmountUsdt, String weekKey) {
         LeadershipPoolConfigGuard.SettlementConfig settlementConfig = requireSettlementConfig("direct-settlement");
         return settleTrusted(
-                poolAmountUsdt, weekKey, null, "SYSTEM", "SYSTEM", "测试/补偿结算", settlementConfig);
+                poolAmountUsdt, weekKey, null, "SYSTEM", "SYSTEM", "测试/补偿结算", settlementConfig).creditedCount();
     }
 
-    private int settleTrusted(
+    private F4SettlementResult settleTrusted(
             BigDecimal poolAmountUsdt,
             String weekKey,
             Long actorId,
@@ -622,13 +645,13 @@ public class LeadershipPoolService {
             String reason,
             LeadershipPoolConfigGuard.SettlementConfig settlementConfig) {
         if (poolAmountUsdt == null || poolAmountUsdt.signum() <= 0 || weekKey == null || weekKey.isBlank()) {
-            return 0;
+            return F4SettlementResult.notExecuted(weekKey, "F4_POOL_INVALID_SETTLEMENT_INPUT");
         }
         int unlockRank = settlementConfig.unlockRank();
         List<Map<String, Object>> voters = teamCommissionMapper.listLeadershipVoters(unlockRank);
         if (voters == null || voters.isEmpty()) {
             log.warn("F4 leadership pool settle: no V{}+ voters, week={}", unlockRank, weekKey);
-            return 0;
+            return F4SettlementResult.notExecuted(weekKey, "F4_POOL_NO_ELIGIBLE_VOTERS");
         }
         List<Voter> eligible = new ArrayList<>();
         BigDecimal totalVotes = BigDecimal.ZERO;
@@ -642,7 +665,7 @@ public class LeadershipPoolService {
         }
         if (totalVotes.signum() <= 0) {
             log.warn("F4 leadership pool settle: total votes=0, week={}", weekKey);
-            return 0;
+            return F4SettlementResult.notExecuted(weekKey, "F4_POOL_NO_ELIGIBLE_VOTERS");
         }
         int settled = 0;
         BigDecimal allocated = ZERO;
@@ -701,7 +724,8 @@ public class LeadershipPoolService {
                 .build());
         log.info("F4 leadership pool settled: week={} pool={} voters={} settled={}",
                 weekKey, poolAmountUsdt, voters.size(), settled);
-        return settled;
+        return settled == 0 ? F4SettlementResult.notExecuted(weekKey, POOL_NO_PAYABLE_AMOUNT)
+                : F4SettlementResult.credited(weekKey, settled, CURRENCY_USDT, allocated);
     }
 
     private LeadershipPoolConfigGuard.SettlementConfig requireSettlementConfig(String source) {

@@ -5428,22 +5428,14 @@ public class OpsTeamService implements AuditReplayable {
                 return ApiResult.fail(422, "F1_PAYOUT_ACTION_INVALID");
             }
             case "f4_pool_settle" -> {
-                int settled = leadershipPoolService.injectAndSettleApprovedCurrentWeek(operator, reason);
-                return ApiResult.ok(Map.of(
-                        "settled", settled,
-                        "source", "F4_A2_APPROVED_REPLAY"));
+                return ApiResult.ok(leadershipPoolService.settleApprovedCurrentWeekResult(operator, reason));
             }
             case "f4_leaderboard_period_payout" -> {
                 if (!LeadershipPoolService.LEADERBOARD_PAYOUT_RULE.equals(str(p, "payoutRule"))) {
                     return ApiResult.fail(409, "F4_LEADERBOARD_PAYOUT_REVIEW_REQUIRED");
                 }
-                String period = str(p, "period");
-                int settled = leadershipPoolService.settleApprovedLeaderboardPeriod(
-                        period, str(p, "periodKey"), operator, reason);
-                return ApiResult.ok(Map.of(
-                        "period", period,
-                        "settled", settled,
-                        "source", "F4_LEADERBOARD_A2_APPROVED_REPLAY"));
+                return ApiResult.ok(leadershipPoolService.settleApprovedLeaderboardResult(
+                        str(p, "period"), str(p, "periodKey"), operator, reason));
             }
             default -> {
                 return ApiResult.fail(422, "UNKNOWN_REPLAY_OP:" + cmd.op());
