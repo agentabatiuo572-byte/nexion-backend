@@ -379,8 +379,8 @@ public class PayoutVndConfigService {
         values.put("feeRatePct", new BigDecimal("1"));
         values.put("feeMinUsd", new BigDecimal("1"));
         values.put("feeMaxUsd", new BigDecimal("25"));
-        values.put("minAmountUsd", new BigDecimal("20"));
-        values.put("maxAmountUsd", new BigDecimal("5000"));
+        values.put("minAmountUsd", new BigDecimal("3"));
+        values.put("maxAmountUsd", new BigDecimal("100000"));
         return values;
     }
 
