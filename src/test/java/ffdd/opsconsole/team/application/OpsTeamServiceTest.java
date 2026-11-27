@@ -352,6 +352,8 @@ class OpsTeamServiceTest {
                 .containsEntry("poolRatioAvailable", false)
                 .containsEntry("poolRatioUnavailableReason", "F4_POOL_RATE_MISSING")
                 .containsEntry("weeklyGmvUsd", 0)
+                .containsEntry("currentWeekSettled", false)
+                .containsEntry("weeklyInjectedAmount", "0.000000")
                 .containsEntry("weeklyInjectedUsd", 0)
                 .containsEntry("monthlyCapUsd", 0)
                 .containsEntry("nextSettlementAt", "")
@@ -385,6 +387,85 @@ class OpsTeamServiceTest {
                 .doesNotContain("Apple Watch")
                 .doesNotContain("Porsche");
         assertThat(configFacade.values).isEmpty();
+    }
+
+    @Test
+    void leadershipPoolSeparatesSubDollarPaymentFromTheLegacyInteger() {
+        configureLeadershipPool();
+        var paid = new BigDecimal("0.650001");
+        commissionRepository.leadershipPoolSummary.putAll(Map.of(
+                "weeklyGmvUsd", 1000, "weeklySettledCount", 1L, "weeklyInjectedUsd", paid));
+
+        ApiResult<Map<String, Object>> result = service.leadershipPool();
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData())
+                .containsEntry("domain", "F4")
+                .containsEntry("settlementConfigStatus", "READY")
+                .containsEntry("currentWeekPoolUsd", paid)
+                .containsEntry("currentWeekSettled", true)
+                .containsEntry("weeklyInjectedAmount", "0.650001")
+                .containsEntry("weeklyInjectedUsd", 0)
+                .containsKeys("metrics", "config", "coverage");
+        assertThat(result.getData().get("sources").toString())
+                .contains("nx_audit_log:F4_LEADERSHIP_POOL_SETTLED");
+        assertThat(service.leadershipPoolVoteProjection().getData().get("estimate"))
+                .isEqualTo(Map.of("available", false, "reason", "CURRENT_WEEK_SETTLED"));
+
+        configFacade.values.remove("team.ui.F.pool.settleCron");
+        assertThat(service.leadershipPool().getData())
+                .containsEntry("settlementConfigStatus", "HOLD")
+                .containsEntry("currentWeekPoolUsd", null)
+                .containsEntry("currentWeekSettled", true)
+                .containsEntry("weeklyInjectedAmount", "0.650001");
+    }
+
+    @Test
+    void leadershipPoolRecognizesAConfirmedZeroPayment() {
+        configureLeadershipPool();
+        commissionRepository.leadershipPoolSummary.putAll(Map.of(
+                "weeklyGmvUsd", 1000, "weeklySettledCount", 0L, "weeklyInjectedUsd", BigDecimal.ZERO,
+                "weeklyEmptySettlementConfirmed", 1L));
+
+        assertThat(service.leadershipPool().getData())
+                .containsEntry("currentWeekPoolUsd", BigDecimal.ZERO)
+                .containsEntry("currentWeekSettled", true)
+                .containsEntry("weeklyInjectedAmount", "0.000000")
+                .containsEntry("weeklyInjectedUsd", 0);
+        assertThat(service.leadershipPoolVoteProjection().getData().get("estimate"))
+                .isEqualTo(Map.of("available", false, "reason", "CURRENT_WEEK_SETTLED"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void leadershipPoolKeepsAnOpenWeekSeparateFromAnEarlierSettlement() {
+        configureLeadershipPool();
+        commissionRepository.leadershipPoolSummary.putAll(Map.of(
+                "weeklyGmvUsd", 1000, "weeklySettledCount", 0L, "weeklyInjectedUsd", BigDecimal.ZERO,
+                "weeklyEmptySettlementConfirmed", 0));
+        commissionRepository.leadershipRanks.add(Map.of("v", 3, "votes", 4, "pop", 2));
+        when(auditLogService.latestLeadershipPoolSettlement()).thenReturn(
+                new AuditLogService.LeadershipPoolSettlement("202601", BigDecimal.TEN, BigDecimal.valueOf(2), 1));
+
+        assertThat(service.leadershipPool().getData())
+                .containsEntry("currentWeekPoolUsd", new BigDecimal("50.000000"))
+                .containsEntry("currentWeekSettled", false)
+                .containsEntry("weeklyInjectedAmount", "0.000000")
+                .containsEntry("weeklyInjectedUsd", 0);
+        var voteProjection = service.leadershipPoolVoteProjection().getData();
+        assertThat((Map<String, Object>) voteProjection.get("estimate"))
+                .containsEntry("available", true)
+                .containsEntry("poolUsd", new BigDecimal("50.000000"));
+        assertThat((Map<String, Object>) voteProjection.get("settled"))
+                .containsEntry("weekKey", "202601");
+    }
+
+    private void configureLeadershipPool() {
+        configFacade.values.put("team.ui.F.pool.configVersion", "7");
+        configFacade.values.put("team.ui.F.pool.ratio", "5%");
+        configFacade.values.put("team.ui.F.pool.unlockVRank", "V3");
+        configFacade.values.put("team.ui.F.pool.monthlyCap", "5000");
+        configFacade.values.put("team.ui.F.pool.settleCron", "0 59 23 * * 0");
     }
 
     @SuppressWarnings("unchecked")

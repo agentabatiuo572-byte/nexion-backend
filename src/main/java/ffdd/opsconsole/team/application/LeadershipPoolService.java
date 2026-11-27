@@ -35,6 +35,7 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.annotation.Propagation;
 
@@ -90,14 +91,14 @@ public class LeadershipPoolService {
     private final TreasuryCoverageFacade coverageFacade;
 
     /** Scheduler entry point: resolve the database-canonical ISO week at execution time. */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public int injectAndSettleCurrentWeek() {
         return legacyPoolCount(injectAndSettleTrusted(
                 teamCommissionMapper.currentYearWeek(), null, "SYSTEM", "SYSTEM", "系统周期结算"));
     }
 
     /** Automatic schedule settles only the latest closed week, never the live week or pre-cutover backlog. */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public int injectAndSettleLastClosedWeek(java.time.Instant now) {
         LocalDate monday = VietnamBusinessPeriod.dateAt(now).with(DayOfWeek.MONDAY).minusWeeks(1);
         if (monday.plusWeeks(1).isBefore(VietnamBusinessPeriod.FIRST_VIETNAM_BOUNDARY)) return -1;
@@ -107,12 +108,12 @@ public class LeadershipPoolService {
     }
 
     /** F4 提前结算是资金动作,必须由 A2 双人审批后的 replay 调用。 */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public int injectAndSettleApprovedCurrentWeek(String operator, String reason) {
         return legacyPoolCount(settleApprovedCurrentWeekResult(operator, reason));
     }
 
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public F4SettlementResult settleApprovedCurrentWeekResult(String operator, String reason) {
         if (!A2ReplayContext.isReplaying()) {
             throw new BizException(409, "A2_CONFIRMATION_REQUIRED");
@@ -125,7 +126,7 @@ public class LeadershipPoolService {
         int weekCode = teamCommissionMapper.currentYearWeek();
         // The coverage check belongs to the money write, not only to the proposal: an already settled
         // week stays a no-op so a repeated approval cannot start failing on a later coverage read.
-        if (teamCommissionMapper.countLeadershipByWeek(String.valueOf(weekCode)) <= 0) {
+        if (!isLeadershipWeekSettled(String.valueOf(weekCode))) {
             requirePayoutCoverage();
         }
         return injectAndSettleTrusted(weekCode, null, "ADMIN", normalizedOperator, normalizedReason);
@@ -137,7 +138,7 @@ public class LeadershipPoolService {
      * @param weekCode ISO YEARWEEK 整数(如 202630)
      * @return 实际分得份额的用户数(-1 表示跳过/无数据)
      */
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
     public int injectAndSettle(int weekCode) {
         return legacyPoolCount(injectAndSettleTrusted(weekCode, null, "SYSTEM", "SYSTEM", "测试/补偿结算"));
     }
@@ -157,7 +158,8 @@ public class LeadershipPoolService {
         if (teamCommissionMapper.lockLeadershipSettlementMutex(weekCode) == null) {
             throw new IllegalStateException("F4_SETTLEMENT_MUTEX_UNAVAILABLE");
         }
-        if (teamCommissionMapper.countLeadershipByWeek(weekKey) > 0) {
+        // Read the completed-week facts after acquiring the mutex, including commits made while waiting.
+        if (isLeadershipWeekSettled(weekKey)) {
             log.info("F4 leadership pool week={} already settled, skip leadership settlement", weekKey);
             return F4SettlementResult.notExecuted(weekKey, POOL_ALREADY_SETTLED);
         }
@@ -180,6 +182,11 @@ public class LeadershipPoolService {
         log.info("F4 leadership pool inject: week={} weeklyVolume={} × {} = poolAmount={}",
                 weekKey, weeklyVolume, injectRate, poolAmount);
         return settleTrusted(poolAmount, weekKey, actorId, actorType, actorUsername, reason, settlementConfig);
+    }
+
+    private boolean isLeadershipWeekSettled(String weekKey) {
+        return teamCommissionMapper.countLeadershipByWeek(weekKey) > 0
+                || teamCommissionMapper.hasCompletedEmptyLeadershipWeek(weekKey);
     }
 
     /** 每分钟补齐所有已结束周期；持久化 checkpoint 使午夜停机后仍可追赶。 */

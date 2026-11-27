@@ -322,6 +322,7 @@ public class OpsTeamService implements AuditReplayable {
                 "nx_v_rank_reward_fulfillment",
                 "nx_binary_commission_settlement",
                 "nx_commission_event",
+                "nx_audit_log:F4_LEADERSHIP_POOL_SETTLED",
                 "nx_team_hardware_quota_tier",
                 "nx_team_hardware_quota_usage",
                 "nx_team_ambassador_application",
@@ -341,6 +342,7 @@ public class OpsTeamService implements AuditReplayable {
                 "nx_v_rank_config",
                 "nx_team_member",
                 "nx_config_item:team.ui.F.pool.*",
+                "nx_commission_event:leadership",
                 "nx_audit_log:F4_LEADERSHIP_POOL_SETTLED"));
         return ApiResult.ok(response);
     }
@@ -348,8 +350,7 @@ public class OpsTeamService implements AuditReplayable {
     private Map<String, Object> leadershipPoolEstimate() {
         Map<String, Object> estimate = new LinkedHashMap<>();
         Map<String, Object> summary = commissionRepository.leadershipPoolSummary();
-        int weeklySettledCount = intValue(summary.get("weeklySettledCount"), 0);
-        if (weeklySettledCount > 0) {
+        if (LeadershipPoolProjection.currentWeekSettled(summary)) {
             estimate.put("available", false);
             estimate.put("reason", "CURRENT_WEEK_SETTLED");
             return estimate;
@@ -456,6 +457,7 @@ public class OpsTeamService implements AuditReplayable {
                 "nx_team_ambassador_application",
                 "nx_team_leaderboard_action",
                 "nx_commission_event:leadership",
+                "nx_audit_log:F4_LEADERSHIP_POOL_SETTLED",
                 "nx_config_item:team.ui.F.pool.ratio policy",
                 "nx_config_item:team.ui.F.pool.monthlyCap policy",
                 "B1 treasury coverage facade"));
@@ -2959,7 +2961,7 @@ public class OpsTeamService implements AuditReplayable {
         PoolRatioReadModel ratio = poolRatioReadModel();
         Map<String, Object> summary = commissionRepository.leadershipPoolSummary();
         int weeklyGmvUsd = intValue(summary.get("weeklyGmvUsd"), 0);
-        BigDecimal weeklyInjectedUsd = null;
+        BigDecimal currentWeekPoolUsd = null;
         int unlockRank = leadershipUnlockRank();
         int topN = intConfig(uiConfigKey("F.vrank.leadership.topN"), 0);
         List<Map<String, Object>> ranks = leadershipRanks();
@@ -2989,7 +2991,7 @@ public class OpsTeamService implements AuditReplayable {
             var nextSettlement = CronExpression.parse(settlementConfig.springCron())
                     .next(ZonedDateTime.now(ffdd.opsconsole.shared.config.BusinessCalendar.growthTeam().zoneAt(java.time.Instant.now())));
             pool.put("nextSettlementAt", nextSettlement == null ? "" : nextSettlement.toInstant().toString());
-            weeklyInjectedUsd = LeadershipPoolProjection.amount(summary, settlementConfig);
+            currentWeekPoolUsd = LeadershipPoolProjection.amount(summary, settlementConfig);
             unlockRank = settlementConfig.unlockRank();
             participantCount = ranks.stream()
                     .filter(rank -> intValue(rank.get("v"), 0) >= settlementConfig.unlockRank()
@@ -3004,7 +3006,9 @@ public class OpsTeamService implements AuditReplayable {
             pool.put("settlementConfigUnavailableKey", failure.key().replaceFirst("^team\\.ui\\.", ""));
             pool.put("settlementConfigUnavailableReason", failure.reason());
         }
-        pool.put("currentWeekPoolUsd", weeklyInjectedUsd);
+        pool.put("currentWeekPoolUsd", currentWeekPoolUsd);
+        pool.put("currentWeekSettled", LeadershipPoolProjection.currentWeekSettled(summary));
+        pool.put("weeklyInjectedAmount", LeadershipPoolProjection.injectedAmount(summary).setScale(6).toPlainString());
         pool.put("weeklyInjectedUsd", intValue(summary.get("weeklyInjectedUsd"), 0));
         pool.put("weeklyGmvUsd", weeklyGmvUsd);
         pool.put("poolRatio", ratio.label());

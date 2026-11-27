@@ -247,6 +247,25 @@ class LeadershipPoolServiceTest {
     }
 
     @Test
+    void zeroPayoutCompletionSkipsAnotherSettlementForTheSameWeek() {
+        stubValidSettlementConfig();
+        when(teamCommissionMapper.currentYearWeek()).thenReturn(202630);
+        when(teamCommissionMapper.lockLeadershipSettlementMutex(202630)).thenReturn(1L);
+        when(teamCommissionMapper.hasCompletedEmptyLeadershipWeek("202630")).thenReturn(true);
+
+        A2ReplayContext.enterReplay("WO-F4-ZERO");
+        try {
+            var replay = service.settleApprovedCurrentWeekResult("reviewer", "Repeat a completed weekly settlement");
+            assertThat(replay.reasonCode()).isEqualTo("F4_POOL_ALREADY_SETTLED");
+            assertThat(replay.creditedCount()).isZero();
+        } finally {
+            A2ReplayContext.exitReplay();
+        }
+        verify(teamCommissionMapper, never()).weeklyPlatformVolume(anyInt());
+        org.mockito.Mockito.verifyNoInteractions(coverageFacade, ledgerPostingFacade, commissionRepository);
+    }
+
+    @Test
     void injectAndSettle_usesPercentConfigAndConfiguredUnlockRank() {
         when(teamCommissionMapper.lockLeadershipSettlementMutex(202630)).thenReturn(1L);
         when(teamCommissionMapper.countLeadershipByWeek("202630")).thenReturn(0);

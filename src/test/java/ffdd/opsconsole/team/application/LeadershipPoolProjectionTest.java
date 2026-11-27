@@ -25,4 +25,14 @@ class LeadershipPoolProjectionTest {
                 "weeklyInjectedUsd", new BigDecimal("321.123456")), config))
                 .isEqualByComparingTo("321.123456");
     }
+
+    @Test void confirmedZeroPaymentUsesTheActualAmountAndRequiresExplicitEvidence() {
+        Map<String, Object> confirmed = Map.of("weeklyGmvUsd", 10000, "weeklyEmptySettlementConfirmed", true);
+        assertThat(LeadershipPoolProjection.currentWeekSettled(confirmed)).isTrue();
+        assertThat(LeadershipPoolProjection.amount(confirmed, config)).isEqualByComparingTo("0");
+
+        assertThat(LeadershipPoolProjection.currentWeekSettled(Map.of("weeklyInjectedUsd", BigDecimal.TEN))).isFalse();
+        assertThat(LeadershipPoolProjection.currentWeekSettled(Map.of("weeklyEmptySettlementConfirmed", false))).isFalse();
+        assertThat(LeadershipPoolProjection.currentWeekSettled(Map.of("weeklyEmptySettlementConfirmed", 2))).isFalse();
+    }
 }

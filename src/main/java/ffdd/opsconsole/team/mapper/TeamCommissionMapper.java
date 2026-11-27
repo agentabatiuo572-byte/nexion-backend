@@ -442,6 +442,21 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     int deleteVRankReward(@Param("rank") String rank, @Param("rewardId") String rewardId);
 
+    String LEADERSHIP_CURRENT_WEEK = "YEARWEEK(" + VietnamBusinessPeriodSql.NOW + ", 1)";
+    String LEADERSHIP_WEEK_REMARK = " CONCAT('F4 leadership pool | week=', ";
+
+    String COMPLETED_EMPTY_LEADERSHIP_WEEK = """
+            SELECT 1
+              FROM nx_audit_log
+             WHERE is_deleted = 0
+               AND resource_type = 'LEADERSHIP_POOL_SETTLEMENT'
+               AND action = 'F4_LEADERSHIP_POOL_SETTLED'
+               AND result = 'SUCCESS'
+               AND JSON_UNQUOTE(JSON_EXTRACT(detail_json, '$.settledUsers')) = '0'
+               AND JSON_UNQUOTE(JSON_EXTRACT(detail_json, '$.totalVotes')) REGEXP '^0([.]0+)?$'
+               AND resource_id = CAST(
+            """;
+
     String LEADERSHIP_POOL_SUMMARY = """
             SELECT (
                      SELECT COALESCE(SUM(o.subtotal_usdt), 0)
@@ -450,8 +465,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                         AND o.order_status NOT IN ('REFUNDED', 'CHARGEBACK')
                         AND o.paid_at IS NOT NULL
                         AND YEARWEEK(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_HEAD + "o.paid_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_MID + "o.paid_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_TAIL + """
-                        , 1) = YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
-                        , 1)
+                        , 1) = """ + LEADERSHIP_CURRENT_WEEK + """
                         AND o.is_deleted = 0
                    ) AS weeklyGmvUsd,
                    (
@@ -459,15 +473,17 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        FROM nx_commission_event e
                       WHERE e.is_deleted = 0
                         AND LOWER(e.commission_type) = 'leadership'
-                        AND e.remark LIKE CONCAT('%', YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
-                        , 1), '%')
+                        AND CONCAT(e.remark, ' ') LIKE """ + LEADERSHIP_WEEK_REMARK + LEADERSHIP_CURRENT_WEEK + """
+                        , ' %')
                    ) AS weeklyInjectedUsd,
                    (
                      SELECT COUNT(*) FROM nx_commission_event e
                       WHERE e.is_deleted = 0 AND LOWER(e.commission_type) = 'leadership'
-                        AND e.remark LIKE CONCAT('%', YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
-                        , 1), '%')
+                        AND CONCAT(e.remark, ' ') LIKE """ + LEADERSHIP_WEEK_REMARK + LEADERSHIP_CURRENT_WEEK + """
+                        , ' %')
                    ) AS weeklySettledCount,
+                   EXISTS (""" + COMPLETED_EMPTY_LEADERSHIP_WEEK + LEADERSHIP_CURRENT_WEEK + """
+                   AS CHAR)) AS weeklyEmptySettlementConfirmed,
                    (
                      SELECT COALESCE(SUM(e.amount_usdt), 0)
                        FROM nx_commission_event e
@@ -1658,15 +1674,19 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     java.math.BigDecimal monthlyLeadershipAmount();
 
-    /** F4 幂等:某周(weekKey)领导池是否已结算(commission_type=leadership + remark 含 weekKey)。 */
+    /** The recorded week token, excluding coincidental matches in the vote counts. */
     @Select("""
             SELECT COUNT(1)
               FROM nx_commission_event
              WHERE LOWER(commission_type) = 'leadership'
-               AND remark LIKE CONCAT('%', #{weekKey}, '%')
+               AND CONCAT(remark, ' ') LIKE """ + LEADERSHIP_WEEK_REMARK + """
+                   #{weekKey}, ' %')
                AND is_deleted = 0
             """)
     int countLeadershipByWeek(@Param("weekKey") String weekKey);
+
+    @Select("SELECT EXISTS (" + COMPLETED_EMPTY_LEADERSHIP_WEEK + "#{weekKey} AS CHAR))")
+    boolean hasCompletedEmptyLeadershipWeek(@Param("weekKey") String weekKey);
 
     @Select("""
             SELECT COUNT(1)
