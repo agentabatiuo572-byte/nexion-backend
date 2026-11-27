@@ -100,7 +100,7 @@ public class OpsDashboardService {
                 "redlineBreached", Boolean.TRUE.equals(snapshot.get("redlineBreached")),
                 "netFlow24hUsd", money(snapshot.get("netFlow24hUsd")),
                 "queueBacklogCount", longValue(snapshot.get("queueBacklogCount")),
-                "queueBacklogUsd", money(snapshot.get("queueBacklogUsd")),
+                "queueBacklogUsd", decimal(snapshot.get("queueBacklogUsd")),
                 "avgRiskScore", longValue(snapshot.get("avgRiskScore")),
                 "coverageSeries", snapshot.getOrDefault("coverageSeries", List.of()),
                 "scope", stringValue(snapshot.get("scope")),
@@ -151,9 +151,12 @@ public class OpsDashboardService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         Map<String, Object> snapshot = map(dualLedger.get("snapshot"));
         long pendingCount = pending.isEmpty() ? longValue(snapshot.get("queueBacklogCount")) : pending.size();
-        BigDecimal pendingAmount = pendingUsd.compareTo(BigDecimal.ZERO) == 0
-                ? money(snapshot.get("queueBacklogUsd"))
+        BigDecimal pendingAmount = pendingUsd.signum() == 0
+                ? decimal(snapshot.get("queueBacklogUsd"))
                 : money(pendingUsd);
+        if (pendingAmount.signum() == 0 && pendingUsd.signum() > 0) {
+            pendingAmount = pendingUsd;
+        }
         return linked(
                 "pendingWithdrawalCount", pendingCount,
                 "pendingWithdrawalUsd", pendingAmount,

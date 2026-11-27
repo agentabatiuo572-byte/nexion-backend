@@ -730,6 +730,7 @@ public class OpsTreasuryService {
         BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
         String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
         BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
+        BigDecimal roundedQueueBacklogUsd = money(queueBacklogUsd);
         BigDecimal netFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(current24hStart, now));
         BigDecimal prevNetFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(prev24hStart, current24hStart));
         BigDecimal avgRiskScore = safe(ledgerRepository.avgActiveWithdrawalQueueRiskScore()).setScale(0, RoundingMode.HALF_UP);
@@ -756,7 +757,8 @@ public class OpsTreasuryService {
                 "runRiskPct", pctScale(runRiskPct),
                 "netFlow24hUsd", money(netFlow24hUsd),
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
-                "queueBacklogUsd", money(queueBacklogUsd),
+                "queueBacklogUsd", roundedQueueBacklogUsd.signum() == 0 && queueBacklogUsd.signum() > 0
+                        ? queueBacklogUsd : roundedQueueBacklogUsd,
                 "avgRiskScore", avgRiskScore.longValue(),
                 "coverageSeries", coveragePoints.stream().map(point -> point.get("coverageRatio")).toList(),
                 "coverageSeriesPoints", coveragePoints,
