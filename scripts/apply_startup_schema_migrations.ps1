@@ -557,6 +557,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261124_b85_device_task_catalog.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_catalog.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_a4_event_registry.sql")
+  (Join-Path $root "scripts\migrations\20261127_e3_tradein_current_price_event.sql")
   (Join-Path $root "scripts\migrations\20261120_lc02_hdpay_withdrawal_schema.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_h9_launch_display.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_h9_active_jobs_display.sql")

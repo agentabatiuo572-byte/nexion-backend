@@ -23,6 +23,7 @@ fresh_db/03_app_runtime_tables.sql
 fresh_db/04_event_registry_restore.sql
 # Install the producer contracts after the fresh event registry has been restored.
 migrations/20261120_lc02_hdpay_withdrawal_schema.sql
+migrations/20261127_e3_tradein_current_price_event.sql
 migrations/20261120_lc_bi_dau.sql
 migrations/20261125_bi11_dau_event_timestamp_property.sql
 migrations/20261120_lc_bi_registration_phase.sql
