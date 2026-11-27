@@ -44,13 +44,34 @@ public class MybatisWithdrawalOrderRepository implements WithdrawalOrderReposito
             String sortDirection,
             int pageNum,
             int pageSize) {
+        return page(status, userId, keyword, minAmount, maxAmount, minRiskScore,
+                ipSegment, sortBy, sortDirection, pageNum, pageSize, null, null);
+    }
+
+    @Override
+    public PageResult<WithdrawalOrderView> page(
+            String status,
+            Long userId,
+            String keyword,
+            BigDecimal minAmount,
+            BigDecimal maxAmount,
+            Integer minRiskScore,
+            String ipSegment,
+            String sortBy,
+            String sortDirection,
+            int pageNum,
+            int pageSize,
+            LocalDateTime createdAtFrom,
+            LocalDateTime createdAtToExclusive) {
         String trimmedKeyword = keyword == null ? null : keyword.trim();
         String trimmedIpSegment = ipSegment == null ? null : ipSegment.trim();
         long total = mapper.countPage(
-                status, userId, trimmedKeyword, minAmount, maxAmount, minRiskScore, trimmedIpSegment);
+                status, userId, trimmedKeyword, minAmount, maxAmount, minRiskScore,
+                trimmedIpSegment, createdAtFrom, createdAtToExclusive);
         List<WithdrawalOrderView> records = mapper.page(
                 status, userId, trimmedKeyword, minAmount, maxAmount, minRiskScore,
-                trimmedIpSegment, sortBy, sortDirection, pageSize, (pageNum - 1) * pageSize);
+                trimmedIpSegment, sortBy, sortDirection, pageSize, (pageNum - 1) * pageSize,
+                createdAtFrom, createdAtToExclusive);
         return new PageResult<>(total, pageNum, pageSize, records);
     }
 

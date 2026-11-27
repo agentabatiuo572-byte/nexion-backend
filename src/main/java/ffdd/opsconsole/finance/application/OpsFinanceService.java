@@ -686,6 +686,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     public ApiResult<PageResult<WithdrawalOrderView>> withdrawals(WithdrawalQueryRequest request) {
+        LocalDate createdFrom = parseWithdrawalDate(request == null ? null : request.createdFrom());
+        LocalDate createdTo = parseWithdrawalDate(request == null ? null : request.createdTo());
+        if (createdFrom != null && createdTo != null && createdFrom.isAfter(createdTo)) {
+            throw new BizException(400, "WITHDRAWAL_DATE_RANGE_INVALID");
+        }
+        LocalDateTime createdAtFrom = createdFrom == null ? null : WithdrawalDayWindow.storageStart(createdFrom);
+        LocalDateTime createdAtToExclusive = createdTo == null ? null : WithdrawalDayWindow.storageStart(createdTo.plusDays(1));
         ensureD2FallbackSeedData();
         int pageNum = clamp(request == null || request.pageNum() == null ? 1 : request.pageNum(), 1, 10_000);
         int pageSize = clamp(request == null || request.pageSize() == null ? 20 : request.pageSize(), 1, 100);
@@ -716,7 +723,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 ? "asc" : "desc";
         return ApiResult.ok(withdrawalRepository.page(
                 status, userId, keyword, minAmount, maxAmount, minRiskScore,
-                ipSegment, sortBy, sortDirection, pageNum, pageSize));
+                ipSegment, sortBy, sortDirection, pageNum, pageSize, createdAtFrom, createdAtToExclusive));
     }
 
     public ApiResult<PageResult<WithdrawalReviewView>> withdrawalsForReview(WithdrawalQueryRequest request) {
@@ -724,6 +731,20 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         BigDecimal threshold = D2WithdrawalReviewThreshold.read(configFacade);
         return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
                 page.getRecords().stream().map(order -> withD2ReviewThreshold(order, threshold)).toList()));
+    }
+
+    private static LocalDate parseWithdrawalDate(String value) {
+        if (value == null) {
+            return null;
+        }
+        if (!value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) {
+            throw new BizException(400, "WITHDRAWAL_DATE_RANGE_INVALID");
+        }
+        try {
+            return LocalDate.parse(value);
+        } catch (DateTimeParseException ex) {
+            throw new BizException(400, "WITHDRAWAL_DATE_RANGE_INVALID");
+        }
     }
 
     @Transactional(rollbackFor = Exception.class)

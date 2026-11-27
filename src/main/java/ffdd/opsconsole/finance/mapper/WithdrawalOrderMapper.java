@@ -82,6 +82,8 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                  ELSE w.status END) = #{status}
              </if>
              <if test='userId != null'>AND w.user_id = #{userId}</if>
+             <if test='createdAtFrom != null'>AND w.created_at &gt;= #{createdAtFrom}</if>
+             <if test='createdAtToExclusive != null'>AND w.created_at &lt; #{createdAtToExclusive}</if>
              <if test='minAmount != null'>AND w.amount &gt;= #{minAmount}</if>
              <if test='maxAmount != null'>AND w.amount &lt;= #{maxAmount}</if>
              <if test='minRiskScore != null'>
@@ -110,7 +112,9 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                    @Param("keyword") String keyword, @Param("minAmount") BigDecimal minAmount,
                    @Param("maxAmount") BigDecimal maxAmount,
                    @Param("minRiskScore") Integer minRiskScore,
-                   @Param("ipSegment") String ipSegment);
+                   @Param("ipSegment") String ipSegment,
+                   @Param("createdAtFrom") LocalDateTime createdAtFrom,
+                   @Param("createdAtToExclusive") LocalDateTime createdAtToExclusive);
 
     @Select("""
             <script>
@@ -282,6 +286,8 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                  WHEN 'DEAD' THEN 'TX_ORPHANED' ELSE w.status END) = #{status}
              </if>
              <if test='userId != null'>AND w.user_id = #{userId}</if>
+             <if test='createdAtFrom != null'>AND w.created_at &gt;= #{createdAtFrom}</if>
+             <if test='createdAtToExclusive != null'>AND w.created_at &lt; #{createdAtToExclusive}</if>
              <if test='minAmount != null'>AND w.amount &gt;= #{minAmount}</if>
              <if test='maxAmount != null'>AND w.amount &lt;= #{maxAmount}</if>
              <if test='minRiskScore != null'>
@@ -324,7 +330,9 @@ public interface WithdrawalOrderMapper extends BaseMapper<WithdrawalOrderEntity>
                                    @Param("sortBy") String sortBy,
                                    @Param("sortDirection") String sortDirection,
                                    @Param("pageSize") int pageSize,
-                                   @Param("offset") int offset);
+                                   @Param("offset") int offset,
+                                   @Param("createdAtFrom") LocalDateTime createdAtFrom,
+                                   @Param("createdAtToExclusive") LocalDateTime createdAtToExclusive);
 
     @Select("""
             <script>
