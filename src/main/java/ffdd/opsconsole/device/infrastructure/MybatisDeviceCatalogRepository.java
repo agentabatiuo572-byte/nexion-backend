@@ -161,7 +161,7 @@ public class MybatisDeviceCatalogRepository implements DeviceCatalogRepository {
     public DeviceSkuView createSku(String skuId, DeviceSkuUpsertRequest request, LocalDateTime now) {
         DeviceCatalogMapper.SkuWrite write = skuWrite(skuId, request, now, now);
         mapper.insertSku(write);
-        mapper.upsertSkuMetadata(write);
+        mapper.insertSkuMetadata(write);
         persistTaglineTranslations(skuId, request.taglineTranslations());
         return findSku(skuId).orElseThrow();
     }

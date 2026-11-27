@@ -579,6 +579,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261123_b70_product_tagline_translations.sql")
   (Join-Path $root "scripts\migrations\20261125_b97_product_store_display_controls.sql")
   (Join-Path $root "scripts\migrations\20261127_e1_storefront_sort_order.sql")
+  (Join-Path $root "scripts\migrations\20261127_b138_e1_sku_numbering.sql")
   (Join-Path $root "scripts\migrations\20261123_device_slot_replacement.sql")
   (Join-Path $root "scripts\migrations\20261123_purchase_device_placement.sql")
   (Join-Path $root "scripts\migrations\20261124_purchase_payment_refund_closeout.sql")
@@ -709,6 +710,15 @@ SELECT f.id, f.original_nickname, f.target_nickname
     if ($LASTEXITCODE -ne 0) {
       throw "Required startup schema migration failed with mysql exit code $LASTEXITCODE. Backend startup has been stopped."
     }
+  }
+  $numberedCatalog = & $MySql @mysqlArgs -N -B -e "SELECT COUNT(*) FROM nx_config_item WHERE config_key='E.catalog.b140.numbered' AND config_value='true' AND is_deleted=0;"
+  if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the catalog numbering state.' }
+  if ($numberedCatalog -eq '1') {
+    # Both legacy schema migrations were required before B140. Their data steps
+    # would refill intentionally empty E6 and H3 storefront targets with old IDs.
+    $migrations = @($migrations | Where-Object {
+      [IO.Path]::GetFileName($_) -notin '20261119_b53_product_series.sql', '20260901_h3_mission_presentation_config.sql'
+    })
   }
   $readerModeSql = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'local/support_fund_reader_replay.sql')
   $readerMode = & $MySql @mysqlArgs -N -B -e $readerModeSql

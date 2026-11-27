@@ -57,12 +57,18 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
     @Select("""
             SELECT EXISTS (
                 SELECT 1 FROM nx_audit_operation_ticket
-                 WHERE object_text = #{skuId} AND status = 'approved'
+                 WHERE status = 'approved'
                    AND decided_at IS NOT NULL AND is_deleted = 0
                    AND CASE WHEN JSON_VALID(command_json) THEN
                        JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.domain')) = 'E'
-                       AND JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.op')) IN ('e1_sku_create', 'e1_sku_update', 'e1_sku_status')
-                       AND LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.params.status')))) = 'on'
+                       AND CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.op')) = 'e1_sku_create'
+                           AND JSON_CONTAINS_PATH(command_json, 'one', '$.skuReview.createRequestId') THEN
+                             JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.resultSkuId')) = #{skuId}
+                             AND JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.resultSkuStatus')) = 'on'
+                           ELSE object_text = #{skuId}
+                             AND JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.op')) IN ('e1_sku_create', 'e1_sku_update', 'e1_sku_status')
+                             AND LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.params.status')))) = 'on'
+                       END
                    END
             )
             """)

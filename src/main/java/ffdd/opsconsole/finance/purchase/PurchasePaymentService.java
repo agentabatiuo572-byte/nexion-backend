@@ -498,7 +498,7 @@ public class PurchasePaymentService {
             case "TRIAL_CONVERT":{
                 var q = require(trials.externalPaymentPricing(owner, pricingAt, legacyTrialQuote, legacyTrialVersion, trialPolicy));
                 if (!legacyTrialVersion) {
-                    AppTrialLifecycleService.requireExternalPaymentProduct(text(payload.get("productNo")), text(q.get("productNo")));
+                    trials.requireExternalPaymentProduct(text(payload.get("productNo")), text(q.get("productNo")));
                 }
                 if ((!legacyTrialVersion || payload.get("quoteVersion") != null)
                         && !text(payload.get("quoteVersion")).equals(text(q.get("quoteVersion")))) {

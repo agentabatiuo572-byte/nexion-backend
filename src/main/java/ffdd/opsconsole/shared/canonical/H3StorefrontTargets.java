@@ -42,6 +42,10 @@ public class H3StorefrontTargets {
         return list().stream().filter(target -> target.productNo().equals(productNo)).findFirst().orElse(null);
     }
 
+    public Target originalS1() {
+        return byProductNo(catalog.standardS1ProductNo());
+    }
+
     public record Target(String productNo, String name, String actionRoute, boolean openable,
                          String seriesCode, boolean roiEligible) { }
 }

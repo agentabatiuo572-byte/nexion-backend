@@ -4826,7 +4826,9 @@ public class OpsGrowthService implements AuditReplayable, ApplicationEventPublis
 
     private String canonicalTrialProductId(String value) {
         String normalized = value == null ? "" : value.trim();
-        return LEGACY_TRIAL_PRODUCT_ID.equals(normalized) ? CANONICAL_TRIAL_PRODUCT_ID : normalized;
+        return LEGACY_TRIAL_PRODUCT_ID.equals(normalized)
+                ? questEventMapper.map(GrowthQuestEventMapper::standardS1ProductNo).orElse(CANONICAL_TRIAL_PRODUCT_ID)
+                : normalized;
     }
 
     private String trialParamCurrentValue(String key, String fallback) {

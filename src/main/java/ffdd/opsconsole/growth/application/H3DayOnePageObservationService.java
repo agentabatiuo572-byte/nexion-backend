@@ -59,6 +59,7 @@ public class H3DayOnePageObservationService {
         boolean roi = "s1-roi".equals(rule.surface());
         if (roi) {
             var target = storefront.byProductNo(productNo);
+            if (target == null && "stellarbox-s1".equals(productNo)) target = storefront.originalS1();
             if (target == null || !target.roiEligible()) return ignored();
         }
 

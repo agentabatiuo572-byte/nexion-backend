@@ -63,6 +63,9 @@ import ffdd.opsconsole.device.application.MonthlyTargetRewardOutOfRangeException
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
 import ffdd.opsconsole.device.application.E2TaskPricingApproval;
 import ffdd.opsconsole.device.application.HostingCenterService;
+import ffdd.opsconsole.device.application.OpsDeviceService.SkuCreateDraft;
+import ffdd.opsconsole.device.application.SkuCreateRequests;
+import ffdd.opsconsole.device.domain.DeviceSkuView;
 import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
@@ -115,6 +118,7 @@ public class OpsAuditCenterService {
     private static final String STATUS_REJECTED = "rejected";
     private static final String A2_COMMAND = "A2_COMMAND";
     private static final String A2_OPERATION_PROPOSED = "A2_OPERATION_PROPOSED";
+    private static final String A2_OPERATION_PROPOSAL_REUSED = "A2_OPERATION_PROPOSAL_REUSED";
     private static final String A2_OPERATION_EXECUTED = "A2_OPERATION_EXECUTED";
     private static final String F5_COMMISSION_SUSPENSION = "f5_commission_suspension";
     private static final String E4_ORDER_REFUND = "e4_order_refund";
@@ -122,6 +126,8 @@ public class OpsAuditCenterService {
     private static final String APPROVAL_FAILURE_REASON = "approvalFailureReason";
     private static final String F4_BUSINESS_RESULT = "f4BusinessResult";
     private static final String LAST_F4_APPROVAL_ATTEMPT_RESULT = "lastApprovalAttemptResult";
+    private static final String RESULT_SKU_ID = "resultSkuId";
+    private static final String RESULT_SKU_STATUS = "resultSkuStatus";
     private static final String EXECUTED_DECISION_REASON = "即时执行·已生效(单人确认)";
     private static final Set<String> TERMINAL_STATUSES = Set.of(STATUS_APPROVED, STATUS_REJECTED, "withdrawn", "expired");
     private static final Set<String> A1_ACCOUNT_OBJECT_OPS = Set.of(
@@ -164,6 +170,8 @@ public class OpsAuditCenterService {
     private final ffdd.opsconsole.device.application.OpsDeviceService devices;
     @Autowired
     private HostingCenterService hostingCenters;
+    @Autowired
+    private SkuCreateRequests skuCreateRequests;
     private final OpsI18nLearningService learning;
     @Autowired @Lazy
     private OpsAdminAccountService accounts;
@@ -212,6 +220,10 @@ public class OpsAuditCenterService {
 
     private boolean canReadOriginalKeyProposal(AuditOperationTicketEntity ticket, AuditReplayCommand command,
             A2AccessPolicy.OriginalKeyReader reader) {
+        if (AuditReplayBusinessPermissionGuard.skuCreateRequestId(command) != null) {
+            return accessPolicy.canRecoverOwnSkuCreate(reader)
+                    || (reader.grants().contains("platform_a2_read") && canReadOwnProposal(ticket, command, reader.actorId()));
+        }
         boolean pageRead = accessPolicy.canReadPageProposal(command, reader.grants());
         boolean verifiedMakerPageRead = pageRead && (A4RegistryApproval.supports(command)
                 || AuditReplayBusinessPermissionGuard.isVRankOverride(command));
@@ -342,11 +354,33 @@ public class OpsAuditCenterService {
     }
 
     public ApiResult<AuditOperationTicket> createProposal(String idempotencyKey, AuditOperationProposalRequest request) {
-        return idempotentTicket("PROPOSE", idempotencyKey, request,
-                () -> createProposalOnce(idempotencyKey, request));
+        var command = request == null ? null : request.command();
+        SkuCreateDraft draft = null;
+        if (StringUtils.hasText(idempotencyKey) && AuditReplayBusinessPermissionGuard.isSkuCreate(command)
+                && command.params() != null && command.params().containsKey("createRequestId")) {
+            var permission = replayBusinessPermissionGuard.validateProposal(command);
+            if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());
+            try {
+                draft = devices.skuCreateDraft(command);
+            } catch (BizException ex) {
+                return ApiResult.fail(ex.getCode(), ex.getMessage());
+            }
+            var target = AuditReplayBusinessPermissionGuard.skuCreateTarget(draft.createRequestId());
+            var supplied = request.target();
+            if (supplied == null || !target.equals(new AuditLockTarget(supplied.domain(), supplied.type(),
+                    Objects.toString(supplied.id(), "").toLowerCase(Locale.ROOT)))
+                    || !Objects.equals(draft.name(), normalizeText(request.obj()))
+                    || (request.targets() != null && !request.targets().isEmpty())) {
+                return fail(OpsErrorCode.VALIDATION_FAILED, "A2_TARGET_MISMATCH");
+            }
+        }
+        SkuCreateDraft createDraft = draft;
+        return idempotentTicket("PROPOSE", idempotencyKey, request, createDraft,
+                () -> createProposalOnce(idempotencyKey, request, createDraft));
     }
 
-    private ApiResult<AuditOperationTicket> createProposalOnce(String idempotencyKey, AuditOperationProposalRequest request) {
+    private ApiResult<AuditOperationTicket> createProposalOnce(String idempotencyKey, AuditOperationProposalRequest request,
+            SkuCreateDraft createDraft) {
         ensureSeedData();
         String authenticatedOperator = AdminActorResolver.resolve(request == null ? null : request.operator());
         ApiResult<AuditOperationTicket> guard = requireMutation(idempotencyKey,
@@ -413,6 +447,20 @@ public class OpsAuditCenterService {
         ApiResult<Void> businessPermission = replayBusinessPermissionGuard.validateProposal(command);
         if (businessPermission.getCode() != 0) {
             return ApiResult.fail(businessPermission.getCode(), businessPermission.getMessage());
+        }
+        if (AuditReplayBusinessPermissionGuard.isSkuCreate(command)) {
+            if (createDraft == null) return fail(OpsErrorCode.VALIDATION_FAILED, "SKU_CREATE_REQUEST_ID_REQUIRED");
+            String requestId = createDraft.createRequestId();
+            long maker = A2ReplayContext.authenticatedAdminId();
+            var draft = skuCreateRequests.claim(maker, requestId, createDraft.businessHash());
+            if (draft.operationId() != null) {
+                return reuseSkuCreateProposal(draft, idempotencyKey, operator);
+            }
+            if (draft.resultSkuId() != null) return ApiResult.fail(409, "SKU_CREATE_REQUEST_CONFLICT");
+            Map<String, Object> params = new LinkedHashMap<>(command.params());
+            params.remove("skuId");
+            params.put("createRequestId", requestId);
+            command = new AuditReplayCommand(command.domain(), command.op(), params);
         }
         ApiResult<AuditReplayBusinessPermissionGuard.DelegatedProposalDescriptor> proposalContext =
                 replayBusinessPermissionGuard.validateProposalContext(request, command);
@@ -624,11 +672,17 @@ public class OpsAuditCenterService {
                 }
                 if (isSkuReviewCommand(command)) {
                     var review = devices.skuProposalReview(command);
-                    target=new AuditLockTarget("E","device_sku",review.skuId());
                     com.fasterxml.jackson.databind.node.ObjectNode after = objectMapper.valueToTree(review.after());
                     after.remove(List.of("reason", "operator", "imagePreviewUrl"));
                     after.set("allowedPoolCodes",objectMapper.valueToTree(review.classes()));
-                    after.put("skuId", review.skuId());
+                    if (review.createRequestId() == null) {
+                        target = new AuditLockTarget("E", "device_sku", review.skuId());
+                        after.put("skuId", review.skuId());
+                    } else {
+                        target = AuditReplayBusinessPermissionGuard.skuCreateTarget(review.createRequestId());
+                        after.remove("skuId");
+                        after.put("createRequestId", review.createRequestId());
+                    }
                     int currentBase = review.before() == null ? 0 : review.before().displaySoldBase();
                     boolean currentVisibility = review.before() == null || review.before().liveActivityVisible();
                     after.put("displaySoldBase", Objects.requireNonNullElse(review.after().proposedDisplaySoldBase(), currentBase));
@@ -644,6 +698,7 @@ public class OpsAuditCenterService {
                     ticket.setOperationType(review.amplifies()?"fund":"param");
                     ticket.setAmplifies(review.amplifies()?1:0);
                     var metadata = stored.putObject("skuReview");
+                    if (review.createRequestId() != null) metadata.put("createRequestId", review.createRequestId());
                     metadata.put("storeDisplayControlsReviewed", true);
                     metadata.put("storeSortOrderReviewed", true);
                     metadata.put("before", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(before));
@@ -753,6 +808,10 @@ public class OpsAuditCenterService {
         String approvalRoleGate = approvalRoleGateText(ticket.getRoleGate(), command);
         if (approvalRoleGate != null) ticket.setRoleGate(approvalRoleGate);
         ticketMapper.insert(ticket);
+        if (createDraft != null) {
+            skuCreateRequests.bindProposal(createDraft.createRequestId(), ticket.getOperationId());
+            auditDetail.put("createRequestId", createDraft.createRequestId());
+        }
         if (promotions != null && refundOrderNo != null) promotions.holdA2Refund(ticket.getOperationId(), refundOrderNo);
 
         auditDetail.putAll(Map.of(
@@ -775,6 +834,29 @@ public class OpsAuditCenterService {
                 .result("SUCCESS")
                 .riskLevel(operationRiskLevel(ticket))
                 .detail(auditDetail)
+                .build());
+        return ApiResult.ok(toTicket(ticket, true));
+    }
+
+    private ApiResult<AuditOperationTicket> reuseSkuCreateProposal(SkuCreateRequests.Draft draft, String key, String operator) {
+        // Approval locks the ticket before the draft. A committed read here keeps that lock order.
+        var ticket = ticketMapper.selectActiveByOperationId(draft.operationId());
+        if (ticket == null) return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+        var command = deserializeCommand(ticket.getCommandJson());
+        if (!draft.requestId().equals(AuditReplayBusinessPermissionGuard.skuCreateRequestId(command))
+                || !Long.valueOf(draft.makerId()).equals(ticketMakerId(ticket, command))) {
+            return ApiResult.fail(409, "IDEMPOTENCY_RESULT_UNKNOWN");
+        }
+        auditLogService.recordRequired(AuditLogWriteRequest.builder()
+                .action(A2_OPERATION_PROPOSAL_REUSED)
+                .resourceType("A2_OPERATION")
+                .resourceId(ticket.getOperationId())
+                .bizNo(ticket.getOperationId())
+                .actorType("ADMIN")
+                .actorUsername(operator)
+                .result("SUCCESS")
+                .riskLevel(operationRiskLevel(ticket))
+                .detail(Map.of("idempotencyKey", key.trim(), "createRequestId", draft.requestId(), "sourceDomain", "E1"))
                 .build());
         return ApiResult.ok(toTicket(ticket, true));
     }
@@ -975,6 +1057,12 @@ public class OpsAuditCenterService {
     private ApiResult<AuditOperationTicket> idempotentTicket(
             String operation, String idempotencyKey, Object request,
             java.util.function.Supplier<ApiResult<AuditOperationTicket>> action) {
+        return idempotentTicket(operation, idempotencyKey, request, null, action);
+    }
+
+    private ApiResult<AuditOperationTicket> idempotentTicket(
+            String operation, String idempotencyKey, Object request, SkuCreateDraft createDraft,
+            java.util.function.Supplier<ApiResult<AuditOperationTicket>> action) {
         if (!StringUtils.hasText(idempotencyKey)) {
             return fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED, OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
@@ -1023,6 +1111,10 @@ public class OpsAuditCenterService {
             com.fasterxml.jackson.databind.node.ObjectNode fields = request == null ? null : objectMapper.valueToTree(request);
             var fingerprint = fields == null ? null : fields.deepCopy();
             if (fingerprint != null) fingerprint.remove(List.of("operator", "operatorRole"));
+            if (createDraft != null) {
+                fingerprint = objectMapper.createObjectNode().put("createRequestId", createDraft.createRequestId())
+                        .put("businessHash", createDraft.businessHash());
+            }
             // G4 already uses a stable fingerprint. The numeric ID keeps new hashes distinct from old name hashes.
             String requestHash = commandHash(catalogReceipt ? "admin:" + actorId : actorId, operation, fingerprint);
             var recovery = idempotencyService.recoveryResult(A2_COMMAND, idempotencyKey, requestHash, AuditOperationTicket.class);
@@ -1061,6 +1153,9 @@ public class OpsAuditCenterService {
                         : ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.readAuthority(value.command().op().toUpperCase(Locale.ROOT));
                 var targets = value.targets() != null && !value.targets().isEmpty() ? value.targets()
                         : value.target() == null ? List.<AuditLockTarget>of() : List.of(value.target());
+                if (createDraft != null) {
+                    targets = List.of(AuditReplayBusinessPermissionGuard.skuCreateTarget(createDraft.createRequestId()));
+                }
                 if (targets.isEmpty() && originAuthority != null) targets = replayBusinessPermissionGuard.investigationTargets(value.command());
                 if (!targets.isEmpty() && value.command() != null && value.command().op() != null
                         && targets.stream().allMatch(target -> target != null && target.domain() != null
@@ -1095,6 +1190,7 @@ public class OpsAuditCenterService {
             if (catalogProposal || (proposal && receipt.v8PromotionSnapshot() != null)) {
                 return proposalByIdempotencyKey(idempotencyKey);
             }
+            if (createDraft != null) return ticketReceipt(receipt, actorId, verb, operationId);
             return ApiResult.ok(receipt);
         } catch (MonthlyTargetPoolException | MonthlyTargetRewardOutOfRangeException | AppTextChineseNotAllowedException
                 | ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException ex) {
@@ -1170,6 +1266,11 @@ public class OpsAuditCenterService {
         Long makerId = ticketMakerId(ticket, command);
         boolean mine = Long.valueOf(actorId).equals(makerId);
         if (operationId == null && !mine) return ApiResult.fail(409, "A2_MAKER_ID_UNVERIFIED");
+        if ("PROPOSE".equals(verb) && AuditReplayBusinessPermissionGuard.skuCreateRequestId(command) != null) {
+            var permission = replayBusinessPermissionGuard.validateProposal(command);
+            if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());
+            return ApiResult.ok(toTicket(ticket, true));
+        }
         if ("WITHDRAW".equals(verb)) {
             if (!canAccessWithdrawal(ticket, command, makerId, actorId)) return fail(OpsErrorCode.FORBIDDEN);
             if (!mine) return fail(OpsErrorCode.FORBIDDEN, "A2_WITHDRAW_MAKER_ONLY");
@@ -1452,6 +1553,7 @@ public class OpsAuditCenterService {
         }
         AuditReplayCommand cmd = STATUS_APPROVED.equals(nextStatus) ? ticketCommand : null;
         boolean f4Settlement = isF4Settlement(cmd);
+        boolean skuCreate = AuditReplayBusinessPermissionGuard.skuCreateRequestId(cmd) != null;
         Long avatarMaker = A2ReplayContext.isAvatarCommand(cmd)
                 ? boundMakerId(ticket.getCommandJson(), "avatarMakerAdminId") : null;
         // Refund participants were locked before the ticket; qualifications only read this locked transaction.
@@ -1526,6 +1628,12 @@ public class OpsAuditCenterService {
                     }
                     storeF4Result(ticket, F4_BUSINESS_RESULT, actual);
                 }
+                if (skuCreate) {
+                    if (!(replayResult.getData() instanceof DeviceSkuView sku) || !StringUtils.hasText(sku.skuId())) {
+                        throw new IllegalStateException("SKU_CREATE_APPROVAL_RESULT_MISSING");
+                    }
+                    storeSkuCreateResult(ticket, sku);
+                }
                 if (TeamFundApproval.isSettlement(cmd) && replayResult.getData() instanceof SettlementResult settlement) {
                     ticket.setAfterValue((settlement.replayed() ? "此结算日已有结果" :
                             "已结算 " + settlement.amountUsdt().stripTrailingZeros().toPlainString() + " USDT")
@@ -1554,6 +1662,7 @@ public class OpsAuditCenterService {
         ticket.setDecidedAt(LocalDateTime.now());
         int updated = ticketMapper.updateById(ticket);
         if (f4Settlement && updated != 1) throw new IllegalStateException("F4_APPROVAL_RESULT_UPDATE_FAILED");
+        if (skuCreate && updated != 1) throw new IllegalStateException("SKU_CREATE_APPROVAL_RESULT_UPDATE_FAILED");
         if (promotions != null && lockedRefundOrder != null
                 && (STATUS_REJECTED.equals(nextStatus) || "withdrawn".equals(nextStatus))) {
             promotions.clearA2Refund(ticket.getOperationId(), lockedRefundOrder);
@@ -1561,6 +1670,29 @@ public class OpsAuditCenterService {
         recordDecision(ticket, auditAction, authenticatedOperator,
                 decisionDetail(ticket, nextStatus, idempotencyKey, request.reason()));
         return ApiResult.ok(toTicket(ticket, makerMatches));
+    }
+
+    private void storeSkuCreateResult(AuditOperationTicketEntity ticket, DeviceSkuView sku) {
+        try {
+            var stored = (com.fasterxml.jackson.databind.node.ObjectNode) objectMapper.reader()
+                    .with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS).readTree(ticket.getCommandJson());
+            stored.put(RESULT_SKU_ID, sku.skuId());
+            stored.put(RESULT_SKU_STATUS, sku.status());
+            ticket.setCommandJson(objectMapper.writeValueAsString(stored));
+        } catch (JsonProcessingException invalid) {
+            throw new IllegalStateException("SKU_CREATE_APPROVAL_RESULT_WRITE_FAILED", invalid);
+        }
+    }
+
+    private String resultSkuId(AuditOperationTicketEntity ticket, AuditReplayCommand command) {
+        if (!STATUS_APPROVED.equals(ticket.getStatus()) || AuditReplayBusinessPermissionGuard.skuCreateRequestId(command) == null) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(ticket.getCommandJson()).path(RESULT_SKU_ID).textValue();
+        } catch (JsonProcessingException invalid) {
+            throw new IllegalStateException("SKU_CREATE_APPROVAL_RESULT_READ_FAILED", invalid);
+        }
     }
 
     private static boolean isF4Settlement(AuditReplayCommand command) {
@@ -1771,6 +1903,12 @@ public class OpsAuditCenterService {
         detail.put("sos", isTrue(ticket.getSos()));
         detail.put("reason", A2RuntimePolicy.reasonForAudit(reason));
         detail.put("idempotencyKey", idempotencyKey.trim());
+        String createRequestId = AuditReplayBusinessPermissionGuard.skuCreateRequestId(command);
+        if (createRequestId != null) {
+            detail.put("createRequestId", createRequestId);
+            String skuId = resultSkuId(ticket, command);
+            if (skuId != null) detail.put(RESULT_SKU_ID, skuId);
+        }
         detail.put("domain", TreasuryThresholdApproval.supports(command) || E2TaskPricingApproval.supports(command)
                 || LearningCourseActivationApproval.supports(command) || OpsI18nLearningService.isCourseRewardAdjustment(command)
                 || TeamFundApproval.supports(command) || HardwareQuotaApproval.supports(command)
@@ -1867,6 +2005,7 @@ public class OpsAuditCenterService {
             stored.remove(APPROVAL_FAILURE_REASON);
             stored.remove(F4_BUSINESS_RESULT);
             stored.remove(LAST_F4_APPROVAL_ATTEMPT_RESULT);
+            stored.remove(List.of(RESULT_SKU_ID, RESULT_SKU_STATUS));
             if ("E".equals(stored.path("domain").asText())
                     && Set.of("e1_bundle_discount", E4_ORDER_REFUND).contains(stored.path("op").asText())) {
                 return objectMapper.treeToValue(stored, AuditReplayCommand.class);
@@ -1888,6 +2027,10 @@ public class OpsAuditCenterService {
             var courseRewardReview = stored.remove(CourseRewardReview.PARAM);
             AuditReplayCommand command = objectMapper.treeToValue(stored, AuditReplayCommand.class);
             // Old SKU tickets kept unknown request parameters without presenting them for approval.
+            if (AuditReplayBusinessPermissionGuard.isSkuCreate(command) && command.params() != null
+                    && (skuReview == null || !skuReview.path("createRequestId").isTextual())) {
+                command.params().remove("createRequestId");
+            }
             if (isSkuReviewCommand(command) && command.params() != null
                     && (skuReview == null || !com.fasterxml.jackson.databind.node.BooleanNode.TRUE.equals(
                             skuReview.path("storeDisplayControlsReviewed")))) {
@@ -2170,7 +2313,8 @@ public class OpsAuditCenterService {
                 objectDisplayName(row, command, displayNames), roleGrantsDiff(row, command), disclosureReview(row, command),
                 commissionReverseEvidence(command), v8PromotionSnapshot(row, command), withdrawalConfigChanges(row, command),
                 approvalFailureReason(row), f4BusinessResult(row, command), lastF4ApprovalAttemptResult(row, command),
-                H3GrowthApproval.missionTarget(command));
+                H3GrowthApproval.missionTarget(command), AuditReplayBusinessPermissionGuard.skuCreateRequestId(command),
+                resultSkuId(row, command));
     }
 
     private F4SettlementResult f4BusinessResult(AuditOperationTicketEntity ticket, AuditReplayCommand command) {

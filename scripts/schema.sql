@@ -3288,6 +3288,20 @@ CREATE TABLE IF NOT EXISTS nx_team_ambassador_application (
   KEY idx_ambassador_user_scope (user_id, source_environment, run_id, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_e1_sku_create_request (
+  request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  maker_id BIGINT NOT NULL,
+  business_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  operation_id VARCHAR(64) NULL,
+  result_sku_id VARCHAR(64) NULL,
+  result_json JSON NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_e1_sku_number_sequence (
+  prefix VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  last_number SMALLINT UNSIGNED NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   monthly_target_usdt DECIMAL(12,2) NULL,
   monthly_target_band_pct DECIMAL(4,1) NULL,

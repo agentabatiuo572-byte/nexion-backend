@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.infrastructure.UserDeviceEntity;
 import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.canonical.mapper.StandardTrialSkuMapper;
 import java.math.BigDecimal;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -14,7 +15,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper, PurchaseGateQuotaMapper {
+public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper, PurchaseGateQuotaMapper, StandardTrialSkuMapper {
     @Select("""
             SELECT config_key AS configKey, config_value AS configValue
               FROM nx_compute_e3_config

@@ -58,7 +58,8 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
                      CAST(detail_json AS CHAR CHARACTER SET utf8mb4) AS receiptDetail
                 FROM nx_audit_log
                WHERE is_deleted=0 AND actor_type='ADMIN' AND actor_id=#{actorId}
-                 AND action=#{action} AND resource_type='A2_OPERATION' AND result='SUCCESS'
+                 AND (action=#{action} OR (#{action}='A2_OPERATION_PROPOSED' AND action='A2_OPERATION_PROPOSAL_REUSED'))
+                 AND resource_type='A2_OPERATION' AND result='SUCCESS'
               UNION ALL
               SELECT JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) AS operationId,
                      NULLIF(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorUsername')), 'null') AS actorUsername,
@@ -67,7 +68,9 @@ public interface AuditLogMapper extends BaseMapper<AuditLogEntity> {
                WHERE content_sha256 IS NOT NULL
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorId'))=CAST(#{actorId} AS CHAR)
-                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))=#{action}
+                 AND (JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))=#{action}
+                   OR (#{action}='A2_OPERATION_PROPOSED'
+                     AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='A2_OPERATION_PROPOSAL_REUSED'))
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='A2_OPERATION'
                  AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.result'))='SUCCESS'
             )

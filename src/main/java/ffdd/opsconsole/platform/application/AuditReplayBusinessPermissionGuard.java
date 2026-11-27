@@ -69,6 +69,7 @@ import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import lombok.RequiredArgsConstructor;
@@ -311,6 +312,24 @@ public class AuditReplayBusinessPermissionGuard {
     static boolean isE1CatalogChangeOperation(AuditReplayCommand command) {
         return command != null && "E".equals(command.domain()) && command.op() != null
                 && E1_CATALOG_CHANGE_OPERATIONS.contains(command.op());
+    }
+
+    static boolean isSkuCreate(AuditReplayCommand command) {
+        return command != null && "E".equals(command.domain()) && "e1_sku_create".equals(command.op());
+    }
+
+    static String skuCreateRequestId(AuditReplayCommand command) {
+        return isSkuCreate(command) && command.params() != null
+                && command.params().get("createRequestId") instanceof String id ? id : null;
+    }
+
+    static AuditLockTarget skuCreateTarget(String requestId) {
+        return new AuditLockTarget("E", "device_sku_create", requestId);
+    }
+
+    private static boolean isSkuCreateTarget(AuditLockTarget target) {
+        return target != null && "E".equalsIgnoreCase(Objects.toString(target.domain(), "").trim())
+                && "device_sku_create".equalsIgnoreCase(Objects.toString(target.type(), "").trim());
     }
 
     static boolean isUserSessionRevocation(AuditReplayCommand command) {
@@ -674,6 +693,11 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<AuditReplayCommand> bindProposalCommand(AuditOperationProposalRequest request) {
         AuditReplayCommand command = request.command();
+        if (!isSkuCreate(command) && (isSkuCreateTarget(request.target())
+                || (request.targets() != null && request.targets().stream()
+                        .anyMatch(AuditReplayBusinessPermissionGuard::isSkuCreateTarget)))) {
+            return ApiResult.fail(422, "A2_TARGET_MISMATCH");
+        }
         if (HardwareQuotaApproval.supports(command)) {
             if (!canProposeHardwareQuota(command)) {
                 return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + HardwareQuotaApproval.AUTHORITY);
@@ -784,8 +808,9 @@ public class AuditReplayBusinessPermissionGuard {
 
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
         if (command != null && "E".equalsIgnoreCase(text(command.domain()))
-                && E1_CATALOG_CHANGE_OPERATIONS.contains(text(command.op()).toLowerCase(Locale.ROOT))
-                && !isE1CatalogChangeOperation(command)) {
+                && (E1_CATALOG_CHANGE_OPERATIONS.contains(text(command.op()).toLowerCase(Locale.ROOT))
+                    || "e1_sku_create".equalsIgnoreCase(text(command.op())))
+                && !isE1CatalogChangeOperation(command) && !isSkuCreate(command)) {
             return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
         }
         if (isF5StatusUiAlias(command)) {
@@ -1503,8 +1528,8 @@ public class AuditReplayBusinessPermissionGuard {
             return ApiResult.ok(new DelegatedProposalDescriptor(review.action(), review.objectId(), review.before(),
                     review.after(), "E1", review.operationType(), review.amplifies(), review.target()));
         }
-        if(command!=null && "E".equals(command.domain()) && Set.of("e1_sku_create","e1_sku_update").contains(command.op()))
-            return ApiResult.ok(delegatedDescriptor(command)); // E1 derives its lock target from the typed SKU, including generated create ids.
+        if (command != null && "E".equals(command.domain()) && Set.of("e1_sku_create", "e1_sku_update").contains(command.op()))
+            return ApiResult.ok(delegatedDescriptor(command));
 
         if (isE1CatalogChangeOperation(command)
                 && superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
@@ -2191,8 +2216,11 @@ public class AuditReplayBusinessPermissionGuard {
                 // nx_product.name is VARCHAR(128); the 7-character prefix still fits action VARCHAR(160).
                 String name = org.springframework.util.StringUtils.hasText(review.after().name())
                         ? review.after().name().trim() : review.skuId();
-                yield new DelegatedProposalDescriptor(verb + " · " + name,review.skuId(),"以服务器型号快照为准","批准后新任务生效","E1",
-                        review.amplifies()?"fund":"param",review.amplifies(),new AuditLockTarget("E","device_sku",review.skuId()));
+                var target = review.createRequestId() == null ? new AuditLockTarget("E", "device_sku", review.skuId())
+                        : skuCreateTarget(review.createRequestId());
+                String object = review.createRequestId() == null ? review.skuId() : name;
+                yield new DelegatedProposalDescriptor(verb + " · " + name, object, "以服务器型号快照为准", "批准后新任务生效", "E1",
+                        review.amplifies() ? "fund" : "param", review.amplifies(), target);
             }
             case "e1_sku_status", "e1_sku_delete" -> e1SkuLifecycleDescriptor(operation, params);
             case "e1_phone_task_policy" -> {

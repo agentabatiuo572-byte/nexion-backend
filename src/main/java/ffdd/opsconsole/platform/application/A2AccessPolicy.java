@@ -262,6 +262,13 @@ public class A2AccessPolicy {
     }
 
     /** The caller has already matched the key and the ticket maker. */
+    boolean canRecoverOwnSkuCreate(OriginalKeyReader reader) {
+        var grants = reader.grants();
+        return grants.containsAll(Set.of("device_e1_read", "device_e1_write"))
+                && (grants.contains("platform_a2_proposal_create") || grants.contains("platform_a2_write"));
+    }
+
+    /** The caller has already matched the key and the ticket maker. */
     boolean canRecoverOwnE1Proposal(AuditOperationTicketEntity ticket, AuditReplayCommand command,
             OriginalKeyReader reader) {
         Set<String> grants = reader.grants();

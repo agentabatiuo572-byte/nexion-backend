@@ -1058,7 +1058,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                  ELSE purchase_gate_json <=> VALUES(purchase_gate_json) END
             """;
 
-    @Insert("""
+    String INSERT_SKU_METADATA = """
             INSERT INTO nx_admin_device_sku (
               sku_id,name,tier,tagline,badge,gpu,vram,hash_rate,power_text,datacenter,uptime,warranty,phone_daily_earn,phone_daily_earn_nex,price,
               daily_earn,daily_earn_nex,share_yield_min,share_yield_max,monthly_target_usdt,monthly_target_band_pct,base_rate,sold,stock_text,
@@ -1075,6 +1075,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               #{sku.tradeinDiscount},'',#{sku.unlockPhaseId},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
               #{sku.imagePreviewUrl},#{sku.tag},#{sku.status},COALESCE(#{sku.createdAt},#{sku.updatedAt}),#{sku.updatedAt},0
             )
+            """;
+
+    @Insert(INSERT_SKU_METADATA)
+    int insertSkuMetadata(@Param("sku") SkuWrite sku);
+
+    @Insert(INSERT_SKU_METADATA + """
             ON DUPLICATE KEY UPDATE
               name=VALUES(name),tier=VALUES(tier),tagline=VALUES(tagline),badge=VALUES(badge),gpu=VALUES(gpu),vram=VALUES(vram),
               hash_rate=VALUES(hash_rate),power_text=VALUES(power_text),datacenter=VALUES(datacenter),uptime=VALUES(uptime),warranty=VALUES(warranty),phone_daily_earn=VALUES(phone_daily_earn),phone_daily_earn_nex=VALUES(phone_daily_earn_nex),price=VALUES(price),

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.shared.canonical.mapper.StandardTrialSkuMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -12,7 +13,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface GrowthQuestEventMapper extends BaseMapper<Object> {
+public interface GrowthQuestEventMapper extends BaseMapper<Object>, StandardTrialSkuMapper {
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_growth_trial_policy (
               id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -364,7 +365,8 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    claim_no AS cardTok,
                    CASE WHEN quota_snapshot LIKE '%productCode=%' THEN
                      REPLACE(SUBSTRING_INDEX(SUBSTRING_INDEX(quota_snapshot,'productCode=',-1),',',1),
-                             'device-trial-standard','stellarbox-s1')
+                             'device-trial-standard', (""" + STANDARD_S1_SQL + """
+                       ))
                    END AS trialProductNo,
                    device_name AS trialProductName,
                    (SELECT i.product_no FROM nx_user_device d

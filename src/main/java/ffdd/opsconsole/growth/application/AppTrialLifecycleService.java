@@ -780,7 +780,7 @@ public class AppTrialLifecycleService {
         return configured;
     }
 
-    public static void requireExternalPaymentProduct(String requestedProductNo, String originalProductNo) {
+    public void requireExternalPaymentProduct(String requestedProductNo, String originalProductNo) {
         if (requestedProductNo == null || !requestedProductNo.matches("[A-Za-z0-9._-]{2,64}")) {
             throw new BizException(422, "TRIAL_PRODUCT_REQUIRED");
         }
@@ -1436,9 +1436,11 @@ public class AppTrialLifecycleService {
         return "";
     }
 
-    private static String canonicalTrialProductId(String value) {
+    private String canonicalTrialProductId(String value) {
         String normalized = value == null ? "" : value.trim();
-        return LEGACY_TRIAL_PRODUCT_ID.equals(normalized) ? CANONICAL_TRIAL_PRODUCT_ID : normalized;
+        if (!LEGACY_TRIAL_PRODUCT_ID.equals(normalized)) return normalized;
+        String productNo = mapper.standardS1ProductNo();
+        return productNo == null ? CANONICAL_TRIAL_PRODUCT_ID : productNo;
     }
 
     private boolean availablePhysicalTrialProduct(AppTrialLifecycleMapper.ConversionProduct product) {
