@@ -152,7 +152,9 @@ public class LeadershipPoolService {
 
     private F4SettlementResult injectAndSettleTrusted(
             int weekCode, Long actorId, String actorType, String actorUsername, String reason) {
-        LeadershipPoolConfigGuard.SettlementConfig settlementConfig = requireSettlementConfig("settlement");
+        // System settlement validates configuration first. A2 approval can close an already completed week.
+        LeadershipPoolConfigGuard.SettlementConfig settlementConfig =
+                "ADMIN".equals(actorType) ? null : requireSettlementConfig("settlement");
         String weekKey = String.valueOf(weekCode);
         teamCommissionMapper.ensureLeadershipSettlementMutex(weekCode);
         if (teamCommissionMapper.lockLeadershipSettlementMutex(weekCode) == null) {
@@ -162,6 +164,9 @@ public class LeadershipPoolService {
         if (isLeadershipWeekSettled(weekKey)) {
             log.info("F4 leadership pool week={} already settled, skip leadership settlement", weekKey);
             return F4SettlementResult.notExecuted(weekKey, POOL_ALREADY_SETTLED);
+        }
+        if (settlementConfig == null) {
+            settlementConfig = requireSettlementConfig("settlement");
         }
         BigDecimal weeklyVolume = teamCommissionMapper.weeklyPlatformVolume(weekCode);
         if (weeklyVolume == null || weeklyVolume.signum() <= 0) {
