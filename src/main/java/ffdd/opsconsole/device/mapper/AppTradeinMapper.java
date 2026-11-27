@@ -316,7 +316,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    p.compute_points AS computePoints,p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct,
                    p.display_sold_base AS displaySoldBase,p.live_activity_visible AS liveActivityVisible,
                    ROW_NUMBER() OVER (ORDER BY p.store_featured DESC,
-                       COALESCE(p.storefront_sort_order,p.sort_order) ASC,p.id ASC) AS storeSortRank
+                       COALESCE(p.storefront_sort_order,p.sort_order) ASC,p.id ASC) AS storeSortRank,
+                   p.series_code AS seriesCode,p.created_at AS createdAt,p.id AS productId
               FROM nx_product p
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0 AND p.store_visible=1
@@ -715,9 +716,29 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                                 String imageAssetId, String imageObjectKey,
                                 String inventoryMode, String specDocumentTitle, String specDocumentUrl, Long computePoints,
                                 BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct,
-                                Integer displaySoldBase, Boolean liveActivityVisible, Long storeSortRank) {
+                                Integer displaySoldBase, Boolean liveActivityVisible, Long storeSortRank,
+                                String seriesCode, java.time.LocalDateTime createdAt, Long productId) {
         @org.apache.ibatis.annotations.AutomapConstructor
         public CatalogTargetProduct { }
+
+        public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                    String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                    BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                    String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                    String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn,
+                                    BigDecimal phoneDailyEarnNex, String featuresJson, BigDecimal aiImageGenPerMin,
+                                    BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                    BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
+                                    String imageAssetId, String imageObjectKey, String inventoryMode, String specDocumentTitle,
+                                    String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct,
+                                    Integer displaySoldBase, Boolean liveActivityVisible, Long storeSortRank) {
+            this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb, hashrate,
+                    dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt, power, datacenter, uptime,
+                    warranty, phoneDailyEarn, phoneDailyEarnNex, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec,
+                    aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson, imageAssetId, imageObjectKey,
+                    inventoryMode, specDocumentTitle, specDocumentUrl, computePoints, monthlyTargetUsdt,
+                    monthlyTargetBandPct, displaySoldBase, liveActivityVisible, storeSortRank, null, null, null);
+        }
 
         public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                     String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,

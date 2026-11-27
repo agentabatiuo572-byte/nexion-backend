@@ -64,9 +64,10 @@ class CommerceCatalogRefreshContractTest {
         String lockSql = String.join("\n", lock.getAnnotation(Select.class).value());
 
         assertThat(listSql).contains("c.datacenter", "c.uptime", "c.phone_daily_earn AS phoneDailyEarn")
+                .contains("JOIN nx_product p ON p.id=c.product_id", "p.series_code AS seriesCode,p.created_at AS createdAt")
                 .doesNotContain("JOIN nx_admin_device_sku");
         assertThat(lockSql).contains("c.datacenter", "c.uptime", "c.phone_daily_earn AS phoneDailyEarn")
-                .doesNotContain("JOIN nx_admin_device_sku");
+                .doesNotContain("JOIN nx_admin_device_sku", "p.series_code AS seriesCode");
         assertThat(listSql).contains("c.purchase_gate_json AS purchaseGateJson")
                 .doesNotContain("s.purchase_gate_json AS purchaseGateJson");
         assertThat(lockSql).contains("c.purchase_gate_json AS purchaseGateJson")

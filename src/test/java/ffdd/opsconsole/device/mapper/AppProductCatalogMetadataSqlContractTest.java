@@ -16,6 +16,7 @@ class AppProductCatalogMetadataSqlContractTest {
         assertThat(sql)
                 .contains("FROM nx_product p")
                 .contains("LEFT JOIN nx_admin_device_sku s")
+                .contains("p.series_code AS seriesCode,p.created_at AS createdAt,p.id AS productId")
                 .contains("s.features_json AS featuresJson")
                 .contains("NULL AS purchaseGateJson")
                 .doesNotContain("s.purchase_gate_json AS purchaseGateJson");

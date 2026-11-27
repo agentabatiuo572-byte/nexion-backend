@@ -12,8 +12,9 @@ import com.sun.net.httpserver.HttpServer;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
-import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
-import ffdd.opsconsole.device.domain.DeviceSkuView;
+import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.device.mapper.AppTradeinMapper.ShareYieldRange;
+import ffdd.opsconsole.shared.canonical.StorefrontSeriesRepresentatives;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.InetAddress;
@@ -23,7 +24,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -88,19 +88,17 @@ class RagNovaAiGatewayTest {
     })
     void answersCloudShareAnnualRangeFromCurrentCatalog(
             String language, String question, String page) {
-        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
-        DeviceSkuView sku = mock(DeviceSkuView.class);
-        when(catalog.findSku("cloud-share")).thenReturn(Optional.of(sku));
-        when(sku.productType()).thenReturn("SHARE");
-        when(sku.status()).thenReturn("on");
-        RagNovaAiGateway gateway = new RagNovaAiGateway(properties(), objectMapper, null, catalog);
-        when(sku.shareYieldMin()).thenReturn(new BigDecimal("8"));
-        when(sku.shareYieldMax()).thenReturn(new BigDecimal("12"));
+        AppTradeinMapper catalog = mock(AppTradeinMapper.class);
+        StorefrontSeriesRepresentatives representatives = mock(StorefrontSeriesRepresentatives.class);
+        when(representatives.currentProductNos()).thenReturn(Map.of("CLOUD_SHARE", "share-cloud-share-02"));
+        RagNovaAiGateway gateway = new RagNovaAiGateway(properties(), objectMapper, null, catalog, representatives);
+        when(catalog.findShareYieldRange("share-cloud-share-02"))
+                .thenReturn(new ShareYieldRange(new BigDecimal("8"), new BigDecimal("12")));
         String first = gateway.chat(new NovaAiGateway.ChatRequest(MODEL, language, RAG_SESSION_ID,
                 List.of(new NovaAiGateway.Message("user", question)), 1_024));
         assertThat(first).contains("8%–12%", page).doesNotContain("invitation", "liên kết mời", "邀请链接");
-        when(sku.shareYieldMin()).thenReturn(new BigDecimal("9.5"));
-        when(sku.shareYieldMax()).thenReturn(new BigDecimal("13.5"));
+        when(catalog.findShareYieldRange("share-cloud-share-02"))
+                .thenReturn(new ShareYieldRange(new BigDecimal("9.5"), new BigDecimal("13.5")));
         String changed = gateway.chat(new NovaAiGateway.ChatRequest(MODEL, language, RAG_SESSION_ID,
                 List.of(new NovaAiGateway.Message("user", question)), 1_024));
         assertThat(changed).contains("9.5%–13.5%", page).doesNotContain("8%–12%");
@@ -108,24 +106,19 @@ class RagNovaAiGatewayTest {
 
     @Test
     void cloudShareAnnualQuestionDoesNotQuoteMissingOrUnpublishedCatalogRange() {
-        DeviceCatalogRepository catalog = mock(DeviceCatalogRepository.class);
-        DeviceSkuView sku = mock(DeviceSkuView.class);
-        when(catalog.findSku("cloud-share")).thenReturn(Optional.of(sku));
-        when(sku.productType()).thenReturn("SHARE");
-        when(sku.status()).thenReturn("off");
-        when(sku.shareYieldMin()).thenReturn(new BigDecimal("8"));
-        when(sku.shareYieldMax()).thenReturn(new BigDecimal("12"));
-        RagNovaAiGateway gateway = new RagNovaAiGateway(properties(), objectMapper, null, catalog);
+        AppTradeinMapper catalog = mock(AppTradeinMapper.class);
+        StorefrontSeriesRepresentatives representatives = mock(StorefrontSeriesRepresentatives.class);
+        when(representatives.currentProductNos()).thenReturn(Map.of("CLOUD_SHARE", "share-cloud-share-02"));
+        RagNovaAiGateway gateway = new RagNovaAiGateway(properties(), objectMapper, null, catalog, representatives);
+        when(catalog.findShareYieldRange("share-cloud-share-02")).thenReturn(
+                new ShareYieldRange(new BigDecimal("8"), new BigDecimal("7")), null)
+                .thenThrow(new IllegalStateException("catalog unavailable"));
         assertCloudShareRangeUnavailable(gateway);
-        when(sku.status()).thenReturn("on");
-        when(sku.publishBlocked()).thenReturn(true);
         assertCloudShareRangeUnavailable(gateway);
-        when(sku.publishBlocked()).thenReturn(false);
-        when(sku.shareYieldMax()).thenReturn(new BigDecimal("7"));
         assertCloudShareRangeUnavailable(gateway);
-        when(catalog.findSku("cloud-share")).thenReturn(Optional.empty());
-        assertCloudShareRangeUnavailable(gateway);
-        when(catalog.findSku("cloud-share")).thenThrow(new IllegalStateException("catalog unavailable"));
+        when(representatives.currentProductNos()).thenReturn(Map.of());
+        when(catalog.findShareYieldRange("cloud-share"))
+                .thenReturn(new ShareYieldRange(new BigDecimal("8"), new BigDecimal("12")));
         assertCloudShareRangeUnavailable(gateway);
     }
 

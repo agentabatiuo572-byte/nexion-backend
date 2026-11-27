@@ -1,5 +1,9 @@
 package ffdd.opsconsole.shared.canonical;
 
+import static ffdd.opsconsole.shared.canonical.StorefrontSeriesRepresentatives.canonicalProductType;
+import static ffdd.opsconsole.shared.canonical.StorefrontSeriesRepresentatives.hasValidRenderData;
+import static ffdd.opsconsole.shared.canonical.StorefrontSeriesRepresentatives.purchaseStatus;
+
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
@@ -25,7 +29,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
@@ -39,7 +42,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 @Slf4j
 public class AppProductCatalogService {
-    private static final Set<String> TIERS = Set.of("Entry", "Pro", "Flagship", "Share");
     private static final Duration PRODUCT_IMAGE_EXPIRY = Duration.ofMinutes(15);
 
     private final AppTradeinMapper tradeinMapper;
@@ -80,11 +82,8 @@ public class AppProductCatalogService {
             List<AppTradeinMapper.CatalogTargetProduct> targets = tradeinMapper.listPurchasableCatalogTargets();
             if (targets == null) return ApiResult.fail(500, "PRODUCT_CATALOG_INVALID");
             reportPublishBlockedProducts();
-            Map<String, String> releaseCandidates = new LinkedHashMap<>();
-            for (AppTradeinMapper.CatalogTargetProduct target : targets) {
-                releaseCandidates.put(target.productNo(), target.unlockPhase());
-            }
-            Map<String, StorefrontProductReleasePolicy.Decision> releases = productReleasePolicy.evaluateBatch(releaseCandidates);
+            Map<String, StorefrontProductReleasePolicy.Decision> releases =
+                    StorefrontSeriesRepresentatives.releaseDecisions(targets, productReleasePolicy);
             Map<String, String> taglineTranslations = taglineTranslations(targets);
             var taskLevels=taskPolicies.taskLevels(targets.stream().map(AppTradeinMapper.CatalogTargetProduct::productNo).toList());
             List<Map<String, Object>> products = new ArrayList<>();
@@ -103,6 +102,7 @@ public class AppProductCatalogService {
                     revision = target.updatedAt();
                 }
             }
+            markSeriesRepresentatives(products, targets, releases);
             Map<String, Object> response = new LinkedHashMap<>();
             response.put("source", "nx_product");
             response.put("serverCanonical", true);
@@ -164,16 +164,22 @@ public class AppProductCatalogService {
                     seed.featuresJson(), seed.aiImageGenPerMin(), seed.aiLlmTokensPerSec(), seed.aiVideoMinPerHour(),
                     seed.aiFineTuneMins(), seed.aiUnlocks(), seed.purchaseGateJson(), seed.inventoryMode(), runId,seed.monthlyTargetUsdt(),seed.monthlyTargetBandPct()));
             commerceAcceptanceSandboxMapper.pruneCatalog(runId);
-            List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> targets = commerceAcceptanceSandboxMapper.listSandboxCatalog(runId);
-            if (targets == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
-            var taskLevels=taskPolicies.taskLevels(targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::productNo).toList());
-            Map<String, String> taglineTranslations = taglineTranslationsByProductNo(
-                    targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::productNo).toList());
-            List<Map<String, Object>> products = targets.stream().map(target->{
-                var item=sandboxProduct(target, locale, taglineTranslations.get(target.productNo()));
-                item.put("taskLevels",taskLevels.get(target.productNo()));return item;
-            }).toList();
-            LocalDateTime revision = targets.stream().map(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct::updatedAt)
+            List<CommerceAcceptanceSandboxMapper.SandboxCatalogProduct> sandboxTargets = commerceAcceptanceSandboxMapper.listSandboxCatalog(runId);
+            if (sandboxTargets == null) return ApiResult.fail(500, "COMMERCE_SANDBOX_CATALOG_INVALID");
+            List<AppTradeinMapper.CatalogTargetProduct> targets = sandboxTargets.stream().map(this::sandboxTarget).toList();
+            var taskLevels = taskPolicies.taskLevels(targets.stream().map(AppTradeinMapper.CatalogTargetProduct::productNo).toList());
+            Map<String, String> taglineTranslations = taglineTranslations(targets);
+            Map<String, StorefrontProductReleasePolicy.Decision> releases = new LinkedHashMap<>();
+            List<Map<String, Object>> products = new ArrayList<>();
+            for (AppTradeinMapper.CatalogTargetProduct target : targets) {
+                var release = productReleasePolicy.evaluate(target.productNo(), target.unlockPhase());
+                releases.put(target.productNo(), release);
+                var item = product(target, target.sold(), release, taglineTranslations.get(target.productNo()), locale);
+                item.put("taskLevels", taskLevels.get(target.productNo()));
+                products.add(item);
+            }
+            markSeriesRepresentatives(products, targets, releases);
+            LocalDateTime revision = targets.stream().map(AppTradeinMapper.CatalogTargetProduct::updatedAt)
                     .filter(java.util.Objects::nonNull).max(LocalDateTime::compareTo).orElse(null);
             return ApiResult.ok(Map.of("source", "mock", "catalogSource", "nx_commerce_sandbox_catalog",
                     "revision", revision == null ? "" : revision.toString(), "products", products,
@@ -185,15 +191,26 @@ public class AppProductCatalogService {
         }
     }
 
-    private Map<String, Object> sandboxProduct(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct target, String locale, String taglineTranslationsJson) {
-        return product(new AppTradeinMapper.CatalogTargetProduct(target.productNo(), target.name(), target.tier(),
+    private AppTradeinMapper.CatalogTargetProduct sandboxTarget(CommerceAcceptanceSandboxMapper.SandboxCatalogProduct target) {
+        return new AppTradeinMapper.CatalogTargetProduct(target.productNo(), target.name(), target.tier(),
                 target.priceUsdt(), target.stock(), target.productType(), 0, target.gpuModel(), target.vramTotalGb(),
                 target.hashrate(), target.dailyUsdt(), target.dailyNex(), target.tagline(), target.badge(), target.sold(),
                 target.unlockPhase(), target.updatedAt(), target.power(), target.datacenter(), target.uptime(), target.warranty(),
                 target.phoneDailyEarn(), target.phoneDailyEarnNex(), target.featuresJson(),
                 target.aiImageGenPerMin(), target.aiLlmTokensPerSec(), target.aiVideoMinPerHour(), target.aiFineTuneMins(), target.aiUnlocks(),
-                target.purchaseGateJson(), null, null, target.inventoryMode(), null, null, target.computePoints(),target.monthlyTargetUsdt(),target.monthlyTargetBandPct()),
-                target.sold(), productReleasePolicy.evaluate(target.productNo(), target.unlockPhase()), taglineTranslationsJson, locale);
+                target.purchaseGateJson(), null, null, target.inventoryMode(), null, null, target.computePoints(),
+                target.monthlyTargetUsdt(), target.monthlyTargetBandPct(), 0, true, null,
+                target.seriesCode(), target.createdAt(), target.productId());
+    }
+
+    private void markSeriesRepresentatives(List<Map<String, Object>> products,
+                                           List<AppTradeinMapper.CatalogTargetProduct> targets,
+                                           Map<String, StorefrontProductReleasePolicy.Decision> releases) {
+        var representatives = StorefrontSeriesRepresentatives.select(targets, releases);
+        for (Map<String, Object> item : products) {
+            var representative = representatives.get(item.get("seriesCode"));
+            item.put("seriesRepresentative", representative != null && representative.productNo().equals(item.get("id")));
+        }
     }
 
     private Map<String, Object> product(
@@ -203,28 +220,12 @@ public class AppProductCatalogService {
             String taglineTranslationsJson,
             String locale) {
         String productType = canonicalProductType(target == null ? null : target.deviceType(), target == null ? null : target.tier());
-        if (target == null
-                || !StringUtils.hasText(target.productNo())
-                || !StringUtils.hasText(target.name())
-                || !TIERS.contains(target.tier())
-                || target.priceUsdt() == null
-                || target.priceUsdt().signum() <= 0
-                || ProductInventoryMode.parse(target.inventoryMode()) == null
-                || (ProductInventoryMode.isUnlimited(target.inventoryMode()) && !"SHARE".equals(productType))
-                || (!ProductInventoryMode.isUnlimited(target.inventoryMode())
-                    && (target.stock() == null || target.stock() < 0))
-                || target.dailyUsdt() == null
-                || target.dailyUsdt().signum() < 0
-                || target.dailyNex() == null
-                || target.dailyNex().signum() < 0
-                || target.computePoints() == null
-                || target.computePoints() < 0
-                || sold == null
-                || sold.longValue() < 0) {
+        if (!hasValidRenderData(target, sold, productType)) {
             throw new IllegalArgumentException("invalid purchasable product catalog row");
         }
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("id", target.productNo());
+        item.put("seriesCode", target.seriesCode());
         item.put("name", target.name());
         item.put("tier", target.tier());
         item.put("tagline", text(ProductTaglines.resolve(target.tagline(), taglineTranslationsJson, locale)));
@@ -238,8 +239,7 @@ public class AppProductCatalogService {
                 && shareYield.minPct() != null && shareYield.minPct().signum() > 0
                 && shareYield.maxPct() != null
                 && shareYield.maxPct().compareTo(shareYield.minPct()) >= 0;
-        boolean specsComplete = share || DeviceSkuSpecifications.hasPurchaseSpecifications(
-                target.gpuModel(), target.vramTotalGb(), target.power());
+        var purchaseStatus = purchaseStatus(target, release);
         item.put("gpu", display(target.gpuModel()));
         item.put("vram", target.vramTotalGb() == null || target.vramTotalGb() <= 0
                 ? ("SHARE".equals(productType) ? "not_applicable" : "unavailable") : target.vramTotalGb() + "GB");
@@ -277,10 +277,10 @@ public class AppProductCatalogService {
         item.put("productType", productType);
         item.put("inventoryMode", target.inventoryMode());
         item.put("stock", ProductInventoryMode.isUnlimited(target.inventoryMode()) ? null : target.stock());
-        item.put("features", features(target.featuresJson()));
+        item.put("features", StorefrontSeriesRepresentatives.features(objectMapper, target.featuresJson()));
         item.put("ai", ai(target));
         item.put("status", "active");
-        item.put("available", release.available() && specsComplete);
+        item.put("available", purchaseStatus.available());
         // Preserve the release policy's server decision verbatim. Specification
         // certification is an independent fail-closed purchase gate and must
         // never hide an E1 phase decision from the App/PC projections.
@@ -292,11 +292,8 @@ public class AppProductCatalogService {
         // Historical client-only gates are deliberately not projected until every quote/order
         // path enforces the same eligibility and quota rules on the server.
         item.put("purchaseGate", null);
-        boolean outOfStock = !ProductInventoryMode.isUnlimited(target.inventoryMode()) && target.stock() == 0;
-        item.put("purchaseBlocked", !specsComplete || outOfStock);
-        item.put("purchaseBlockedReason", !specsComplete
-                ? "PRODUCT_SPECS_UNAVAILABLE"
-                : outOfStock ? "PRODUCT_OUT_OF_STOCK" : null);
+        item.put("purchaseBlocked", purchaseStatus.blockedReason() != null);
+        item.put("purchaseBlockedReason", purchaseStatus.blockedReason());
         return item;
     }
 
@@ -367,29 +364,6 @@ public class AppProductCatalogService {
         } catch (RuntimeException ex) {
             log.warn("Storefront SKU media presign failed for product={}", target.productNo());
             return null;
-        }
-    }
-
-    private String canonicalProductType(String raw, String tier) {
-        if (StringUtils.hasText(raw)) {
-            String normalized = raw.trim().toUpperCase(java.util.Locale.ROOT);
-            if ("DEVICE".equals(normalized) || "SHARE".equals(normalized)) return normalized;
-        }
-        // Compatibility for old isolated-catalog fixtures only. Canonical nx_product rows
-        // always project product_type explicitly through AppTradeinMapper.
-        return "Share".equals(tier) ? "SHARE" : "DEVICE";
-    }
-
-    private List<String> features(String json) {
-        if (!StringUtils.hasText(json)) return List.of();
-        try {
-            List<String> values = objectMapper.readValue(json, new TypeReference<>() { });
-            if (values == null || values.stream().anyMatch(value -> value == null)) {
-                throw new IllegalArgumentException("invalid product feature metadata");
-            }
-            return List.copyOf(values);
-        } catch (Exception ex) {
-            throw new IllegalArgumentException("invalid product feature metadata", ex);
         }
     }
 

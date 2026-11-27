@@ -135,7 +135,9 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
                    c.ai_image_gen_per_min AS aiImageGenPerMin,c.ai_llm_tokens_per_sec AS aiLlmTokensPerSec,
                    c.ai_video_min_per_hour AS aiVideoMinPerHour,c.ai_fine_tune_mins AS aiFineTuneMins,
                    c.ai_unlocks AS aiUnlocks,c.purchase_gate_json AS purchaseGateJson,
-                   c.device_type AS productType,c.inventory_mode AS inventoryMode,p.compute_points AS computePoints,c.monthly_target_usdt monthlyTargetUsdt,c.monthly_target_band_pct monthlyTargetBandPct
+                   c.device_type AS productType,c.inventory_mode AS inventoryMode,p.compute_points AS computePoints,
+                   c.monthly_target_usdt monthlyTargetUsdt,c.monthly_target_band_pct monthlyTargetBandPct,
+                   p.series_code AS seriesCode,p.created_at AS createdAt
               FROM nx_commerce_sandbox_catalog c
               JOIN nx_product p ON p.id=c.product_id AND p.product_no=c.product_no AND p.is_deleted=0 AND p.store_visible=1
                                 AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
@@ -465,7 +467,25 @@ public interface CommerceAcceptanceSandboxMapper extends BaseMapper<Object> {
                                  BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, String featuresJson,
                                  BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec,
                                  BigDecimal aiVideoMinPerHour, BigDecimal aiFineTuneMins,
-                                 String aiUnlocks, String purchaseGateJson, String productType, String inventoryMode, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+                                 String aiUnlocks, String purchaseGateJson, String productType, String inventoryMode,
+                                 Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct,
+                                 String seriesCode, LocalDateTime createdAt) {
+        /** The order and refund projections do not need catalogue series metadata. */
+        public SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                     Integer sold, String gpuModel, Integer vramTotalGb, BigDecimal hashrate, BigDecimal dailyUsdt,
+                                     BigDecimal dailyNex, String tagline, String badge, String unlockPhase, Long version,
+                                     LocalDateTime updatedAt, String power, String datacenter, String uptime, String warranty,
+                                     BigDecimal phoneDailyEarn, BigDecimal phoneDailyEarnNex, String featuresJson,
+                                     BigDecimal aiImageGenPerMin, BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                     BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson, String productType,
+                                     String inventoryMode, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+            this(productId, productNo, name, tier, priceUsdt, stock, sold, gpuModel, vramTotalGb, hashrate,
+                    dailyUsdt, dailyNex, tagline, badge, unlockPhase, version, updatedAt, power, datacenter, uptime,
+                    warranty, phoneDailyEarn, phoneDailyEarnNex, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec,
+                    aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson, productType, inventoryMode,
+                    computePoints, monthlyTargetUsdt, monthlyTargetBandPct, null, null);
+        }
+
     public SandboxCatalogProduct(Long productId, String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                  Integer sold, String gpuModel, Integer vramTotalGb, BigDecimal hashrate, BigDecimal dailyUsdt,
                                  BigDecimal dailyNex, String tagline, String badge, String unlockPhase, Long version,

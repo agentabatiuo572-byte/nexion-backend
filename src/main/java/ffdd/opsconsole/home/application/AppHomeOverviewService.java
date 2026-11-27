@@ -302,7 +302,7 @@ public class AppHomeOverviewService {
             int rank = 1;
             for (MarketProductRow row : products) {
                 if (row == null || "cloud-share".equals(deviceKind(row))) continue;
-                rankings.add(linked("rank", rank++, "name", text(row.name()), "kind", deviceKind(row),
+                rankings.add(linked("rank", rank++, "name", text(row.name()), "kind", deviceKind(row), "productNo", row.productNo(),
                         "imageUrl", images.get(java.util.Objects.toString(row.productNo(), "")),
                         "bestFor", null, "dailyUsdt", nonNegative(row.dailyUsdt()),
                         "dailyEstimateLowUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyLow(row.monthlyTargetUsdt(), row.monthlyTargetBandPct()),

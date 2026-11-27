@@ -365,6 +365,25 @@ class AppHomeOverviewServiceTest {
     }
 
     @Test
+    void deviceRankingsKeepDistinctProductNumbersForTheSameSeries() {
+        when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
+        when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
+        when(mapper.marketProducts()).thenReturn(List.of(
+                new AppHomeOverviewMapper.MarketProductRow("entry-s1-02", "UVELBox S1 Plus", "DEVICE", "Entry",
+                        new BigDecimal("799.00"), new BigDecimal("9.00"), 3, "FINITE", "S1", null, null),
+                new AppHomeOverviewMapper.MarketProductRow("entry-s1-01", "UVELBox S1", "DEVICE", "Entry",
+                        new BigDecimal("649.00"), new BigDecimal("7.00"), 5, "FINITE", "S1", null, null)));
+
+        var home = service.overview(42L).getData();
+        var ranking = (List<?>) ((Map<?, ?>) home.get("marketBoard")).get("deviceRankings");
+        assertEquals(List.of(List.of(1, "entry-s1-02", "stellarbox-s1", new BigDecimal("9.00")),
+                        List.of(2, "entry-s1-01", "stellarbox-s1", new BigDecimal("7.00"))),
+                ranking.stream().map(row -> (Map<?, ?>) row)
+                        .map(row -> List.of(row.get("rank"), row.get("productNo"), row.get("kind"), row.get("dailyUsdt")))
+                        .toList());
+    }
+
+    @Test
     void shareAnnualRangeIsNotComparedAsDailyUsdInHomeRecommendations() {
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));

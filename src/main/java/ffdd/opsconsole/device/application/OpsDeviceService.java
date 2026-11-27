@@ -92,6 +92,7 @@ import ffdd.opsconsole.shared.canonical.BundleDiscountPolicy;
 import ffdd.opsconsole.shared.canonical.ManagedSkuMediaIdentity;
 import ffdd.opsconsole.shared.canonical.RetiredBrandGate;
 import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
+import ffdd.opsconsole.shared.canonical.StorefrontSeriesRepresentatives;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.storage.ObjectStorageService;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
@@ -123,8 +124,10 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataAccessException;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.security.core.Authentication;
@@ -133,6 +136,7 @@ import org.springframework.util.StringUtils;
 
 @ApplicationService
 @RequiredArgsConstructor(onConstructor_ = @Autowired)
+@Slf4j
 public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditReplayable {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
@@ -310,6 +314,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     @org.springframework.beans.factory.annotation.Autowired
     private DeviceMonthlyTargetReadService monthlyTargetReads;
+    @Autowired
+    private StorefrontSeriesRepresentatives seriesRepresentatives;
 
     @org.springframework.beans.factory.annotation.Value("${nexion.simulated-tasks.enabled:false}")
     private boolean simulatedTasksEnabled;
@@ -5379,14 +5385,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         Map<String, Integer> deviceVram = new LinkedHashMap<>();
         deviceVram.put("cloud-share", 8);
         deviceVram.put("phone", 8);
-        Map.of("S1", "stellarbox-s1", "Pro", "stellarbox-pro", "Rack", "stellarrack-p1")
-                .forEach((deviceClass, skuId) -> catalogRepository.findSku(skuId).ifPresent(sku -> {
-                    String raw = sku.vram();
-                    if (raw != null && raw.trim().matches("(?i)\\d+\\s*GB(?:\\s+VRAM)?")) {
-                        int vram = parseVram(raw.trim().replaceAll("(?i)\\s*VRAM$", "").replaceAll("(?i)\\s+GB", "GB"));
-                        if (vram > 0) deviceVram.put(deviceClass, vram);
-                    }
-                }));
+        Map<String, Integer> vramBySeries = e2RepresentativeVramGb();
+        Map.of("S1", "S1", "Pro", "PRO", "Rack", "RACK_P1").forEach((deviceClass, seriesCode) -> {
+            Integer vram = vramBySeries.get(seriesCode);
+            if (vram != null) deviceVram.put(deviceClass, vram);
+        });
         List<Map<String, Object>> teaser = new ArrayList<>();
         deviceVram.forEach((deviceClass, vram) -> {
             List<String> locked = new ArrayList<>();
@@ -5403,6 +5406,16 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                     "dailyPotential", dailyPotential.setScale(4, RoundingMode.HALF_UP)));
         });
         return teaser;
+    }
+
+    private Map<String, Integer> e2RepresentativeVramGb() {
+        if (seriesRepresentatives == null) return Map.of();
+        try {
+            return seriesRepresentatives.currentVramGb();
+        } catch (DataAccessException ex) {
+            log.warn("E2 series representative samples unavailable: {}", ex.getClass().getSimpleName());
+            return Map.of();
+        }
     }
 
     static int parseVram(String raw) {
