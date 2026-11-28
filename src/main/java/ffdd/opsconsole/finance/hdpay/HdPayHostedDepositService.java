@@ -241,17 +241,27 @@ public class HdPayHostedDepositService {
             refreshed.remove("paymentUrl");
             return refreshed;
         }
-        String url = text(provider.get("paymentUrl"));
-        if ("CREATED".equals(status)
-                && "awaiting_payment".equals(text(canonical.get("status")))
-                && futureInstant(canonical.get("expiresAt"))
-                && "UNSETTLED".equals(provider.get("settlementStatus"))
-                && (provider.get("providerStatus") == null || "1".equals(text(provider.get("providerStatus"))))
-                && properties.isTrustedPaymentPage(url)) {
-            result.put("paymentUrl", url);
-            return result;
+        if ("CREATED".equals(status)) {
+            String intentStatus = text(canonical.get("status"));
+            boolean awaitingPayment = "awaiting_payment".equals(intentStatus);
+            boolean beforeExpiry = futureInstant(canonical.get("expiresAt"));
+            String providerStatus = text(provider.get("providerStatus"));
+            String url = text(provider.get("paymentUrl"));
+            if (awaitingPayment && beforeExpiry
+                    && "UNSETTLED".equals(provider.get("settlementStatus"))
+                    && (provider.get("providerStatus") == null || "1".equals(providerStatus))
+                    && properties.isTrustedPaymentPage(url)) {
+                result.put("paymentUrl", url);
+                return result;
+            }
+            if (!failOnUnusable) return result;
+            boolean providerEnded = "HDPAY_ORDER_QUERY_TERMINAL_REVIEW".equals(error)
+                    && ("4".equals(providerStatus) || "5".equals(providerStatus));
+            if (providerEnded || (awaitingPayment && !beforeExpiry) || "expired".equals(intentStatus)
+                    || "cancelled".equals(intentStatus) || "returned".equals(intentStatus)) {
+                throw new BizException(409, "HDPAY_ORDER_NOT_PAYABLE");
+            }
         }
-        if ("CREATED".equals(status) && !failOnUnusable) return result;
         if (!failOnUnusable && ("SUBMIT_UNKNOWN".equals(status)
                 || "PENDING".equals(status)
                 || "REJECTED".equals(status))) {
