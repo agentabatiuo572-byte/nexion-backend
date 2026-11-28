@@ -581,7 +581,6 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261125_b97_product_store_display_controls.sql")
   (Join-Path $root "scripts\migrations\20261127_e1_storefront_sort_order.sql")
   (Join-Path $root "scripts\migrations\20261127_b138_e1_sku_numbering.sql")
-  (Join-Path $root "scripts\migrations\20261128_b140_test_wallet_reset_proof.sql")
   (Join-Path $root "scripts\migrations\20261123_device_slot_replacement.sql")
   (Join-Path $root "scripts\migrations\20261123_purchase_device_placement.sql")
   (Join-Path $root "scripts\migrations\20261124_purchase_payment_refund_closeout.sql")
