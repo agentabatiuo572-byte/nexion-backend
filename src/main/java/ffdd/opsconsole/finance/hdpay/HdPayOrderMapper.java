@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.hdpay;
 
+import static ffdd.opsconsole.finance.hdpay.HdPayGatewayException.EXPLICIT_CREATE_REJECTION;
+
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -13,6 +15,22 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface HdPayOrderMapper extends BaseMapper<Object> {
+    String PRE_SUBMISSION_EXPIRY = "HDPAY_INTENT_EXPIRED_BEFORE_SUBMISSION";
+    String CONFIRMED_QUERY_FAILURE = "HDPAY_QUERY_PAYMENT_FAILED";
+    String TERMINAL_SUBMISSION_ERRORS = "('" + EXPLICIT_CREATE_REJECTION + "', '"
+            + PRE_SUBMISSION_EXPIRY + "', '" + CONFIRMED_QUERY_FAILURE + "')";
+    String UNCONFIRMED_REJECTION_SQL = "(submission_status = 'REJECTED'"
+            + " AND COALESCE(last_error_code, '') NOT IN " + TERMINAL_SUBMISSION_ERRORS + ")";
+
+    static boolean isSubmissionUnknown(Map<String, Object> order) {
+        Object status = order.get("submissionStatus");
+        Object error = order.get("lastErrorCode");
+        return "SUBMIT_UNKNOWN".equals(status) || ("REJECTED".equals(status)
+                && !EXPLICIT_CREATE_REJECTION.equals(error)
+                && !PRE_SUBMISSION_EXPIRY.equals(error)
+                && !CONFIRMED_QUERY_FAILURE.equals(error));
+    }
+
     // Preserve receipt -> intent lock order before any automatic financial write.
     @Select("""
             SELECT id FROM nx_vietqr_reconciliation
@@ -28,7 +46,9 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
             SELECT merchant_order_id AS merchantOrderId, version
               FROM nx_hdpay_payin_order
              WHERE settlement_status = 'UNSETTLED'
-               AND submission_status IN ('CREATED', 'SUBMIT_UNKNOWN')
+               AND (submission_status IN ('CREATED', 'SUBMIT_UNKNOWN') OR
+            """ + UNCONFIRMED_REJECTION_SQL + """
+               )
                AND updated_at <= #{dueBefore}
              ORDER BY updated_at ASC, id ASC
              LIMIT #{limit}
@@ -41,7 +61,9 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
                SET version = version + 1, updated_at = NOW()
              WHERE merchant_order_id = #{merchantOrderId} AND version = #{version}
                AND settlement_status = 'UNSETTLED'
-               AND submission_status IN ('CREATED', 'SUBMIT_UNKNOWN')
+               AND (submission_status IN ('CREATED', 'SUBMIT_UNKNOWN') OR
+            """ + UNCONFIRMED_REJECTION_SQL + """
+               )
                AND updated_at <= #{dueBefore}
             """)
     int claimOrderQuery(@Param("merchantOrderId") String merchantOrderId,
@@ -229,7 +251,8 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
                SET submission_status = 'CREATED', payment_url = #{paymentUrl},
                    last_error_code = NULL, version = version + 1, updated_at = NOW()
              WHERE merchant_order_id = #{merchantOrderId}
-               AND submission_status = 'SUBMIT_UNKNOWN'
+               AND submission_status = 'SUBMIT_UNKNOWN' AND settlement_status = 'UNSETTLED'
+               AND (provider_status IS NULL OR provider_status IN (0, 1))
             """)
     int markCreated(
             @Param("merchantOrderId") String merchantOrderId,
@@ -240,7 +263,7 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
                SET submission_status = 'SUBMIT_UNKNOWN', last_error_code = #{errorCode},
                    version = version + 1, updated_at = NOW()
              WHERE merchant_order_id = #{merchantOrderId}
-               AND submission_status = 'SUBMIT_UNKNOWN'
+               AND submission_status = 'SUBMIT_UNKNOWN' AND settlement_status = 'UNSETTLED'
             """)
     int markSubmitUnknown(
             @Param("merchantOrderId") String merchantOrderId,
@@ -261,13 +284,20 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
             @Param("errorCode") String errorCode);
 
     @Update("""
-            UPDATE nx_hdpay_payin_order
-               SET submission_status = 'CREATED', payment_url = #{paymentUrl},
-                   provider_order_id = #{providerOrderId}, provider_status = #{providerStatus},
-                   last_error_code = NULL, version = version + 1, updated_at = NOW()
-             WHERE merchant_order_id = #{merchantOrderId}
-               AND submission_status = 'SUBMIT_UNKNOWN'
-               AND (provider_order_id IS NULL OR provider_order_id = #{providerOrderId})
+            UPDATE nx_hdpay_payin_order o
+              JOIN nx_vietqr_intent i
+                ON i.intent_no = o.merchant_order_id AND i.is_deleted = 0
+               SET o.submission_status = 'CREATED', o.payment_url = #{paymentUrl},
+                   o.provider_order_id = #{providerOrderId}, o.provider_status = #{providerStatus},
+                   o.last_error_code = NULL, o.version = o.version + 1, o.updated_at = NOW()
+             WHERE o.merchant_order_id = #{merchantOrderId}
+               AND o.submission_status = 'SUBMIT_UNKNOWN'
+               AND #{providerStatus} = 1 AND o.settlement_status = 'UNSETTLED'
+               AND (o.provider_order_id IS NULL OR o.provider_order_id = #{providerOrderId})
+               AND (o.provider_status IS NULL OR o.provider_status IN (0, 1))
+               AND i.payable_vnd = o.amount_vnd AND i.payment_rail = 'HDPAY'
+               AND i.settlement_target_type = 'WALLET_TOPUP'
+               AND i.status = 'AWAITING_PAYMENT' AND i.expires_at > NOW()
             """)
     int resolveSubmitUnknown(
             @Param("merchantOrderId") String merchantOrderId,
@@ -285,13 +315,16 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
              WHERE o.merchant_order_id = #{merchantOrderId}
                AND o.submission_status = 'REJECTED'
                AND COALESCE(o.last_error_code, '') = #{expectedErrorCode}
-               AND COALESCE(o.last_error_code, '') <> 'HDPAY_CREATE_EXPLICIT_REJECTED'
+               AND COALESCE(o.last_error_code, '') NOT IN
+            """ + TERMINAL_SUBMISSION_ERRORS + """
+
                AND o.version = #{expectedVersion} AND o.amount_vnd = #{amountVnd}
                AND #{providerStatus} = 1
                AND o.settlement_status = 'UNSETTLED'
                AND (o.provider_order_id IS NULL OR o.provider_order_id = #{providerOrderId})
-               AND (o.provider_status IS NULL OR o.provider_status = 1)
+               AND (o.provider_status IS NULL OR o.provider_status IN (0, 1))
                AND i.payable_vnd = o.amount_vnd AND i.payment_rail = 'HDPAY'
+               AND i.settlement_target_type = 'WALLET_TOPUP'
                AND i.status = 'AWAITING_PAYMENT' AND i.expires_at > NOW()
             """)
     int resolveRejectedByQuery(
@@ -303,13 +336,53 @@ public interface HdPayOrderMapper extends BaseMapper<Object> {
             @Param("providerStatus") Integer providerStatus,
             @Param("paymentUrl") String paymentUrl);
 
+    default int resolvePayableOrderQuery(Map<String, Object> order, HdPayGateway.PayOrder confirmed, long version) {
+        if ("REJECTED".equals(order.get("submissionStatus"))) {
+            Object error = order.get("lastErrorCode");
+            return resolveRejectedByQuery(confirmed.merchantOrderId(), version, error == null ? "" : error.toString(),
+                    confirmed.transAmt(), confirmed.providerOrderId(), confirmed.orderStatus(), confirmed.appLink());
+        }
+        return resolveSubmitUnknown(confirmed.merchantOrderId(), confirmed.providerOrderId(),
+                confirmed.orderStatus(), confirmed.appLink());
+    }
+
+    @Update("""
+            UPDATE nx_hdpay_payin_order o
+              JOIN nx_vietqr_intent i
+                ON i.intent_no = o.merchant_order_id AND i.is_deleted = 0
+               SET o.submission_status = 'REJECTED', o.payment_url = NULL,
+                   o.provider_order_id = #{providerOrderId}, o.provider_status = 5,
+                   o.last_error_code = #{errorCode}, o.version = o.version + 1, o.updated_at = NOW()
+             WHERE o.merchant_order_id = #{merchantOrderId}
+               AND o.version = #{expectedVersion} AND o.amount_vnd = #{amountVnd}
+               AND (o.submission_status = 'SUBMIT_UNKNOWN' OR (o.submission_status = 'REJECTED'
+                    AND COALESCE(o.last_error_code, '') NOT IN
+            """ + TERMINAL_SUBMISSION_ERRORS + """
+               ))
+               AND o.settlement_status = 'UNSETTLED'
+               AND (o.provider_order_id IS NULL OR o.provider_order_id = #{providerOrderId})
+               AND (o.provider_status IS NULL OR o.provider_status IN (0, 1, 5))
+               AND i.payable_vnd = o.amount_vnd AND i.payment_rail = 'HDPAY'
+               AND i.settlement_target_type = 'WALLET_TOPUP'
+            """)
+    int rejectUnknownOrderByQuery(
+            @Param("merchantOrderId") String merchantOrderId,
+            @Param("expectedVersion") long expectedVersion,
+            @Param("amountVnd") BigDecimal amountVnd,
+            @Param("providerOrderId") String providerOrderId,
+            @Param("errorCode") String errorCode);
+
     @Update("""
             UPDATE nx_hdpay_payin_order
                SET provider_order_id = #{providerOrderId}, provider_status = #{providerStatus},
                    last_error_code = #{errorCode}, version = version + 1, updated_at = NOW()
              WHERE merchant_order_id = #{merchantOrderId}
-               AND submission_status = 'SUBMIT_UNKNOWN'
+               AND (submission_status = 'SUBMIT_UNKNOWN' OR
+            """ + UNCONFIRMED_REJECTION_SQL + """
+               )
+               AND settlement_status = 'UNSETTLED' AND #{providerStatus} IN (3, 4)
                AND (provider_order_id IS NULL OR provider_order_id = #{providerOrderId})
+               AND (provider_status IS NULL OR provider_status IN (0, 1))
             """)
     int observeSubmitUnknownTerminal(
             @Param("merchantOrderId") String merchantOrderId,

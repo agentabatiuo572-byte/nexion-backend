@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.hdpay;
 
 public final class HdPayGatewayException extends RuntimeException {
+    static final String EXPLICIT_CREATE_REJECTION = "HDPAY_CREATE_EXPLICIT_REJECTED";
     private final boolean ambiguous;
     private final String providerReason;
 

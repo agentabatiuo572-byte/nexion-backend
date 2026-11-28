@@ -188,7 +188,11 @@ public class AppVietQrIntentService {
         mapper.closeInactiveInFlightReconciliationsForUser(userId);
         List<Map<String, Object>> items = new ArrayList<>();
         for (Map<String, Object> row : safeList(mapper.listIntentsForUser(userId, limit))) {
-            items.add(toView(row));
+            Map<String, Object> item = toView(row);
+            if ("hosted".equals(item.get("paymentMode"))) {
+                item.put("createIdempotencyKey", row.get("createIdempotencyKey"));
+            }
+            items.add(item);
         }
         return ApiResult.ok(Map.of("items", items));
     }
