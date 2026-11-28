@@ -38,7 +38,7 @@ def replace_number(table, column, old, new, *, quoted=False, scope="1=1"):
     return f"UPDATE {table} SET {column} = {transform} WHERE {match} AND {scope};"
 
 
-def render(server_uuid):
+def render(server_uuid, archived_history=False):
     original = (ROOT / "migrations/20261121_lc2_catalog.sql").read_text(encoding="utf-8")
     seed_rows, _ = original.split("START TRANSACTION;\n")
     _, seed_writes = original.split("-- E1 derives the points", 1)
@@ -51,8 +51,15 @@ def render(server_uuid):
         "SELECT product_no, name, IF(tier", "SELECT old.id, product_no, name, IF(tier", 1
     ).replace(
         "FROM lc2_catalog\nWHERE @lc2_empty_catalog", "FROM lc2_catalog LEFT JOIN b140_product_ids old USING (product_no)\nWHERE @lc2_empty_catalog", 1
+    ).replace(
+        "INSERT INTO nx_admin_device_sku (\n  sku_id", "INSERT INTO nx_admin_device_sku (\n  id, sku_id"
+    ).replace(
+        "SELECT c.product_no, c.name", "SELECT old.id, c.product_no, c.name", 1
+    ).replace(
+        "FROM lc2_catalog c JOIN nx_product p ON p.product_no = c.product_no\n",
+        "FROM lc2_catalog c JOIN nx_product p ON p.product_no = c.product_no\n"
+        "LEFT JOIN b140_sku_config old ON old.sku_id = c.product_no\n", 1
     )
-    old_numbers = ",".join(f"'{number}'" for number in NUMBERS)
     new_numbers = ",".join(f"'{number}'" for number in NUMBERS.values())
     pairs = ",\n".join(f"('{old}','{new}')" for old, new in NUMBERS.items())
     checks = (
@@ -68,7 +75,8 @@ def render(server_uuid):
          "external wallet history needs a reconciliation boundary"),
         ("NOT EXISTS (SELECT 1 FROM nx_support_fund_operation o WHERE o.source_table IN "
          "('nx_earnings_release_entry','nx_earnings_source_recovery','nx_order','nx_order_item','nx_user_device',"
-         "'nx_trial_claim','nx_promotion_reward','nx_wallet_ledger','nx_wallet_bill') AND NOT EXISTS ("
+         "'nx_trial_claim','nx_promotion_reward','nx_wallet_ledger','nx_wallet_bill','nx_compute_receipt',"
+         "'nx_commission_event','nx_direct_referral_settlement','nx_unilevel_event_recovery') AND NOT EXISTS ("
          "SELECT 1 FROM nx_b140_test_wallet_reset r JOIN nx_support_fund_operation cleared "
          "ON cleared.op_key=CONCAT('B140:WALLET_RESET:',r.entry_no) "
          "AND cleared.business_type='SUPPORT_B140_TEST_WALLET_RESET' AND cleared.phase='RESET' "
@@ -86,8 +94,12 @@ def render(server_uuid):
         "CREATE TEMPORARY TABLE b140_checks (result VARCHAR(120), CHECK (result = 'ok'));",
         require(f"DATABASE() = 'nexion' AND @@server_uuid = '{server_uuid}'", "wrong database or server"),
         require(f"NOT EXISTS (SELECT 1 FROM nx_config_item WHERE config_key='{MARKER}')", "B140 already applied"),
-        require(f"(SELECT COUNT(*) FROM nx_product WHERE product_no IN ({old_numbers})) = 9", "missing legacy product seeds"),
-        require(f"(SELECT COUNT(*) FROM nx_admin_device_sku WHERE sku_id IN ({old_numbers})) = 9", "missing legacy SKU seeds"),
+        "CREATE TEMPORARY TABLE b140_numbers (old_no VARCHAR(64) PRIMARY KEY, new_no VARCHAR(64) UNIQUE) "
+        "DEFAULT CHARSET=utf8mb4 COLLATE utf8mb4_0900_ai_ci;",
+        f"INSERT INTO b140_numbers VALUES\n{pairs};",
+        require("NOT EXISTS (SELECT 1 FROM b140_numbers n LEFT JOIN nx_product p ON p.product_no=n.old_no "
+                "LEFT JOIN nx_admin_device_sku s ON s.sku_id=n.old_no WHERE (p.id IS NULL) <> (s.id IS NULL))",
+                "legacy product and SKU presence differs"),
         require(f"NOT EXISTS (SELECT 1 FROM nx_product WHERE product_no IN ({new_numbers})) AND "
                 f"NOT EXISTS (SELECT 1 FROM nx_admin_device_sku WHERE sku_id IN ({new_numbers}))", "number collision"),
         require("(SELECT COUNT(*) FROM nx_admin_phase_config WHERE scope='E1' AND label='P1' "
@@ -95,17 +107,25 @@ def render(server_uuid):
         require("NOT EXISTS (SELECT 1 FROM nx_audit_operation_ticket WHERE status='pending' AND is_deleted=0 "
                 "AND JSON_VALID(command_json) AND JSON_UNQUOTE(JSON_EXTRACT(command_json,'$.op')) "
                 "IN ('e1_sku_create','e1_phase_create'))", "settle pending E1 creation before cutover"),
-        *(require(condition, error) for condition, error in checks),
+        *(require(condition, error) for condition, error in (checks[:1] if archived_history else checks)),
         seed_rows,
-        "CREATE TEMPORARY TABLE b140_numbers (old_no VARCHAR(64) PRIMARY KEY, new_no VARCHAR(64) UNIQUE) "
-        "DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;",
-        f"INSERT INTO b140_numbers VALUES\n{pairs};",
+        require(f"(SELECT COUNT(*)={len(NUMBERS)} AND COUNT(n.old_no)={len(NUMBERS)} "
+                "FROM lc2_catalog c LEFT JOIN b140_numbers n ON BINARY c.product_no=BINARY n.old_no)",
+                "canonical catalog seed set differs"),
         "UPDATE lc2_catalog c JOIN b140_numbers n ON n.old_no=c.product_no SET c.product_no=n.new_no;",
         "START TRANSACTION;",
         "CREATE TEMPORARY TABLE b140_product_ids AS SELECT p.id, n.new_no product_no, "
         "p.superseded_by_product_no FROM nx_product p JOIN b140_numbers n ON n.old_no=p.product_no;",
+        *((
+            "DELETE FROM nx_purchase_payment_arrival;",
+            "DELETE FROM nx_purchase_payment_result;",
+            "DELETE FROM nx_purchase_payment_intent;",
+            "DELETE FROM nx_wallet_asset_adjustment;",
+            "UPDATE nx_event_outbox SET is_deleted=1 WHERE is_deleted=0 "
+            "AND event_type IN ('admin.balance_adjusted','admin.bill_adjusted');",
+        ) if archived_history else ()),
         (ROOT / "maintenance/20261128_b140_test_business_reset.sql").read_text(encoding="utf-8-sig"),
-        "CREATE TEMPORARY TABLE b140_sku_config AS SELECT n.new_no sku_id, s.superseded_by, "
+        "CREATE TEMPORARY TABLE b140_sku_config AS SELECT s.id, n.new_no sku_id, s.superseded_by, "
         "s.purchase_gate_json, s.purchase_gate_generation FROM nx_admin_device_sku s "
         "JOIN b140_numbers n ON n.old_no=s.sku_id;",
         "CREATE TEMPORARY TABLE b140_task_policy LIKE nx_sim_product_task_policy_version;",
@@ -167,6 +187,13 @@ def render(server_uuid):
         require(f"(SELECT COUNT(*) FROM nx_product WHERE product_no IN ({new_numbers}) AND is_deleted=0 AND store_visible=0) = 9 "
                 "AND (SELECT COUNT(*) FROM nx_product) = 9 AND (SELECT COUNT(*) FROM nx_admin_device_sku WHERE status='off' "
                 f"AND sku_id IN ({new_numbers}) AND is_deleted=0) = 9 AND (SELECT COUNT(*) FROM nx_admin_device_sku) = 9", "numbered catalog verification failed"),
+        require("NOT EXISTS (SELECT 1 FROM nx_order) AND NOT EXISTS (SELECT 1 FROM nx_user_device) "
+                "AND NOT EXISTS (SELECT 1 FROM nx_trial_claim) AND NOT EXISTS (SELECT 1 FROM nx_growth_voucher_grant) "
+                "AND NOT EXISTS (SELECT 1 FROM nx_promotion) AND NOT EXISTS (SELECT 1 FROM nx_team_hardware_quota_usage) "
+                "AND NOT EXISTS (SELECT 1 FROM nx_wallet_ledger) AND NOT EXISTS (SELECT 1 FROM nx_wallet_bill) "
+                "AND NOT EXISTS (SELECT 1 FROM nx_user_wallet WHERE usdt_available<>0 OR nex_available<>0 "
+                "OR pending_withdraw<>0 OR cregis_risk_held<>0 OR lifetime_earned<>0 OR cumulative_deposit_usdt<>0)",
+                "test business reset verification failed"),
         f"INSERT INTO nx_config_item (config_key,config_value,value_type,config_group,visibility,status,created_at,updated_at,is_deleted) "
         f"VALUES ('{MARKER}','true','BOOLEAN','E','INTERNAL',1,NOW(6),NOW(6),0);",
         "COMMIT;",
@@ -179,5 +206,7 @@ if __name__ == "__main__":
     parser = ArgumentParser(description=__doc__)
     parser.add_argument("expected_server_uuid", type=UUID)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--archived-history", action="store_true",
+                        help="clear a TEST candidate with verified original payment and Support history archived")
     args = parser.parse_args()
-    args.output.write_text(render(args.expected_server_uuid), encoding="utf-8")
+    args.output.write_text(render(args.expected_server_uuid, args.archived_history), encoding="utf-8")
