@@ -18,8 +18,13 @@ public interface SimulatedTaskMapper {
             Long productId,String productCode,String productTier,String deviceName,String deviceType,String gpuModel,Integer vramTotalGb,
             String taskTypeId,long taskTypeVersion,long productPolicyVersion,long e3Version,String taskName,String taskClass,
             int durationSeconds,String asset,BigDecimal baseReward,BigDecimal rewardAmount,BigDecimal e3Multiplier,BigDecimal cloudDailyNex,
+            BigDecimal phoneRewardNex,BigDecimal phoneDailyUsdt,BigDecimal phoneDailyNex,
             long walletId,String walletIncarnation,LocalDateTime startedAt,LocalDateTime dueAt,String status,
             LocalDateTime completedAt,LocalDateTime postedAt,String cancelReason,LocalDateTime targetCycleStart,String targetSnapshotJson) {
+        public BigDecimal baseRewardNex() {
+            return phoneRewardNex!=null ? phoneRewardNex : "UVT".equals(asset) ? rewardAmount : BigDecimal.ZERO;
+        }
+
         @com.fasterxml.jackson.annotation.JsonValue
         public java.util.Map<String,Object> evidenceProjection() {
             var result=new java.util.LinkedHashMap<String,Object>();
@@ -56,6 +61,11 @@ public interface SimulatedTaskMapper {
             result.put("completedAt",completedAt);
             result.put("postedAt",postedAt);
             result.put("cancelReason",cancelReason);
+            if(phoneRewardNex!=null) {
+                result.put("phoneRewardNex",phoneRewardNex);
+                result.put("phoneDailyUsdt",phoneDailyUsdt);
+                result.put("phoneDailyNex",phoneDailyNex);
+            }
             if(targetSnapshotJson!=null) {
                 result.put("targetCycleStart",targetCycleStart.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSSSS")));
                 result.put("targetSnapshotJson",targetSnapshotJson);
@@ -107,6 +117,7 @@ public interface SimulatedTaskMapper {
               gpu_model gpuModel,vram_total_gb vramTotalGb,task_type_id taskTypeId,task_type_version taskTypeVersion,
               product_policy_version productPolicyVersion,e3_version e3Version,task_name taskName,task_class taskClass,
               duration_seconds durationSeconds,asset,base_reward baseReward,reward_amount rewardAmount,e3_multiplier e3Multiplier,cloud_daily_nex cloudDailyNex,
+              phone_reward_nex phoneRewardNex,phone_daily_usdt phoneDailyUsdt,phone_daily_nex phoneDailyNex,
               wallet_id walletId,wallet_incarnation walletIncarnation,started_at startedAt,due_at dueAt,status,
               completed_at completedAt,posted_at postedAt,cancel_reason cancelReason,target_cycle_start targetCycleStart,target_snapshot_json targetSnapshotJson
             FROM nx_simulated_task
@@ -264,15 +275,24 @@ public interface SimulatedTaskMapper {
                AND stop_after_current=1 AND stop_at IS NULL AND current_task_no IS NOT NULL
             """)
     int cancelPendingSlotStop(long userId, long deviceId);
+    @Select("""
+            SELECT DISTINCT duration_seconds FROM nx_simulated_task
+             WHERE user_device_id=#{deviceId} AND generation=#{generation}
+               AND started_at>=#{since} AND started_at<#{before}
+            """)
+    List<Integer> recentTaskDurations(long deviceId,long generation,LocalDateTime since,LocalDateTime before);
+
     @Insert("""
             INSERT INTO nx_simulated_task(task_no,receipt_no,user_id,user_device_id,instance_no,generation,product_id,product_code,
               product_tier,device_name,device_type,gpu_model,vram_total_gb,task_type_id,task_type_version,product_policy_version,e3_version,
-              task_name,task_class,duration_seconds,asset,base_reward,reward_amount,e3_multiplier,cloud_daily_nex,wallet_id,wallet_incarnation,
+              task_name,task_class,duration_seconds,asset,base_reward,reward_amount,e3_multiplier,cloud_daily_nex,
+              phone_reward_nex,phone_daily_usdt,phone_daily_nex,wallet_id,wallet_incarnation,
               started_at,due_at,status,completed_at,posted_at,cancel_reason,target_cycle_start,target_snapshot_json)
             VALUES(#{t.taskNo},#{t.receiptNo},#{t.userId},#{t.deviceId},#{t.instanceNo},#{t.generation},#{t.productId},#{t.productCode},
               #{t.productTier},#{t.deviceName},#{t.deviceType},#{t.gpuModel},#{t.vramTotalGb},#{t.taskTypeId},#{t.taskTypeVersion},
               #{t.productPolicyVersion},#{t.e3Version},#{t.taskName},#{t.taskClass},#{t.durationSeconds},#{t.asset},#{t.baseReward},
-              #{t.rewardAmount},#{t.e3Multiplier},#{t.cloudDailyNex},#{t.walletId},#{t.walletIncarnation},#{t.startedAt},#{t.dueAt},#{t.status},
+              #{t.rewardAmount},#{t.e3Multiplier},#{t.cloudDailyNex},#{t.phoneRewardNex},#{t.phoneDailyUsdt},#{t.phoneDailyNex},
+              #{t.walletId},#{t.walletIncarnation},#{t.startedAt},#{t.dueAt},#{t.status},
               #{t.completedAt},#{t.postedAt},#{t.cancelReason},#{t.targetCycleStart},#{t.targetSnapshotJson})
             """)
     int insertTask(@Param("t")TaskRow task);

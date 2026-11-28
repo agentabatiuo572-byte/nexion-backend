@@ -90,6 +90,7 @@ public class TaskPoolService {
     private Map<String,Object> taskView(TypeVersion t) {
         var row=new LinkedHashMap<String,Object>();
         row.put("taskTypeId",t.taskTypeId());row.put("name",t.name());row.put("taskClass",t.taskClass());row.put("durationMinutes",t.durationSeconds()/60);
+        if("PHONE".equals(t.poolCode()))row.put("durationSeconds",t.durationSeconds());
         row.put("enabled",t.enabled());row.put("version",t.version());row.put("effectiveAt",t.effectiveAt());
         row.put("baseReward", t.baseReward().setScale(6).toPlainString());
         row.put("asset", t.asset());

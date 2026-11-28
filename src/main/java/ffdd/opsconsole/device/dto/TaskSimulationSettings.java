@@ -1,12 +1,19 @@
 package ffdd.opsconsole.device.dto;
 
-import java.math.BigDecimal;
+import com.fasterxml.jackson.annotation.JsonAnySetter;
+import ffdd.opsconsole.shared.exception.BizException;
 
-/** New publications accept USDT or UVT; legacy stored asset aliases are read-only compatibility. */
+/** PHONE tasks carry duration and lifecycle only. Calibration rates determine their rewards. */
 public record TaskSimulationSettings(
         @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=DeviceTaskUpsertRequest.StrictSchedulingInteger.class)
-        Integer durationMinutes, BigDecimal baseReward, String asset, Boolean enabled,
+        Integer durationSeconds, Boolean enabled,
         @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using=StrictVersion.class) Long expectedVersion) {
+    @JsonAnySetter
+    public void rejectRetiredReward(String key, Object value) {
+        if ("baseReward".equals(key) || "asset".equals(key))
+            throw new BizException(422, "PHONE_TASK_REWARD_FIELDS_FORBIDDEN");
+    }
+
     public static final class StrictVersion extends com.fasterxml.jackson.databind.JsonDeserializer<Long> {
         @Override public Long deserialize(com.fasterxml.jackson.core.JsonParser parser,
                 com.fasterxml.jackson.databind.DeserializationContext context) throws java.io.IOException {

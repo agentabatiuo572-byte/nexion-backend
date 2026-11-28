@@ -1,6 +1,7 @@
 package ffdd.opsconsole.shared.canonical;
 
 import ffdd.opsconsole.device.application.HostingCenterService;
+import ffdd.opsconsole.device.application.PhoneTaskRewards;
 import ffdd.opsconsole.device.application.DeviceSlotReplacementCompletion;
 import ffdd.opsconsole.device.mapper.DeviceSlotReplacementMapper;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
@@ -73,6 +74,8 @@ public class AppCanonicalBoundaryService {
     private DeviceSlotReplacementCompletion slotReplacementCompletion;
     @Autowired
     private AppTrialLifecycleService trialLifecycle;
+    @Autowired
+    private PhoneTaskRewards phoneTaskRewards;
 
     private static final ZoneId SERVER_ZONE = StorageTime.ZONE;
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -552,7 +555,7 @@ public class AppCanonicalBoundaryService {
             }
         }
         for (CanonicalStateMapper.OwnedDevice device : rawDevices) {
-            Map<String, Object> projection = projectE3Capacity(device, capacityConfig, capacityNow);
+            Map<String, Object> projection = projectE3Capacity(device, capacityConfig, capacityNow, !sandboxRuntime);
             if (projection == null) continue;
             if (pendingReplacements.containsKey(device.id())) {
                 projection.put("replacement", pendingReplacements.get(device.id()));
@@ -676,7 +679,7 @@ public class AppCanonicalBoundaryService {
     private Map<String, Object> projectE3Capacity(
             CanonicalStateMapper.OwnedDevice device,
             Map<String, String> config,
-            LocalDateTime now) {
+            LocalDateTime now, boolean useCurrentPhoneRates) {
         E3DeviceCapacityPolicy.Projection capacity;
         try {
             capacity = E3DeviceCapacityPolicy.project(
@@ -694,6 +697,12 @@ public class AppCanonicalBoundaryService {
                     .divide(BigDecimal.valueOf(30),6,RoundingMode.HALF_UP)
                 : E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyUsdt()), capacity);
         BigDecimal dailyNex = E3DeviceCapacityPolicy.applyCapacity(zero(device.dailyNex()), capacity);
+        if (useCurrentPhoneRates && ("MOBILE".equalsIgnoreCase(device.deviceType()) || "PHONE".equalsIgnoreCase(device.deviceType()))) {
+            var rates = phoneTaskRewards.currentRates(device.productTier());
+            if (rates == null) throw new BizException(409, PhoneTaskRewards.UNAVAILABLE);
+            dailyUsdt = rates.baseRateUsdt();
+            dailyNex = rates.baseRateNex();
+        }
         boolean calibratedPhone = "MOBILE".equalsIgnoreCase(device.deviceType())
                 && "phone".equalsIgnoreCase(device.productCode())
                 && "ONBOARDING".equalsIgnoreCase(device.sourceChannel());

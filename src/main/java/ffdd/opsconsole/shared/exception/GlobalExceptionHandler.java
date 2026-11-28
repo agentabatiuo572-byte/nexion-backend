@@ -135,7 +135,8 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ApiResult<Void> handleUnreadableMessage(HttpMessageNotReadableException ex, HttpServletResponse response) {
-        if(ex.getMostSpecificCause() instanceof BizException biz && java.util.Set.of("MONTHLY_TARGET_DEVICE_INELIGIBLE","TASK_POOL_FORMAT_RETIRED").contains(biz.getMessage())) {
+        if(ex.getMostSpecificCause() instanceof BizException biz && java.util.Set.of(
+                "MONTHLY_TARGET_DEVICE_INELIGIBLE","TASK_POOL_FORMAT_RETIRED","PHONE_TASK_REWARD_FIELDS_FORBIDDEN").contains(biz.getMessage())) {
             response.setStatus(biz.getCode());
             return ApiResult.fail(biz.getCode(),biz.getMessage());
         }

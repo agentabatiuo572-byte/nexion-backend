@@ -126,6 +126,10 @@ final class AuditApprovalRechecks {
             return "LEARNING_COURSE_REWARD_SNAPSHOT_CHANGED".equals(reason);
         }
         return switch (command.op()) {
+            case "e2_task_create", "e2_task_update" -> "E".equals(command.domain()) && command.params()!=null
+                    && "PHONE".equals(command.params().get("poolCode"))
+                    && Set.of("PHONE_TASK_REWARD_FIELDS_FORBIDDEN","SIMULATED_DURATION_SECONDS_INVALID",
+                        "SIMULATED_TASK_POLICY_VERSION_CONFLICT").contains(reason);
             case "h2_trial_cancel" -> code == 409 && "H".equals(command.domain())
                     && "TRIAL_SESSION_ALREADY_TERMINAL".equals(reason);
             case "h8_referral_settlement", "h8_referral_settlement_user" -> H8_SETTLEMENT_REASONS.contains(reason);

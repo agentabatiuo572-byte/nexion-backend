@@ -1,5 +1,6 @@
 package ffdd.opsconsole.device.dto;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import java.math.BigDecimal;
 
 public record DeviceTaskUpsertRequest(
@@ -24,6 +25,11 @@ public record DeviceTaskUpsertRequest(
         String runtimeKey,
         String validatorKey,
         String workloadConfigJson, TaskSimulationSettings simulation,String poolCode) {
+    @JsonAnySetter
+    public void rejectRetiredReward(String key, Object value) {
+        if ("PHONE".equals(poolCode) && simulation != null) simulation.rejectRetiredReward(key, value);
+    }
+
     public boolean hasSchedulingSettings() {
         return selectionWeight != null || expectedDurationMinSec != null || expectedDurationMaxSec != null
                 || executionTimeoutSec != null || runtimeKey != null || validatorKey != null || workloadConfigJson != null;

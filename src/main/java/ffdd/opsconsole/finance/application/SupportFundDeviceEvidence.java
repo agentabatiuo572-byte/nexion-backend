@@ -3,6 +3,7 @@ package ffdd.opsconsole.finance.application;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.device.facade.SupportDeviceReadFacade.FundEarnings;
+import ffdd.opsconsole.device.application.PhoneTaskRewards;
 import ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow;
 import ffdd.opsconsole.finance.domain.SupportFundAllocation.*;
 import ffdd.opsconsole.finance.domain.SupportFundReplay.*;
@@ -112,7 +113,18 @@ public class SupportFundDeviceEvidence {
             &&Set.of("USDT","UVT").contains(simulation.asset()));
         var base=money(simulation.baseReward());var reward=money(simulation.rewardAmount());var frozenDaily=money(simulation.cloudDailyNex());
         require(base.signum()>=0&&reward.signum()>=0&&frozenDaily.signum()>=0&&simulation.e3Multiplier().signum()>=0);
-        if(simulation.targetSnapshotJson()==null) {
+        if(simulation.phoneRewardNex()!=null) {
+            var dailyUsdt=money(simulation.phoneDailyUsdt());var dailyNex=money(simulation.phoneDailyNex());
+            require("USDT".equals(simulation.asset())
+                && ("PHONE".equalsIgnoreCase(simulation.deviceType()) || "MOBILE".equalsIgnoreCase(simulation.deviceType()))
+                && text(simulation.productTier()).matches("TIER-[1-5]")
+                && simulation.targetCycleStart()==null && simulation.targetSnapshotJson()==null
+                && simulation.e3Multiplier().compareTo(BigDecimal.ONE)==0 && frozenDaily.signum()==0
+                && dailyUsdt.signum()>0 && dailyNex.signum()>0
+                && base.compareTo(reward)==0
+                && PhoneTaskRewards.perTask(dailyUsdt,simulation.durationSeconds()).compareTo(reward)==0
+                && PhoneTaskRewards.perTask(dailyNex,simulation.durationSeconds()).compareTo(simulation.phoneRewardNex())==0);
+        } else if(simulation.targetSnapshotJson()==null) {
             require(simulation.targetCycleStart()==null && base.multiply(simulation.e3Multiplier()).setScale(6,java.math.RoundingMode.HALF_UP).compareTo(reward)==0);
         } else {
             var snapshot=targetSnapshot(simulation.targetSnapshotJson());
@@ -124,7 +136,7 @@ public class SupportFundDeviceEvidence {
                 &&ffdd.opsconsole.device.application.DeviceMonthlyTargetPacing.recompute(snapshot,base,simulation.durationSeconds()).compareTo(reward)==0);
         }
         var usd=money(r.get("rewardUsdt"));var nex=money(r.get("rewardNex"));
-        var baseNex="UVT".equals(simulation.asset())?reward:BigDecimal.ZERO;var dailyNex=nex.subtract(baseNex);
+        var baseNex=simulation.baseRewardNex();var dailyNex=nex.subtract(baseNex);
         require(usd.signum()>=0&&nex.signum()>=0&&usd.compareTo("USDT".equals(simulation.asset())?reward:BigDecimal.ZERO)==0
             &&usd.compareTo(money(t.get("rewardUsdt")))==0&&dailyNex.signum()>=0&&(dailyNex.signum()==0||dailyNex.compareTo(frozenDaily)==0));
         String daily="CLOUD_SHARE_DAILY:"+device+":"+simulation.dueAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE).withZoneSameInstant(ZoneOffset.UTC).toLocalDate();

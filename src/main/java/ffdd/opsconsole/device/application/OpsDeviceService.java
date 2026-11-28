@@ -1378,6 +1378,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if (request.dailyNex() != null && !validPositiveDecimal18x6(request.dailyNex())) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "PHONE_TIER_NEX_INVALID");
         }
+        if (!A2ReplayContext.isReplaying()
+                && (request.dailyUsdt() != null && !hasAuthority("device_e2_phone_tier_usdt")
+                    || request.dailyNex() != null && !hasAuthority("device_e2_phone_tier_nex"))) {
+            return ApiResult.fail(403, "PHONE_TIER_ASSET_PERMISSION_REQUIRED");
+        }
         DevicePhoneTierRewardUpdateRequest trusted = new DevicePhoneTierRewardUpdateRequest(
                 request.dailyUsdt(), request.dailyNex(), request.expectedRevision(),
                 request.reason().trim(), operator(request.operator()));
@@ -1402,6 +1407,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return ApiResult.fail(400, "PHONE_TIER_MONOTONICITY_INVALID");
             }
             if (nextUsdt.compareTo(before.dailyUsdt()) > 0 || nextNex.compareTo(before.dailyNex()) > 0) {
+                if (!reviewedTier) return ApiResult.fail(409, "A2_CONFIRMATION_REQUIRED");
                 TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
                 boolean unavailable = e2CoverageUnavailable(coverage);
                 if (unavailable || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
@@ -1441,6 +1447,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         DeviceTaskUpsertRequest trusted = trustedTaskRequest(request);
         Supplier<ApiResult<DeviceTaskView>> action = () -> {
+            simulationPolicies.lockE3Configuration();
             LocalDateTime now = LocalDateTime.now(clock);
             LocalDateTime catalogTime = now.truncatedTo(ChronoUnit.SECONDS);
             if (trusted.simulation() == null) {
@@ -1448,9 +1455,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                         catalogRepository.lockTaskCatalog(), null, trusted, catalogTime, reviewedRevision);
                 if (pricingGuard != null) return pricingGuard;
             }
-            boolean enabled = "active".equals(trusted.status()) && !"已 kill".equals(trusted.killInit());
-            if (enabled && (trusted.minReward().signum() > 0 || trusted.maxReward().signum() > 0)
-                    && coverageBelowRedline()) {
+            boolean enabled = "active".equals(trusted.status()) && trusted.simulation().enabled();
+            if (enabled && simulationPolicies.phonePoolEmptyForUpdate() && coverageBelowRedline()) {
                 return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                         OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
@@ -1493,6 +1499,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         }
         DeviceTaskUpsertRequest input = trustedTaskRequest(request);
         Supplier<ApiResult<DeviceTaskView>> action = () -> {
+            simulationPolicies.lockE3Configuration();
             if (!A2ReplayContext.isReplaying()
                     && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
                 return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -1504,8 +1511,11 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 return reviewedRevision == null ? ApiResult.fail(404, "TASK_NOT_FOUND")
                         : ApiResult.fail(409, "E2_TASK_PRICING_STALE");
             }
-            DeviceTaskUpsertRequest trusted = !StringUtils.hasText(request.status())
-                    ? trustedTaskRequest(request, before.status()) : input;
+            if (before.simulation() == null) return ApiResult.fail(409, "SIMULATED_TASK_POLICY_VERSION_CONFLICT");
+            boolean beforeEnabled = before.simulation().enabled();
+            if (request.simulation().enabled() != null && request.simulation().enabled() != beforeEnabled)
+                return ApiResult.fail(422, "TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
+            DeviceTaskUpsertRequest trusted = trustedTaskRequest(request, before.status(), beforeEnabled);
             LocalDateTime now = LocalDateTime.now(clock);
             LocalDateTime catalogTime = now.truncatedTo(ChronoUnit.SECONDS);
             if (reviewedRevision != null) {
@@ -1515,8 +1525,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             }
             if(before.simulation()!=null&&trusted.simulation()==null)
                 return ApiResult.fail(422,"SIMULATED_TASK_SETTINGS_REQUIRED");
-            TaskSchedulingSettings nextScheduling;
-            try { nextScheduling = before.scheduling().merge(trusted); }
+            try { before.scheduling().merge(trusted); }
             catch (IllegalArgumentException invalid) { return ApiResult.fail(422, invalid.getMessage()); }
             if (!before.status().equals(trusted.status())) {
                 return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
@@ -1525,18 +1534,6 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
             if (reviewedRevision == null && before.simulation() == null) {
                 ApiResult<DeviceTaskView> pricingGuard = guardTaskLifecycle(catalog, before, trusted, catalogTime, null);
                 if (pricingGuard != null) return pricingGuard;
-            }
-            boolean beforeEnabled = before.simulation().enabled();
-            boolean nextEnabled = "active".equals(trusted.status()) && trusted.simulation().enabled();
-            if ((e2TaskPricingAmplifiesFinancialOutflow(
-                    before.minReward(), before.maxReward(), parseVram(before.minVram()), beforeEnabled,
-                    trusted.minReward(), trusted.maxReward(), parseVram(trusted.minVram()), nextEnabled)
-                    || nextEnabled && (nextScheduling.selectionWeight() > before.scheduling().selectionWeight()
-                        || nextScheduling.expectedDurationMinSec() < before.scheduling().expectedDurationMinSec()
-                        || before.scheduling().runtimeKey().isEmpty() && !nextScheduling.runtimeKey().isEmpty()))
-                    && coverageBelowRedline()) {
-                return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
-                        OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
             }
             DeviceTaskView updated = catalogRepository.updateTask(normalized, trusted, catalogTime).orElse(before);
             if(trusted.simulation()!=null) {
@@ -1631,6 +1628,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         DeviceTaskStatusRequest trusted = new DeviceTaskStatusRequest(
                 request.status(), request.reason().trim(), operator(request.operator()),request.poolCode());
         return deviceIdempotent("E2_TASK_STATUS", idempotencyKey, taskId, trusted, () -> {
+        simulationPolicies.lockE3Configuration();
         if (!A2ReplayContext.isReplaying()
                 && lockMapper.countActiveByTarget("E", "device_task", taskId) > 0) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
@@ -1651,10 +1649,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         // PHONE status belongs to the immutable SIM policy; the legacy kill flag may reflect a disabled creation.
         boolean beforeEnabled = before.simulation().enabled();
         boolean nextEnabled = "active".equals(status);
-        if (e2TaskPricingAmplifiesFinancialOutflow(
-                before.minReward(), before.maxReward(), parseVram(before.minVram()), beforeEnabled,
-                before.minReward(), before.maxReward(), parseVram(before.minVram()), nextEnabled)
-                && coverageBelowRedline()) {
+        if (nextEnabled && !beforeEnabled && simulationPolicies.phonePoolEmptyForUpdate() && coverageBelowRedline()) {
             return ApiResult.fail(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
@@ -1665,8 +1660,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         DeviceTaskView updated = catalogRepository.updateTaskStatus(normalized, status, LocalDateTime.now(clock)).orElse(before);
         if(before.simulation()!=null) {
             var type=before.simulation();
-            publishTaskSimulation(updated,new ffdd.opsconsole.device.dto.TaskSimulationSettings(type.durationMinutes(),type.baseReward(),
-                    type.asset(),nextEnabled,type.version()),LocalDateTime.now(clock));
+            publishTaskSimulation(updated,new ffdd.opsconsole.device.dto.TaskSimulationSettings(type.durationSeconds(),
+                    nextEnabled,type.version()),LocalDateTime.now(clock));
             updated=updated.withSimulation(simulationPolicies.typeView(normalized));
         }
         auditRequired("E2_TASK_STATUS_CHANGED", "DEVICE_TASK", normalized, trusted.operator(), detail(
@@ -4567,16 +4562,19 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private DeviceTaskUpsertRequest trustedTaskRequest(DeviceTaskUpsertRequest request) {
-        return trustedTaskRequest(request, "active");
+        return trustedTaskRequest(request, "active", true);
     }
 
-    private DeviceTaskUpsertRequest trustedTaskRequest(DeviceTaskUpsertRequest request, String defaultStatus) {
+    private DeviceTaskUpsertRequest trustedTaskRequest(DeviceTaskUpsertRequest request, String defaultStatus, boolean defaultEnabled) {
         if(request.simulation()!=null) {
-            var simulation=request.simulation();int seconds=simulation.durationMinutes()*60;
-            return new DeviceTaskUpsertRequest(request.name().trim(),simulation.baseReward(),"/job","手机+",BigDecimal.ZERO,
+            var requested=request.simulation();
+            int seconds=requested.durationSeconds();
+            boolean enabled=requested.enabled()==null?defaultEnabled:requested.enabled();
+            var simulation=new ffdd.opsconsole.device.dto.TaskSimulationSettings(seconds,enabled,requested.expectedVersion());
+            return new DeviceTaskUpsertRequest(request.name().trim(),BigDecimal.ZERO,"/job","手机+",BigDecimal.ZERO,
                     StringUtils.hasText(request.status())?normalizeTaskStatus(request.status()):defaultStatus,
                     StringUtils.hasText(request.taskClass())?normalizeUpper(request.taskClass()):"EM","",
-                    simulation.baseReward(),simulation.baseReward(),"0GB",simulation.enabled()?"派发中":"已 kill",
+                    BigDecimal.ZERO,BigDecimal.ZERO,"0GB",enabled?"派发中":"已 kill",
                     request.reason().trim(),operator(request.operator()),1,seconds,seconds,Math.max(300,seconds),"","","{}",simulation,request.poolCode());
         }
         return new DeviceTaskUpsertRequest(
@@ -4589,7 +4587,7 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
     }
 
     private void publishTaskSimulation(DeviceTaskView task,ffdd.opsconsole.device.dto.TaskSimulationSettings value,LocalDateTime at) {
-        var effective=new ffdd.opsconsole.device.dto.TaskSimulationSettings(value.durationMinutes(),value.baseReward(),value.asset(),
+        var effective=new ffdd.opsconsole.device.dto.TaskSimulationSettings(value.durationSeconds(),
                 value.enabled()&&"active".equals(task.status()),value.expectedVersion());
         simulationPolicies.publishType(task.taskId(),task.name(),task.taskClass(),effective,at);
     }
@@ -6490,6 +6488,30 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
                 before==null?null:before.monthlyTargetBandPct(),after.monthlyTargetUsdt(),after.monthlyTargetBandPct()); }
     }
 
+    public record PhoneTierReview(AuditLockTarget target,String before,String after,boolean amplifies) { }
+
+    public PhoneTierReview reviewPhoneTierReward(Map<String,Object> params) {
+        Integer tier=intVal(params,"tier");
+        if (tier==null || tier<1 || tier>5) throw new BizException(422,"PHONE_TIER_INVALID");
+        var tiers=catalogRepository.listPhoneTierRewards();
+        var before=tiers.stream().filter(row->tier.equals(row.tier())).findFirst()
+                .orElseThrow(()->new BizException(404,"PHONE_TIER_NOT_FOUND"));
+        if (!Objects.equals(before.revision(),longVal(params,"expectedRevision")))
+            throw new BizException(409,"PHONE_TIER_VERSION_CONFLICT");
+        BigDecimal usdt=decimal(params,"dailyUsdt"), nex=decimal(params,"dailyNex");
+        if (usdt==null && nex==null) throw new BizException(422,"PHONE_TIER_REWARD_REQUIRED");
+        if (usdt!=null && !validPositiveDecimal18x6(usdt)) throw new BizException(422,"PHONE_TIER_USDT_INVALID");
+        if (nex!=null && !validPositiveDecimal18x6(nex)) throw new BizException(422,"PHONE_TIER_NEX_INVALID");
+        BigDecimal nextUsdt=usdt==null?before.dailyUsdt():usdt, nextNex=nex==null?before.dailyNex():nex;
+        if (!isMonotonicPhoneTier(tiers,tier,nextUsdt,DevicePhoneTierRewardView::dailyUsdt)
+                || !isMonotonicPhoneTier(tiers,tier,nextNex,DevicePhoneTierRewardView::dailyNex))
+            throw new BizException(422,"PHONE_TIER_MONOTONICITY_INVALID");
+        return new PhoneTierReview(new AuditLockTarget("E","phone_tier",String.valueOf(tier)),
+                before.dailyUsdt().toPlainString()+" USDT · "+before.dailyNex().toPlainString()+" UVT",
+                nextUsdt.toPlainString()+" USDT · "+nextNex.toPlainString()+" UVT",
+                nextUsdt.compareTo(before.dailyUsdt())>0 || nextNex.compareTo(before.dailyNex())>0);
+    }
+
     public record PhoneClassReview(String before,String after) { }
     /** 规则任务审批单动作:仅由原始回放命令推出(新增/编辑/启用/停用),不按实时库或前后值推断;null 表示非规则任务或旧单无 simulation。 */
     public record RuleTaskReview(String target,String name,String before,String after,Long statusVersion, boolean amplifies,String action) { }
@@ -6503,14 +6525,15 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         String id=str(params,"taskId");
         var old=create?null:catalogRepository.findTask(normalizeId(id)).orElseThrow(()->new BizException(404,"TASK_NOT_FOUND"));
         var current=old==null?null:old.simulation();
-        String before=current==null?"未配置":ruleDescription(old.name(),old.taskClass(),current.enabled(),current.durationMinutes(),current.baseReward(),current.asset());
+        String before=current==null?"未配置":ruleDescription(old.name(),old.taskClass(),current.enabled(),current.durationSeconds());
         if(statusOnly) {
             String status=normalizeTaskStatus(str(params,"status"));
             if(status==null)throw new BizException(422,"TASK_STATUS_INVALID");
             // 旧任务未配置模拟设置:沿用 legacy 语义(不产出审批单),不在审批单动作上扩展旧提议行为。
             if(current==null)return null;
             boolean enabled="active".equals(status);
-            return new RuleTaskReview(old.taskId(),old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationMinutes(),current.baseReward(),current.asset()),current.version(), enabled && !current.enabled(), enabled?"ENABLE":"DISABLE");
+            boolean amplifies=enabled && !current.enabled() && phonePoolEmpty();
+            return new RuleTaskReview(old.taskId(),old.name(),before,ruleDescription(old.name(),old.taskClass(),enabled,current.durationSeconds()),current.version(),amplifies,enabled?"ENABLE":"DISABLE");
         }
         var raw=buildTaskUpsertRequest(params,"规则任务审批","A2");
         var settings=raw.simulation();
@@ -6519,21 +6542,25 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         AppDisplayText.requireNoHan("name", raw.name());
         if(StringUtils.hasText(raw.status()) && normalizeTaskStatus(raw.status())==null)throw new BizException(422,"TASK_STATUS_INVALID");
         if(settings.expectedVersion()!=(current==null?0:current.version()))throw new BizException(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
-        var next=trustedTaskRequest(raw,create?"active":old.status());
+        if(!create && settings.enabled()!=null && settings.enabled()!=current.enabled())
+            throw new BizException(422,"TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
+        var next=trustedTaskRequest(raw,create?"active":old.status(),create || current.enabled());
         if(!create && !old.status().equals(next.status()))
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),"TASK_STATUS_REQUIRES_LIFECYCLE_ACTION");
         if(!TASK_CLASSES.contains(next.taskClass()))throw new BizException(422,"TASK_CLASS_INVALID");
         String lock=create?"new-"+java.util.UUID.nameUUIDFromBytes(next.name().getBytes(java.nio.charset.StandardCharsets.UTF_8)):old.taskId();
-        boolean nextEnabled=settings.enabled() && "active".equals(next.status());
-        boolean amplifies=create?nextEnabled && settings.baseReward().signum()>0
-                :settings.baseReward().compareTo(current.baseReward())>0 || nextEnabled && (!current.enabled() || settings.durationMinutes()<current.durationMinutes());
+        boolean nextEnabled=next.simulation().enabled() && "active".equals(next.status());
+        boolean amplifies=create && nextEnabled && phonePoolEmpty();
         // 只看原始命令:新增一律 CREATE,编辑一律 UPDATE(即使 enabled=false 或前后值相同),不看实时库状态。
         String action=create?"CREATE":"UPDATE";
         return new RuleTaskReview(lock,next.name(),before,ruleDescription(next.name(),next.taskClass(),
-                nextEnabled,settings.durationMinutes(),settings.baseReward(),settings.asset()),null, amplifies, action);
+                nextEnabled,settings.durationSeconds()),null, amplifies, action);
     }
-    private String ruleDescription(String name,String taskClass,boolean enabled,int minutes,BigDecimal reward,String asset) {
-        return name+" · "+classSummary(List.of(taskClass))+" · "+(enabled?"启用":"停用")+" · "+minutes+" 分钟 · "+reward.stripTrailingZeros().toPlainString()+" "+asset;
+    private boolean phonePoolEmpty() {
+        return simulationPolicies.currentTypes().stream().noneMatch(SimulatedTaskPolicyService.TaskTypeSnapshot::enabled);
+    }
+    private String ruleDescription(String name,String taskClass,boolean enabled,int seconds) {
+        return name+" · "+classSummary(List.of(taskClass))+" · "+(enabled?"启用":"停用")+" · "+seconds+" 秒";
     }
 
     public PhoneClassReview phoneClassReview(AuditReplayCommand command) {
@@ -6612,6 +6639,8 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
 
     /** 从 replay params 重建 DeviceTaskUpsertRequest(e2_task_create/update 复用)。 */
     private static DeviceTaskUpsertRequest buildTaskUpsertRequest(Map<String, Object> p, String reason, String operator) {
+        if ("PHONE".equals(p.get("poolCode")) && (p.containsKey("baseReward") || p.containsKey("asset")))
+            throw new BizException(422,"PHONE_TASK_REWARD_FIELDS_FORBIDDEN");
         return new DeviceTaskUpsertRequest(
                 str(p, "name"), decimal(p, "price"), str(p, "unit"), str(p, "requirement"),
                 decimal(p, "saturation"), str(p, "status"), str(p, "taskClass"), str(p, "model"),
@@ -6626,8 +6655,10 @@ public class OpsDeviceService implements ffdd.opsconsole.platform.domain.AuditRe
         if(raw==null)return null;
         if(!(raw instanceof Map<?,?> source))throw new ffdd.opsconsole.shared.exception.BizException(422,"SIMULATED_TASK_SETTINGS_INVALID");
         Map<String,Object> value=new LinkedHashMap<>();source.forEach((k,v)->value.put(String.valueOf(k),v));
-        return new ffdd.opsconsole.device.dto.TaskSimulationSettings(schedulingInt(value,"durationMinutes"),decimal(value,"baseReward"),
-                str(value,"asset"),boolVal(value,"enabled"),strictPolicyVersion(value.get("expectedVersion")));
+        if(value.containsKey("baseReward") || value.containsKey("asset"))
+            throw new BizException(422,"PHONE_TASK_REWARD_FIELDS_FORBIDDEN");
+        return new ffdd.opsconsole.device.dto.TaskSimulationSettings(schedulingInt(value,"durationSeconds"),
+                boolVal(value,"enabled"),strictPolicyVersion(value.get("expectedVersion")));
     }
     private static Long strictPolicyVersion(Object value) {
         if(value==null)return null;

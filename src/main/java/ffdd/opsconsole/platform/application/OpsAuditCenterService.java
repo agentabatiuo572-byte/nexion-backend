@@ -723,6 +723,19 @@ public class OpsAuditCenterService {
                         if(rule.statusVersion()!=null)stored.put("ruleStatusReviewVersion",rule.statusVersion());
                     }
                 }
+                if ("E".equals(command.domain()) && "e2_phone_tier".equals(command.op())
+                        && !StringUtils.hasText(Objects.toString(command.params().get("configKey"), ""))) {
+                    var review=devices.reviewPhoneTierReward(command.params());
+                    if (target!=null && !review.target().equals(target) || request.targets()!=null && !request.targets().isEmpty())
+                        return fail(OpsErrorCode.VALIDATION_FAILED, "A2_TARGET_MISMATCH");
+                    target=review.target();
+                    ticket.setObjectText("T"+target.id());
+                    ticket.setBeforeValue(review.before());
+                    ticket.setAfterValue(review.after());
+                    ticket.setOperationType(review.amplifies()?"fund":"param");
+                    ticket.setAmplifies(review.amplifies()?1:0);
+                    ticket.setSos(0);
+                }
                 if (A2ReplayContext.isAvatarCommand(command)) {
                     Long maker = A2ReplayContext.authenticatedAdminId();
                     if (maker == null || !A2ReplayContext.hasAuthority("platform_a1_write"))

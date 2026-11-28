@@ -365,6 +365,14 @@ public interface OnboardingCalibrationMapper {
     List<TierRow> activeTiers();
 
     @Select("""
+            SELECT tier,name,tops_min topsMin,tops_max topsMax,base_rate_usdt baseRateUsdt,
+                   base_rate_nex baseRateNex,revision
+              FROM nx_onboarding_phone_tier_config
+             WHERE active=1 AND is_deleted=0 AND tier=#{tier}
+            """)
+    TierRow activeTier(int tier);
+
+    @Select("""
             SELECT c.config_key configKey,
                    CASE WHEN c.config_key='phone' THEN c.label ELSE p.name END label,
                    CASE WHEN c.config_key='phone' THEN t.base_rate_usdt ELSE p.estimated_daily_usdt END dailyUsdt,

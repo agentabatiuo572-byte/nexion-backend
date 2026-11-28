@@ -1120,6 +1120,7 @@ def apply(sha, *, rollback_check=False):
     b85_files = {'20261124_b85_device_task_catalog.sql', '20261124_b85_phone_task_duration.sql'}
     b86_file = '20261125_b86_phone_task_duration_tiers.sql'
     b87_file = '20261125_b87_vrank_salary.sql'
+    b152_file = '20261128_b152_phone_task_rewards.sql'
     storage_offset = {'Asia/Shanghai': '+08:00', 'Asia/Ho_Chi_Minh': '+07:00'}.get(
         storage_zone.strip() or 'Asia/Shanghai')
     if any(name in b84_files for name, _ in pending):
@@ -1130,6 +1131,8 @@ def apply(sha, *, rollback_check=False):
         require(storage_offset is not None, 'B86_STORAGE_TIMEZONE_UNSUPPORTED')
     if any(name == b87_file for name, _ in pending):
         require(storage_offset is not None, 'B87_STORAGE_TIMEZONE_UNSUPPORTED')
+    if any(name == b152_file for name, _ in pending):
+        require(storage_offset is not None, 'B152_STORAGE_TIMEZONE_UNSUPPORTED')
     scoped_account(user, password)
     trigger_context = migration_preflight(
         [(name, data) for name, data in pending
@@ -1180,7 +1183,7 @@ def apply(sha, *, rollback_check=False):
                 execute_sql(name + '.retired-prefix', prefix, folder, user, password)
             elif name == EARNINGS_FILE and trigger_context['root_install']:
                 execute_earnings_recovery(data, folder, user, password, root_password, trigger_context, journal)
-            elif name in b84_files or name in b85_files or name in (b86_file, b87_file):
+            elif name in b84_files or name in b85_files or name in (b86_file, b87_file, b152_file):
                 session_sql = f"SET SESSION time_zone = '{storage_offset}';\n".encode()
                 execute_sql(name, session_sql + data, folder, user, password)
             else:
