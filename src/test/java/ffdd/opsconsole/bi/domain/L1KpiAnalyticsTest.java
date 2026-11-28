@@ -25,11 +25,11 @@ class L1KpiAnalyticsTest {
     }
 
     @Test
-    void alwaysReturnsEightContractsAndKeepsMissingDenominatorsNull() {
+    void alwaysReturnsSevenContractsAndKeepsMissingDenominatorsNull() {
         Map<String, Object> result = L1KpiAnalytics.calculate(List.of(), "7d", null, null, null, null);
 
         List<Map<String, Object>> kpis = rows(result.get("kpis"));
-        assertThat(kpis).hasSize(8);
+        assertThat(kpis).extracting(kpi -> kpi.get("n")).containsExactly(1, 2, 3, 4, 5, 7, 8);
         assertThat(kpis).allSatisfy(kpi -> {
             assertThat(kpi.get("value")).isNull();
             assertThat(kpi.get("status")).isEqualTo("UNAVAILABLE");
@@ -58,7 +58,7 @@ class L1KpiAnalyticsTest {
         assertThat(kpis.get(0)).containsEntry("value", 50D).containsEntry("numerator", 1L).containsEntry("denominator", 2L);
         assertThat(kpis.get(2)).containsEntry("value", 50D);
         assertThat(kpis.get(3)).containsEntry("value", 100D).containsEntry("numerator", 1L).containsEntry("denominator", 1L);
-        assertThat(kpis.get(5)).containsEntry("value", 100D);
+        assertThat(kpis).noneMatch(kpi -> Integer.valueOf(6).equals(kpi.get("n")));
     }
 
     @Test
@@ -126,7 +126,7 @@ class L1KpiAnalyticsTest {
 
         List<Map<String, Object>> kpis = rows(L1KpiAnalytics.calculate(
                 List.of(first, duplicate, second), "7d", null, null, null, null).get("kpis"));
-        assertThat(kpis.get(7))
+        assertThat(kpis.get(6))
                 .containsEntry("value", 2D)
                 .containsEntry("numerator", 1000L);
 
@@ -183,7 +183,7 @@ class L1KpiAnalyticsTest {
                 List.of(referralOne, referralTwo, beforeBinding, firstNetwork, replayWithAnotherEventId, nonNetwork),
                 "7d", null, null, null, null).get("kpis"));
 
-        assertThat(kpis.get(6))
+        assertThat(kpis.get(5))
                 .containsEntry("value", 50D)
                 .containsEntry("numerator", 1L)
                 .containsEntry("denominator", 2L);

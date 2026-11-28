@@ -548,6 +548,9 @@ public class SupportAnalyticsService {
                         || row.completeness()==SupportInvitationReadFacade.Completeness.COMPLETE && !row.reasons().isEmpty()
                         || row.directCustomerIds().stream().anyMatch(id->id==null || id<=0 || id==row.rootCustomerId())
                         || row.descendantCustomerIds().stream().anyMatch(id->id==null || id<=0 || id==row.rootCustomerId())
+                        || row.withinRewardRange()<0 || row.beyondRewardRange()<0
+                        || (long)row.withinRewardRange()+row.beyondRewardRange()!=row.descendantCustomerIds().size()
+                        || row.directCustomerIds().size()>row.withinRewardRange()
                         || !new HashSet<>(row.descendantCustomerIds()).containsAll(row.directCustomerIds())
                         || new HashSet<>(row.directCustomerIds()).size()!=row.directCustomerIds().size()
                         || new HashSet<>(row.descendantCustomerIds()).size()!=row.descendantCustomerIds().size()
@@ -763,7 +766,8 @@ public class SupportAnalyticsService {
     }
     private static InvitationSummary invitationSummary(SupportInvitationReadFacade.Invitation tree,Query query,Collection<Fact> facts,
             Snapshot rootSnapshot,Snapshot extraSnapshot,Set<Long> rootFinancialIds) {
-        if(tree==null)return new InvitationSummary(new Count(null,null,Status.UNKNOWN),new Count(null,null,Status.UNKNOWN),List.of(),Status.UNKNOWN,List.of("INVITATION_SOURCE_UNVERIFIED"));
+        if(tree==null)return new InvitationSummary(new Count(null,null,Status.UNKNOWN),new Count(null,null,Status.UNKNOWN),
+                new Count(null,null,Status.UNKNOWN),new Count(null,null,Status.UNKNOWN),List.of(),Status.UNKNOWN,List.of("INVITATION_SOURCE_UNVERIFIED"));
         Status state=switch(tree.completeness()){case COMPLETE->Status.AVAILABLE;case PARTIAL->Status.PARTIAL;case UNKNOWN->Status.UNKNOWN;case FAILED->Status.FAILED;};
         var descendants=new HashSet<>(tree.descendantCustomerIds());var rows=facts.stream().filter(f->descendants.contains(f.customerId()) && f.kind()==Kind.DEPOSIT).toList();
         var currencies=new TreeSet<String>();if(query.currency()!=null)currencies.add(query.currency());else rows.forEach(f->currencies.add(f.currency()));
@@ -790,8 +794,9 @@ public class SupportAnalyticsService {
                 value=new Money(value.observedAmount(),null,value.observedEvents(),null,value.observedCustomers(),Status.UNKNOWN,List.of("INVITATION_SOURCE_UNVERIFIED"));
             totals.add(new InvitationCurrencyTotal(currency,value));
         }
-        return new InvitationSummary(invitationCount(tree.directCustomerIds().size(),state),invitationCount(descendants.size(),state),totals,state,
-            tree.reasons().stream().map(Enum::name).sorted().toList());
+        return new InvitationSummary(invitationCount(tree.directCustomerIds().size(),state),
+            invitationCount(tree.withinRewardRange(),state),invitationCount(tree.beyondRewardRange(),state),
+            invitationCount(tree.total(),state),totals,state,tree.reasons().stream().map(Enum::name).sorted().toList());
     }
     private static Count invitationCount(long value,Status state) {
         return new Count(state==Status.FAILED?null:value,state==Status.AVAILABLE?value:null,state);

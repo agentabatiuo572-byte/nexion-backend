@@ -10,7 +10,6 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.capacity.E3CapacityCurve;
 import ffdd.opsconsole.shared.capacity.E3DeviceCapacityPolicy;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -37,7 +36,7 @@ public class SimulatedTaskPolicyService {
             List<TaskTypeSnapshot> taskTypes,long e3Version,Map<String,String> e3Config,
             BigDecimal monthlyTargetUsdt,BigDecimal monthlyTargetBandPct,List<String> allowedPoolCodes) { }
     public record TypeView(int durationMinutes,BigDecimal baseReward,String asset,boolean enabled,
-            long version,LocalDateTime effectiveAt) { }
+            long version,LocalDateTime effectiveAt,int durationSeconds) { }
     public record ProductView(List<String> allowedPoolCodes,long productTaskPolicyVersion,
             LocalDateTime productTaskPolicyEffectiveAt) { }
 
@@ -219,7 +218,7 @@ public class SimulatedTaskPolicyService {
         if(!ids.isEmpty())for(var t:mapper.typesAt(ids,LocalDateTime.now(clock)))result.put(t.taskTypeId(),toView(t));
         return result;
     }
-    private TypeView toView(TypeVersion t) {return new TypeView(t.durationSeconds()/60,t.baseReward(),t.asset(),t.enabled(),t.version(),t.effectiveAt());}
+    private TypeView toView(TypeVersion t) {return new TypeView(t.durationSeconds()/60,t.baseReward(),t.asset(),t.enabled(),t.version(),t.effectiveAt(),t.durationSeconds());}
     public List<TaskTypeSnapshot> currentTypes() {
         return typesInPools(List.of("PHONE"),LocalDateTime.now(clock)).stream().map(t->new TaskTypeSnapshot(t.taskTypeId(),t.version(),t.name(),t.taskClass(),t.durationSeconds(),t.baseReward(),t.asset(),t.enabled(),t.poolCode())).toList();
     }
@@ -253,11 +252,13 @@ public class SimulatedTaskPolicyService {
         }
     }
     public void validateType(TaskSimulationSettings s) {
-        if(s==null||s.durationMinutes()==null||s.durationMinutes()<1||s.durationMinutes()>1440)throw new BizException(422,"SIMULATED_DURATION_MINUTES_INVALID");
-        if(s.baseReward()==null||s.baseReward().signum()<0||s.baseReward().compareTo(DeviceMonthlyTargetPacing.MAX_REWARD)>0
-                ||s.baseReward().stripTrailingZeros().scale()>6)throw new BizException(422,"SIMULATED_FIXED_REWARD_INVALID");
-        if(!Set.of("USDT","UVT").contains(s.asset()==null?"":s.asset()))throw new BizException(422,"SIMULATED_ASSET_INVALID");
-        if(s.enabled()==null||s.expectedVersion()==null||s.expectedVersion()<0)throw new BizException(422,"SIMULATED_POLICY_VERSION_REQUIRED");
+        if(s==null||s.durationSeconds()==null||s.durationSeconds()<60||s.durationSeconds()>86400)
+            throw new BizException(422,"SIMULATED_DURATION_SECONDS_INVALID");
+        if(s.expectedVersion()==null||s.expectedVersion()<0)throw new BizException(422,"SIMULATED_POLICY_VERSION_REQUIRED");
+    }
+    /** Caller holds the common E3 configuration lock used for PHONE writes. */
+    public boolean phonePoolEmptyForUpdate() {
+        return mapper.lockEnabledPhoneType(LocalDateTime.now(clock))==null;
     }
     public void requirePhoneType(String id) {
         var t=mapper.typeAt(id,LocalDateTime.now(clock));
@@ -269,7 +270,8 @@ public class SimulatedTaskPolicyService {
         if(before!=null&&!"PHONE".equals(before.poolCode()))throw new BizException(422,"TASK_POOL_KIND_FORBIDDEN");
         if(s.expectedVersion()!=(before==null?0:before.version()))throw new BizException(409,"SIMULATED_TASK_POLICY_VERSION_CONFLICT");
         initializeE3(at);
-        mapper.insertType(new TypeVersion(id,before==null?1:before.version()+1,at,name,taskClass,s.durationMinutes()*60,s.baseReward().setScale(6,RoundingMode.UNNECESSARY),s.asset(),s.enabled(),"PHONE"));
+        mapper.insertType(new TypeVersion(id,before==null?1:before.version()+1,at,name,taskClass,s.durationSeconds(),
+                BigDecimal.ZERO,"USDT",s.enabled(),"PHONE"));
         wakes.afterCommitProducts(List.of("phone"));
     }
     public void saveProduct(String key,List<String> pools,boolean publishing,LocalDateTime at) {saveProduct(key,pools,publishing,at,true);}

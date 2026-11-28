@@ -100,12 +100,12 @@ public final class HttpHdPayGateway implements HdPayGateway {
                     parsed = true;
                 } catch (IOException ex) {
                     reason = "INVALID_JSON";
-                    // Preserve HTTP rejection for non-2xx even when its body is not JSON.
+                    // Keep the HTTP status for diagnostics even when its body is not JSON.
                     if (response.statusCode() >= 200 && response.statusCode() < 300) throw ex;
                 }
                 if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                    reason = "HTTP_REJECTED";
-                    throw new HdPayGatewayException("HDPAY_HTTP_" + response.statusCode(), false);
+                    reason = "HTTP_UNCONFIRMED";
+                    throw new HdPayGatewayException("HDPAY_HTTP_" + response.statusCode(), true);
                 }
                 if (root == null || !root.isObject()) {
                     throw new HdPayGatewayException("HDPAY_CREATE_REJECTED", true);
@@ -119,7 +119,7 @@ public final class HttpHdPayGateway implements HdPayGateway {
                     reason = safeRejectionReason(root);
                     PublicReason publicReason = createRejectionReason(root, requestBody);
                     publicReasonDisposition = publicReason.disposition();
-                    throw new HdPayGatewayException("HDPAY_CREATE_EXPLICIT_REJECTED", false, null,
+                    throw new HdPayGatewayException(HdPayGatewayException.EXPLICIT_CREATE_REJECTION, false, null,
                             publicReason.value());
                 }
                 String page = root.path("data").isTextual() ? root.path("data").asText().trim() : "";

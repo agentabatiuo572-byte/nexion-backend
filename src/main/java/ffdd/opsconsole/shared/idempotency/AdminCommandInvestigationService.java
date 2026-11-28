@@ -9,6 +9,7 @@ import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.idempotency.AdminCommandOrigin.A3Content;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminCommandInvestigationMapper;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
@@ -77,9 +78,15 @@ public class AdminCommandInvestigationService {
                 || path == null || !path.startsWith("/api/admin/") || path.length() > 512)
             throw new BizException(422, "INVESTIGATION_ORIGINAL_LOCATOR_INVALID");
         boolean investigator = isInvestigator(actor);
-        return investigations.findOriginals(key, method, path, actor, investigator).stream()
-                .filter(original -> AdminCommandOrigin.supported(original.getScope()) && original.getOriginAdminId() != null
-                        && StringUtils.hasText(original.getOriginReadAuthority()))
+        var a3Content = A3Content.forRoute(method, path);
+        if (a3Content != null) requireInitialReader(a3Content.scope(actor), actor);
+        var originals = a3Content == null ? investigations.findOriginals(key, method, path, actor, investigator)
+                : investigations.findA3ContentOriginals(key, a3Content.scope(actor), a3Content.scopePattern, investigator);
+        return originals.stream()
+                .filter(original -> a3Content == null
+                        ? A3Content.forScope(original.getScope()) == null && AdminCommandOrigin.supported(original.getScope())
+                            && original.getOriginAdminId() != null && StringUtils.hasText(original.getOriginReadAuthority())
+                        : bindA3ContentOriginal(original, a3Content))
                 .map(original -> {
                     requireReader(original, actor);
                     var latest = investigations.latest(original.getId());
@@ -93,7 +100,7 @@ public class AdminCommandInvestigationService {
         long actor = requireAdmin();
         validateIdentity(scope, key, hash, false);
         requireInitialReader(scope, actor);
-        var original = requireOriginal(records.selectCurrent(scope, key), hash);
+        var original = requireOriginal(selectOriginal(scope, key), hash);
         requireReader(original, actor);
         var latest = investigations.latest(original.getId());
         requireFactReader(original, latest);
@@ -127,12 +134,19 @@ public class AdminCommandInvestigationService {
                 || !commandKey.equals(commandKey.trim())) {
             throw new BizException(422, "RECEIPT_COMMAND_KEY_INVALID");
         }
-        if (!permissions.getPermissionCodes(actor).contains(authority)) throw denied();
+        var a3Content = A3Content.forScope(scope);
+        if (a3Content != null) requireInitialReader(scope, actor);
+        else if (!permissions.getPermissionCodes(actor).contains(authority)) throw denied();
         String storedScope = AdminCommandOrigin.g2ParameterKey(scope) == null ? scope
                 : scope.toUpperCase(java.util.Locale.ROOT);
-        var original = records.selectCurrent(storedScope, commandKey);
+        var original = selectOriginal(storedScope, commandKey);
         if (original == null || !Integer.valueOf(0).equals(original.getIsDeleted())) {
             return new ReceiptStatus("NOT_FOUND");
+        }
+        if (a3Content != null) {
+            if (!bindA3ContentOriginal(original, a3Content)) return new ReceiptStatus("UNKNOWN");
+            requireReader(original, actor);
+            return statusOf(original, actor);
         }
         // Only a stored origin proves who issued the command; rows without one stay unknown.
         if (original.getOriginAdminId() == null || !Long.valueOf(actor).equals(original.getOriginAdminId())) {
@@ -161,8 +175,10 @@ public class AdminCommandInvestigationService {
         // An active writer owns its outcome. A manual investigation must not abort or race that writer.
         if ("PROCESSING".equals(original.getStatus())) throw new BizException(409, "INVESTIGATION_COMMAND_STILL_PROCESSING");
         boolean known = Set.of("SUCCEEDED", "FAILED").contains(original.getStatus());
+        boolean a3Content = A3Content.forScope(original.getScope()) != null;
         if (known && ("STILL_UNKNOWN".equals(request.conclusion())
-                || "NOT_EXECUTED".equals(request.conclusion()) && !provenNotExecuted(original)))
+                || "NOT_EXECUTED".equals(request.conclusion()) && !provenNotExecuted(original)
+                || a3Content && "SUCCEEDED".equals(request.conclusion()) && businessRejected(original)))
             throw new BizException(409, "INVESTIGATION_KNOWN_RESULT_CONFLICT");
         // A business rejection is only ever concluded from the stored response of this record; the caller
         // supplies neither the code nor the body.
@@ -200,7 +216,8 @@ public class AdminCommandInvestigationService {
                 }
                 entry.setFactAction(original.getScope());
             } else if (request.evidenceAuditId() != null) {
-                var fact = investigations.successEvidence(request.evidenceAuditId(), original);
+                // Older A3 claims could use the same row again after expiry. An earlier generation's audit is not proof.
+                var fact = investigations.successEvidence(request.evidenceAuditId(), original, a3Content);
                 if (allowedFact(original, fact)) {
                     entry.setConclusion("SUCCEEDED");
                     entry.setEvidenceType("SUCCESS_AUDIT:" + fact.getId());
@@ -251,6 +268,9 @@ public class AdminCommandInvestigationService {
 
     private boolean successfulReceipt(AdminIdempotencyRecordEntity original) {
         if (!"SUCCEEDED".equals(original.getStatus()) || !StringUtils.hasText(original.getResponseJson())) return false;
+        if (A3Content.forScope(original.getScope()) != null) {
+            return Integer.valueOf(0).equals(businessCode(original.getResponseJson()));
+        }
         try {
             var value = json.readTree(original.getResponseJson());
             if (value == null || !value.isObject() || value.isEmpty()) return false;
@@ -336,8 +356,8 @@ public class AdminCommandInvestigationService {
     }
 
     private boolean provenNotExecuted(AdminIdempotencyRecordEntity original) {
+        if (original.getResponseJson() == null) return AdminIdempotencyRollbackEvidence.confirmed(original);
         if (!AdminCommandOrigin.localConfiguration(original.getScope())) return false;
-        if (original.getResponseJson() == null) return Integer.valueOf(1).equals(original.getRollbackConfirmed());
         try {
             var response = json.readTree(original.getResponseJson());
             int code = response.path("code").asInt(0);
@@ -355,6 +375,9 @@ public class AdminCommandInvestigationService {
         String scope = original.getScope();
         if (fact == null || !StringUtils.hasText(fact.getResourceId()) || !StringUtils.hasText(fact.getResourceType())) return false;
         String action = fact.getAction();
+        var a3Content = A3Content.forScope(scope);
+        if (a3Content != null) return "PUBLISHED_CONTENT".equals(fact.getResourceType())
+                && a3Content.configKey.equals(fact.getResourceId()) && a3Content.auditAction.equals(action);
         if (AdminCommandOrigin.purchasePaymentPolicyScope(scope)) return "PURCHASE_PAYMENT_POLICY".equals(fact.getResourceType())
                 && "1".equals(fact.getResourceId()) && "PURCHASE_PAYMENT_POLICY_UPDATE".equals(action);
         if ("A2_COMMAND".equals(scope)) return "A2_OPERATION".equals(fact.getResourceType())
@@ -364,7 +387,8 @@ public class AdminCommandInvestigationService {
                 && Set.of("L_BI_REPORT_CREATE", "ADMIN.REPORT_EXPORTED").contains(action);
         if (scope.startsWith("L_BI_REPORT_ACTION_")) return "BI_REPORT".equals(fact.getResourceType())
                 && action.equals("L_BI_REPORT_" + scope.substring("L_BI_REPORT_ACTION_".length()));
-        if (scope.startsWith("E2_POOL_")) return Set.of("E2_TASK_POOL_RANDOM_ADDED", "E2_TASK_POOL_STATUS_CHANGED").contains(action);
+        if (scope.startsWith("E2_POOL_")) return Set.of("E2_TASK_POOL_RANDOM_ADDED", "E2_TASK_POOL_STATUS_CHANGED",
+                "E2_TASK_POOL_TASK_CREATED", "E2_TASK_POOL_TASK_UPDATED").contains(action);
         // AuditLogService stores action canonically uppercase, so the whitelist must match the
         // persisted value (e.g. ADMIN.DEVICE_PAUSED) rather than the lowercase writer alias.
         if (scope.startsWith("E5_DEVICE_")) return (scope.startsWith("E5_DEVICE_BATCH_") ? "USER_DEVICE_BATCH" : "DEVICE").equals(fact.getResourceType())
@@ -717,6 +741,8 @@ public class AdminCommandInvestigationService {
     }
 
     private void requireInitialReader(String scope, long actor) {
+        var a3Content = A3Content.forScope(scope);
+        if (a3Content != null && !scope.equals(a3Content.scope(actor)) && !isInvestigator(actor)) throw denied();
         if ("A2_COMMAND".equals(scope)) {
             a2.requireProposalReader();
             return;
@@ -750,9 +776,45 @@ public class AdminCommandInvestigationService {
         if (original == null || !Integer.valueOf(0).equals(original.getIsDeleted()))
             throw new BizException(409, "INVESTIGATION_ORIGINAL_NOT_FOUND_REMAINS_LOCKED");
         if (hash != null && !hash.equals(original.getRequestHash())) throw new BizException(409, "IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        var a3Content = A3Content.forScope(original.getScope());
+        if (a3Content != null && !bindA3ContentOriginal(original, a3Content)) {
+            throw new BizException(409, "INVESTIGATION_LEGACY_ORIGIN_UNPROVEN_REMAINS_LOCKED");
+        }
         if (original.getOriginAdminId() == null || !StringUtils.hasText(original.getOriginReadAuthority()))
             throw new BizException(409, "INVESTIGATION_LEGACY_ORIGIN_UNPROVEN_REMAINS_LOCKED");
         return original;
+    }
+
+    private AdminIdempotencyRecordEntity selectOriginal(String scope, String key) {
+        var original = records.selectCurrent(scope, key);
+        if (original != null && A3Content.forScope(scope) != null
+                && (!scope.equals(original.getScope()) || !key.equals(original.getIdempotencyKey()))) return null;
+        return original;
+    }
+
+    private boolean bindA3ContentOriginal(AdminIdempotencyRecordEntity original, A3Content content) {
+        String scope = original.getScope();
+        if (A3Content.forScope(scope) != content || original.getRequestHash() == null
+                || !original.getRequestHash().matches("[0-9a-f]{64}")) return false;
+        long owner;
+        try { owner = Long.parseLong(scope.substring(content.scopePrefix.length() + 1)); }
+        catch (NumberFormatException invalid) { return false; }
+        String authority = AdminCommandOrigin.readAuthority(scope);
+        if (original.getOriginAdminId() != null) {
+            return original.getOriginAdminId() == owner && "PUT".equals(original.getOriginMethod())
+                    && content.path.equals(original.getOriginPath()) && content.configKey.equals(original.getOriginTarget())
+                    && authority.equals(original.getOriginReadAuthority());
+        }
+        if (original.getOriginMethod() != null || original.getOriginPath() != null || original.getOriginTarget() != null
+                || original.getOriginTargets() != null || original.getOriginReadAuthority() != null) return false;
+        // The two original writers construct these scopes from the authenticated admin and have one fixed route each.
+        // Recover that identity for reads and exact evidence checks without backfilling any historical row.
+        original.setOriginAdminId(owner);
+        original.setOriginMethod("PUT");
+        original.setOriginPath(content.path);
+        original.setOriginTarget(content.configKey);
+        original.setOriginReadAuthority(authority);
+        return true;
     }
 
     private void validateIdentity(String scope, String key, String hash, boolean requireHash) {
@@ -917,6 +979,19 @@ public class AdminCommandInvestigationService {
 
     private String receiptState(AdminIdempotencyRecordEntity original) {
         String status = original.getStatus();
+        if (A3Content.forScope(original.getScope()) != null) {
+            return switch (status) {
+                case "PROCESSING", "UNKNOWN" -> status;
+                case "CONFIRMED_SUCCEEDED" -> "SUCCEEDED";
+                case "CONFIRMED_NOT_EXECUTED" -> "NOT_EXECUTED";
+                case "CONFIRMED_REJECTED" -> "REJECTED";
+                case "SUCCEEDED" -> {
+                    Integer code = businessCode(original.getResponseJson());
+                    yield code == null ? "UNKNOWN" : code == 0 ? "SUCCEEDED" : "REJECTED";
+                }
+                default -> "UNKNOWN";
+            };
+        }
         if ("PROCESSING".equals(status)) return "PROCESSING";
         if ("FAILED".equals(status)) {
             // Only the origin-backed failure path persists a trusted business reply; a bare
@@ -965,12 +1040,16 @@ public class AdminCommandInvestigationService {
     }
 
     private Receipt receipt(AdminIdempotencyRecordEntity original, AdminCommandInvestigationEntity latest) {
-        boolean locked = Set.of("UNKNOWN", "PROCESSING").contains(original.getStatus());
+        boolean rollbackConfirmed = AdminIdempotencyRollbackEvidence.confirmed(original);
+        boolean a3Failed = A3Content.forScope(original.getScope()) != null && "FAILED".equals(original.getStatus());
+        boolean locked = Set.of("UNKNOWN", "PROCESSING").contains(original.getStatus())
+                || a3Failed && !rollbackConfirmed;
+        boolean newOperationAllowed = "CONFIRMED_NOT_EXECUTED".equals(original.getStatus());
         return new Receipt(original.getId(), original.getScope(), original.getIdempotencyKey(), original.getRequestHash(),
                 original.getOriginMethod(), original.getOriginPath(), original.getOriginTarget(), original.getOriginTargets(), original.getOriginAdminId(),
-                original.getStatus(), locked, "CONFIRMED_NOT_EXECUTED".equals(original.getStatus()),
+                original.getStatus(), locked, newOperationAllowed,
                 businessCode(original.getResponseJson()), receiptState(original), batchSplit(original), latest,
-                original.getResponseJson() == null && provenNotExecuted(original), integrityRepair(original));
+                rollbackConfirmed, integrityRepair(original));
     }
 
     private IntegrityRepairReceipt integrityRepair(AdminIdempotencyRecordEntity original) {

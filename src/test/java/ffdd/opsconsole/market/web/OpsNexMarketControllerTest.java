@@ -32,7 +32,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 class OpsNexMarketControllerTest {
     private final OpsNexMarketService marketService = mock(OpsNexMarketService.class);
     private final GenesisCatalogService genesisCatalogService = mock(GenesisCatalogService.class);
-    private final OpsNexMarketController controller = new OpsNexMarketController(marketService, null, null, null, genesisCatalogService, mock(G4DividendApproval.class));
+    private final OpsNexMarketController controller = new OpsNexMarketController(marketService, null, null, null, null, genesisCatalogService, mock(G4DividendApproval.class));
 
     @Test
     void curveDelegatesToService() {
@@ -210,7 +210,7 @@ class OpsNexMarketControllerTest {
                                                 OpsRepurchaseAdminService repurchaseService,
                                                 GenesisCatalogService genesisCatalogService,
                                                 G4DividendApproval g4DividendApproval) {
-            return new OpsNexMarketController(marketService, commandService, g4CommandService, repurchaseService, genesisCatalogService, g4DividendApproval);
+            return new OpsNexMarketController(marketService, null, commandService, g4CommandService, repurchaseService, genesisCatalogService, g4DividendApproval);
         }
     }
 

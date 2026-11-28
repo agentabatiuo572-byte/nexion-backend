@@ -1,6 +1,6 @@
 {
- "catalogVersion": "android-soc-tiers-20261028",
- "verifiedOn": "2026-10-28",
+ "catalogVersion": "android-soc-tiers-20261127",
+ "verifiedOn": "2026-11-27",
  "scope": "MAINSTREAM_ANDROID_SOCS_SINCE_2021",
  "matchBy": "SOC_IDENTIFIER",
  "computeUnit": "platform",
@@ -21,7 +21,14 @@
   "https://en.wikichip.org/wiki/Google",
   "https://phonearena.com/news/laguna-malibu-google-codenames-tensor-processors_id164010",
   "https://helpix.ru/chipset/unisoc_t606/",
-  "https://www.notebookcheck.com/UNISOC-SC9863A-SoC-Benchmarks-und-Specs.426936.0.html"
+  "https://www.notebookcheck.com/UNISOC-SC9863A-SoC-Benchmarks-und-Specs.426936.0.html",
+  "https://www.notebookcheck.net/Smartphone-Processors-Benchmark-List.149513.0.html",
+  "https://github.com/xdaGari/tadiphone-buildprop-archive",
+  "https://github.com/TomKing062/CVE-2022-38694_unlock_bootloader/wiki/AddSupportToModel",
+  "https://www.sammobile.com/news/exynos-1610-chip-more-than-rebranded-exynos-1330-without-5g/",
+  "https://cputronic.com/soc/samsung-exynos-2600",
+  "https://phonedb.net/index.php?m=processor&id=973&c=mediatek_dimensity_7025_mt6855vatza",
+  "https://www.deviceinfo.app/soc/qualcomm/"
  ],
  "notice": "Operator presets, not vendor specifications or measured performance. Identifiers are included only when two independent sources agree; chips sharing an identifier sit in one group. Not yet sampled on real phones. Loading the catalog only fills an E6 draft; it takes effect after A2 approval.",
  "ambiguousIds": [
@@ -36,36 +43,36 @@
  ],
  "excluded": [
   {
-   "chip": "天玑 9500",
-   "reason": "MT6993 只有一个来源"
-  },
-  {
-   "chip": "天玑 7025",
-   "reason": "MT6855 只有一个来源"
-  },
-  {
    "chip": "天玑 700 / 6020",
    "reason": "共用 MT6833 且分属不同档"
   },
   {
-   "chip": "Exynos 2500",
-   "reason": "S5E9955 只有一个来源"
-  },
-  {
-   "chip": "Exynos 1580",
-   "reason": "S5E8855 只有一个来源"
-  },
-  {
-   "chip": "Exynos 1480",
-   "reason": "S5E8845 只有一个来源"
-  },
-  {
-   "chip": "Exynos 1330",
-   "reason": "S5E8535 只有一个来源"
-  },
-  {
    "chip": "Android 11 及以下的高通平台代号",
    "reason": "多颗芯片共用，需真机采样"
+  },
+  {
+   "chip": "骁龙 8 Elite Gen 6（SM8950）",
+   "reason": "目标市场暂无在售机型，也没有公开跑分"
+  },
+  {
+   "chip": "天玑 1000+（MT6889）、天玑 1050 / 7030（MT6879）",
+   "reason": "标识符只有一个来源"
+  },
+  {
+   "chip": "天玑 7100 / 7300e（MT6858）",
+   "reason": "暂无公开跑分，档位未定"
+  },
+  {
+   "chip": "紫光展锐 T7250 / T7280 / T8300 / T9300 等新命名",
+   "reason": "真机上报的标识符未核实"
+  },
+  {
+   "chip": "Tensor G4 / G5 上报的「Tensor G4」「Tensor G5」",
+   "reason": "只有一个来源，暂按平台代号匹配"
+  },
+  {
+   "chip": "华为麒麟系列",
+   "reason": "真机只上报「Kirin」，无法分档"
   }
  ],
  "tiers": [
@@ -99,10 +106,50 @@
     },
     {
      "socKey": "mtk-dimensity-9400",
-     "name": "天玑 9400 / 9400+",
+     "name": "天玑 9400 / 9400+ / 9500s",
      "manufacturer": "联发科",
      "aliases": [
       "MT6991"
+     ]
+    },
+    {
+     "socKey": "sd-8-gen-5",
+     "name": "骁龙 8 Gen 5",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM8845"
+     ]
+    },
+    {
+     "socKey": "sd-8-elite-extreme-gen-6",
+     "name": "骁龙 8 Elite Extreme Gen 6",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM8975"
+     ]
+    },
+    {
+     "socKey": "mtk-dimensity-9500",
+     "name": "天玑 9500",
+     "manufacturer": "联发科",
+     "aliases": [
+      "MT6993"
+     ]
+    },
+    {
+     "socKey": "exynos-2600",
+     "name": "Exynos 2600",
+     "manufacturer": "三星",
+     "aliases": [
+      "S5E9965"
+     ]
+    },
+    {
+     "socKey": "exynos-2500",
+     "name": "Exynos 2500",
+     "manufacturer": "三星",
+     "aliases": [
+      "S5E9955"
      ]
     }
    ]
@@ -146,7 +193,7 @@
     },
     {
      "socKey": "mtk-dimensity-9300",
-     "name": "天玑 9300 / 9300+",
+     "name": "天玑 9300 / 9300+ / 9400e",
      "manufacturer": "联发科",
      "aliases": [
       "MT6989"
@@ -174,6 +221,14 @@
      "manufacturer": "谷歌",
      "aliases": [
       "laguna"
+     ]
+    },
+    {
+     "socKey": "google-tensor-g6",
+     "name": "Tensor G6",
+     "manufacturer": "谷歌",
+     "aliases": [
+      "Tensor G6"
      ]
     }
    ]
@@ -223,7 +278,7 @@
     },
     {
      "socKey": "mtk-dimensity-8400",
-     "name": "天玑 8400",
+     "name": "天玑 8400 / 8450 / 8500 / 8550",
      "manufacturer": "联发科",
      "aliases": [
       "MT6899"
@@ -231,10 +286,11 @@
     },
     {
      "socKey": "mtk-dimensity-8300",
-     "name": "天玑 8300",
+     "name": "天玑 8300 / 8350",
      "manufacturer": "联发科",
      "aliases": [
-      "MT6897"
+      "MT6897",
+      "MT6897Z_A/ZA"
      ]
     },
     {
@@ -252,7 +308,16 @@
      "manufacturer": "谷歌",
      "aliases": [
       "GS301",
-      "zuma"
+      "zuma",
+      "Tensor G3"
+     ]
+    },
+    {
+     "socKey": "exynos-1680",
+     "name": "Exynos 1680",
+     "manufacturer": "三星",
+     "aliases": [
+      "S5E8865"
      ]
     }
    ]
@@ -313,7 +378,7 @@
     },
     {
      "socKey": "sd-7s-gen-3",
-     "name": "骁龙 7s Gen 3",
+     "name": "骁龙 7s Gen 3 / 7s Gen 4",
      "manufacturer": "高通",
      "aliases": [
       "SM7635"
@@ -346,7 +411,7 @@
     },
     {
      "socKey": "mtk-dimensity-1200",
-     "name": "天玑 1200",
+     "name": "天玑 1200 / 1300 / 8050",
      "manufacturer": "联发科",
      "aliases": [
       "MT6893"
@@ -354,7 +419,7 @@
     },
     {
      "socKey": "mtk-dimensity-7200",
-     "name": "天玑 7200",
+     "name": "天玑 7200 / 7350 Pro",
      "manufacturer": "联发科",
      "aliases": [
       "MT6886"
@@ -373,7 +438,8 @@
      "name": "Exynos 2100",
      "manufacturer": "三星",
      "aliases": [
-      "S5E9840"
+      "S5E9840",
+      "Exynos 2100"
      ]
     },
     {
@@ -389,7 +455,81 @@
      "name": "Tensor（第一代）",
      "manufacturer": "谷歌",
      "aliases": [
-      "GS101"
+      "GS101",
+      "Tensor"
+     ]
+    },
+    {
+     "socKey": "sd-7-gen-4",
+     "name": "骁龙 7 Gen 4",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM7750"
+     ]
+    },
+    {
+     "socKey": "sd-6-gen-4",
+     "name": "骁龙 6 Gen 4",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM6650"
+     ]
+    },
+    {
+     "socKey": "sd-6-gen-5",
+     "name": "骁龙 6 Gen 5",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM6850"
+     ]
+    },
+    {
+     "socKey": "sd-855",
+     "name": "骁龙 855 / 855+ / 860",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM8150",
+      "SM8150-AC"
+     ]
+    },
+    {
+     "socKey": "sd-780g",
+     "name": "骁龙 780G",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM7350"
+     ]
+    },
+    {
+     "socKey": "mtk-dimensity-7500",
+     "name": "天玑 7500",
+     "manufacturer": "联发科",
+     "aliases": [
+      "MT6881"
+     ]
+    },
+    {
+     "socKey": "mtk-dimensity-1100",
+     "name": "天玑 1100 / 8020",
+     "manufacturer": "联发科",
+     "aliases": [
+      "MT6891"
+     ]
+    },
+    {
+     "socKey": "exynos-1580",
+     "name": "Exynos 1580",
+     "manufacturer": "三星",
+     "aliases": [
+      "S5E8855"
+     ]
+    },
+    {
+     "socKey": "exynos-1480",
+     "name": "Exynos 1480",
+     "manufacturer": "三星",
+     "aliases": [
+      "S5E8845"
      ]
     }
    ]
@@ -430,7 +570,7 @@
     },
     {
      "socKey": "mtk-dimensity-7300",
-     "name": "天玑 7300",
+     "name": "天玑 7300 / 7300X / 7360 / 7400 / 7400X",
      "manufacturer": "联发科",
      "aliases": [
       "MT6878"
@@ -441,12 +581,15 @@
      "name": "天玑 900 / 920 / 1080 / 7050",
      "manufacturer": "联发科",
      "aliases": [
-      "MT6877"
+      "MT6877",
+      "MT6877V/TZA",
+      "MT6877V/TTZA",
+      "MT6877T"
      ]
     },
     {
      "socKey": "mtk-dimensity-6100",
-     "name": "天玑 6100+ / 6300",
+     "name": "天玑 6100+ / 6300 / 6400",
      "manufacturer": "联发科",
      "aliases": [
       "MT6835"
@@ -462,10 +605,11 @@
     },
     {
      "socKey": "mtk-helio-g99",
-     "name": "Helio G99",
+     "name": "Helio G99 / G100 / G200",
      "manufacturer": "联发科",
      "aliases": [
-      "MT6789"
+      "MT6789",
+      "MT6789V/CD"
      ]
     },
     {
@@ -491,6 +635,81 @@
      "aliases": [
       "T820"
      ]
+    },
+    {
+     "socKey": "sd-6-gen-3",
+     "name": "骁龙 6 Gen 3",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM6475"
+     ]
+    },
+    {
+     "socKey": "sd-6s-gen-4",
+     "name": "骁龙 6s Gen 4",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM6435"
+     ]
+    },
+    {
+     "socKey": "sd-765",
+     "name": "骁龙 765 / 765G / 768G",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM7250"
+     ]
+    },
+    {
+     "socKey": "sd-750g",
+     "name": "骁龙 750G",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM7225"
+     ]
+    },
+    {
+     "socKey": "sd-690",
+     "name": "骁龙 690",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM6350"
+     ]
+    },
+    {
+     "socKey": "mtk-dimensity-7025",
+     "name": "天玑 930 / 7020 / 7025 / 7060",
+     "manufacturer": "联发科",
+     "aliases": [
+      "MT6855",
+      "MT6855V/ATZA",
+      "MT6855V/AZA"
+     ]
+    },
+    {
+     "socKey": "mtk-dimensity-720",
+     "name": "天玑 720 / 800U",
+     "manufacturer": "联发科",
+     "aliases": [
+      "MT6853",
+      "MT6853V/TNZA"
+     ]
+    },
+    {
+     "socKey": "exynos-1330",
+     "name": "Exynos 1330",
+     "manufacturer": "三星",
+     "aliases": [
+      "S5E8535"
+     ]
+    },
+    {
+     "socKey": "exynos-1610",
+     "name": "Exynos 1610",
+     "manufacturer": "三星",
+     "aliases": [
+      "S5E8365"
+     ]
     }
    ]
   },
@@ -505,7 +724,7 @@
    "chips": [
     {
      "socKey": "sd-680",
-     "name": "骁龙 680 / 685",
+     "name": "骁龙 680 / 685 / 6s 4G Gen 2",
      "manufacturer": "高通",
      "aliases": [
       "SM6225"
@@ -513,7 +732,7 @@
     },
     {
      "socKey": "sd-4-gen-2",
-     "name": "骁龙 4 Gen 2",
+     "name": "骁龙 4 Gen 2 / 4 Gen 4",
      "manufacturer": "高通",
      "aliases": [
       "SM4450"
@@ -545,17 +764,18 @@
     },
     {
      "socKey": "mtk-helio-g85",
-     "name": "Helio G85 / G88",
+     "name": "Helio G70 / G80 / G81 / G85 / G88 / G91 / G92",
      "manufacturer": "联发科",
      "aliases": [
       "MT6769",
       "MT6769H",
-      "MT6769Z"
+      "MT6769Z",
+      "MT6769T"
      ]
     },
     {
      "socKey": "mtk-helio-g36",
-     "name": "Helio G36 / G37",
+     "name": "Helio G35 / G36 / G37 / P35",
      "manufacturer": "联发科",
      "aliases": [
       "MT6765",
@@ -567,7 +787,8 @@
      "name": "Exynos 850",
      "manufacturer": "三星",
      "aliases": [
-      "S5E3830"
+      "S5E3830",
+      "Exynos 850"
      ]
     },
     {
@@ -595,6 +816,111 @@
      "manufacturer": "紫光展锐",
      "aliases": [
       "SC9863A"
+     ]
+    },
+    {
+     "socKey": "sd-4-gen-5",
+     "name": "骁龙 4 Gen 5",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM4850"
+     ]
+    },
+    {
+     "socKey": "sd-732g",
+     "name": "骁龙 730 / 730G / 732G",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM7150"
+     ]
+    },
+    {
+     "socKey": "sd-720g",
+     "name": "骁龙 720G",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM7125"
+     ]
+    },
+    {
+     "socKey": "sd-678",
+     "name": "骁龙 675 / 678",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM6150"
+     ]
+    },
+    {
+     "socKey": "sd-665",
+     "name": "骁龙 665",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM6125"
+     ]
+    },
+    {
+     "socKey": "sd-662",
+     "name": "骁龙 662 / 6s 4G Gen 1",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM6115"
+     ]
+    },
+    {
+     "socKey": "sd-480",
+     "name": "骁龙 480 / 480+",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM4350"
+     ]
+    },
+    {
+     "socKey": "sd-460",
+     "name": "骁龙 460",
+     "manufacturer": "高通",
+     "aliases": [
+      "SM4250"
+     ]
+    },
+    {
+     "socKey": "mtk-helio-g90",
+     "name": "Helio G90 / G90T / G95",
+     "manufacturer": "联发科",
+     "aliases": [
+      "MT6785",
+      "MT6785V/CD"
+     ]
+    },
+    {
+     "socKey": "mtk-helio-p22",
+     "name": "Helio P22 / G25",
+     "manufacturer": "联发科",
+     "aliases": [
+      "MT6762"
+     ]
+    },
+    {
+     "socKey": "mtk-helio-a22",
+     "name": "Helio A22",
+     "manufacturer": "联发科",
+     "aliases": [
+      "MT6761"
+     ]
+    },
+    {
+     "socKey": "exynos-9611",
+     "name": "Exynos 9611",
+     "manufacturer": "三星",
+     "aliases": [
+      "Exynos 9611"
+     ]
+    },
+    {
+     "socKey": "unisoc-t618",
+     "name": "紫光展锐 T618",
+     "manufacturer": "紫光展锐",
+     "aliases": [
+      "T618"
      ]
     }
    ]

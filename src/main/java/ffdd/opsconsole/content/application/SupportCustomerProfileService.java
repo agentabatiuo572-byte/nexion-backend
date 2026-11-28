@@ -15,6 +15,7 @@ import ffdd.opsconsole.risk.application.OpsRiskService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.user.application.OpsUserService;
+import ffdd.opsconsole.user.domain.UserInviterView;
 import java.time.*;
 import java.util.*;
 import java.util.function.Supplier;
@@ -77,11 +78,14 @@ public class SupportCustomerProfileService {
             data.put("nickname",user.nickname());String avatar=mapper.avatar(customer);
             data.put("avatar",ffdd.opsconsole.content.domain.SupportCustomerAvatar.ref(customer,avatar));
             data.put("level",first(user.vRank(),user.userLevel()));
+            // B73-BE-07: legacy level keeps its first-non-blank value; the two sources stay separate.
+            data.put("vRank",blank(user.vRank()));data.put("userLevel",blank(user.userLevel()));
+            data.put("inviter",inviter(customer,scope.actorId()));
             data.put("phoneMasked",user.phoneMasked());data.put("region",user.countryCode());data.put("registeredAt",businessUtc(user.registeredAt()));
             data.put("lastLoginAt",businessUtc(user.lastLoginAt()));data.put("accountStatus",user.status());return data;
         });
         result.put("identity",identity);result.put("finance",group(()-> {
-            var legacy=group(()->finance.totals(customer));
+            var legacy=group(()->finance.displayTotals(customer));
             var data=new LinkedHashMap<String,Object>();
             if(legacy.get("data") instanceof Map<?,?> totals)totals.forEach((key,value)->data.put((String)key,value));
             else data.put("byCurrency",List.of());
@@ -293,11 +297,32 @@ public class SupportCustomerProfileService {
         return rows.stream().map(value->{var row=(Map<String,Object>)value;String amount=row.get("principal")==null?null:row.get("principal")+" "+row.get("currency");
             return new ConversationCustomerProfile.LedgerEntry(text(row,"kind"),text(row,"createdAt"),amount,"DEPOSIT".equals(row.get("kind")),Set.of("SUBMITTED","PENDING","REVIEW_PENDING","PROCESSING").contains(text(row,"status")));}).toList();
     }
+    private Map<String,Object> inviter(long customer,long actor) {
+        UserInviterView view;
+        try {view=users.inviters(List.of(customer)).get(customer);}
+        catch(RuntimeException ex){view=null;}
+        if(view==null)view=UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED);
+        Long target=null;
+        if(view.state()==UserInviterView.State.PRESENT && view.userNo()!=null) {
+            try {target=users.userIdByUserNo(view.userNo());}
+            catch(RuntimeException ex){target=null;}
+        }
+        boolean navigable=false;
+        if(target!=null) {
+            try {navigable=ownership.canRead(actor,target);}
+            catch(RuntimeException ex){navigable=false;}
+        }
+        var data=new LinkedHashMap<String,Object>();
+        data.put("state",view.state().name());data.put("userNo",view.userNo());data.put("nickname",view.nickname());
+        data.put("reason",view.reason()==null?null:view.reason().name());data.put("navigable",navigable);
+        data.put("customerId",navigable?String.valueOf(target):null);return data;
+    }
     private static Map<String,Object> unavailable(String status) {var result=new LinkedHashMap<String,Object>();result.put("status",status);result.put("data",null);result.put("evaluatedAt",Instant.now().toString());if("ERROR".equals(status))result.put("errorHint","Please retry this section");return result;}
     @SuppressWarnings("unchecked") private static Map<String,Object> data(Map<String,Object> groups,String key){var group=(Map<String,Object>)groups.get(key);return group!=null && group.get("data") instanceof Map<?,?> data?(Map<String,Object>)data:Map.of();}
     private static String text(Map<String,Object> data,String key){return data.get(key)==null?null:data.get(key).toString();}
     private static String amount(Map<String,Object> data,String key){return data.get(key)==null?null:data.get(key)+" USDT";}
     private static String first(String a,String b){return a!=null && !a.isBlank()?a:b!=null && !b.isBlank()?b:null;}
+    private static String blank(String value){return value==null || value.isBlank()?null:value;}
     @SuppressWarnings("unchecked") private static List<String> strings(Object value){return value instanceof List<?>?(List<String>)value:List.of();}
     private static LocalDateTime parseTime(String value){if(value==null)return null;try{return LocalDateTime.ofInstant(Instant.parse(value),ZoneOffset.UTC);}catch(DateTimeException ex){throw new BizException(422,"SUPPORT_FLOW_RANGE_INVALID");}}
 }

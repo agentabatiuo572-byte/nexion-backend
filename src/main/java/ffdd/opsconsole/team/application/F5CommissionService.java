@@ -7,6 +7,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.exception.BizException;
@@ -28,6 +29,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -47,7 +49,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class F5CommissionService {
     public static final Set<String> KINDS =
-            Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning");
+            Set.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning", VRankSalaryService.KIND);
+    public static final List<String> SUSPENDABLE_KINDS = KINDS.stream()
+            .filter(kind -> !VRankSalaryService.KIND.equals(kind)).sorted().toList();
     private static final Set<String> STATUSES =
             Set.of("cooling", "unlocked", "withdrawn", "reversed", "frozen", "rejected", "recovery_pending");
     private static final int DEFAULT_LIMIT = 20;
@@ -107,6 +111,7 @@ public class F5CommissionService {
         response.put("domain", "F5");
         response.put("summary", summary(kindAggregates, statusAggregates));
         response.put("commissionKinds", kindSummary(kindAggregates));
+        response.put("suspendableKinds", SUSPENDABLE_KINDS);
         response.put("commissionFilters", List.of(
                 Map.of("key", "all", "label", "全部状态"),
                 Map.of("key", "cooling", "label", "冷却计提"),
@@ -150,7 +155,7 @@ public class F5CommissionService {
                 "coolingAuthority", COOLING_DAYS_KEY,
                 "coolingKinds", List.of("network", "binary", "direct_purchase", "direct_device_earning"),
                 "directCoolingAuthority", "/api/config/commission/direct-referral",
-                "immediateKinds", List.of("peer", "cultivation", "leadership", "genesis")));
+                "immediateKinds", List.of("peer", "cultivation", "leadership", "genesis", VRankSalaryService.KIND)));
         response.put("guardrails", List.of(
                 "F5 writes require Idempotency-Key and an 8-200 character reason",
                 "reissue is fail-closed on an unavailable or below-redline B1 snapshot",
@@ -176,7 +181,13 @@ public class F5CommissionService {
         if (rows == null || rows.isEmpty()) {
             return ApiResult.fail(404, "COMMISSION_EVENT_NOT_FOUND");
         }
-        return ApiResult.ok(eventView(rows.get(0)));
+        Map<String, Object> event = eventView(rows.get(0));
+        if (VRankSalaryService.KIND.equals(event.get("kind")) && "recovery_pending".equals(event.get("status"))) {
+            BigDecimal recovered = mapper.recoveredSalaryAmount(eventId, longValue(event.get("userId")));
+            event.put("recoveredAmount", recovered);
+            event.put("pendingRecoveryAmount", decimal(event.get("amount")).subtract(recovered));
+        }
+        return ApiResult.ok(event);
     }
 
     /**
@@ -225,7 +236,8 @@ public class F5CommissionService {
         output.writeBytes(new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF});
         writeCsvLine(output, List.of(
                 "commissionId", "eventId", "user", "kind", "currency", "amount",
-                "sourceUser", "layer", "status", "settledAt", "sourceRef", "settlementNo"));
+                "sourceUser", "layer", "status", "settledAt", "sourceRef", "settlementNo",
+                "salaryMonth", "salaryRank", "claimNo", "claimedAt"));
         long written = 0L;
         Long cursor = null;
         while (written < expectedRows) {
@@ -267,7 +279,9 @@ public class F5CommissionService {
                         redactUserId(longValue(row.get("sourceUserId"))),
                         Objects.toString(row.get("layer"), ""),
                         status,
-                        text(row.get("settledAt")),text(row.get("orderNo")),text(row.get("settlementNo"))));
+                        text(row.get("settledAt")), text(row.get("orderNo")), text(row.get("settlementNo")),
+                        text(row.get("salaryMonth")), text(row.get("salaryRank")), text(row.get("claimNo")),
+                        Objects.toString(salaryClaimedAt(row), "")));
                 cursor = eventId;
                 written++;
                 if (written > expectedRows || written > EXPORT_MAX_ROWS) {
@@ -504,6 +518,9 @@ public class F5CommissionService {
         Long userId = longValue(event.get("userId"));
         String currency = text(event.get("currency")).toUpperCase(Locale.ROOT);
         boolean reversedFunds = ledgerPostingFacade.reverseCommissionFunds(eventId);
+        boolean salary = VRankSalaryService.KIND.equals(event.get("kind"));
+        BigDecimal recovered = salary && reversedFunds ? mapper.recoveredSalaryAmount(eventId, userId) : BigDecimal.ZERO;
+        BigDecimal pending = salary ? amount.subtract(recovered) : BigDecimal.ZERO;
         String operationNo = operationNo("REV");
         mapper.insertOperation(
                 operationNo, "REVERSE", eventId, null, userId, text(event.get("kind")), amount,
@@ -517,23 +534,34 @@ public class F5CommissionService {
                 "refundRef", refundRef,
                 "operator", operator,
                 "reason", reason);
-        audit("ADMIN_COMMISSION_REVERSED", commissionId, userId, operator, detail);
+        Map<String, Object> auditDetail = detail;
+        if (salary) {
+            auditDetail = new LinkedHashMap<>(detail);
+            auditDetail.put("recoveredAmount", recovered);
+            auditDetail.put("pendingRecoveryAmount", pending);
+        }
+        audit("ADMIN_COMMISSION_REVERSED", commissionId, userId, operator, auditDetail);
         eventOutboxService.publish("ADMIN_COMMISSION", commissionId, "admin.commission_reversed", detail);
-        return ApiResult.ok(linked(
+        Map<String, Object> result = linked(
                 "operationNo", operationNo,
                 "commissionId", commissionId,
-                "status", "reversed",
-                "ledgerBizNo", reversedFunds ? "F5-COMMISSION-" + eventId + "-REVERSE" : ""));
+                "status", pending.signum() > 0 ? "recovery_pending" : "reversed",
+                "ledgerBizNo", reversedFunds ? "F5-COMMISSION-" + eventId + "-REVERSE" : "");
+        if (salary) {
+            result.put("recoveredAmount", recovered);
+            result.put("pendingRecoveryAmount", pending);
+        }
+        return ApiResult.ok(result);
     }
 
     private ApiResult<Map<String, Object>> reissueInternal(
             List<Long> eventIds, String reason, String operator, String idempotencyKey) {
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        if (coverage == null || !coverage.reliable()) {
+        if (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
+                || coverage.redlinePct() == null || coverage.redlinePct().signum() <= 0) {
             throw new BizException(503, "COVERAGE_SNAPSHOT_UNAVAILABLE");
         }
-        if (coverage.coverageRatio() == null || coverage.redlinePct() == null
-                || coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
+        if (coverage.coverageRatio().compareTo(coverage.redlinePct()) < 0) {
             throw new BizException(
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
@@ -747,11 +775,12 @@ public class F5CommissionService {
     }
 
     private AnomalySnapshot layerRatioAnomalies(List<Map<String, Object>> rows) {
-        Map<Integer, BigDecimal> theory = new LinkedHashMap<>();
-        for (Map<String, Object> row : mapper.theoreticalLayerRates()) {
+        boolean rankBased = PurchaseRankPolicy.active(configFacade);
+        Map<Integer, BigDecimal> configuredTheory = new LinkedHashMap<>();
+        for (Map<String, Object> row : rankBased ? List.<Map<String, Object>>of() : mapper.theoreticalLayerRates()) {
             Long layer = longValue(row.get("layer"));
             if (layer != null && row.get("theoreticalPct") != null) {
-                theory.put(layer.intValue(), decimal(row.get("theoreticalPct")));
+                configuredTheory.put(layer.intValue(), decimal(row.get("theoreticalPct")));
             }
         }
         Map<String, List<Map<String, Object>>> byCurrency = new LinkedHashMap<>();
@@ -760,30 +789,46 @@ public class F5CommissionService {
                 byCurrency.computeIfAbsent(text(row.get("currency")), ignored -> new ArrayList<>()).add(row);
             }
         }
-        BigDecimal theoryTotal = theory.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        Map<Long, BigDecimal> snapshotTheory = new LinkedHashMap<>();
+        if (rankBased && !byCurrency.isEmpty()) {
+            var ids = byCurrency.values().stream().flatMap(List::stream)
+                    .map(row -> longValue(row.get("eventId"))).filter(java.util.Objects::nonNull).toList();
+            if (!ids.isEmpty()) {
+                for (var row : mapper.snapshotLayerAmounts(ids)) {
+                    if (row.get("expectedAmount") != null) {
+                        snapshotTheory.put(longValue(row.get("eventId")), decimal(row.get("expectedAmount")));
+                    }
+                }
+            }
+        }
         BigDecimal threshold = layerRatioThreshold();
         List<Map<String, Object>> anomalies = new ArrayList<>();
         List<Map<String, Object>> comparisons = new ArrayList<>();
         for (Map.Entry<String, List<Map<String, Object>>> currency : byCurrency.entrySet()) {
-            if (!"USDT".equals(currency.getKey())) {
+            if (!rankBased && !"USDT".equals(currency.getKey())) {
                 comparisons.add(linked("currency", currency.getKey(), "available", false,
                         "reason", "F5_LAYER_RATIO_THEORY_UNAVAILABLE", "layers", null,
                         "theoreticalPct", null, "deviation", null));
                 continue;
             }
             Map<Integer, BigDecimal> actual = new LinkedHashMap<>();
+            Map<Integer, BigDecimal> theory = rankBased ? new LinkedHashMap<>() : configuredTheory;
             boolean missingLayer = false;
             for (Map<String, Object> row : currency.getValue()) {
                 Long layer = longValue(row.get("layer"));
-                if (layer == null || !theory.containsKey(layer.intValue())) {
+                BigDecimal expected = rankBased ? snapshotTheory.get(longValue(row.get("eventId")))
+                        : layer == null ? null : theory.get(layer.intValue());
+                if (layer == null || expected == null || (rankBased && expected.signum() <= 0)) {
                     missingLayer = true;
                 } else {
                     actual.merge(layer.intValue(), decimal(row.get("amount")), BigDecimal::add);
+                    if (rankBased) theory.merge(layer.intValue(), expected, BigDecimal::add);
                 }
             }
             BigDecimal networkTotal = actual.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-            String unavailable = theory.isEmpty() || theoryTotal.signum() <= 0
-                    ? "F5_LAYER_RATIO_THEORY_UNAVAILABLE"
+            BigDecimal theoryTotal = theory.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+            String unavailable = rankBased && missingLayer ? "F5_LAYER_RATIO_SNAPSHOT_UNAVAILABLE"
+                    : theoryTotal.signum() <= 0 ? "F5_LAYER_RATIO_THEORY_UNAVAILABLE"
                     : missingLayer ? "F5_LAYER_RATIO_LAYER_UNAVAILABLE"
                     : networkTotal.signum() <= 0 ? "F5_LAYER_RATIO_SAMPLE_UNAVAILABLE" : null;
             if (unavailable != null) {
@@ -814,7 +859,8 @@ public class F5CommissionService {
                 }
             }
             comparisons.add(linked("currency", currency.getKey(), "available", true, "reason", null,
-                    "basis", "CURRENT_ACTIVE_UNILEVEL_USDT_RATE", "layers", List.copyOf(layers)));
+                    "basis", rankBased ? "ORDER_SETTLEMENT_SNAPSHOT" : "CURRENT_ACTIVE_UNILEVEL_USDT_RATE",
+                    "layers", List.copyOf(layers)));
         }
         return new AnomalySnapshot(List.copyOf(anomalies), List.copyOf(comparisons));
     }
@@ -832,8 +878,16 @@ public class F5CommissionService {
                 "status", "open");
     }
 
+    private Instant salaryClaimedAt(Map<String, Object> row) {
+        LocalDateTime claimedAt = (LocalDateTime) row.get("claimedAt");
+        return claimedAt == null ? null : claimedAt.atZone(StorageTime.ZONE).toInstant();
+    }
+
     private Map<String, Object> eventView(Map<String, Object> raw) {
         Map<String, Object> row = new LinkedHashMap<>(raw);
+        if (raw.containsKey("claimedAt")) {
+            row.put("claimedAt", salaryClaimedAt(raw));
+        }
         var direct = directReferrals == null ? null : directReferrals.getIfAvailable();
         Long eventId = longValue(raw.get("eventId"));
         boolean grouped = direct != null && eventId != null && direct.groupForEvent(eventId) != null;
@@ -960,8 +1014,9 @@ public class F5CommissionService {
                 "leadership", "团队激励池",
                 "genesis", "创世节点收益",
                 "direct_purchase", "好友购买奖励",
-                "direct_device_earning", "好友设备收益奖励");
-        return List.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning")
+                "direct_device_earning", "好友设备收益奖励",
+                VRankSalaryService.KIND, "等级月薪");
+        return List.of("network", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning", VRankSalaryService.KIND)
                 .stream()
                 .map(kind -> {
                     List<Map<String, Object>> aggregateRows = grouped.getOrDefault(kind, List.of());
@@ -1097,7 +1152,7 @@ public class F5CommissionService {
             throw new IllegalArgumentException("COMMISSION_KINDS_REQUIRED");
         }
         List<String> normalized = kinds.stream().map(this::normalizedOptional).distinct().toList();
-        if (normalized.stream().anyMatch(kind -> kind == null || !KINDS.contains(kind))) {
+        if (normalized.stream().anyMatch(kind -> !SUSPENDABLE_KINDS.contains(kind))) {
             throw new IllegalArgumentException("COMMISSION_KIND_INVALID");
         }
         return normalized;

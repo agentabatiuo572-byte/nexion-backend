@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.device.infrastructure.UserDeviceEntity;
 import ffdd.opsconsole.shared.canonical.StorefrontProductPublishGate;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
+import ffdd.opsconsole.shared.canonical.mapper.StandardTrialSkuMapper;
 import java.math.BigDecimal;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
@@ -14,7 +15,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper, PurchaseGateQuotaMapper {
+public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper, ffdd.opsconsole.shared.canonical.mapper.TrialSlotReservationMapper, PurchaseGateQuotaMapper, StandardTrialSkuMapper {
     @Select("""
             SELECT config_key AS configKey, config_value AS configValue
               FROM nx_compute_e3_config
@@ -32,6 +33,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
 
     @Select("SELECT sandbox FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
     Integer activeUserEnvironment(@Param("userId") Long userId);
+    @Select("SELECT language FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 LIMIT 1")
+    String userLanguage(@Param("userId") Long userId);
 
     record ProductArtwork(String sku, String seriesCode, String assetId, String objectKey) {}
 
@@ -146,7 +149,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -160,6 +164,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.pending_deactivate=0
+               AND NOT EXISTS (SELECT 1 FROM nx_device_slot_replacement swap WHERE swap.new_device_id=d.id)
              LIMIT 1
             """)
     SourceDevice findSourceDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
@@ -175,7 +180,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -189,6 +195,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.pending_deactivate=0
+               AND NOT EXISTS (SELECT 1 FROM nx_device_slot_replacement swap WHERE swap.new_device_id=d.id FOR SHARE)
              LIMIT 1 FOR UPDATE OF d
             """)
     SourceDevice lockSourceDevice(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
@@ -204,7 +211,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -218,6 +226,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                AND UPPER(COALESCE(NULLIF(d.device_type,''),'DEVICE')) <> 'SHARE'
                AND UPPER(COALESCE(d.source_channel,'')) <> 'PROMOTION_GIFT'
                AND d.source_environment='PRODUCTION' AND d.run_id='' AND d.pending_deactivate=0
+               AND NOT EXISTS (SELECT 1 FROM nx_device_slot_replacement swap WHERE swap.new_device_id=d.id)
              ORDER BY d.id
             """)
     List<SourceDevice> listTradeinSourceCandidates(@Param("userId") Long userId);
@@ -233,7 +242,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -264,7 +274,8 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                         THEN CASE WHEN o.quantity>0 THEN o.amount_usdt/o.quantity ELSE NULL END
                         ELSE d.price_usdt_snapshot END AS actualPaidUsdt,
                    d.row_version AS rowVersion,
-                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated
+                   (d.activated_at IS NOT NULL AND d.deactivated_at IS NULL) AS activated,
+                   p.price_usdt AS currentPriceUsdt
               FROM nx_user_device d
               LEFT JOIN nx_product p ON p.id=d.product_id AND p.is_deleted=0
               LEFT JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -303,7 +314,11 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                    s.image_asset_id AS imageAssetId,s.image_object_key AS imageObjectKey,
                    p.inventory_mode AS inventoryMode,
                    s.spec_document_title AS specDocumentTitle,s.spec_document_url AS specDocumentUrl,
-                   p.compute_points AS computePoints,p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct
+                   p.compute_points AS computePoints,p.monthly_target_usdt AS monthlyTargetUsdt,p.monthly_target_band_pct AS monthlyTargetBandPct,
+                   p.display_sold_base AS displaySoldBase,p.live_activity_visible AS liveActivityVisible,
+                   ROW_NUMBER() OVER (ORDER BY p.store_featured DESC,
+                       COALESCE(p.storefront_sort_order,p.sort_order) ASC,p.id ASC) AS storeSortRank,
+                   p.series_code AS seriesCode,p.created_at AS createdAt,p.id AS productId
               FROM nx_product p
               LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.is_deleted=0 AND p.store_visible=1
@@ -314,6 +329,18 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
              ORDER BY p.store_featured DESC,p.sort_order ASC,p.id ASC
             """)
     List<CatalogTargetProduct> listPurchasableCatalogTargets();
+
+    @Select("""
+            <script>
+            SELECT p.product_no AS productNo, p.tagline_translations_json AS taglineTranslationsJson
+              FROM nx_product p
+             WHERE p.is_deleted=0 AND p.product_no IN
+             <foreach collection="productNos" item="productNo" open="(" separator="," close=")">#{productNo}</foreach>
+            </script>
+            """)
+    List<TaglineTranslations> listTaglineTranslations(@Param("productNos") List<String> productNos);
+
+    record TaglineTranslations(String productNo, String taglineTranslationsJson) { }
 
     @Select("""
             SELECT share_yield_min AS minPct, share_yield_max AS maxPct
@@ -392,14 +419,35 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             """)
     TargetProduct lockTargetProduct(@Param("productId") Long productId, @Param("productNo") String productNo);
 
-    @Select("""
-            SELECT COALESCE(SUM(reward_usdt),0)
-             FROM nx_visible_compute_receipt
-             WHERE user_device_id=#{deviceId} AND is_deleted=0
+    @Select("SELECT price_usdt FROM nx_product WHERE id=#{productId} AND is_deleted=0 FOR SHARE")
+    BigDecimal lockSourceCurrentPrice(@Param("productId") Long productId);
+
+    String VISIBLE_TRADEIN_OUTPUT = """
+               AND is_deleted=0
                AND COALESCE(source_environment, 'PRODUCTION') = 'PRODUCTION'
                AND UPPER(earning_status) IN ('POSTED','SUCCESS','SETTLED','CREDITED','PAID')
-            """)
+            """;
+
+    @Select("""
+            SELECT COALESCE(SUM(reward_usdt),0)
+              FROM nx_visible_compute_receipt
+             WHERE user_device_id=#{deviceId}
+            """ + VISIBLE_TRADEIN_OUTPUT)
     BigDecimal cumulativeDeviceOutputUsdt(@Param("deviceId") Long deviceId);
+
+    @Select("""
+            <script>
+            SELECT user_device_id AS deviceId, COALESCE(SUM(reward_usdt),0) AS outputUsdt
+              FROM nx_visible_compute_receipt
+             WHERE user_device_id IN
+               <foreach collection="deviceIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            """ + VISIBLE_TRADEIN_OUTPUT + """
+             GROUP BY user_device_id
+            </script>
+            """)
+    List<DeviceOutput> cumulativeTradeinOutputs(@Param("deviceIds") List<Long> deviceIds);
+
+    record DeviceOutput(Long deviceId, BigDecimal outputUsdt) { }
 
     @Select("SELECT usdt_available FROM nx_user_wallet WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1")
     BigDecimal walletBalanceUsdt(@Param("userId") Long userId);
@@ -517,7 +565,7 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                #{row.discountUsdt},#{row.walletDebitUsdt},
                GREATEST((SELECT compute_points FROM nx_product WHERE id=#{row.productId})
                  - COALESCE((SELECT compute_points FROM nx_product WHERE id=#{row.sourceProductId}),0),0),
-               'PAID','COMPLETED','ACTIVATED',NOW(6),NOW(),NOW(),0)
+               'PAID','COMPLETED',CASE WHEN #{row.activateTarget} THEN 'ACTIVATED' ELSE 'INVENTORY' END,NOW(6),NOW(),NOW(),0)
             """)
     int insertCapacityKeepOrder(@Param("row") PaidOrderWrite row);
 
@@ -561,8 +609,10 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
             SELECT #{row.userId},#{row.orderNo},#{row.productId},#{row.productNo},#{row.productTier},p.series_code,
                #{row.instanceNo},#{row.productName},#{row.deviceType},#{row.generation},#{row.gpuModel},
                #{row.vramTotalGb},CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
-               #{hostingCenter},#{row.targetPriceUsdt},'OWNED','ORDER','ACTIVE',#{row.hashrate},
-               #{row.dailyUsdt},#{row.dailyNex},NOW(),NOW(),NOW(),0,NOW(),NOW(),0
+               #{hostingCenter},#{row.targetPriceUsdt},'OWNED','ORDER',
+               CASE WHEN #{row.activated} THEN 'ACTIVE' ELSE 'INACTIVE' END,#{row.hashrate},
+               #{row.dailyUsdt},#{row.dailyNex},NOW(),CASE WHEN #{row.activated} THEN NOW() END,
+               CASE WHEN #{row.activated} THEN NOW() END,0,NOW(),NOW(),0
               FROM nx_admin_device_sku s
               JOIN nx_product p ON p.id=#{row.productId} AND p.product_no=s.sku_id
              WHERE s.sku_id=#{row.productNo} AND s.is_deleted=0
@@ -612,7 +662,17 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
 
     record SourceDevice(Long id, Long userId, String instanceNo, Long productId, String productNo,
                         String productName, String productTier, String status, BigDecimal actualPaidUsdt,
-                        Long rowVersion, boolean activated) {
+                        Long rowVersion, boolean activated, BigDecimal currentPriceUsdt) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public SourceDevice { }
+
+        public SourceDevice(Long id, Long userId, String instanceNo, Long productId, String productNo,
+                            String productName, String productTier, String status, BigDecimal actualPaidUsdt,
+                            Long rowVersion, boolean activated) {
+            this(id, userId, instanceNo, productId, productNo, productName, productTier, status,
+                    actualPaidUsdt, rowVersion, activated, null);
+        }
+
         public SourceDevice(Long id, Long userId, String instanceNo, Long productId, String productNo,
                             String productName, String productTier, String status, BigDecimal actualPaidUsdt) {
             this(id, userId, instanceNo, productId, productNo, productName, productTier, status, actualPaidUsdt,
@@ -655,7 +715,50 @@ public interface AppTradeinMapper extends BaseMapper<UserDeviceEntity>, ffdd.ops
                                 BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
                                 BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
                                 String imageAssetId, String imageObjectKey,
-                                String inventoryMode, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+                                String inventoryMode, String specDocumentTitle, String specDocumentUrl, Long computePoints,
+                                BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct,
+                                Integer displaySoldBase, Boolean liveActivityVisible, Long storeSortRank,
+                                String seriesCode, java.time.LocalDateTime createdAt, Long productId) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public CatalogTargetProduct { }
+
+        public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                    String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                    BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                    String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                    String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn,
+                                    BigDecimal phoneDailyEarnNex, String featuresJson, BigDecimal aiImageGenPerMin,
+                                    BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                    BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
+                                    String imageAssetId, String imageObjectKey, String inventoryMode, String specDocumentTitle,
+                                    String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct,
+                                    Integer displaySoldBase, Boolean liveActivityVisible, Long storeSortRank) {
+            this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb, hashrate,
+                    dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt, power, datacenter, uptime,
+                    warranty, phoneDailyEarn, phoneDailyEarnNex, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec,
+                    aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson, imageAssetId, imageObjectKey,
+                    inventoryMode, specDocumentTitle, specDocumentUrl, computePoints, monthlyTargetUsdt,
+                    monthlyTargetBandPct, displaySoldBase, liveActivityVisible, storeSortRank, null, null, null);
+        }
+
+        public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
+                                    String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
+                                    BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,
+                                    String badge, Integer sold, String unlockPhase, java.time.LocalDateTime updatedAt,
+                                    String power, String datacenter, String uptime, String warranty, BigDecimal phoneDailyEarn,
+                                    BigDecimal phoneDailyEarnNex, String featuresJson, BigDecimal aiImageGenPerMin,
+                                    BigDecimal aiLlmTokensPerSec, BigDecimal aiVideoMinPerHour,
+                                    BigDecimal aiFineTuneMins, String aiUnlocks, String purchaseGateJson,
+                                    String imageAssetId, String imageObjectKey, String inventoryMode, String specDocumentTitle,
+                                    String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct) {
+            this(productNo, name, tier, priceUsdt, stock, deviceType, generation, gpuModel, vramTotalGb, hashrate,
+                    dailyUsdt, dailyNex, tagline, badge, sold, unlockPhase, updatedAt, power, datacenter, uptime,
+                    warranty, phoneDailyEarn, phoneDailyEarnNex, featuresJson, aiImageGenPerMin, aiLlmTokensPerSec,
+                    aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, purchaseGateJson, imageAssetId, imageObjectKey,
+                    inventoryMode, specDocumentTitle, specDocumentUrl, computePoints, monthlyTargetUsdt,
+                    monthlyTargetBandPct, 0, true, null);
+        }
+
     public CatalogTargetProduct(String productNo, String name, String tier, BigDecimal priceUsdt, Integer stock,
                                 String deviceType, Integer generation, String gpuModel, Integer vramTotalGb,
                                 BigDecimal hashrate, BigDecimal dailyUsdt, BigDecimal dailyNex, String tagline,

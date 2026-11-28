@@ -98,6 +98,7 @@ public interface PromotionMapper extends BaseMapper<Object>, ffdd.opsconsole.sha
         }
         // This is the same reservation/receipt fact used by CanonicalStateMapper.PROMOTION_RESERVED_SLOTS.
         for(Map<String,Object> r:list("SELECT reservation_id,amount FROM nx_promotion_reservation r WHERE beneficiary_id=? AND asset='DEVICE' AND status IN ('RESERVED','COMMITTED') "
+            + CanonicalStateMapper.LEGACY_PROMOTION_SLOT_PROMISE
             + "AND EXISTS (SELECT 1 FROM nx_order gift_order WHERE gift_order.order_no=r.order_no AND gift_order.is_deleted=0 "
             + "AND (gift_order.inventory_reserved=1 OR UPPER(gift_order.payment_status) IN ('PAID','CONFIRMED','SUCCESS')) FOR SHARE) ORDER BY reservation_id FOR UPDATE",account)){
             Map<String,Object> reward=one("SELECT obligation_id,status FROM nx_promotion_reward WHERE reservation_id=? FOR UPDATE",r.get("reservation_id"));

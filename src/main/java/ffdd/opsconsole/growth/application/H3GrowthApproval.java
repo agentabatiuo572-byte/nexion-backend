@@ -6,11 +6,13 @@ import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.domain.AuditLockTarget;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
+import ffdd.opsconsole.platform.dto.AuditCenterOverview.H3MissionTarget;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.math.BigInteger;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -41,8 +43,22 @@ public class H3GrowthApproval {
     public AuditReplayCommand bindMaker(AuditReplayCommand command, Long adminId) {
         if (adminId == null || adminId <= 0) throw new BizException(403, "H3_MAKER_REQUIRED");
         AuditLockTarget target = target(command);
-        return new AuditReplayCommand("H", command.op(), Map.of("values", values(command),
+        Map<?, ?> requestedValues = values(command);
+        Map<String, Object> params = new LinkedHashMap<>(Map.of("values", requestedValues,
                 "makerAdminId", adminId, "expectedState", growth.h3ApprovalState(target)));
+        if (CREATE.equals(command.op())) {
+            var product = growth.h3ProductTarget(text(requestedValues, "actionRoute"));
+            if (product != null) params.put("targetProductName", product.name());
+        }
+        return new AuditReplayCommand("H", command.op(), params);
+    }
+
+    public static H3MissionTarget missionTarget(AuditReplayCommand command) {
+        if (!supports(command) || !CREATE.equals(command.op()) || command.params() == null
+                || !(command.params().get("values") instanceof Map<?, ?> values)
+                || !(values.get("actionRoute") instanceof String route)) return null;
+        String name = command.params().get("targetProductName") instanceof String frozenName ? frozenName : null;
+        return new H3MissionTarget(route, name);
     }
 
     public ApiResult<Void> validateChecker(AuditReplayCommand command, Long checkerId) {
@@ -93,10 +109,17 @@ public class H3GrowthApproval {
                 new AuditLockTarget(locks.get(0).getTargetDomain(), locks.get(0).getTargetType(), locks.get(0).getTargetId()))) {
             return ApiResult.fail(403, "H3_APPROVAL_FORBIDDEN");
         }
-        if (!growth.h3ApprovalState(target).equals(command.params().get("expectedState"))) {
+        Map<String, String> current = growth.h3ApprovalState(target);
+        Object expected = command.params().get("expectedState");
+        Object proposalReason = command.params().get("proposalReason");
+        if (!current.equals(expected)) {
+            if (CONFIG.equals(command.op()) && proposalReason instanceof String
+                    && confirmedStateChange(target.id(), expected, current)) {
+                throw new ConfirmedRecheckFailure(409, "H3_CONFIG_STALE");
+            }
             return ApiResult.fail(409, "H3_CONFIG_STALE");
         }
-        if (!(command.params().get("proposalReason") instanceof String reason)) {
+        if (!(proposalReason instanceof String reason)) {
             return ApiResult.fail(422, "H3_PROPOSAL_INVALID");
         }
         if (CREATE.equals(command.op())) {
@@ -107,6 +130,39 @@ public class H3GrowthApproval {
         var request = config(command, reason);
         return commands.execute("H3", "QUEST_CONFIG_UPDATE", target.id(), context.idempotencyKey(), request,
                 () -> growth.executeApprovedH3Config(context.idempotencyKey(), target.id(), request, target));
+    }
+
+    private static boolean confirmedStateChange(String key, Object expected, Map<String, String> current) {
+        if (!(expected instanceof Map<?, ?> previous) || !current.keySet().equals(previous.keySet())) return false;
+        if (current.keySet().equals(Set.of("id", "kind", "status"))) {
+            var validStatuses = Set.of("0", "1", "2");
+            String id = current.get("id");
+            String kind = current.get("kind");
+            return id.matches("[1-9][0-9]*") && id.equals(previous.get("id"))
+                    && !kind.isBlank() && !"null".equals(kind) && kind.equals(previous.get("kind"))
+                    && previous.get("status") instanceof String status && validStatuses.contains(status)
+                    && validStatuses.contains(current.get("status"));
+        }
+        if (!current.keySet().equals(Set.of("value")) || !(previous.get("value") instanceof String oldValue)) {
+            return false;
+        }
+        String value = current.get("value");
+        try {
+            if ("dayOne.triReward".equals(key)) {
+                return !DayOneTriRewardPolicy.normalizeStoredPolicy(oldValue)
+                        .equals(DayOneTriRewardPolicy.normalizeStoredPolicy(value));
+            }
+            return key.startsWith("weekly.mult.") && OpsGrowthService.parseWeeklyPhaseMultiplier(oldValue)
+                    .compareTo(OpsGrowthService.parseWeeklyPhaseMultiplier(value)) != 0;
+        } catch (BizException | IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
+    public static final class ConfirmedRecheckFailure extends BizException {
+        ConfirmedRecheckFailure(int code, String reason) {
+            super(code, reason);
+        }
     }
 
     private static Map<?, ?> values(AuditReplayCommand command) {

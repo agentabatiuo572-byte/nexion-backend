@@ -4,6 +4,7 @@ import ffdd.opsconsole.finance.facade.SupportFundJournalFacade;
 import ffdd.opsconsole.finance.domain.SupportFundAllocation.*;
 import ffdd.opsconsole.device.facade.SupportDeviceReadFacade;
 import ffdd.opsconsole.device.mapper.SupportDeviceReadMapper;
+import ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -39,9 +40,7 @@ public class SupportDeviceFundAdapter {
         if(usd.signum()>0)events.add(new Event(key(receiptNo)+":USDT",Action.EARNINGS,null,new Account(token.customer,"USDT","available"),null,usd,null));if(nex.signum()>0)events.add(new Event(key(receiptNo)+":NEX",Action.EARNINGS,null,new Account(token.customer,"UVT","available"),null,nex,null));
         var earnings=actual.earningEvents().stream().filter(e->receiptNo.equals(e.get("receiptNo"))).toList();var ledgerNos=new HashSet<String>();ledgerNos.add(taskNo);
         // UVT daily ledger is identified by the actual UTC settlement day, never a new earning entry.
-        BigDecimal baseNex=simulation.filter(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow.class::isInstance)
-                .map(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow.class::cast)
-                .filter(t->"UVT".equals(t.asset())).map(ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow::rewardAmount).orElse(BigDecimal.ZERO);
+        BigDecimal baseNex=simulation.map(TaskRow.class::cast).map(TaskRow::baseRewardNex).orElse(BigDecimal.ZERO);
         String daily="CLOUD_SHARE_DAILY:"+receipt.get("deviceId")+":"+time(receipt.get("completedAt")).atZone(ffdd.opsconsole.shared.config.DateTimeFormatConfig.BUSINESS_ZONE).withZoneSameInstant(java.time.ZoneOffset.UTC).toLocalDate();if(nex.subtract(baseNex).signum()>0)ledgerNos.add(daily);
         String schema=simulation.isEmpty()?"SUPPORT_DEVICE_EARNING_V1":
                 ((ffdd.opsconsole.device.mapper.SimulatedTaskMapper.TaskRow)simulation.get()).targetSnapshotJson()==null

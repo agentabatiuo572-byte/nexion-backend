@@ -9,6 +9,7 @@ import ffdd.opsconsole.content.domain.SupportSlaView;
 import ffdd.opsconsole.content.dto.SupportFaqStatusRequest;
 import ffdd.opsconsole.content.dto.SupportFaqUpsertRequest;
 import ffdd.opsconsole.content.dto.SupportKnowledgeDeleteRequest;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -26,6 +27,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
 import ffdd.opsconsole.shared.i18n.InterfaceLanguages;
 import org.springframework.util.StringUtils;
@@ -44,6 +46,8 @@ public class OpsSupportKnowledgeService {
     private final EventOutboxService eventOutboxService;
     private final Clock clock;
     private final OpsReadTimeSeedPolicy readTimeSeedPolicy;
+    @Autowired
+    private A2RuntimePolicy reasonPolicy;
 
     public ApiResult<SupportKnowledgeOverview> overview() {
         ensureSeedData();
@@ -176,7 +180,11 @@ public class OpsSupportKnowledgeService {
         if (!StringUtils.hasText(idempotencyKey)) {
             return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
-        if (request == null || !validReason(request.reason())) {
+        String reason = request == null ? null : request.reason();
+        int visibleReasonLength = A2RuntimePolicy.visibleCodePointCount(reason);
+        // Directly constructed callers retain the original minimum of eight.
+        if (visibleReasonLength < 8 || visibleReasonLength > 200
+                || (reasonPolicy != null && visibleReasonLength < reasonPolicy.reasonMinChars())) {
             return ApiResult.fail(OpsErrorCode.REASON_REQUIRED.httpStatus(), OpsErrorCode.REASON_REQUIRED.name());
         }
         SupportFaqView current = findFaq(faqId);

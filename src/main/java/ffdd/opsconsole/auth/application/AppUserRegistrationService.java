@@ -227,7 +227,8 @@ public class AppUserRegistrationService {
         return ApiResult.ok(new UserRegistrationOtpResponse(
                 challengeNo,
                 policy.cooldownSeconds(),
-                maskPhone(phone)));
+                maskPhone(phone),
+                policy.ttlSeconds()));
     }
 
     @Transactional
@@ -641,7 +642,7 @@ public class AppUserRegistrationService {
         }
         try {
             int value = Integer.parseInt(configured.trim());
-            if (value < 1 || value > 10) {
+            if (value < 1 || value > 50) {
                 throw new BizException(503, "USER_REGISTRATION_K1_CONFIG_UNAVAILABLE");
             }
             return value;

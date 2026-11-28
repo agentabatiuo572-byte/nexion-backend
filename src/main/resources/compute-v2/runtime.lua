@@ -3,6 +3,22 @@ local p = KEYS[1]
 local op = ARGV[1]
 local function key(s) return p .. s end
 local function err(s) return redis.error_reply('COMPUTE_V2_' .. s) end
+local function hasExited(task,gen)
+  return redis.call('HEXISTS',key('lifecycle-events'),task .. ':' .. gen .. ':EXITED') == 1
+end
+local function releasePermit(task,gen)
+  redis.call('SREM',key('permits'),task .. ':' .. gen)
+  redis.call('HDEL',key('executors'),task)
+  redis.call('ZREM',key('leases'),task)
+end
+local function restorePermit(task,gen,lease,payload,started)
+  if started ~= '1' or hasExited(task,gen) or redis.call('HEXISTS',key('executors'),task) == 1 then return false end
+  redis.call('HSETNX',key('start-events'),task,payload)
+  redis.call('HSET',key('executors'),task,'RECOVERY_REQUIRED')
+  redis.call('SADD',key('permits'),task .. ':' .. gen)
+  redis.call('ZADD',key('leases'),lease,task)
+  return true
+end
 local function admissionError(now,backlog,capacity)
   if redis.call('GET',key('ready')) ~= '1' or redis.call('EXISTS',key('last-freeze')) == 0 then return 'RECOVERING' end
   for _,name in ipairs({'pending-age','outgoing-age'}) do
@@ -62,6 +78,27 @@ end
 if op == 'ready' then
   return redis.call('GET',key('ready')) == '1' and redis.call('EXISTS',key('last-freeze')) == 1 and '1' or '0'
 end
+if op == 'replacement-view' then
+  if redis.call('GET',key('ready')) ~= '1' or redis.call('EXISTS',key('last-freeze')) == 0 then return {'UNAVAILABLE'} end
+  local device,owner = ARGV[2],ARGV[3]
+  local task = redis.call('HGET',key('devices'),device)
+  if not task then return {'EMPTY'} end
+  local taskOwner = redis.call('HGET',key('owners'),task)
+  local taskDevice = redis.call('HGET',key('task-devices'),task)
+  if not taskOwner or not taskDevice then return {'UNAVAILABLE'} end
+  if taskOwner ~= owner or taskDevice ~= device then return {'OWNER_MISMATCH'} end
+  local generation = redis.call('HGET',key('generation'),task)
+  if not generation or generation ~= redis.call('HGET',key('device-generation'),device) then return {'UNAVAILABLE'} end
+  local instance = redis.call('HGET',key('instances'),task)
+  local state = redis.call('HGET',key('states'),task)
+  local event = redis.call('HGET',key('completed'),task) or redis.call('HGET',key('start-events'),task)
+      or redis.call('HGET',key('issued-events'),task)
+  local payload = event or redis.call('HGET',key('snapshots'),task)
+  if not instance or not state or not payload then return {'UNAVAILABLE'} end
+  return {'PRESENT',task,generation,instance,state,
+      redis.call('HEXISTS',key('executors'),task) == 1 and '1' or '0',
+      hasExited(task,generation) and '1' or '0',event and 'EVENT' or 'SNAPSHOT',payload}
+end
 if op == 'admission' then
   return ARGV[5]=='1' and not admissionError(ARGV[2],ARGV[3],ARGV[4]) and '1' or '0'
 end
@@ -82,6 +119,7 @@ end
 if op == 'restore' then
   local task,dev,owner,gen,kind = ARGV[2],ARGV[3],ARGV[4],ARGV[5],ARGV[6]
   local request = owner .. ':' .. dev .. ':' .. ARGV[11]
+  redis.call('HSET',key('instances'),task,ARGV[15])
   redis.call('HSET',key('task-requests'),task,request)
   if ARGV[13] == '1' and kind == 'ISSUED' then redis.call('HSET',key('posted-requests'),task,'1') end
   local oldgen = tonumber(redis.call('HGET',key('device-generation'),dev) or '0')
@@ -99,6 +137,11 @@ if op == 'restore' then
     return '1'
   end
   if tonumber(gen) >= oldgen then
+    local previous = redis.call('HGET',key('devices'),dev)
+    -- A newer generation proves an older restored permit is historical. UVT recovery can load only its VERIFIED event.
+    if tonumber(gen) > oldgen and previous and redis.call('HGET',key('executors'),previous) == 'RECOVERY_REQUIRED' then
+      releasePermit(previous,tostring(oldgen))
+    end
     redis.call('HSET',key('device-generation'),dev,gen)
     redis.call('HSET',key('devices'),dev,task)
   end
@@ -119,25 +162,24 @@ if op == 'restore' then
     local state = redis.call('HGET',key('states'),task)
     if not state or state == 'QUEUED' then
       redis.call('HSET',key('states'),task,'RECOVERING')
-      redis.call('HSET',key('executors'),task,'RECOVERY_REQUIRED')
-      redis.call('SADD',key('permits'),task .. ':' .. gen)
-      redis.call('ZADD',key('leases'),ARGV[10],task)
+      restorePermit(task,gen,ARGV[10],ARGV[8],ARGV[14])
       redis.call('ZREM',key('queue'),task)
     end
   elseif kind == 'VERIFIED' then
     redis.call('HSET',key('states'),task,'COMPLETED')
     redis.call('HSET',key('completed'),task,ARGV[8])
     redis.call('ZREM',key('queue'),task)
+    restorePermit(task,gen,ARGV[10],ARGV[8],ARGV[14])
   elseif kind == 'FAILED' or kind == 'FENCED' then
     redis.call('HSET',key(kind == 'FENCED' and 'fenced-events' or 'failed-events'),task,ARGV[8])
     if redis.call('HGET',key('states'),task) ~= 'COMPLETED' then
-      redis.call('HSET',key('states'),task,kind == 'FENCED' and 'RECOVERING' or 'FAILED')
+      redis.call('HSET',key('states'),task,kind == 'FENCED' and not hasExited(task,gen) and 'RECOVERING' or 'FAILED')
+      -- A fence can follow a lost STARTED acknowledgement. Still reserve that execution's resources.
+      restorePermit(task,gen,ARGV[10],ARGV[8],ARGV[14])
       redis.call('ZREM',key('queue'),task)
     end
   elseif kind == 'EXITED' then
-    redis.call('HDEL',key('executors'),task)
-    redis.call('SREM',key('permits'),task .. ':' .. gen)
-    redis.call('ZREM',key('leases'),task)
+    releasePermit(task,gen)
     if redis.call('HGET',key('states'),task) ~= 'COMPLETED' then redis.call('HSET',key('states'),task,'FAILED') end
   end
   return '1'
@@ -268,9 +310,12 @@ if op == 'cancel' then
   local prior = redis.call('HGET',key('staged'),ARGV[4]) or redis.call('HGET',key('lifecycle-events'),ARGV[4])
   if prior and (state == 'FAILING' or state == 'FAILED') then return prior end
   if state ~= 'ISSUING' and state ~= 'QUEUED' then return '' end
+  if redis.call('HLEN',key('outgoing')) >= tonumber(ARGV[7]) then return err('SEND_CAPACITY') end
   redis.call('HSET',key('states'),task,'FAILING')
   redis.call('ZREM',key('queue'),task)
   redis.call('HSET',key('staged'),ARGV[4],ARGV[5])
+  redis.call('HSET',key('outgoing'),ARGV[4],ARGV[5])
+  redis.call('ZADD',key('outgoing-age'),ARGV[6],ARGV[4])
   return ARGV[5]
 end
 if op == 'stage' then
@@ -289,7 +334,12 @@ if op == 'stage' then
     end
     redis.call('HSET',key('states'),task,'VERIFYING')
   elseif ARGV[6] == 'FENCED' then
-    if state ~= 'COMPUTING' and state ~= 'STARTING' and state ~= 'VERIFYING' then return err('NOT_COMPUTING') end
+    if state == 'RECOVERING' and redis.call('HGET',key('executors'),task) == 'RECOVERY_REQUIRED' then
+      local recovered = tonumber(redis.call('GET',key('recovered-at')) or '0')
+      if redis.call('GET',key('ready')) ~= '1' or recovered == 0 or recovered + tonumber(ARGV[11]) > tonumber(ARGV[7]) then
+        return err('RECOVERING')
+      end
+    elseif state ~= 'COMPUTING' and state ~= 'STARTING' and state ~= 'VERIFYING' then return err('NOT_COMPUTING') end
     if redis.call('HEXISTS',key('staged'),task .. ':' .. ARGV[3] .. ':VERIFIED') == 1 then return err('VERIFICATION_ACK_UNKNOWN') end
     if tonumber(redis.call('ZSCORE',key('leases'),task) or '0') > tonumber(ARGV[7]) then return err('LEASE_NOT_EXPIRED') end
     redis.call('HSET',key('states'),task,'RECOVERING')
@@ -364,27 +414,34 @@ if op == 'apply' then
     if kind == 'ISSUED' and state == 'ISSUING' then
       redis.call('HSET',key('states'),task,'QUEUED')
       redis.call('ZADD',key('queue'),ARGV[8],task)
-    elseif kind == 'STARTED' and (state == 'STARTING' or state == 'QUEUED') then
-      redis.call('HSET',key('states'),task,'COMPUTING')
-      redis.call('ZREM',key('queue'),task)
-      redis.call('HSET',key('snapshots'),task,ARGV[14])
+    elseif kind == 'STARTED' then
+      redis.call('HSET',key('start-events'),task,ARGV[6])
+      if state == 'STARTING' or state == 'QUEUED' then
+        local restored = restorePermit(task,gen,ARGV[18],ARGV[6],ARGV[19])
+        redis.call('HSET',key('states'),task,restored and 'RECOVERING' or 'COMPUTING')
+        redis.call('ZREM',key('queue'),task)
+        redis.call('HSET',key('snapshots'),task,ARGV[14])
+      end
     elseif kind == 'VERIFIED' and redis.call('HEXISTS',key('failed-events'),task) == 0
         and redis.call('HEXISTS',key('fenced-events'),task) == 0 then
       redis.call('HSET',key('states'),task,'COMPLETED')
       redis.call('HSET',key('completed'),task,ARGV[6])
       redis.call('ZREM',key('queue'),task)
+      restorePermit(task,gen,ARGV[18],ARGV[6],ARGV[19])
     elseif kind == 'FAILED' and state ~= 'COMPLETED' then
       redis.call('HSET',key('failed-events'),task,ARGV[6])
       redis.call('HSET',key('states'),task,'FAILED')
       redis.call('ZREM',key('queue'),task)
+      restorePermit(task,gen,ARGV[18],ARGV[6],ARGV[19])
     elseif kind == 'FENCED' and state ~= 'COMPLETED' then
       redis.call('HSET',key('fenced-events'),task,ARGV[6])
-      redis.call('HSET',key('states'),task,'RECOVERING')
+      redis.call('HSET',key('states'),task,hasExited(task,gen) and 'FAILED' or 'RECOVERING')
+      redis.call('ZREM',key('queue'),task)
+      restorePermit(task,gen,ARGV[18],ARGV[6],ARGV[19])
     elseif kind == 'EXITED' then
-      redis.call('SREM',key('permits'),task .. ':' .. gen)
-      redis.call('HDEL',key('executors'),task)
-      redis.call('ZREM',key('leases'),task)
-      if state == 'RECOVERING' then redis.call('HSET',key('states'),task,'FAILED') end
+      releasePermit(task,gen)
+      redis.call('ZREM',key('queue'),task)
+      if state ~= 'COMPLETED' then redis.call('HSET',key('states'),task,'FAILED') end
     end
   end
   redis.call('HDEL',key('staged'),id)

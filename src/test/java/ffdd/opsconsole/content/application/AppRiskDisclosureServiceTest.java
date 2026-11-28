@@ -11,17 +11,20 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.content.domain.AppRiskDisclosureView;
 import ffdd.opsconsole.content.domain.DisclosureChapterView;
 import ffdd.opsconsole.content.domain.DisclosureDraftView;
 import ffdd.opsconsole.content.domain.DisclosureGateActionView;
-import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
 import ffdd.opsconsole.content.domain.DisclosureJurisdictionCatalogView;
+import ffdd.opsconsole.content.domain.DisclosureJurisdictionView;
 import ffdd.opsconsole.content.domain.TrustDisclosureRepository;
 import ffdd.opsconsole.content.dto.AppRiskDisclosureAckRequest;
 import ffdd.opsconsole.content.infrastructure.DisclosureAckStatusEntity;
-import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
 import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper.UserAttribution;
+import ffdd.opsconsole.content.mapper.DisclosureAckStatusMapper;
+import ffdd.opsconsole.emergency.web.GeoBlockEnforcementFilter;
 import ffdd.opsconsole.risk.facade.TamperDetectionPublisher;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import java.time.Clock;
@@ -31,10 +34,16 @@ import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 class AppRiskDisclosureServiceTest {
     private final TrustDisclosureRepository repository = mock(TrustDisclosureRepository.class);
@@ -55,7 +64,7 @@ class AppRiskDisclosureServiceTest {
                 new DisclosureJurisdictionCatalogView("SBV", "越南国家银行", "ACTIVE", 1L, 1L, true, "tester", "2026-07-12"),
                 new DisclosureJurisdictionCatalogView("CN-RISK", "中国法域", "ACTIVE", 1L, 1L, true, "tester", "2026-07-12"),
                 new DisclosureJurisdictionCatalogView("VN-ALT", "越南替代法域", "ACTIVE", 1L, 1L, true, "tester", "2026-07-12")));
-        when(ackMapper.findUserCountryCode(42L)).thenReturn("vn");
+        when(ackMapper.findUserCountries(42L)).thenReturn(new DisclosureAckStatusMapper.UserCountries("84", "VN"));
         when(ackMapper.userAttribution(42L)).thenReturn(new UserAttribution("P3", 4, "2026-W10"));
         when(ackMapper.insertReadToken(anyString(), eq(42L), eq("SBV"), eq("v13"),
                 any(LocalDateTime.class), any(LocalDateTime.class))).thenReturn(1);
@@ -308,7 +317,7 @@ class AppRiskDisclosureServiceTest {
                 new DisclosureJurisdictionView("SBV", "越南国家银行", List.of("VN"), "v13", "published", "2026-07-12", 100, 0, 0),
                 new DisclosureJurisdictionView("CN-RISK", "中国法域", List.of("CN"), "v8", "published", "2026-07-12", 100, 0, 0)));
 
-        var result = service.currentWithTrustedIpCountry(42L, "VN");
+        var result = readWithTrustedCountry("VN");
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().jurisdiction()).isEqualTo("SBV");
@@ -316,9 +325,25 @@ class AppRiskDisclosureServiceTest {
         when(repository.listJurisdictions()).thenReturn(List.of(
                 new DisclosureJurisdictionView("SBV", "越南国家银行", List.of("VN"), "v13", "published", "2026-07-12", 100, 0, 0),
                 new DisclosureJurisdictionView("VN-ALT", "越南替代法域", List.of("VN"), "v9", "published", "2026-07-12", 100, 0, 0)));
-        var ambiguous = service.currentWithTrustedIpCountry(42L, "VN");
+        var ambiguous = readWithTrustedCountry("VN");
         assertThat(ambiguous.getCode()).isEqualTo(409);
         assertThat(ambiguous.getMessage()).isEqualTo("RISK_DISCLOSURE_JURISDICTION_AMBIGUOUS");
+    }
+
+    private ApiResult<AppRiskDisclosureView> readWithTrustedCountry(String country) {
+        when(ackMapper.findUserCountries(42L)).thenReturn(new DisclosureAckStatusMapper.UserCountries(null, "CN"));
+        var request = new MockHttpServletRequest();
+        request.setAttribute(GeoBlockEnforcementFilter.class.getName() + ".trustedCountry", country);
+        var authentication = new UsernamePasswordAuthenticationToken(42L, null, List.of());
+        authentication.setDetails(Map.of("subjectType", "USER"));
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            return service.current(42L);
+        } finally {
+            RequestContextHolder.resetRequestAttributes();
+            SecurityContextHolder.clearContext();
+        }
     }
 
     private static DisclosureAckStatusEntity ack(String required, String acknowledged, String status) {

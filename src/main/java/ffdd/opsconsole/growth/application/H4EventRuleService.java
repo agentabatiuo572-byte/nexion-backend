@@ -211,8 +211,13 @@ public class H4EventRuleService {
             var domainMissing=commerce.readiness(code,rules,start,end);
             if(!domainMissing.isEmpty())return ApiResult.fail(422,"EVENT_RULE_INCOMPLETE",Map.of("missing",domainMissing));
             var snapshot=coverage.snapshot();
-            if(!"evt-anniversary-spin".equals(code)&&(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null
-                    ||snapshot.redlineBreached()))throw new BizException(409,"COVERAGE_REDLINE");
+            if(!"evt-anniversary-spin".equals(code)) {
+                if(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null)
+                    throw new BizException(409,"COVERAGE_REDLINE");
+                if(approved&&!preview&&H4GrowthApproval.confirmedCoverageBreach(snapshot))
+                    throw new H4GrowthApproval.ConfirmedRecheckFailure(409,"COVERAGE_REDLINE");
+                if(snapshot.redlineBreached())throw new BizException(409,"COVERAGE_REDLINE");
+            }
             if(current.get("activated_at")!=null&&!enabled)
                 throw new BizException(409,"EVENT_RULE_REOPEN_NOT_ALLOWED");
         }

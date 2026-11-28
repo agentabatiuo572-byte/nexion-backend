@@ -42,6 +42,18 @@ public interface SimulatedTaskPolicyMapper {
     List<TypeVersion> typesInClassesAt(@Param("classes")List<String> classes,@Param("at")LocalDateTime at);
     @Select("SELECT "+TYPE_COLUMNS+" FROM nx_sim_task_type_version WHERE task_type_id=#{id} ORDER BY version DESC LIMIT 1 FOR UPDATE")
     TypeVersion lockType(String id);
+    @Select("""
+            SELECT t.task_type_id FROM nx_sim_task_type_version t
+             WHERE t.pool_code='PHONE' AND t.enabled=1 AND t.effective_at<=#{at}
+               AND NOT EXISTS (
+                   SELECT 1 FROM nx_sim_task_type_version n
+                    WHERE n.task_type_id=t.task_type_id AND n.pool_code='PHONE' AND n.effective_at<=#{at}
+                      AND (n.effective_at>t.effective_at OR (n.effective_at=t.effective_at AND n.version>t.version))
+                    FOR SHARE
+               )
+             LIMIT 1 FOR UPDATE
+            """)
+    String lockEnabledPhoneType(LocalDateTime at);
     @Select("SELECT "+TYPE_COLUMNS+" FROM nx_sim_task_type_version t WHERE NOT EXISTS(SELECT 1 FROM nx_sim_task_type_version n WHERE n.task_type_id=t.task_type_id AND n.version>t.version) ORDER BY t.task_type_id")
     List<TypeVersion> currentTypes();
     @Insert("INSERT INTO nx_sim_task_type_version(task_type_id,version,effective_at,name,task_class,duration_seconds,base_reward,asset,enabled,pool_code) VALUES(#{taskTypeId},#{version},#{effectiveAt},#{name},#{taskClass},#{durationSeconds},#{baseReward},#{asset},#{enabled},#{poolCode})")

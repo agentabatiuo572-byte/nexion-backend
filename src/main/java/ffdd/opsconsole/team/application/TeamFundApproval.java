@@ -94,9 +94,16 @@ public class TeamFundApproval {
             var preview = teams.previewVRankPolicyApproval(request);
             if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
             var review = preview.getData();
-            String action = "threshold".equals(request.action()) ? "放宽 " + request.rank() + " 晋升条件"
-                    : "reward_add".equals(request.action()) ? request.rank() + " 新增资金奖励"
-                    : request.rank() + " 增加资金奖励";
+            String action = switch (request.action()) {
+                case "threshold" -> switch (request.field()) {
+                    case "purchaseL1Rate" -> "提高 " + request.rank() + " 好友购买一级比例";
+                    case "purchaseL2Rate" -> "提高 " + request.rank() + " 好友购买二级比例";
+                    case VRankSalaryService.POLICY_FIELD -> "提高 " + request.rank() + " USDT 月薪";
+                    default -> "放宽 " + request.rank() + " 晋升条件";
+                };
+                case "reward_add" -> request.rank() + " 新增资金奖励";
+                default -> request.rank() + " 增加资金奖励";
+            };
             return ApiResult.ok(new Review(review.target(), action, review.before(), review.after(),
                     review.beforeFields(), review.afterFields()));
         }
@@ -178,6 +185,9 @@ public class TeamFundApproval {
 
     private VRankPolicyChangeRequest vRankRequest(AuditReplayCommand command) {
         Map<?, ?> values = values(command);
+        if (VRankSalaryService.POLICY_FIELD.equals(values.get("field")) && !(values.get("value") instanceof String)) {
+            throw new BizException(422, "VRANK_SALARY_AMOUNT_INVALID");
+        }
         if (values.get("reward") instanceof Map<?, ?> reward
                 && (reward.get("amount") instanceof Double || reward.get("amount") instanceof Float)) {
             throw new BizException(422, "F1_REWARD_DECIMAL_STRING_REQUIRED");

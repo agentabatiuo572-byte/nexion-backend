@@ -16,7 +16,8 @@ public interface NotificationPreferenceMapper extends BaseMapper<Object> {
                    notify_staking AS staking,
                    notify_market AS market,
                    notify_genesis AS genesis,
-                   notify_system AS `system`
+                   notify_system AS `system`,
+                   CASE WHEN earning_push IN ('REALTIME','DAILY','HALF_HOURLY','OFF') THEN earning_push ELSE 'DAILY' END AS earningPush
               FROM nx_user_preference
              WHERE user_id = #{userId} AND is_deleted = 0
              LIMIT 1
@@ -26,11 +27,12 @@ public interface NotificationPreferenceMapper extends BaseMapper<Object> {
     @Insert("""
             INSERT INTO nx_user_preference
                 (user_id, notify_commission, notify_team, notify_staking,
-                 notify_market, notify_genesis, notify_system,
+                 notify_market, notify_genesis, notify_system, earning_push,
                  created_at, updated_at, is_deleted)
             VALUES
                 (#{userId}, COALESCE(#{commission}, 1), COALESCE(#{team}, 1), COALESCE(#{staking}, 1),
-                 COALESCE(#{market}, 1), COALESCE(#{genesis}, 1), COALESCE(#{system}, 1), NOW(), NOW(), 0)
+                 COALESCE(#{market}, 1), COALESCE(#{genesis}, 1), COALESCE(#{system}, 1),
+                 COALESCE(#{earningPush}, 'DAILY'), NOW(), NOW(), 0)
             ON DUPLICATE KEY UPDATE
                 notify_commission = CASE WHEN #{commission} IS NULL THEN notify_commission ELSE #{commission} END,
                 notify_team = CASE WHEN #{team} IS NULL THEN notify_team ELSE #{team} END,
@@ -38,6 +40,7 @@ public interface NotificationPreferenceMapper extends BaseMapper<Object> {
                 notify_market = CASE WHEN #{market} IS NULL THEN notify_market ELSE #{market} END,
                 notify_genesis = CASE WHEN #{genesis} IS NULL THEN notify_genesis ELSE #{genesis} END,
                 notify_system = CASE WHEN #{system} IS NULL THEN notify_system ELSE #{system} END,
+                earning_push = CASE WHEN #{earningPush} IS NULL THEN earning_push ELSE #{earningPush} END,
                 is_deleted = 0,
                 updated_at = NOW()
             """)
@@ -48,5 +51,11 @@ public interface NotificationPreferenceMapper extends BaseMapper<Object> {
             @Param("staking") Boolean staking,
             @Param("market") Boolean market,
             @Param("genesis") Boolean genesis,
-            @Param("system") Boolean system);
+            @Param("system") Boolean system,
+            @Param("earningPush") String earningPush);
+
+    default int upsert(Long userId, Boolean commission, Boolean team, Boolean staking,
+            Boolean market, Boolean genesis, Boolean system) {
+        return upsert(userId, commission, team, staking, market, genesis, system, null);
+    }
 }

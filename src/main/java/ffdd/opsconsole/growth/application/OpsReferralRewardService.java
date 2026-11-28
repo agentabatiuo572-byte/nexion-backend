@@ -35,6 +35,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.time.Instant;
 import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import lombok.RequiredArgsConstructor;
@@ -237,8 +238,7 @@ public class OpsReferralRewardService {
         boolean freezeGift = Boolean.TRUE.equals(snapshot == null ? null : snapshot.freezeGift());
         boolean settled = snapshot != null && Boolean.TRUE.equals(snapshot.settled());
         boolean releasePossible = settled && freezeGift && firstPaidOrder > 0 && releaseHolds.stream()
-                .anyMatch(hold -> mapper.giftReleaseAllowed(invitedUserId, hold.sandbox(),
-                        "risk_bucket".equals(hold.lockMode())) == 1);
+                .anyMatch(this::giftReleaseAllowed);
         result.put("eligible", candidate);
         result.put("willFreeze", candidate && freezeGift);
         result.put("releasePossible", releasePossible);
@@ -255,6 +255,54 @@ public class OpsReferralRewardService {
         else reason = "NOT_ELIGIBLE";
         result.put("reason", reason);
         return result;
+    }
+
+    public record SettlementProposalReview(String before, String after) { }
+
+    /** Proposal-time amounts from the approved scope's read-only sources. */
+    public SettlementProposalReview previewSettlementProposal(Long invitedUserId, ReferralSettlementRunRequest request) {
+        requireProductionH8UnavailableInStrictSandbox("H8_PRODUCTION_SETTLEMENT_FORBIDDEN_IN_SANDBOX");
+        RewardSnapshot snapshot = rewardSnapshot();
+        requireApprovedSnapshot(request, snapshot);
+        EffectiveRewards rewards = snapshot.rewards();
+        String before = "发起时奖励设置 v" + snapshot.h8Version() + " · 第 " + rewards.rhythmMonth() + " 个月";
+        if (invitedUserId == null) {
+            return new SettlementProposalReview(before, "最多结算 " + request.limit() + " 条；按各人生效区间的金额");
+        }
+        String scope = "新人 " + invitedUserId;
+        if (snapshot.enabled() && hasPositiveRewards(rewards)) {
+            var pending = mapper.findPendingReferrals(snapshot.effectiveAt(), SETTLEMENT_ENVIRONMENT,
+                    canonicalAccountSandbox(), "risk_bucket".equals(snapshot.lockMode()), 1, invitedUserId);
+            if (!pending.isEmpty()) {
+                String inviter = pending.get(0).inviterUserId() == null ? "无符合资格的邀请人，不发邀请奖励"
+                        : "邀请人 " + rewards.inviterNex().stripTrailingZeros().toPlainString() + " UVT";
+                return new SettlementProposalReview(before, "仅结算" + scope + " · 新人礼 "
+                        + giftAmountText(rewards.newcomerUsdt(), rewards.newcomerNex()) + " · " + inviter);
+            }
+        }
+        var eligibility = mapper.eligibilitySnapshot(invitedUserId);
+        if (snapshot.enabled() && eligibility != null && Boolean.TRUE.equals(eligibility.settled())) {
+            String amount = "金额暂无法确认";
+            if (Boolean.TRUE.equals(eligibility.freezeGift()) && mapper.firstPaidOrderCount(invitedUserId) > 0) {
+                var holds = mapper.releaseCandidates(invitedUserId).stream().filter(this::giftReleaseAllowed).toList();
+                if (!holds.isEmpty() && holds.stream().allMatch(hold -> hold.usdt() != null && hold.nex() != null)) {
+                    BigDecimal usdt = holds.stream().map(ReferralRewardMapper.GiftHold::usdt).reduce(BigDecimal.ZERO, BigDecimal::add);
+                    BigDecimal nex = holds.stream().map(ReferralRewardMapper.GiftHold::nex).reduce(BigDecimal.ZERO, BigDecimal::add);
+                    amount = giftAmountText(usdt, nex);
+                }
+            }
+            return new SettlementProposalReview(before + " · " + scope + "已结算",
+                    "符合解冻条件时，仅按原冻结金额解冻 · " + amount);
+        }
+        return new SettlementProposalReview(before, "仅结算" + scope + "；符合资格时按各人生效区间的金额");
+    }
+
+    private boolean giftReleaseAllowed(ReferralRewardMapper.GiftHold hold) {
+        return mapper.giftReleaseAllowed(hold.userId(), hold.sandbox(), "risk_bucket".equals(hold.lockMode())) == 1;
+    }
+
+    private String giftAmountText(BigDecimal usdt, BigDecimal nex) {
+        return usdt.stripTrailingZeros().toPlainString() + " USDT + " + nex.stripTrailingZeros().toPlainString() + " UVT";
     }
 
     /**
@@ -448,24 +496,27 @@ public class OpsReferralRewardService {
                         }
                         long nextVersion = Math.addExact(currentVersion, 1L);
                         Instant policyChangeAt = clock.instant();
+                        boolean hasEffectiveAt = config.activeValue(EFFECTIVE_AT_KEY).isPresent();
                         Long pendingBeforePolicyChange = null;
-                        if (config.activeValue(EFFECTIVE_AT_KEY).isPresent()) {
+                        if (hasEffectiveAt) {
                             LocalDateTime priorEffectiveAt = effectiveAtRequired();
                             // Every accepted param change freezes the running interval. Only an interval
                             // that was actually enabled with positive rewards is sealed; a disabled or
                             // zero-reward interval must not resurrect registrations made while it was off.
                             // Pending count may be temporarily zero (wallet missing or risk review), but
                             // the valid old segment still needs its own amount, interval and lock mode.
-                            boolean priorEligible = "enabled".equals(paramKey) ? Boolean.parseBoolean(before) : referralEnabled();
-                            if (priorEligible && hasPositiveRewards(effectiveRewards())) {
+                            if (referralEnabled() && hasPositiveRewards(effectiveRewards())) {
                                 pendingBeforePolicyChange = mapper.totalPendingBefore(priorEffectiveAt,
                                         LocalDateTime.ofInstant(policyChangeAt, DATABASE_ZONE), 0, "risk_bucket".equals(lockMode()));
                                 storePriorPolicy(priorEffectiveAt, policyChangeAt);
                             }
                         }
-                        config.upsertAdminValue(EFFECTIVE_AT_KEY, policyChangeAt.toString(), "DATETIME", "GROWTH_REFERRAL",
-                                "H8 reward policy version " + nextVersion
-                                        + " effective time; earlier pending referrals are never repriced");
+                        boolean disabling = "enabled".equals(paramKey) && "false".equals(value);
+                        if (!disabling || !hasEffectiveAt) {
+                            config.upsertAdminValue(EFFECTIVE_AT_KEY, policyChangeAt.toString(), "DATETIME", "GROWTH_REFERRAL",
+                                    "H8 reward policy version " + nextVersion
+                                            + " effective time; earlier pending referrals are never repriced");
+                        }
                         config.upsertAdminValue(STORAGE_KEYS.get(paramKey), value,
                                 "enabled".equals(paramKey) ? "BOOLEAN"
                                         : "newcomer.lockMode".equals(paramKey) ? "STRING" : "DECIMAL", "GROWTH_REFERRAL",
@@ -947,8 +998,11 @@ public class OpsReferralRewardService {
         for (String record : priorPolicyRecords()) {
             String[] p = record.split("\\|", -1);
             if (p.length != 9) throw new IllegalStateException("H8_PRIOR_POLICY_INVALID");
+            Instant effectiveAt = Instant.parse(p[0]);
+            // The legacy default is not evidence that a reward policy covered this cohort.
+            if (Instant.EPOCH.equals(effectiveAt)) continue;
             policies.add(new PriorPolicy(
-                    LocalDateTime.ofInstant(Instant.parse(p[0]), DATABASE_ZONE),
+                    LocalDateTime.ofInstant(effectiveAt, DATABASE_ZONE),
                     LocalDateTime.ofInstant(Instant.parse(p[1]), DATABASE_ZONE),
                     p[2],
                     new EffectiveRewards(
@@ -960,6 +1014,14 @@ public class OpsReferralRewardService {
                             new BigDecimal(p[8]))));
         }
         return policies;
+    }
+
+    public List<ReferralRewardMapper.AppPendingRewardWindow> appPriorPendingRewardWindows() {
+        return priorPolicies().stream()
+                .filter(prior -> hasPositiveRewards(prior.rewards()))
+                .map(prior -> new ReferralRewardMapper.AppPendingRewardWindow(
+                        prior.effectiveAt(), prior.effectiveUntil()))
+                .toList();
     }
 
     private record RewardSnapshot(
@@ -1135,8 +1197,12 @@ public class OpsReferralRewardService {
                         OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(),
                         "REFERRAL_REWARD_EFFECTIVE_AT_MISSING"));
         try {
-            return LocalDateTime.ofInstant(Instant.parse(raw), DATABASE_ZONE);
-        } catch (RuntimeException ex) {
+            Instant effectiveAt = Instant.parse(raw);
+            if (Instant.EPOCH.equals(effectiveAt)) {
+                throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_EFFECTIVE_AT_INVALID");
+            }
+            return LocalDateTime.ofInstant(effectiveAt, DATABASE_ZONE);
+        } catch (DateTimeException ex) {
             throw new BizException(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "REFERRAL_REWARD_EFFECTIVE_AT_INVALID");
         }
     }

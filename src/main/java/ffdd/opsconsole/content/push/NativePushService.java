@@ -3,12 +3,21 @@ package ffdd.opsconsole.content.push;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper.Installation;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper.Notification;
+import ffdd.opsconsole.device.application.AppTaskAssignmentService;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.CurrentAppSessionService;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
@@ -16,15 +25,31 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class NativePushService {
+    public static final String TEST_APNS_TOPIC = "ai.uvel.app.test";
+    private static final String EARNING_RECEIPT_ROUTE = "/pages/me/receipts?receiptNo=";
+    private static final String EARNING_FINANCE_ROUTE = "/pages/me/notifications?section=notifications&filter=finance";
     private final NativePushMapper mapper;
     private final CurrentAppSessionService sessions;
+    @Autowired private AppTaskAssignmentService taskAssignments;
 
     public NativePushService(NativePushMapper mapper, CurrentAppSessionService sessions) {
         this.mapper = mapper;
         this.sessions = sessions;
     }
 
-    public record Registration(String clientId, String provider, String platform, String permission, String appVersion) { }
+    public record Registration(String clientId, String provider, String platform, String permission, String appVersion,
+            String apnsTopic, Integer appBuild, Object timeZone, Object capabilities) {
+        public Registration(String clientId, String provider, String platform, String permission, String appVersion) {
+            this(clientId, provider, platform, permission, appVersion, null, null, null, null);
+        }
+        public Registration(String clientId, String provider, String platform, String permission, String appVersion, String apnsTopic) {
+            this(clientId, provider, platform, permission, appVersion, apnsTopic, null, null, null);
+        }
+        public Registration(String clientId, String provider, String platform, String permission, String appVersion,
+                String apnsTopic, Integer appBuild) {
+            this(clientId, provider, platform, permission, appVersion, apnsTopic, appBuild, null, null);
+        }
+    }
     public record Route(String notificationId, String route) { }
 
     @Transactional
@@ -33,7 +58,9 @@ public class NativePushService {
         if (request == null || !validNativeToken(request.provider(), request.platform(), request.clientId())
                 || !("android".equals(request.platform()) || "ios".equals(request.platform()))
                 || !("granted".equals(request.permission()) || "denied".equals(request.permission()) || "unknown".equals(request.permission()))
-                || request.appVersion() == null || request.appVersion().length() > 64)
+                || request.appVersion() == null || request.appVersion().length() > 64
+                || (request.appBuild() != null && (!TEST_APNS_TOPIC.equals(request.apnsTopic()) || request.appBuild() < 1))
+                || (request.apnsTopic() != null && !("APNS".equals(request.provider()) && TEST_APNS_TOPIC.equals(request.apnsTopic()))))
             throw new BizException(400, "INVALID_PUSH_REGISTRATION");
         String hash = hashToken(token);
         var session = sessions.requireCurrent(auth, id, false);
@@ -42,14 +69,16 @@ public class NativePushService {
         String cidOwner = mapper.tokenOwner(request.provider(), canonicalToken(request));
         if (cidOwner != null && !id.equals(cidOwner)) throw new BizException(409, "PUSH_TOKEN_ALREADY_BOUND");
         Installation next = new Installation(id, canonicalToken(request), request.provider(), hash, session.getUserId(), session.getSessionChainId(),
-                request.platform(), request.permission(), request.appVersion(), old == null ? 1 : old.bindingEpoch(), true);
+                request.platform(), request.permission(), request.appVersion(), old == null ? 1 : old.bindingEpoch(), true,
+                request.apnsTopic(), request.appBuild(), normalizedTimeZone(request.timeZone()),
+                normalizedCapabilities(request.capabilities()));
         try {
             if (old == null) mapper.insert(next);
             else {
                 boolean changed = !old.active() || !Objects.equals(old.userId(), next.userId())
                         || !Objects.equals(old.sessionChainId(), next.sessionChainId())
                         || !old.provider().equals(next.provider()) || !old.clientId().equals(next.clientId()) || !old.permission().equals(next.permission())
-                        || !old.platform().equals(next.platform());
+                        || !old.platform().equals(next.platform()) || !Objects.equals(old.apnsTopic(), next.apnsTopic());
                 if (changed) mapper.cancelPending(id);
                 mapper.update(next, changed ? 1 : 0);
             }
@@ -89,8 +118,25 @@ public class NativePushService {
     }
 
     static Route route(Notification n) {
+        return route(n, Instant.now());
+    }
+
+    static Route route(Notification n, Instant now) {
         if (n == null) throw new BizException(404, "PUSH_NOTIFICATION_NOT_FOUND");
+        if (n.type().startsWith("EARNING_") && n.createdAt() != null
+                && n.createdAt().plusDays(7).isBefore(LocalDateTime.ofInstant(now, StorageTime.ZONE))) {
+            return new Route(Long.toString(n.id()), EARNING_FINANCE_ROUTE);
+        }
         String route = n.ctaHref();
+        if (n.isNova()) {
+            String page = switch (route == null ? "" : route) {
+                case "", "NONE" -> "";
+                case "/team" -> "/pages/team/team";
+                case "/earn" -> "/pages/earn/earn";
+                default -> throw new BizException(409, "PUSH_ROUTE_UNAVAILABLE");
+            };
+            return new Route(Long.toString(n.id()), page);
+        }
         boolean allowed = route != null && switch (n.type()) {
             case "DEVICE_EXPIRY" -> route.equals("/pages/me/trial") || route.matches("/pages/earn/device-detail\\?id=[0-9]{1,18}");
             case "DEVICE_ALERT" -> route.matches("/pages/earn/device-detail\\?id=[0-9]{1,18}");
@@ -100,14 +146,37 @@ public class NativePushService {
                 || route.matches("/pages/me/wallet-withdraw-tracking\\?id=WD-[A-Z0-9]{1,93}");
             case "ACCOUNT_SECURITY" -> route.equals("/pages/me/security");
             case "SUPPORT_REPLY" -> route.matches("/pages/support/chat\\?cid=[A-Za-z0-9_-]{1,96}");
+            case "APP_UPDATE" -> route.equals("/pages/me/app-update");
+            case "EARNING_FIRST", "EARNING_REALTIME" ->
+                    route.matches("/pages/me/receipts\\?receiptNo=[A-Za-z0-9._:-]{1,96}");
+            case "EARNING_DAILY" -> route.equals(EARNING_FINANCE_ROUTE);
+            case "EARNING_HALF_HOURLY" ->
+                    route.equals(EARNING_FINANCE_ROUTE)
+                            || route.matches("/pages/me/receipts\\?receiptNo=[A-Za-z0-9._:-]{1,96}");
             default -> false;
         };
         if (!allowed) throw new BizException(409, "PUSH_ROUTE_UNAVAILABLE");
         return new Route(Long.toString(n.id()), route);
     }
 
+    Route earningRoute(Notification notification, long user) {
+        Route target = route(notification);
+        if (target.route().startsWith(EARNING_RECEIPT_ROUTE)) {
+            String receiptNo = target.route().substring(EARNING_RECEIPT_ROUTE.length());
+            if (!receiptNo.equals(mapper.earningReceiptNo(notification.id(), user))
+                    || !taskAssignments.isReceiptReadable(user, receiptNo)) {
+                return new Route(target.notificationId(), EARNING_FINANCE_ROUTE);
+            }
+        }
+        return target;
+    }
+
     private Route ownedRoute(long notificationId, long user) {
-        Route target = route(mapper.ownedNotification(notificationId, user));
+        Notification notification = mapper.ownedNotification(notificationId, user);
+        if (notification != null && notification.type().startsWith("EARNING_")) {
+            return earningRoute(notification, user);
+        }
+        Route target = route(notification);
         String path = target.route();
         if (path.startsWith("/pages/earn/device-detail?id=")
                 && mapper.ownedDevice(Long.parseLong(path.substring(path.indexOf('=') + 1)), user) == 0)
@@ -122,6 +191,41 @@ public class NativePushService {
                 && mapper.ownedOrder(path.substring(path.indexOf('=') + 1), user) == 0)
             throw new BizException(404, "PUSH_TARGET_NOT_FOUND");
         return target;
+    }
+
+    static String normalizedTimeZone(Object value) {
+        return value instanceof String text ? normalizedTimeZone(text) : null;
+    }
+
+    static String normalizedTimeZone(String value) {
+        if (value == null || value.isBlank() || value.length() > 64
+                || !ZoneId.getAvailableZoneIds().contains(value)) return null;
+        try {
+            return ZoneId.of(value).getId();
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    static String normalizedCapabilities(Object value) {
+        if (!(value instanceof List<?> entries)) return "[]";
+        List<String> values = new ArrayList<>();
+        for (Object entry : entries) {
+            if (!(entry instanceof String text)) return "[]";
+            values.add(text);
+        }
+        return normalizedCapabilities(values);
+    }
+
+    static String normalizedCapabilities(List<String> values) {
+        if (values == null || values.size() > 24) return "[]";
+        LinkedHashSet<String> normalized = new LinkedHashSet<>();
+        for (String value : values) {
+            if (value == null || !value.matches("[a-z0-9_]{1,64}")) return "[]";
+            normalized.add(value);
+        }
+        if (normalized.isEmpty()) return "[]";
+        return "[\"" + String.join("\",\"", normalized) + "\"]";
     }
 
     static boolean validNativeToken(String provider, String platform, String token) {

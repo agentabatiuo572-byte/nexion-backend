@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.mapper;
 
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -10,6 +12,10 @@ import org.apache.ibatis.annotations.Select;
 // Read-only payment and ledger projections span source tables; generic CRUD would broaden this contract.
 @SuppressWarnings("MybatisPlusBaseMapper")
 public interface SupportPaymentFactMapper {
+    @Select(SupportPaymentFactSql.DIRECT_PURCHASES)
+    List<DirectPurchaseEvidence> directPurchases(@Param("customerIds") Collection<Long> ids,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to);
+
     @Select(SupportPaymentFactSql.DEPOSITS) List<Map<String,Object>> deposits(@Param("customerIds") Collection<Long> ids);
     @Select(SupportPaymentFactSql.CARDS) List<Map<String,Object>> cards(@Param("customerIds") Collection<Long> ids);
     @Select(SupportPaymentFactSql.VIETQR) List<Map<String,Object>> vietqr(@Param("customerIds") Collection<Long> ids);
@@ -19,4 +25,9 @@ public interface SupportPaymentFactMapper {
     @Select(SupportPaymentFactSql.REFUNDS) List<Map<String,Object>> refunds(@Param("customerIds") Collection<Long> ids);
     @Select(SupportPaymentFactSql.FREE_TRIALS) List<Map<String,Object>> freeTrials(@Param("customerIds") Collection<Long> ids);
     @Select(SupportPaymentFactSql.UNMATCHED) List<Map<String,Object>> unmatched(@Param("customerIds") Collection<Long> ids);
+
+    record DirectPurchaseEvidence(
+            String intentNo, long customerId, String purchaseKind, String paymentMethod, String providerReference,
+            LocalDateTime providerPaidAt, String quoteJson, String orderNo, BigDecimal businessAmountUsdt,
+            String reviewReason, String refundReceiptJson, BigDecimal confirmedBankAmountVnd) { }
 }

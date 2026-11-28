@@ -31,6 +31,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
@@ -43,7 +44,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -115,6 +118,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
     /** A sandbox drill reached its terminal proof; no production side effect exists to roll back. */
     private static final String J4_DRILL_ROLLBACK_NOT_REQUIRED = "NOT_REQUIRED";
     private static final String J4_DRILL_VALIDATION_ONLY_REASON = "VALIDATION_ONLY_NO_PRODUCTION_ACTIONS";
+    private static final String J4_PLAYBOOK_NOT_READY = "J4_PLAYBOOK_NOT_READY";
     private static final Set<String> SOP_RECOVERY_MARKERS = Set.of(
             "恢复", "解封", "放行", "开启", "启用", "restore", "release", "enable", "resume");
     private static final Set<String> J1_CANONICAL_GATE_SETTINGS = Set.of(
@@ -210,8 +214,11 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     "level", "mid",
                     "title", "J2 地域策略已变更 · " + scope,
                     "hint", target + " · " + operator + " · " + reason,
-                    "occurredAt", stringValue(payload.get("occurredAt"),
-                            message.getCreatedAt() == null ? "" : message.getCreatedAt().toString())));
+                    "scope", alertPayloadText(payload, "scope"),
+                    "target", alertPayloadText(payload, "target"),
+                    "operator", alertPayloadText(payload, "operator"),
+                    "reason", alertPayloadText(payload, "reason"),
+                    "occurredAt", alertOccurredAt(payload, message)));
         } catch (Exception ignored) {
             return Optional.empty();
         }
@@ -263,11 +270,40 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                     "level", "mid",
                     "title", "J3 篡改告警配置已变更",
                     "hint", "阈值 " + thresholdChange + " · K4 " + k4Change + " · " + operator + " · " + reason,
-                    "occurredAt", stringValue(payload.get("occurredAt"),
-                            message.getCreatedAt() == null ? "" : message.getCreatedAt().toString())));
+                    "before", tamperConfigAlertState(before),
+                    "after", tamperConfigAlertState(after),
+                    "operator", alertPayloadText(payload, "operator"),
+                    "reason", alertPayloadText(payload, "reason"),
+                    "occurredAt", alertOccurredAt(payload, message)));
         } catch (Exception ignored) {
             return Optional.empty();
         }
+    }
+
+    private static String alertPayloadText(Map<String, Object> payload, String field) {
+        return payload.get(field) instanceof String value ? value : null;
+    }
+
+    private static String alertOccurredAt(Map<String, Object> payload, EventOutboxMessage message) {
+        if (payload.get("occurredAt") instanceof String value && !value.isBlank()) {
+            try {
+                var parsed = DateTimeFormatter.ISO_DATE_TIME.parseBest(value,
+                        OffsetDateTime::from, LocalDateTime::from);
+                OffsetDateTime time = parsed instanceof OffsetDateTime offsetTime ? offsetTime
+                        : ((LocalDateTime) parsed).atZone(StorageTime.ZONE).toOffsetDateTime();
+                return time.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+            } catch (DateTimeParseException ignored) {
+                // Fall back to the original event timestamp for malformed historical payloads.
+            }
+        }
+        LocalDateTime stored = message.getEventTs() != null ? message.getEventTs() : message.getCreatedAt();
+        return stored == null ? "" : stored.atZone(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+    }
+
+    private static Map<String, Object> tamperConfigAlertState(Map<?, ?> state) {
+        return map(
+                "threshold", state.get("threshold") instanceof Number threshold ? threshold : null,
+                "feedK4", state.get("feedK4") instanceof Boolean feedK4 ? feedK4 : null);
     }
 
     @Transactional
@@ -950,7 +986,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                             "audienceRole", "SUPER_ADMIN",
                             "operator", operator,
                             "reason", request.reason().trim(),
-                            "occurredAt", LocalDateTime.now().toString()));
+                            "occurredAt", OffsetDateTime.now(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)));
             auditRequired("J3_TAMPER_ALERT_CONFIG_CHANGED", "TAMPER_ALERT_CONFIG", "default", operator, "HIGH", map(
                     "before", before,
                     "after", after,
@@ -1428,7 +1464,12 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         // maker/checker separation and incorrectly reject a dedicated J4 checker.
         ApiResult<Map<String, Object>> validation = validateExecutablePlaybook(seed, true);
         if (validation != null) {
-            return rejectJ4("PLAYBOOK_EXECUTE", seed.code(), operator, request.reason(), idempotencyKey, validation);
+            rejectJ4("PLAYBOOK_EXECUTE", seed.code(), operator, request.reason(), idempotencyKey, validation);
+            if (J4_PLAYBOOK_NOT_READY.equals(validation.getMessage()) && !seed.draft()
+                    && "active".equals(seed.state()) && emergencyRepository.hasExpiredDrillEvidence(seed.code())) {
+                throw new ExpiredDrillRecheck();
+            }
+            return validation;
         }
         ApiResult<Map<String, Object>> confirmationError = validateJ4StepConfirmations(seed, request);
         if (confirmationError != null) {
@@ -1842,8 +1883,15 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         if ("drill".equals(stringValue(execution.get("mode"), ""))) {
             // A drill is a validation-only terminal record. Never funnel it through
             // the J1 recovery boundary, even if a caller bypasses the hidden UI action.
-            return rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
+            var rejection = rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
                     ApiResult.fail(409, "J4_DRILL_ROLLBACK_NOT_APPLICABLE:" + execId));
+            if (A2ReplayContext.isReplaying() && StringUtils.hasText(requestedCode)
+                    && execId.equals(execution.get("executionId"))
+                    && J4_DRILL_ROLLBACK_NOT_REQUIRED.equals(execution.get("rollbackStatus"))
+                    && J4_DRILL_VALIDATION_ONLY_REASON.equals(execution.get("rollbackReason"))) {
+                throw new DrillRollbackRecheck(rejection.getMessage());
+            }
+            return rejection;
         }
         String effectiveCode = StringUtils.hasText(requestedCode)
                 ? requestedCode
@@ -1938,8 +1986,10 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
             return rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
                     rejected.rejection());
         } catch (BizException rejected) {
-            return rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
+            var rejection = rejectJ4("PLAYBOOK_ROLLBACK", execId, actor, request.reason(), idempotencyKey,
                     ApiResult.fail(rejected.getCode(), rejected.getMessage()));
+            if (rejected instanceof OpsKillSwitchService.J4GateOwnershipRecheck) throw rejected;
+            return rejection;
         }
         Map<String, Object> response = sopOverview().getData();
         response.put("updated", map(
@@ -2612,13 +2662,25 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
         if (production && (seed.draft() || !"active".equals(seed.state())
                 || !isJ4DrillFresh(seed.lastDrill())
                 || !emergencyRepository.hasCurrentDrillEvidence(seed.code()))) {
-            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "J4_PLAYBOOK_NOT_READY");
+            return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), J4_PLAYBOOK_NOT_READY);
         }
         if (requiresI3Dispatch(seed)
                 && notificationDispatchFacade.inspectEmergencyCampaign(seed.notifyCampaignNo()).isEmpty()) {
             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "J4_NOTIFY_CAMPAIGN_NOT_READY");
         }
         return null;
+    }
+
+    public static final class ExpiredDrillRecheck extends BizException {
+        private ExpiredDrillRecheck() {
+            super(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), J4_PLAYBOOK_NOT_READY);
+        }
+    }
+
+    public static final class DrillRollbackRecheck extends BizException {
+        private DrillRollbackRecheck(String reason) {
+            super(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), reason);
+        }
     }
 
     private ApiResult<Map<String, Object>> validateJ4StepConfirmations(
@@ -2998,7 +3060,7 @@ public class OpsEmergencyControlService implements ffdd.opsconsole.platform.doma
                 "reason", reason == null ? "" : reason.trim(),
                 "triggerBasis", triggerBasis == null ? "" : triggerBasis.trim(),
                 "audienceRole", "SUPER_ADMIN",
-                "occurredAt", LocalDateTime.now().toString()));
+                "occurredAt", OffsetDateTime.now(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)));
     }
 
     private String publishJ4Event(String eventType, String aggregateId, Map<String, Object> payload) {

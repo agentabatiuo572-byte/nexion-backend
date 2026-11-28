@@ -582,6 +582,13 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
             """)
     String settingValue(@Param("settingKey") String settingKey);
 
+    @Select("""
+            SELECT setting_value FROM nx_emergency_control_setting
+             WHERE setting_key = #{settingKey} AND is_deleted = 0
+             FOR UPDATE
+            """)
+    String settingValueForUpdate(@Param("settingKey") String settingKey);
+
     @Update("""
             UPDATE nx_emergency_control_setting
                SET setting_value = CONCAT(
@@ -1365,6 +1372,7 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                                     @Param("since") LocalDateTime since);
 
     @Select("""
+            <script>
             SELECT COUNT(*) > 0
               FROM nx_emergency_sop_playbook p
               JOIN nx_emergency_sop_execution e ON e.execution_id = p.last_drill_execution_id
@@ -1375,8 +1383,13 @@ public interface EmergencyControlMapper extends BaseMapper<Object> {
                AND e.execution_mode = 'drill'
                AND e.rollback_status = 'NOT_REQUIRED'
                AND e.rollback_reason = 'VALIDATION_ONLY_NO_PRODUCTION_ACTIONS'
+            <if test="expired">
+               AND TIMESTAMPDIFF(SECOND, p.last_drill_at, DATE_SUB(NOW(), INTERVAL 90 DAY)) > 0
+               AND TIMESTAMPDIFF(SECOND, e.created_at, DATE_SUB(NOW(), INTERVAL 90 DAY)) > 0
+            </if>
+            </script>
             """)
-    boolean hasCurrentDrillEvidence(@Param("code") String code);
+    boolean hasDrillEvidence(@Param("code") String code, @Param("expired") boolean expired);
 
     @Insert("""
             INSERT INTO nx_emergency_sop_execution (

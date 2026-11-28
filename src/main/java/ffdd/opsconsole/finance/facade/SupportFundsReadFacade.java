@@ -2,9 +2,11 @@ package ffdd.opsconsole.finance.facade;
 
 import ffdd.opsconsole.common.boundary.DomainFacade;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.function.Consumer;
 
 /** Internal evidence only. The caller authorizes all IDs and owns the repeatable-read snapshot. */
 public interface SupportFundsReadFacade extends DomainFacade {
@@ -13,6 +15,25 @@ public interface SupportFundsReadFacade extends DomainFacade {
         return readNetContributions(customerIds, () -> {});
     }
     NetSnapshot readNetContributions(Collection<Long> customerIds, Runnable batchRead);
+    NetSnapshot readNetContributions(Collection<Long> customerIds, Runnable batchRead, PerformanceCapture performance);
+
+    /** Optional observation of a single interval from the same verified read. */
+    record PerformanceCapture(Instant from,Instant to,Consumer<ConfirmedWithdrawal> withdrawals,
+            Consumer<ConfirmedDepositCorrection> depositCorrections,Consumer<WithdrawalReference> withdrawalReferences,
+            Runnable readFailed) {
+        public PerformanceCapture(Instant from,Instant to,Consumer<ConfirmedWithdrawal> withdrawals,
+                Consumer<ConfirmedDepositCorrection> depositCorrections,Runnable readFailed) {
+            this(from,to,withdrawals,depositCorrections,ignored -> {},readFailed);
+        }
+        public boolean contains(Instant at) {return !at.isBefore(from) && at.isBefore(to);}
+    }
+    record WithdrawalReference(String withdrawalNo,long customerId,String rail,String state,Instant requestedAt,
+                               Instant effectiveAt,BigDecimal requestedUsdt) { }
+    record ConfirmedWithdrawal(String withdrawalNo,long customerId,String rail,Instant requestedAt,Instant completedAt,
+            BigDecimal walletDebitUsdt,BigDecimal feeUsdt,BigDecimal networkFeeUsdt,BigDecimal receivedUsdt,
+            BigDecimal receivedVnd,String evidenceKey,String settlementEventId) { }
+    record ConfirmedDepositCorrection(String operationNo,long customerId,String originalFactId,
+            String phase,Instant effectiveAt,BigDecimal signedUsdt) { }
 
     record NetSnapshot(List<NetCustomer> customers,List<ContributionOrigin> origins,List<ContributionChange> changes) {
         public NetSnapshot {customers=List.copyOf(customers);origins=List.copyOf(origins);changes=List.copyOf(changes);}

@@ -14,6 +14,7 @@ import org.junit.jupiter.api.*;
 
 /** Contract tests exclusively against a loopback server. No provider credentials or public endpoints. */
 class HttpCregisAutoForwardTest {
+    final String platform = "0x" + "1".repeat(40), counterparty = "0x" + "2".repeat(40);
     final ObjectMapper json=new ObjectMapper();final CregisProperties config=new CregisProperties();
     final AtomicInteger requests=new AtomicInteger();final AtomicReference<String> path=new AtomicReference<>(),reply=new AtomicReference<>("{\"code\":\"00000\",\"data\":{\"cid\":123}}");
     final AtomicReference<Map<String,Object>> sent=new AtomicReference<>();int responseStatus=200;HttpServer server;
@@ -25,28 +26,29 @@ class HttpCregisAutoForwardTest {
             byte[] bytes=reply.get().getBytes(StandardCharsets.UTF_8);e.sendResponseHeaders(responseStatus,bytes.length);e.getResponseBody().write(bytes);e.close();});server.start();
         config.setMode(CregisProperties.Mode.PROVIDER);config.setPayoutEnabled(true);config.setProjectId(42);config.setBaseUrl("http://127.0.0.1:"+server.getAddress().getPort());
         config.setCallbackBaseUrl("https://example.invalid/cregis");config.setApiKey("offline-fixture-key");
+        config.setBep20PlatformAddress(platform);config.setBep20CounterpartyAddress(counterparty);
     }
     @AfterEach void close(){server.stop(0);}
     HttpCregisGateway gateway(){return new HttpCregisGateway(config,json,HttpClient.newHttpClient(),Clock.systemUTC(),()->"abc123",true);}
-    CregisGateway.CollectionRequest collection(){return new CregisGateway.CollectionRequest(source,CregisFundsPreparationService.PLATFORM,new BigDecimal("5.000000"));}
-    CregisGateway.PayoutRequest payment(){return new CregisGateway.PayoutRequest(CregisConstants.USDT_BEP20_CURRENCY,CregisFundsPreparationService.COUNTERPARTY,new BigDecimal("4.000000"),"CA-P-42-100","https://example.invalid/cregis/payout","auto fixture");}
+    CregisGateway.CollectionRequest collection(){return new CregisGateway.CollectionRequest(source,platform,new BigDecimal("5.000000"));}
+    CregisGateway.PayoutRequest payment(){return new CregisGateway.PayoutRequest(CregisConstants.USDT_BEP20_CURRENCY,counterparty,new BigDecimal("4.000000"),"CA-P-42-100","https://example.invalid/cregis/payout","auto fixture");}
     @Test void defaultTransportBlockPreventsAllProviderWrites(){
         assertThatThrownBy(()->gateway().createCollection(collection())).isInstanceOf(CregisGatewayException.class);
         assertThatThrownBy(()->gateway().createAutoForwardPayout(payment())).isInstanceOf(CregisGatewayException.class);assertThat(requests).hasValue(0);
     }
     @Test void collectionIsExplicitAmountAndPayoutV2PinsBothAddresses(){config.setAutoForwardEnabled(true);
         assertThat(gateway().createCollection(collection())).isEqualTo(123);
-        assertThat(path).hasValue("/api/v1/collection");assertThat(sent.get()).containsEntry("from_address",source).containsEntry("to_address",CregisFundsPreparationService.PLATFORM).containsEntry("amount","5.000000");
+        assertThat(path).hasValue("/api/v1/collection");assertThat(sent.get()).containsEntry("from_address",source).containsEntry("to_address",platform).containsEntry("amount","5.000000");
         assertThat(gateway().createAutoForwardPayout(payment()).cid()).isEqualTo(123);assertThat(path).hasValue("/api/v2/payout");
-        assertThat(sent.get()).containsEntry("from_address",CregisFundsPreparationService.PLATFORM).containsEntry("to_address",CregisFundsPreparationService.COUNTERPARTY).containsEntry("amount","4").containsEntry("third_party_id","CA-P-42-100");
+        assertThat(sent.get()).containsEntry("from_address",platform).containsEntry("to_address",counterparty).containsEntry("amount","4").containsEntry("third_party_id","CA-P-42-100");
     }
     @Test void collectionTransportNeverRetriesUnknownAndRejectsTargetOverride(){config.setAutoForwardEnabled(true);responseStatus=503;
         assertThatThrownBy(()->gateway().createCollection(collection())).hasMessage("CREGIS_SUBMISSION_UNKNOWN");assertThat(requests).hasValue(1);
-        assertThatThrownBy(()->gateway().createCollection(new CregisGateway.CollectionRequest(source,CregisFundsPreparationService.COUNTERPARTY,BigDecimal.ONE))).isInstanceOf(CregisGatewayException.class);
+        assertThatThrownBy(()->gateway().createCollection(new CregisGateway.CollectionRequest(source,counterparty,BigDecimal.ONE))).isInstanceOf(CregisGatewayException.class);
         assertThat(requests).hasValue(1);
     }
     @Test void collectionQueryIsReadOnlyWhenDisabledAndRejectsForeignIdentity()throws Exception {
-        Map<String,Object> row=new HashMap<>(Map.of("pid",42L,"cid",123L,"chain_id","2510","token_id",CregisConstants.USDT_BEP20_TOKEN_ID,"from_address",source,"to_address",CregisFundsPreparationService.PLATFORM,"amount","5.000000","business_type","5","trade_type","2","status",1));
+        Map<String,Object> row=new HashMap<>(Map.of("pid",42L,"cid",123L,"chain_id","2510","token_id",CregisConstants.USDT_BEP20_TOKEN_ID,"from_address",source,"to_address",platform,"amount","5.000000","business_type","5","trade_type","2","status",1));
         row.put("currency",CregisConstants.USDT_BEP20_CURRENCY);row.put("txid",tx);setRow(row);
         assertThat(gateway().queryCollection(123,collection())).contains(new CregisGateway.CollectionOrder(123,1,tx));assertThat(path).hasValue("/api/v1/trade/page");
         for(String field:List.of("pid","cid","from_address","to_address","amount","business_type","trade_type","chain_id","token_id","currency")){

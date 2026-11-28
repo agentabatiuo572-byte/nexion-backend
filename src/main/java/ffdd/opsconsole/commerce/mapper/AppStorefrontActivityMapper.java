@@ -93,7 +93,7 @@ public interface AppStorefrontActivityMapper extends BaseMapper<Object> {
             @Param("limit") int limit);
 
     @Select("""
-            SELECT id, name, product_no AS productNo, sold_count AS soldCount
+            SELECT id, name, product_no AS productNo, sold_count AS soldCount, display_sold_base AS displaySoldBase
               FROM nx_product
              WHERE product_no = #{productNo}
                AND is_deleted = 0
@@ -103,7 +103,7 @@ public interface AppStorefrontActivityMapper extends BaseMapper<Object> {
     ProductRow product(@Param("productNo") String productNo);
 
     @Select("""
-            SELECT product_id id, name, product_no AS productNo, sold_count AS soldCount
+            SELECT product_id id, name, product_no AS productNo, sold_count AS soldCount, 0 AS displaySoldBase
               FROM nx_commerce_sandbox_catalog
              WHERE run_id=#{runId}
                AND product_no=#{productNo}
@@ -215,5 +215,12 @@ public interface AppStorefrontActivityMapper extends BaseMapper<Object> {
 
     record ActivityRow(long activityId, String productName, LocalDateTime occurredAt, int quantity) { }
 
-    record ProductRow(long id, String name, String productNo, int soldCount) { }
+    record ProductRow(long id, String name, String productNo, Integer soldCount, Integer displaySoldBase) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public ProductRow { }
+
+        public ProductRow(long id, String name, String productNo, int soldCount) {
+            this(id, name, productNo, soldCount, 0);
+        }
+    }
 }

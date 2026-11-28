@@ -67,6 +67,13 @@ public interface AppGrowthWheelSandboxMapper extends BaseMapper<Object> {
                    @Param("probabilityPct") BigDecimal probabilityPct, @Param("rewardKind") String rewardKind,
                    @Param("rewardAmount") BigDecimal rewardAmount, @Param("sortOrder") int sortOrder);
 
+    @Update("""
+            UPDATE nx_growth_wheel_sandbox_tier SET status=0, updated_at=NOW()
+             WHERE run_id=#{runId} AND user_id=#{userId} AND reward_kind='points'
+               AND status=1 AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX'
+            """)
+    int retirePointTiers(@Param("runId") String runId, @Param("userId") Long userId);
+
     @Insert("INSERT IGNORE INTO nx_growth_wheel_sandbox_guard "
             + "(run_id,user_id,guard_key,guard_value,status,is_deleted,source,source_environment,created_at,updated_at) "
             + "VALUES(#{runId},#{userId},#{guardKey},#{guardValue},1,0,'mock','SANDBOX',NOW(),NOW())")
@@ -76,13 +83,13 @@ public interface AppGrowthWheelSandboxMapper extends BaseMapper<Object> {
     @Select("SELECT tier_id tierId,tier_name tierName,reward_name rewardName,probability_pct probabilityPct,"
             + "reward_kind rewardKind,reward_amount rewardAmount,real_outflow realOutflow,daily_stock dailyStock "
             + "FROM nx_growth_wheel_sandbox_tier WHERE run_id=#{runId} AND user_id=#{userId} "
-            + "AND status=1 AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX' ORDER BY sort_order,id")
+            + "AND status=1 AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX' ORDER BY sort_order,tier_id FOR SHARE")
     List<SandboxTier> listTiers(@Param("runId") String runId, @Param("userId") Long userId);
 
     @Select("SELECT tier_id tierId,tier_name tierName,reward_name rewardName,probability_pct probabilityPct,"
             + "reward_kind rewardKind,reward_amount rewardAmount,real_outflow realOutflow,daily_stock dailyStock "
             + "FROM nx_growth_wheel_sandbox_tier WHERE run_id=#{runId} AND user_id=#{userId} "
-            + "AND status=1 AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX' ORDER BY sort_order,id FOR UPDATE")
+            + "AND status=1 AND is_deleted=0 AND source='mock' AND source_environment='SANDBOX' ORDER BY sort_order,tier_id FOR UPDATE")
     List<SandboxTier> lockTiers(@Param("runId") String runId, @Param("userId") Long userId);
 
     @Select("SELECT guard_value FROM nx_growth_wheel_sandbox_guard WHERE run_id=#{runId} AND user_id=#{userId} "

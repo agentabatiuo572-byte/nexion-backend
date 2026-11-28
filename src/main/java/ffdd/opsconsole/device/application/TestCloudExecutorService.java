@@ -32,6 +32,8 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class TestCloudExecutorService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceSlotReplacementCompletion slotReplacement;
     public static final String PREFIX = "nexion.compute-task.test-cloud.";
     public static final String KIND = "TEST_BGE_M3_V1";
     public static final String SPEC = "UVEL_TEST_BGE_M3_V1";
@@ -579,8 +581,10 @@ public class TestCloudExecutorService {
             } else {
                 if(mapper.cancelRolledBack(taskNo,i.ownerId(),i.deviceId(),now())!=1) throw error(409,"TEST_CLOUD_TERMINATION_CONFLICT");
                 assignments.clearRuntimeTask(i.ownerId(),i.deviceId(),taskNo,now());
-                if(assignments.deactivatePendingDevice(i.ownerId(),i.deviceId(),now())>0)
+                if(assignments.deactivatePendingDevice(i.ownerId(),i.deviceId(),now())>0) {
                     assignments.markRuntimeDeactivated(i.ownerId(),i.deviceId(),now());
+                    slotReplacement.afterDeactivation(i.ownerId(), i.deviceId());
+                }
                 terminal="CANCELLED";
             }
             record(i,"TEST_CLOUD_ROLLED_BACK_TASK_TERMINATED",taskNo,Map.of("requestHash",hash,"generation",generation,"taskStatus",terminal));

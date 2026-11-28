@@ -38,14 +38,14 @@ class NotificationPreferenceCriticalDeliveryMySqlTest {
                 assertThat(campaign.countNotificationsByBizNo("DISCLOSURE-VN-20260911")).isEqualTo(1);
                 assertThat(campaign.selectUserNotifications(1L, null, null, 20)).extracting(view -> view.id()).hasSize(1);
                 assertThat(campaign.selectUserNotifications(2L, null, null, 20)).isEmpty();
-                assertThat(campaign.countUnreadForUser(1L)).isEqualTo(1L);
-                assertThat(campaign.countUnreadForUser(2L)).isZero();
+                assertThat(campaign.countUnreadForUser(1L).unread()).isEqualTo(1L);
+                assertThat(campaign.countUnreadForUser(2L).unread()).isZero();
 
                 long notificationId = scalar(connection, "SELECT id FROM nx_notification WHERE biz_no='DISCLOSURE-VN-20260911'");
                 assertThat(campaign.markUserNotificationRead(2L, notificationId)).isZero();
-                assertThat(campaign.countUnreadForUser(1L)).isEqualTo(1L);
+                assertThat(campaign.countUnreadForUser(1L).unread()).isEqualTo(1L);
                 assertThat(campaign.markUserNotificationRead(1L, notificationId)).isEqualTo(1);
-                assertThat(campaign.countUnreadForUser(1L)).isZero();
+                assertThat(campaign.countUnreadForUser(1L).unread()).isZero();
                 assertThat(campaign.selectUserNotifications(1L, null, null, 20)).singleElement()
                         .satisfies(view -> assertThat(view.readAt()).isNotNull());
             }

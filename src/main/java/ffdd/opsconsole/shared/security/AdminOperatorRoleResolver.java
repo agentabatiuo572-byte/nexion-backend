@@ -8,9 +8,11 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
-/** Resolves the audit role label from the authenticated administrator record. */
+/** Resolves the audit role label from an administrator record. */
 @Component
 @RequiredArgsConstructor
 public class AdminOperatorRoleResolver {
@@ -25,14 +27,24 @@ public class AdminOperatorRoleResolver {
     }
 
     public String resolve() {
-        String roleCode = resolveCode();
-        if ("SUPER_ADMIN".equals(roleCode)) {
-            return "超管";
+        return roleLabel(resolveCode());
+    }
+
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public String resolveForAdmin(long adminId) {
+        try {
+            String roleCode = resolveCode(adminId);
+            return roleCode == null ? null : roleLabel(roleCode);
+        } catch (RuntimeException ignored) {
+            // Optional identity metadata must not fail an export read or command response.
+            return null;
         }
-        if (!StringUtils.hasText(roleCode)) {
-            return "认证运营员";
-        }
+    }
+
+    public static String roleLabel(String roleCode) {
+        if (roleCode == null) return "认证运营员";
         return switch (roleCode) {
+            case "SUPER_ADMIN" -> "超管";
             case "CONFIG_ADMIN" -> "配置管理员";
             case "FINANCE" -> "财务";
             case "FINANCE_LEAD" -> "财务主管";
@@ -48,9 +60,10 @@ public class AdminOperatorRoleResolver {
     public String resolveCode() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         Long adminId = authentication == null ? null : positiveId(authentication.getPrincipal());
-        if (adminId == null) {
-            return null;
-        }
+        return adminId == null ? null : resolveCode(adminId);
+    }
+
+    private String resolveCode(long adminId) {
         AdminEntity admin = adminMapper.selectById(adminId);
         if (admin == null || Integer.valueOf(1).equals(admin.getIsDeleted())
                 || !Integer.valueOf(1).equals(admin.getStatus())) {

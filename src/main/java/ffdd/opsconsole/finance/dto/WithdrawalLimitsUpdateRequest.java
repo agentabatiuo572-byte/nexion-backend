@@ -12,6 +12,7 @@ public class WithdrawalLimitsUpdateRequest {
     private final Set<String> presentFields = new LinkedHashSet<>();
     private Long expectedVersion;
     private Integer dailyLimitCount;
+    private BigDecimal minUsdt;
     private BigDecimal balanceMaxRatio;
     private BigDecimal networkFeeRatio;
     private BigDecimal networkFeeMin;
@@ -21,6 +22,8 @@ public class WithdrawalLimitsUpdateRequest {
     private Map<String, Boolean> networkEnabled;
     private BigDecimal smallAmountThresholdUsd;
     private Integer payoutSlaHours;
+    private BigDecimal addressEffectiveDelayHours;
+    private BigDecimal addressChangeCooldownDays;
     private Integer cooldownDays;
     private BigDecimal penaltyFeeRate;
     private Boolean complianceHoldEnabled;
@@ -31,6 +34,8 @@ public class WithdrawalLimitsUpdateRequest {
     @JsonSetter public void setExpectedVersion(Long value) { expectedVersion = value; presentFields.add("expectedVersion"); }
     public Integer getDailyLimitCount() { return dailyLimitCount; }
     @JsonSetter public void setDailyLimitCount(Integer value) { dailyLimitCount = value; presentFields.add("dailyLimitCount"); }
+    public BigDecimal getMinUsdt() { return minUsdt; }
+    @JsonSetter public void setMinUsdt(BigDecimal value) { minUsdt = value; presentFields.add("minUsdt"); }
     public BigDecimal getBalanceMaxRatio() { return balanceMaxRatio; }
     @JsonSetter public void setBalanceMaxRatio(BigDecimal value) { balanceMaxRatio = value; presentFields.add("balanceMaxRatio"); }
     public BigDecimal getNetworkFeeRatio() { return networkFeeRatio; }
@@ -61,6 +66,16 @@ public class WithdrawalLimitsUpdateRequest {
         payoutSlaHours = value;
         presentFields.add("payoutSlaHours");
     }
+    public BigDecimal getAddressEffectiveDelayHours() { return addressEffectiveDelayHours; }
+    @JsonSetter public void setAddressEffectiveDelayHours(BigDecimal value) {
+        addressEffectiveDelayHours = value;
+        presentFields.add("addressEffectiveDelayHours");
+    }
+    public BigDecimal getAddressChangeCooldownDays() { return addressChangeCooldownDays; }
+    @JsonSetter public void setAddressChangeCooldownDays(BigDecimal value) {
+        addressChangeCooldownDays = value;
+        presentFields.add("addressChangeCooldownDays");
+    }
     public Integer getCooldownDays() { return cooldownDays; }
     @JsonSetter public void setCooldownDays(Integer value) { cooldownDays = value; presentFields.add("cooldownDays"); }
     public BigDecimal getPenaltyFeeRate() { return penaltyFeeRate; }
@@ -87,10 +102,10 @@ public class WithdrawalLimitsUpdateRequest {
     public Set<String> changedD5Fields() {
         Set<String> fields = new LinkedHashSet<>(presentFields);
         fields.retainAll(Set.of(
-                "dailyLimitCount", "balanceMaxRatio", "networkFeeRatio",
+                "dailyLimitCount", "balanceMaxRatio", "minUsdt", "networkFeeRatio",
                 "networkFeeMin", "networkFeeMax", "nexFeeOffsetRate", "networkConfirmFeeUsd",
                 "networkEnabled",
-                "smallAmountThresholdUsd", "payoutSlaHours"));
+                "smallAmountThresholdUsd", "payoutSlaHours", "addressEffectiveDelayHours", "addressChangeCooldownDays"));
         return fields;
     }
 }

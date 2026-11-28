@@ -74,7 +74,8 @@ public class WithdrawalPayoutDispatchGuard {
         var current = mapper.lockComplianceDispatchState(candidate.withdrawalNo());
         if (current == null || !"REVIEW_PASSED".equals(current.status())
                 || current.payoutSource() != null || current.providerCid() != null) return false;
-        var compliance = WithdrawalCompliancePolicy.require(growthRhythm.snapshot());
+        var compliance = WithdrawalCompliancePolicy.require(growthRhythm.snapshot())
+                .withOrderThreshold(current.complianceThresholdUsdt());
         if (!compliance.reviewRequired(candidate.chain())) return true;
         LocalDateTime holdUntil = compliance.holdUntil(candidate.chain(), candidate.amount(), current.createdAt());
         if (compliance.approvalOwner().equals(current.lifecycleOwner()) && !holdUntil.isAfter(now)) return true;

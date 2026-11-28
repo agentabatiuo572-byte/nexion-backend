@@ -35,7 +35,6 @@ public class CregisDepositService {
     public void stopPoolMaintenance() {closing=true;}
     @jakarta.annotation.PreDestroy public void closePoolWorkers() {closing=true;poolWorkers.shutdown();}
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(CregisDepositService.class);
-    private static final BigDecimal EXPOSURE_TRIP = new BigDecimal("500");
     private final CregisProperties config;
     private final CregisGatewayRouter router;
     private final BscDepositProof chain;
@@ -99,7 +98,6 @@ public class CregisDepositService {
             if(!available) return Map.of("enabled",false,"creditEnabled",false,"network",network.network(),"reason","CREGIS_DEPOSIT_NETWORK_UNAVAILABLE");
             chain.head(network);
         }
-        tripIfNeeded();
         if (config.getDepositConfirmations() < 15) throw new BizException(503, "CREGIS_CONFIRMATIONS_INVALID");
         var currentPolicy = policies.current();
         List<Map<String, Object>> rows = db.addressForUser(userId, network.chainId());
@@ -152,7 +150,6 @@ public class CregisDepositService {
             Map<String, Object> gate = db.lockProvisionGate();
             if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "assignEnabled") || !depositEnabledLocked(network))
                 throw new BizException(503, "CREGIS_ADDRESS_POOL_PAUSED");
-            if (tripLocked()) return null;
             List<Map<String, Object>> current = db.addressForUser(userId, network.chainId());
             if (!current.isEmpty()) return current.get(0);
             Long cursor = db.lockCursor(network);
@@ -281,7 +278,7 @@ public class CregisDepositService {
         return transactions.execute(ignored -> {
             Map<String,Object> gate=db.lockProvisionGate();
             if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate,"assignEnabled") || !on(gate,"creditEnabled")
-                    || !depositEnabledLocked(network) || tripLocked()) return 0;
+                    || !depositEnabledLocked(network)) return 0;
             var raw=db.poolPolicy(network);var policy=CregisAddressPoolPolicy.from(raw);
             if((automatic && !policy.enabled()) || submissionCoolingDown(raw)) return 0;
             int available=db.availableAddressCount(config.getProjectId(),network.chainId());
@@ -315,7 +312,7 @@ public class CregisDepositService {
         long creationBlock=chain.head(network).number();
         Map<String,Object> request=transactions.execute(ignored->{
             var gate=db.lockProvisionGate();
-            if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate,"assignEnabled") || !on(gate,"creditEnabled") || !depositEnabledLocked(network) || tripLocked()) return null;
+            if(gate==null || !"IDLE".equals(gate.get("state")) || !on(gate,"assignEnabled") || !on(gate,"creditEnabled") || !depositEnabledLocked(network)) return null;
             var raw=db.poolPolicy(network);var policy=CregisAddressPoolPolicy.from(raw);
             if(submissionCoolingDown(raw) || db.submittingAddressCount(config.getProjectId(),network.chainId())>=policy.concurrency()) return null;
             var row=db.lockQueuedAddress(config.getProjectId(),network.chainId());
@@ -544,7 +541,6 @@ public class CregisDepositService {
     public void reconcile() {
         if (config.getMode() != CregisProperties.Mode.PROVIDER) return;
         if (config.getDepositConfirmations() < 15) return;
-        tripIfNeeded();
         List<Map<String, Object>> pending = db.pendingDeliveries();
         for (Map<String, Object> delivery : pending) {
             long id = ((Number) delivery.get("id")).longValue();
@@ -708,7 +704,6 @@ public class CregisDepositService {
                 db.holdPoolAddress(config.getProjectId(), network.chainId(), log.address());
                 db.blockProvisionGateAny();
             }
-            tripLocked();
             return null;
         });
         if (issue != null) throw new IllegalStateException(issue);
@@ -1026,15 +1021,7 @@ public class CregisDepositService {
                 || proof.logIndex() != ((Number) event.get("logIndex")).intValue())
             throw new IllegalStateException("CREGIS_REVIEW_EVENT_CHANGED");
         Map<String, Object> gate = db.lockProvisionGate();
-        // A 500-USDT exposure trip may be reduced by a checked hold release.
-        // Emergency and incident closures still prohibit every credit.
-        boolean automatic = gate != null && "IDLE".equals(gate.get("state"))
-                && on(gate, "creditEnabled")
-                && db.unresolvedExposure(config.getProjectId()).compareTo(EXPOSURE_TRIP) < 0;
-        boolean exposureResolution = gate != null && "BLOCKED".equals(gate.get("state"))
-                && "CREGIS_UNRESOLVED_EXPOSURE_500".equals(gate.get("switchReason"))
-                && db.unresolvedExposure(config.getProjectId()).compareTo(EXPOSURE_TRIP) >= 0;
-        if ((!automatic && !exposureResolution)
+        if (gate == null || !"IDLE".equals(gate.get("state")) || !on(gate, "creditEnabled")
                 || db.disputedDeliveryCount(cid) != 0
                 || db.disputedDeliveryCountForProject(config.getProjectId()) != 0
                 || db.pendingAcceptedDeliveryCount(0) != 0
@@ -1061,8 +1048,7 @@ public class CregisDepositService {
         requireReviewProofFresh(proof);
         var policy = policies.snapshot(network,config.getProjectId(),txid);
         if (policy.version()!=proof.policyVersion() || policy.feeUsdt().compareTo(proof.feeAmount()) != 0 || proof.confirmations() < policy.confirmations()) throw new IllegalStateException("CREGIS_REVIEW_POLICY_CHANGED");
-        if(policies.integerPrincipalRequired(network,config.getProjectId(),txid)
-                &&(amount.stripTrailingZeros().scale()>0||amount.compareTo(policy.minDepositUsdt())<0))
+        if (amount.compareTo(policy.minDepositUsdt()) < 0)
             throw new BizException(409,"CREGIS_TOPUP_PRINCIPAL_REQUIRES_EXCEPTION");
         BigDecimal net = amount.subtract(policy.feeUsdt());
         if (net.signum()<=0) throw new IllegalStateException("CREGIS_REVIEW_NET_INVALID");
@@ -1104,8 +1090,7 @@ public class CregisDepositService {
                 && on(gate, "creditEnabled")
                 && !hasBlockingPendingDelivery(network,deliveryId, cid, txid, address, amount, proof.blockNumber())) {
             if (settle(network,deliveryId, userId, cid, txid, address, amount, proof)) return true;
-            // A trip during settlement can close the gate before this verified
-            // transfer is materialized. Keep it as a reviewed hold.
+            // Preserve a hold created during settlement.
             if (!db.lockEvent(network,config.getProjectId(), cid).isEmpty()) return false;
         }
         var policy = policies.snapshot(network,config.getProjectId(), txid);
@@ -1116,7 +1101,6 @@ public class CregisDepositService {
                 proof.blockHash(), proof.confirmations(), status) != 1)
             throw new IllegalStateException("CREGIS_PAUSED_HOLD_INSERT_FAILED");
         recordTransferSender(network,cid,proof);
-        tripLocked();
         if (deliveryId > 0) db.finishDelivery(deliveryId, status);
         return true;
     }
@@ -1148,10 +1132,9 @@ public class CregisDepositService {
         if (proof.confirmations() < policy.confirmations()) return false;
         String status = amount.compareTo(policy.minDepositUsdt()) < 0 ? "DUST_HOLD"
                 : policies.integerPrincipalRequired(network,config.getProjectId(),txid)&&amount.stripTrailingZeros().scale()>0
-                        || amount.compareTo(new BigDecimal("100")) > 0 ? "REVIEW_HOLD" : "CREDITED";
+                        ? "REVIEW_HOLD" : "CREDITED";
         Map<String, Object> gate = db.lockProvisionGate();
         if (gate == null) throw new IllegalStateException("CREGIS_DEPOSIT_RISK_GATE_MISSING");
-        if (tripLocked()) return false;
         if (!depositEnabledLocked(network) || !"IDLE".equals(gate.get("state")) || !on(gate, "creditEnabled")
                 || hasBlockingPendingDelivery(network,deliveryId, cid, txid, address, amount, proof.blockNumber())) return false;
         var exceptionSource = new CregisExceptionSourceService.Source(config.getProjectId(), cid, txid,
@@ -1168,7 +1151,6 @@ public class CregisDepositService {
                 proof.blockNumber(), proof.blockHash(), proof.confirmations(), status) != 1)
             throw new IllegalStateException("CREGIS_EVENT_INSERT_FAILED");
         recordTransferSender(network,cid,proof);
-        if (!"CREDITED".equals(status)) tripLocked();
         if ("CREDITED".equals(status)) {
             Map<String, Object> wallet = db.lockWallet(userId);
             if (wallet == null) throw new IllegalStateException("CREGIS_WALLET_MISSING");
@@ -1228,30 +1210,6 @@ public class CregisDepositService {
             db.blockProvisionGateAny();
             throw new IllegalStateException("CREGIS_ALLOCATION_ANCHOR_MISMATCH");
         }
-    }
-
-    @Scheduled(fixedDelayString = "${NEXION_CREGIS_RISK_CHECK_MS:30000}")
-    public void tripIfNeeded() {
-        if (config.getMode() != CregisProperties.Mode.PROVIDER) return;
-        transactions.executeWithoutResult(ignored -> {
-            if (db.lockProvisionGate() == null) throw new IllegalStateException("CREGIS_RISK_GATE_MISSING");
-            tripLocked();
-        });
-    }
-
-    /** The provision row serializes the trip against address assignment and credit. */
-    private boolean tripLocked() {
-        BigDecimal exposure = db.unresolvedExposure(config.getProjectId());
-        if (exposure == null) throw new IllegalStateException("CREGIS_EXPOSURE_UNAVAILABLE");
-        if (exposure.compareTo(EXPOSURE_TRIP) < 0) {
-            db.resolveExposureAlert(config.getProjectId());
-            return false;
-        }
-        db.tripAll("CREGIS_UNRESOLVED_EXPOSURE_500");
-        db.insertRiskAlert(config.getProjectId(), "unresolved-exposure-500", "P0",
-                "UNRESOLVED_EXPOSURE", "Exposure reached " + exposure.toPlainString() + " USDT");
-        db.reopenExposureAlert(config.getProjectId());
-        return true;
     }
 
     private static boolean on(Map<String, Object> row, String key) {

@@ -33,14 +33,14 @@ class AppGrowthLifecyclePublisherTest {
                 .thenReturn(new VoucherRedemptionRow(
                         "G-1", "V-20", "PERCENT", BigDecimal.ZERO, new BigDecimal("20"),
                         new BigDecimal("100"), new BigDecimal("15")));
-        when(mapper.markVoucherUsed("G-1", 42L, "ORD-1")).thenReturn(1);
+        when(mapper.markVoucherUsed("G-1", 42L, "ORD-1", new BigDecimal("15.000000"))).thenReturn(1);
 
         VoucherRedemption redemption = service.prepareVoucher(42L, "V-20", "SKU-1", new BigDecimal("200"));
         service.redeemVoucher(42L, redemption, "ORD-1", "SKU-1", attribution);
 
         assertThat(redemption.discountUsdt()).isEqualByComparingTo("15.000000");
         var ordered = inOrder(mapper, audit, outbox);
-        ordered.verify(mapper).markVoucherUsed("G-1", 42L, "ORD-1");
+        ordered.verify(mapper).markVoucherUsed("G-1", 42L, "ORD-1", new BigDecimal("15.000000"));
         ordered.verify(audit).recordRequired(any());
         ordered.verify(outbox).publishUserEvent(
                 eq("ORDER"), eq("ORD-1"), eq("voucher.redeemed"), eq(42L),
@@ -49,7 +49,7 @@ class AppGrowthLifecyclePublisherTest {
 
     @Test
     void outboxFailurePropagatesSoCallerTransactionRollsBackVoucherAndOrder() {
-        when(mapper.markVoucherUsed("G-1", 42L, "ORD-1")).thenReturn(1);
+        when(mapper.markVoucherUsed("G-1", 42L, "ORD-1", BigDecimal.ONE)).thenReturn(1);
         when(outbox.publishUserEvent(any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenThrow(new IllegalStateException("outbox unavailable"));
 
@@ -68,7 +68,7 @@ class AppGrowthLifecyclePublisherTest {
 
         assertThatThrownBy(() -> service.prepareVoucher(42L, "V-1", "SKU-X", BigDecimal.TEN))
                 .hasMessage("VOUCHER_NOT_AVAILABLE_OR_NOT_APPLICABLE");
-        verify(mapper, never()).markVoucherUsed(any(), any(), any());
+        verify(mapper, never()).markVoucherUsed(any(), any(), any(), any());
     }
 
     @Test

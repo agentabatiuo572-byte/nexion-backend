@@ -148,7 +148,7 @@ class LeaderboardPauseSnapshotAdversarialTest {
         when(auditMapper.insertAuditLog(any())).thenThrow(new IllegalStateException("fixture audit insert failure"));
         var realAudit=new ffdd.opsconsole.shared.audit.AuditLogService(auditMapper,
                 new ffdd.opsconsole.shared.audit.AuditLogSanitizer(new ObjectMapper()),
-                new ffdd.opsconsole.shared.audit.ApplicationNameProperties(), properties,null,runtime);
+                new ffdd.opsconsole.shared.audit.ApplicationNameProperties(), properties,null,runtime, new com.fasterxml.jackson.databind.ObjectMapper());
         ReflectionTestUtils.setField(writer,"auditLogService",realAudit);
         ReflectionTestUtils.setField(writer,"pauseSnapshots",snapshots);
         cfg.upsertAdminValue("team.ui.F.leaderboard.paused","on".equals(next) ? "off" : "on","TEXT","fixture","fixture");

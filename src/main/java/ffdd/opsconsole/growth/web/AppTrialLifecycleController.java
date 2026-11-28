@@ -7,10 +7,12 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -25,15 +27,30 @@ public class AppTrialLifecycleController {
         return userId == null ? forbidden() : service.state(userId);
     }
 
+    @GetMapping("/commands/{kind}")
+    public ApiResult<Map<String, Object>> command(@PathVariable String kind,
+                                                   @RequestParam(name = "commandKey", required = false) String commandKey,
+                                                   Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.command(userId, kind, commandKey);
+    }
+
+    @GetMapping("/purchase-options")
+    public ApiResult<Map<String, Object>> purchaseOptions(Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.purchaseOptions(userId);
+    }
+
     @PostMapping("/start")
     public ApiResult<Map<String, Object>> start(
             @RequestBody(required = false) StartRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
-        StartRequest body = request == null ? new StartRequest(null, null) : request;
+        StartRequest body = request == null ? new StartRequest(null, null, null, null) : request;
         return userId == null ? forbidden()
-                : service.withProductImage(service.start(userId, body.paymentMethodId(), body.deviceName(), idempotencyKey));
+                : service.withProductImage(service.start(userId, body.paymentMethodId(), body.deviceName(),
+                        body.trialProductId(), body.trialTermsVersion(), idempotencyKey));
     }
 
     @PostMapping("/cancel")
@@ -42,8 +59,9 @@ public class AppTrialLifecycleController {
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
             Authentication authentication) {
         Long userId = userId(authentication);
+        CancelRequest body = request == null ? new CancelRequest(null, null) : request;
         return userId == null ? forbidden()
-                : service.withProductImage(service.cancel(userId, request == null ? null : request.reason(), idempotencyKey));
+                : service.withProductImage(service.cancel(userId, body.reason(), body.claimNo(), idempotencyKey));
     }
 
     @PostMapping("/extension")
@@ -93,10 +111,10 @@ public class AppTrialLifecycleController {
         return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
     }
 
-    public record StartRequest(Long paymentMethodId, String deviceName) {
+    public record StartRequest(Long paymentMethodId, String deviceName, String trialProductId, String trialTermsVersion) {
     }
 
-    public record CancelRequest(String reason) {
+    public record CancelRequest(String reason, String claimNo) {
     }
 
     public record ConvertRequest(String productNo, BigDecimal expectedAmountUsdt, String quoteVersion,

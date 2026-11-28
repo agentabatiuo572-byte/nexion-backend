@@ -29,14 +29,6 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
     private static final DateTimeFormatter INSTANCE_TIME = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss");
     private static final int DEFAULT_ELIGIBILITY_HOURS = 72;
     private static final int FULL_REWARD_HOURS = 24;
-    private static final java.util.Set<String> ACCOUNT_PHONE_CODES = java.util.Set.of(
-            "bind_mobile","bind_phone","bind_phone_number","verify_mobile","verify_phone","verify_phone_number");
-    private static final java.util.Set<String> ACCOUNT_PHONE_ROUTES = java.util.Set.of(
-            "/pages/me/profile","/pages/me/security","/me/profile","/me/security");
-    private static final java.util.regex.Pattern PHONE = java.util.regex.Pattern.compile(
-            "(?iu)(?:^|[\\s_/-])(?:(?:phone|mobile|smartphone)(?:[\\s_/-]|$)|iphone(?=\\d|[\\s_/-]|$))|手机|手機|điện thoại");
-    private static final java.util.regex.Pattern PHONE_ACTION = java.util.regex.Pattern.compile(
-            "(?iu)connect|calibrat|activat|bind|buy|purchas|连接|接入|校准|激活|开启|启用|绑定|购买|kết nối|hiệu chuẩn|hiệu chỉnh|kích hoạt|mua|liên kết");
     private final DayOneInstanceMapper mapper;
     private final GrowthRhythmFacade growthRhythmFacade;
 
@@ -57,17 +49,19 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
 
         var definitions = mapper.lockActiveDayOneDefinitions();
         List<Long> activeDefinitionIds = definitions.stream()
-                .filter(mission -> !"H5".equals(user.surface()) || availableOnWeb(mission))
                 .map(DayOneInstanceMapper.DayOneMission::id).toList();
         var eligibleIds = java.util.Set.copyOf(activeDefinitionIds);
         int activeDefinitionCount = activeDefinitionIds.size();
-        List<DayOneDefinitionBinding> bindings = activeDefinitionCount == 0
+        List<DayOneDefinitionBinding> configuredBindings = activeDefinitionCount == 0
                 ? List.of() : mapper.lockActiveDayOneDefinitionBindings().stream()
                         .filter(binding -> eligibleIds.contains(binding.sourceMissionId())).toList();
-        Map<Long, List<DayOneDefinitionBinding>> items = groupItems(bindings);
+        Map<Long, List<DayOneDefinitionBinding>> items = groupItems(configuredBindings);
         if (!activeDefinitionIds.equals(new ArrayList<>(items.keySet()))) {
             throw new BizException(503, "DAY_ONE_SNAPSHOT_BINDING_REQUIRED");
         }
+        List<DayOneDefinitionBinding> bindings = configuredBindings.stream()
+                .filter(binding -> H3DayOneBindingPolicy.permits(
+                        binding.producer(), binding.eventType(), binding.questCode(), binding.userIdField())).toList();
         String status = activeDefinitionCount == 0 ? "EMPTY" : "SNAPSHOT";
         int eligibilityHours = eligibilityHours(mapper.lockConfigValue("growth.quest.day_one.eligibility_hours"));
         LocalDateTime eligibleUntil = user.enteredAt().plusHours(eligibilityHours);
@@ -75,7 +69,7 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
             DayOneInstanceSnapshot draft = new DayOneInstanceSnapshot(
                     null, userId, instanceKey, status, user.enteredAt(), eligibilityHours, FULL_REWARD_HOURS,
                     eligibleUntil, null, null, null, 0,
-                    definitionHash(status, eligibilityHours, null, null, null, bindings));
+                    definitionHash(status, eligibilityHours, null, null, null, items, bindings));
             mapper.insertInstanceIfAbsent(draft);
             DayOneInstanceSnapshot stored = mapper.lockExistingInstance(userId, instanceKey);
             if (stored == null) throw new IllegalStateException("DAY_ONE_SNAPSHOT_WRITE_UNAVAILABLE");
@@ -92,7 +86,7 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
                 null, userId, instanceKey, status, user.enteredAt(), eligibilityHours, FULL_REWARD_HOURS,
                 eligibleUntil, triReward, rhythm.questBonusMultiplier(), rhythm.currentMonth(), items.size(),
                 definitionHash(status, eligibilityHours, triReward, rhythm.questBonusMultiplier(),
-                        rhythm.currentMonth(), bindings));
+                        rhythm.currentMonth(), items, bindings));
         int inserted = mapper.insertInstanceIfAbsent(draft);
         DayOneInstanceSnapshot stored = mapper.lockExistingInstance(userId, instanceKey);
         if (stored == null) throw new IllegalStateException("DAY_ONE_SNAPSHOT_WRITE_UNAVAILABLE");
@@ -104,11 +98,11 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
                     item.category(), item.actionRoute(), item.rewardPoints(), ++ordinal, item.nameTranslations()) != 1) {
                 throw new IllegalStateException("DAY_ONE_SNAPSHOT_ITEM_WRITE_FAILED");
             }
-            for (DayOneDefinitionBinding binding : itemBindings) {
-                if (mapper.insertBinding(stored.id(), binding.sourceMissionId(), binding.sourceBindingId(), binding.bindingCode(),
-                        binding.producer(), binding.eventType(), binding.userIdField()) != 1) {
-                    throw new IllegalStateException("DAY_ONE_SNAPSHOT_BINDING_WRITE_FAILED");
-                }
+        }
+        for (DayOneDefinitionBinding binding : bindings) {
+            if (mapper.insertBinding(stored.id(), binding.sourceMissionId(), binding.sourceBindingId(), binding.bindingCode(),
+                    binding.producer(), binding.eventType(), binding.userIdField()) != 1) {
+                throw new IllegalStateException("DAY_ONE_SNAPSHOT_BINDING_WRITE_FAILED");
             }
         }
         return stored;
@@ -118,14 +112,6 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
         if (raw == null || !raw.trim().matches("^[0-9]{1,3}$")) return DEFAULT_ELIGIBILITY_HOURS;
         int parsed = Integer.parseInt(raw.trim());
         return parsed >= 24 && parsed <= 720 ? parsed : DEFAULT_ELIGIBILITY_HOURS;
-    }
-
-    private boolean availableOnWeb(DayOneInstanceMapper.DayOneMission mission) {
-        String route = mission.route() == null ? "" : mission.route().split("[?#]", 2)[0];
-        if (route.matches("/(?:pages/)?(?:onboarding/(?:connect|estimator)|entry-surfaces/(?:index|signed|h5|white))")) return false;
-        if (ACCOUNT_PHONE_CODES.contains(mission.code().toLowerCase(Locale.ROOT)) || ACCOUNT_PHONE_ROUTES.contains(route)) return true;
-        String label = mission.code() + " " + mission.name();
-        return !(PHONE.matcher(label).find() && PHONE_ACTION.matcher(label).find());
     }
 
     private Map<Long, List<DayOneDefinitionBinding>> groupItems(List<DayOneDefinitionBinding> bindings) {
@@ -145,12 +131,16 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
 
     private String definitionHash(String status, int eligibilityHours, String triReward,
             BigDecimal questBonusMultiplier, Integer rhythmMonth,
+            Map<Long, List<DayOneDefinitionBinding>> items,
             List<DayOneDefinitionBinding> bindings) {
         StringBuilder material = new StringBuilder(status).append('|').append(eligibilityHours)
                 .append('|').append(FULL_REWARD_HOURS).append('|').append(triReward)
                 .append('|').append(questBonusMultiplier).append('|').append(rhythmMonth);
+        var boundMissionIds = new java.util.HashSet<Long>();
         bindings.stream().sorted(Comparator.comparing(DayOneDefinitionBinding::sourceMissionId)
-                .thenComparing(DayOneDefinitionBinding::bindingCode)).forEach(binding -> material
+                .thenComparing(DayOneDefinitionBinding::bindingCode)).forEach(binding -> {
+                    boundMissionIds.add(binding.sourceMissionId());
+                    material
                         .append('|').append(binding.sourceMissionId()).append('|').append(binding.sourceBindingId())
                         .append('|').append(binding.questCode())
                         .append('|').append(binding.name()).append('|').append(binding.category())
@@ -158,7 +148,17 @@ public class DayOneInstanceFacadeAdapter implements DayOneInstanceFacade {
                         .append('|').append(binding.bindingCode()).append('|')
                         .append(binding.producer().toUpperCase(Locale.ROOT)).append('|')
                         .append(binding.eventType()).append('|').append(binding.userIdField())
-                        .append(binding.nameTranslations() == null ? "" : "|" + binding.nameTranslations()));
+                        .append(binding.nameTranslations() == null ? "" : "|" + binding.nameTranslations());
+                });
+        items.forEach((missionId, rows) -> {
+            if (!boundMissionIds.contains(missionId)) {
+                DayOneDefinitionBinding item = rows.get(0);
+                material.append("|unbound|").append(missionId).append('|').append(item.questCode())
+                        .append('|').append(item.name()).append('|').append(item.category())
+                        .append('|').append(item.actionRoute()).append('|').append(item.rewardPoints())
+                        .append(item.nameTranslations() == null ? "" : "|" + item.nameTranslations());
+            }
+        });
         try {
             return java.util.HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
                     .digest(material.toString().getBytes(StandardCharsets.UTF_8)));

@@ -40,6 +40,22 @@ public interface PaymentPasswordMapper {
     int finishAttempt(@Param("userId") long userId,@Param("attempt") String attempt,@Param("code") int code,@Param("state") String state);
     @Update("UPDATE nx_payment_password_attempt SET result_message='BUSINESS_REJECTED' WHERE user_id=#{userId} AND attempt_no=#{attempt} AND result_code=0")
     int rejectBusiness(@Param("userId") long userId,@Param("attempt") String attempt);
+    @Select("SELECT claim_no FROM nx_trial_balance_submission WHERE user_id=#{userId} AND command_key=#{key}")
+    String trialBalanceClaim(@Param("userId") long userId, @Param("key") String key);
+
+    @Select("""
+            SELECT claim_no AS claimNo,
+                   CASE WHEN JSON_TYPE(JSON_EXTRACT(snapshot_json,'$.productNo')) = 'STRING'
+                        THEN JSON_UNQUOTE(JSON_EXTRACT(snapshot_json,'$.productNo')) END AS productNo
+              FROM nx_trial_balance_submission WHERE user_id=#{userId} AND command_key=#{key}
+            """)
+    TrialBalanceSubmission trialBalanceSubmission(@Param("userId") long userId, @Param("key") String key);
+
+    record TrialBalanceSubmission(String claimNo, String productNo) {}
+
+    @Select("SELECT claim_no FROM nx_trial_claim WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1")
+    java.util.Optional<String> currentTrialClaim(@Param("userId") long userId);
+
     @Select("SELECT kind FROM nx_payment_command WHERE user_id=#{userId} AND command_key=#{key} AND kind IN ('setup','change','reset') ORDER BY created_at DESC LIMIT 1")
     Map<String,Object> securityCommand(@Param("userId") long userId,@Param("key") String key);
     @Insert("INSERT INTO nx_verified_phone(user_id,phone_hash,verified_at) VALUES(#{userId},#{phoneHash},#{now}) ON DUPLICATE KEY UPDATE phone_hash=VALUES(phone_hash),verified_at=VALUES(verified_at)")
@@ -64,6 +80,38 @@ public interface PaymentPasswordMapper {
     Map<String,Object> resetProof(@Param("userId") long userId,@Param("proofHash") String proofHash);
     @Update("UPDATE nx_payment_password_reset SET consumed_at=#{now} WHERE challenge_no=#{challenge}")
     int consumeReset(@Param("challenge") String challenge,@Param("now") long now);
+    @Insert("""
+            INSERT INTO nx_payment_password_change_proof(user_id,session_hash,proof_hash,credential_version,expires_at)
+            VALUES(#{userId},#{sessionHash},#{proofHash},#{version},#{expiresAt})
+            ON DUPLICATE KEY UPDATE proof_hash=VALUES(proof_hash),credential_version=VALUES(credential_version),
+            expires_at=VALUES(expires_at),consumed_at=NULL
+            """)
+    int writeChangeProof(@Param("userId") long userId,@Param("sessionHash") String sessionHash,
+                         @Param("proofHash") String proofHash,@Param("version") long version,
+                         @Param("expiresAt") long expiresAt);
+    @Select("""
+            SELECT expires_at FROM nx_payment_password_change_proof
+            WHERE user_id=#{userId} AND session_hash=#{sessionHash} AND proof_hash=#{proofHash}
+              AND credential_version=#{version} AND consumed_at IS NULL AND expires_at>#{now}
+            """)
+    Long activeChangeProofExpiry(@Param("userId") long userId,@Param("sessionHash") String sessionHash,
+                                 @Param("proofHash") String proofHash,@Param("version") long version,
+                                 @Param("now") long now);
+    @Update("""
+            UPDATE nx_payment_password_change_proof SET proof_hash=#{nextProofHash}
+            WHERE user_id=#{userId} AND session_hash=#{sessionHash} AND proof_hash=#{priorProofHash}
+              AND credential_version=#{version} AND consumed_at IS NULL AND expires_at=#{expiresAt} AND expires_at>#{now}
+            """)
+    int replaceChangeProof(@Param("userId") long userId,@Param("sessionHash") String sessionHash,
+                           @Param("priorProofHash") String priorProofHash,@Param("nextProofHash") String nextProofHash,
+                           @Param("version") long version,@Param("expiresAt") long expiresAt,@Param("now") long now);
+    @Update("""
+            UPDATE nx_payment_password_change_proof SET consumed_at=#{now}
+            WHERE user_id=#{userId} AND session_hash=#{sessionHash} AND proof_hash=#{proofHash}
+              AND credential_version=#{version} AND consumed_at IS NULL AND expires_at>#{now}
+            """)
+    int consumeChangeProof(@Param("userId") long userId,@Param("sessionHash") String sessionHash,
+                           @Param("proofHash") String proofHash,@Param("version") long version,@Param("now") long now);
     @Select("<script>SELECT * FROM nx_payment_password_policy WHERE id=1<if test='lock'> FOR UPDATE</if></script>")
     Map<String,Object> policy(@Param("lock") boolean lock);
     @Insert("INSERT INTO nx_payment_security_record(record_no,user_id,reason,started_at,locked_until,failed_attempts,window_minutes) VALUES(#{record},#{userId},'支付密码连续错误达到限制',#{now},#{until},#{failures},#{window})")

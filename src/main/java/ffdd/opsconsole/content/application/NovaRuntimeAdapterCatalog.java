@@ -52,6 +52,9 @@ final class NovaRuntimeAdapterCatalog {
                 option("market.curve_advanced", "市场曲线推进（广播）"));
     }
 
+    /** B79: retired channels stay in history but can never be enabled again. */
+    public static final java.util.Set<String> RETIRED_CHANNELS = java.util.Set.of("dailySummary");
+
     static Map<String, String> eventDisplayNames(List<String> events) {
         Map<String, String> labels = new LinkedHashMap<>(FIXED_EVENT_LABELS);
         options().forEach(option -> labels.put(option.value().substring(PREFIX.length()), option.label()));
@@ -72,7 +75,6 @@ final class NovaRuntimeAdapterCatalog {
         sources.put("welcome", targeted("auth.register_completed"));
         sources.put("market", broadcast("market.curve_advanced"));
         sources.put("upgrade", targeted("device.upgrade_recommended"));
-        sources.put("dailySummary", targeted("earnings.credited"));
         sources.put("tradein", targeted("tradein.eligible"));
         sources.put("eventClaim", targeted("event.reward_claimable"));
         sources.put("wrapped", targeted("nova.wrapped_ready"));

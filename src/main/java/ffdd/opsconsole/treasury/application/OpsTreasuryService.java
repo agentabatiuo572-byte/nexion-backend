@@ -6,6 +6,8 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.DateTimeFormatConfig;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
@@ -21,6 +23,7 @@ import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.platform.mapper.AuditObjectLockMapper;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.application.A2RuntimePolicy;
+import ffdd.opsconsole.risk.facade.RiskSignalCategorySummaryFacade;
 import ffdd.opsconsole.risk.facade.RiskTamperSignalFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerRepository;
@@ -46,6 +49,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -121,6 +125,7 @@ public class OpsTreasuryService {
     private final AuditObjectLockMapper lockMapper;
     private final EmergencyControlRepository emergencyRepository;
     private final RiskTamperSignalFacade riskTamperSignalFacade;
+    private final RiskSignalCategorySummaryFacade riskSignalCategorySummaryFacade;
     private final AuditLogService auditLogService;
     private final AdminIdempotencyService idempotencyService;
     private final EventOutboxService eventOutboxService;
@@ -725,6 +730,7 @@ public class OpsTreasuryService {
         BigDecimal runRiskPct = safetyThresholdDecimal(RUN_RISK_CONFIG_KEY, dualLedgerProperties.getRunRiskPct());
         String scope = configValue(SCOPE_CONFIG_KEY, "all active liabilities");
         BigDecimal queueBacklogUsd = safe(ledgerRepository.sumActiveWithdrawalQueueUsdt());
+        BigDecimal roundedQueueBacklogUsd = money(queueBacklogUsd);
         BigDecimal netFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(current24hStart, now));
         BigDecimal prevNetFlow24hUsd = safe(ledgerRepository.sumNetUsdtFlowBetween(prev24hStart, current24hStart));
         BigDecimal avgRiskScore = safe(ledgerRepository.avgActiveWithdrawalQueueRiskScore()).setScale(0, RoundingMode.HALF_UP);
@@ -751,7 +757,8 @@ public class OpsTreasuryService {
                 "runRiskPct", pctScale(runRiskPct),
                 "netFlow24hUsd", money(netFlow24hUsd),
                 "queueBacklogCount", ledgerRepository.countActiveWithdrawalQueue(),
-                "queueBacklogUsd", money(queueBacklogUsd),
+                "queueBacklogUsd", roundedQueueBacklogUsd.signum() == 0 && queueBacklogUsd.signum() > 0
+                        ? queueBacklogUsd : roundedQueueBacklogUsd,
                 "avgRiskScore", avgRiskScore.longValue(),
                 "coverageSeries", coveragePoints.stream().map(point -> point.get("coverageRatio")).toList(),
                 "coverageSeriesPoints", coveragePoints,
@@ -778,6 +785,11 @@ public class OpsTreasuryService {
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public ApiResult<Map<String, Object>> bDomainDashboard() {
+        return bDomainDashboard(false);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public ApiResult<Map<String, Object>> bDomainDashboard(boolean categorizedRiskFeed) {
         boolean acknowledged = configFacade.activeValue(B_ALERT_COVERAGE_ACK_KEY).map(Boolean::parseBoolean).orElse(false);
         if (acknowledged) {
             // Read coverage after locking the acknowledgement so an older sample cannot clear a later acknowledgement.
@@ -789,10 +801,11 @@ public class OpsTreasuryService {
             saveCoverageAlertAcknowledgement(false);
             acknowledged = false;
         }
-        return ApiResult.ok(bDomainDashboard(snapshot.data(), acknowledged));
+        return ApiResult.ok(bDomainDashboard(snapshot.data(), acknowledged, categorizedRiskFeed));
     }
 
-    private Map<String, Object> bDomainDashboard(Map<String, Object> dualLedger, boolean acknowledged) {
+    private Map<String, Object> bDomainDashboard(
+            Map<String, Object> dualLedger, boolean acknowledged, boolean categorizedRiskFeed) {
         List<Map<String, Object>> warnings = new ArrayList<>();
         Map<String, Object> response = section(
                 "service", "nexion-backend",
@@ -815,7 +828,7 @@ public class OpsTreasuryService {
         response.put("liquidity", liquidityDashboard(dualLedger, warnings));
         response.put("funnel", funnelDashboard(warnings));
         response.put("rhythm", rhythmDashboard(dualLedger, warnings));
-        response.put("riskRadar", riskRadarDashboard(dualLedger, warnings));
+        response.put("riskRadar", riskRadarDashboard(dualLedger, warnings, categorizedRiskFeed));
         return response;
     }
 
@@ -862,7 +875,7 @@ public class OpsTreasuryService {
                 "reason", reason,
                 "operator", operator,
                 "idempotencyKey", idempotencyKey));
-        Map<String, Object> response = bDomainDashboard(snapshot, true);
+        Map<String, Object> response = bDomainDashboard(snapshot, true, false);
         response.put("alertAck", section("alertId", normalizedAlertId, "acknowledged", true));
         return ApiResult.ok(response);
     }
@@ -1143,6 +1156,9 @@ public class OpsTreasuryService {
         }
         ledgerRepository.lockOperationMutex(B1_THRESHOLD_MUTEX);
         B1ThresholdChange change = thresholdChange(values);
+        if (approvalOperationId != null && expectedVersion != null && change.version() > expectedVersion) {
+            throw new ThresholdVersionAdvanced(409, "CONFIG_VERSION_CONFLICT");
+        }
         ApiResult<Void> validation = validateThresholdChange(change, expectedVersion, approvalOperationId != null);
         if (validation.getCode() != 0) {
             return ApiResult.fail(validation.getCode(), validation.getMessage());
@@ -1238,6 +1254,12 @@ public class OpsTreasuryService {
     private record B1ThresholdChange(long version, B1CoverageThresholds before, B1CoverageThresholds after) {
         int redlineDirection() {
             return after.redlinePct().compareTo(before.redlinePct());
+        }
+    }
+
+    public static final class ThresholdVersionAdvanced extends BizException {
+        private ThresholdVersionAdvanced(int code, String reason) {
+            super(code, reason);
         }
     }
 
@@ -1658,7 +1680,8 @@ public class OpsTreasuryService {
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Object> riskRadarDashboard(Map<String, Object> dualLedger, List<Map<String, Object>> warnings) {
+    private Map<String, Object> riskRadarDashboard(
+            Map<String, Object> dualLedger, List<Map<String, Object>> warnings, boolean categorizedRiskFeed) {
         Map<String, Object> snapshot = (Map<String, Object>) dualLedger.getOrDefault("snapshot", Map.of());
         List<Map<String, Object>> feed = new ArrayList<>();
         LocalDateTime since = LocalDateTime.now(clock).minusDays(7);
@@ -1676,23 +1699,25 @@ public class OpsTreasuryService {
         boolean k4ScoringAvailable = StringUtils.hasText(k4ModelVersion) && k4ThresholdsValid;
         long k4AutoEscalated = decimal(k4.get("autoEscalated")).longValue();
         long k4HighRisk = decimal(k4.get("highRisk")).longValue();
+        long feedHighRisk = categorizedRiskFeed ? decimal(k4.get("highBelowAuto")).longValue() : k4HighRisk;
         long k4MediumRisk = decimal(k4.get("mediumRisk")).longValue();
         long k4LowRisk = decimal(k4.get("lowRisk")).longValue();
         long k4FlaggedAccounts = decimal(k4.get("flaggedAccounts")).longValue();
         long k4ActiveOverrides = decimal(k4.get("activeOverrides")).longValue();
         long k4StaleScoreUsers = decimal(k4.get("staleScoreUsers")).longValue();
         List<Map<String, Object>> severity = k4ScoringAvailable ? List.of(
-                section("nm", "高风险", "v", k4HighRisk, "c", "var(--danger)"),
-                section("nm", "中风险", "v", k4MediumRisk, "c", "var(--warning)"),
+                section("nm", "高风险", "v", k4HighRisk, "c", "var(--danger)", "band", "HIGH"),
+                section("nm", "中风险", "v", k4MediumRisk, "c", "var(--warning)", "band", "MEDIUM"),
                 section("nm", "低风险", "v", k4LowRisk, "c", "var(--success)")) : List.of();
         BigDecimal pressureTightPct = decimal(snapshot.get("runRiskPct"));
         BigDecimal reserveUsd = decimal(snapshot.get("reserveUsd"));
         BigDecimal withdrawalRequests24h = safe(ledgerRepository.sumWithdrawalRequested24hUsdt());
-        BigDecimal bankRunRatio = pctScale(pct(withdrawalRequests24h, reserveUsd));
+        BigDecimal bankRunRatio = BankRunThresholdPolicy.ratio(withdrawalRequests24h, reserveUsd).movePointRight(2);
+        BigDecimal bankRunDisplayPct = pctScale(pct(withdrawalRequests24h, reserveUsd));
         BankRunThresholdPolicy.Bands bankRunBands = BankRunThresholdPolicy.resolve(configFacade);
         BigDecimal bankRunYellowPct = bankRunBands.yellowPct();
         BigDecimal bankRunRedlinePct = bankRunBands.redlinePct();
-        feed.add(dynamicCoverageFeed(snapshot, bankRunRatio, bankRunYellowPct, bankRunRedlinePct));
+        feed.add(dynamicCoverageFeed(snapshot, bankRunDisplayPct, withdrawalRequests24h, reserveUsd, bankRunBands));
         if (!k4ScoringAvailable) {
             feed.add(section(
                     "sev", "p1",
@@ -1705,18 +1730,26 @@ public class OpsTreasuryService {
                     "t", "自动上报分数线 " + k4AutoEscalateScore + " · " + k4AutoEscalated
                             + " 个账户 · 当前评分规则 " + k4ModelVersion,
                     "m", "按当前评分规则和最新得分统计（含手动改分）",
+                    "band", "AUTO_REPORT",
+                    "count", k4AutoEscalated,
                     "href", "/risk/scoring"));
-        } else if (k4HighRisk > 0) {
+        }
+        if (k4ScoringAvailable && feedHighRisk > 0 && (categorizedRiskFeed || k4AutoEscalated <= 0)) {
             feed.add(section(
                     "sev", "p1",
-                    "t", "高风险 " + k4HighRisk + " 个账户 · 当前评分规则 " + k4ModelVersion,
+                    "t", "高风险 " + feedHighRisk + " 个账户 · 当前评分规则 " + k4ModelVersion,
                     "m", "按手动改分后的最新得分统计",
+                    "band", categorizedRiskFeed ? "HIGH_BELOW_AUTO" : "HIGH",
+                    "count", feedHighRisk,
                     "href", "/risk/scoring"));
-        } else if (k4MediumRisk > 0) {
+        }
+        if (k4ScoringAvailable && k4MediumRisk > 0 && (categorizedRiskFeed || (k4AutoEscalated <= 0 && feedHighRisk <= 0))) {
             feed.add(section(
                     "sev", "p2",
                     "t", "中风险 " + k4MediumRisk + " 个账户 · 当前评分规则 " + k4ModelVersion,
                     "m", "按手动改分后的最新得分统计",
+                    "band", "MEDIUM",
+                    "count", k4MediumRisk,
                     "href", "/risk/scoring"));
         }
         if (k4ScoringAvailable && k4StaleScoreUsers > 0) {
@@ -1724,15 +1757,48 @@ public class OpsTreasuryService {
                     "sev", "p2",
                     "t", k4StaleScoreUsers + " 个账户等待按当前规则重新评分",
                     "m", "旧规则的得分不计入异常账户和风险分布",
+                    "band", "STALE",
+                    "count", k4StaleScoreUsers,
                     "href", "/risk/scoring"));
         }
-        RiskTamperSignalFacade.TamperRadarSnapshot tamperRadar = riskTamperSignalFacade.tamperRadarSnapshot(since);
-        if (tamperRadar.signalCount() > 0) {
-            feed.add(section(
-                    "sev", "p1",
-                    "t", "篡改拦截 " + tamperRadar.signalCount() + " 起 · 涉及 " + tamperRadar.accountCount() + " 个账户",
-                    "m", "篡改防御拦截 · 最近 " + tamperRadar.latestAt(),
-                    "href", "/emergency/tamper"));
+        LocalDateTime signalsEndAt = LocalDateTime.ofInstant(
+                clock.instant().truncatedTo(ChronoUnit.SECONDS).plusSeconds(1), StorageTime.ZONE);
+        LocalDateTime signalsStartAt = signalsEndAt.minusDays(7);
+        String startAt = riskSignalDateTime(signalsStartAt);
+        String endAt = riskSignalDateTime(signalsEndAt);
+        if (categorizedRiskFeed) {
+            for (RiskSignalCategorySummaryFacade.Summary row
+                    : riskSignalCategorySummaryFacade.openCategorySummaries(signalsStartAt, signalsEndAt)) {
+                feed.add(section(
+                        "sev", row.highestLevel().toLowerCase(Locale.ROOT),
+                        "t", row.categoryName() + " " + row.count() + " 条待处理",
+                        "m", "涉及 " + row.accountCount() + " 个账户",
+                        "category", row.category(),
+                        "categoryName", row.categoryName(),
+                        "count", row.count(),
+                        "accountCount", row.accountCount(),
+                        "latestAt", riskSignalDateTime(row.latestAt()),
+                        "startAt", startAt,
+                        "endAt", endAt,
+                        "handlingStatus", "open",
+                        "href", "/overview/risk-radar"));
+            }
+        } else {
+            RiskTamperSignalFacade.TamperRadarSnapshot tamperRadar = riskTamperSignalFacade.tamperRadarSnapshot(signalsStartAt);
+            if (tamperRadar.signalCount() > 0) {
+                LocalDateTime tamperLatestAt = LocalDateTime.parse(tamperRadar.latestAt(), DateTimeFormatConfig.DATE_TIME_FORMATTER);
+                feed.add(section(
+                        "sev", "p1",
+                        "t", "篡改拦截 " + tamperRadar.signalCount() + " 起 · 涉及 " + tamperRadar.accountCount() + " 个账户",
+                        "m", "篡改防御拦截 · 最近 " + tamperRadar.latestAt(),
+                        "signalType", "TAMPER_DETECTED",
+                        "count", tamperRadar.signalCount(),
+                        "accountCount", tamperRadar.accountCount(),
+                        "latestAt", riskSignalDateTime(tamperLatestAt),
+                        "startAt", startAt,
+                        "endAt", endAt,
+                        "href", "/emergency/tamper"));
+            }
         }
         List<Map<String, Object>> gates = riskGates();
         long tripped = gates.stream().filter(gate -> Boolean.FALSE.equals(gate.get("on"))).count();
@@ -1771,7 +1837,11 @@ public class OpsTreasuryService {
                         "nx_admin_risk_score_user:fresh-current-model",
                         "nx_admin_risk_score_model:active-thresholds",
                         "nx_admin_risk_score_override:active",
-                        "nx_risk_signal:TAMPER_DETECTED"));
+                        categorizedRiskFeed ? "nx_risk_signal:open-by-category" : "nx_risk_signal:TAMPER_DETECTED"));
+    }
+
+    private static String riskSignalDateTime(LocalDateTime time) {
+        return time.atZone(StorageTime.ZONE).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
     private List<Map<String, Object>> riskGates() {
@@ -1804,12 +1874,13 @@ public class OpsTreasuryService {
     private Map<String, Object> dynamicCoverageFeed(
             Map<String, Object> snapshot,
             BigDecimal bankRun,
-            BigDecimal bankRunYellowPct,
-            BigDecimal bankRunRedlinePct) {
+            BigDecimal withdrawalRequests24h,
+            BigDecimal reserveUsd,
+            BankRunThresholdPolicy.Bands bands) {
         BigDecimal coverage = decimal(snapshot.get("coverageRatio"));
-        String severity = bankRun.compareTo(bankRunRedlinePct) >= 0
+        String severity = BankRunThresholdPolicy.reached(withdrawalRequests24h, reserveUsd, bands.redlinePct())
                 ? "p0"
-                : bankRun.compareTo(bankRunYellowPct) >= 0 ? "p1" : "p2";
+                : BankRunThresholdPolicy.reached(withdrawalRequests24h, reserveUsd, bands.yellowPct()) ? "p1" : "p2";
         return section(
                 "sev", severity,
                 "t", "挤兑比率 " + bankRun.stripTrailingZeros().toPlainString() + "% · 覆盖率 " + coverage.stripTrailingZeros().toPlainString() + "%",

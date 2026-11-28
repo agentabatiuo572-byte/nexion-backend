@@ -52,10 +52,23 @@ public class OnboardingCalibrationController {
     public ApiResult<Map<String, Object>> activate(
             @RequestBody(required = false) OnboardingCalibrationService.ActionRequest request,
             @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(name = "X-UVEL-IOS-Recovery-Key", required = false) String iosRecoveryKey,
+            @RequestHeader(name = "X-UVEL-Android-Recovery-Key", required = false) String androidRecoveryKey,
             Authentication authentication) {
         Long userId = authenticatedUserId(authentication);
-        return userId == null ? ApiResult.fail(403, "USER_AUTH_REQUIRED")
-                : service.activate(userId, action(request, idempotencyKey), authentication);
+        if (userId == null) return ApiResult.fail(403, "USER_AUTH_REQUIRED");
+        var activation = action(request, idempotencyKey);
+        if (androidRecoveryKey != null) {
+            if (iosRecoveryKey != null) return ApiResult.fail(422, "PHONE_RECOVERY_PLATFORM_INVALID");
+            return service.activate(userId, activation, authentication, androidRecoveryKey, "android");
+        }
+        return iosRecoveryKey == null ? service.activate(userId, activation, authentication)
+                : service.activate(userId, activation, authentication, iosRecoveryKey);
+    }
+
+    public ApiResult<Map<String, Object>> activate(OnboardingCalibrationService.ActionRequest request,
+            String idempotencyKey, Authentication authentication) {
+        return activate(request, idempotencyKey, null, null, authentication);
     }
 
     @PostMapping("/defer")

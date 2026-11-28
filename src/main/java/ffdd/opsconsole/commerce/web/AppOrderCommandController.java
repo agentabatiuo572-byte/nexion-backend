@@ -27,6 +27,14 @@ public class AppOrderCommandController {
         return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED") : service.cancel(userId, orderNo, key);
     }
 
+    @PostMapping({"/api/app/orders/{orderNo}/hide", "/api/orders/{orderNo}/hide"})
+    public ApiResult<Map<String, Object>> hide(@PathVariable String orderNo,
+                                                @RequestHeader(name = "Idempotency-Key", required = false) String key,
+                                                Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? ApiResult.fail(403, "USER_SUBJECT_REQUIRED") : service.hide(userId, orderNo, key);
+    }
+
     @PostMapping({"/api/orders/{orderNo}/pay", "/api/app/orders/{orderNo}/pay"})
     @PromotionItemImages
     public ApiResult<Map<String, Object>> pay(@PathVariable String orderNo,

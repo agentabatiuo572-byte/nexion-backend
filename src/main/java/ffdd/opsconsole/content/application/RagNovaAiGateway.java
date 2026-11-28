@@ -6,7 +6,8 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.content.domain.SupportFaqView;
 import ffdd.opsconsole.content.domain.SupportKnowledgeRepository;
 import ffdd.opsconsole.device.domain.DeviceCatalogRepository;
-import ffdd.opsconsole.device.domain.DeviceSkuView;
+import ffdd.opsconsole.device.mapper.AppTradeinMapper;
+import ffdd.opsconsole.shared.canonical.StorefrontSeriesRepresentatives;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.net.InetAddress;
@@ -41,25 +42,35 @@ public class RagNovaAiGateway implements NovaAiGateway {
     private final NovaAiProperties properties;
     private final ObjectMapper objectMapper;
     private final SupportKnowledgeRepository knowledgeRepository;
-    private final DeviceCatalogRepository catalogRepository;
+    private final AppTradeinMapper tradeinMapper;
+    private final StorefrontSeriesRepresentatives seriesRepresentatives;
 
     @Autowired
     public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper,
                             SupportKnowledgeRepository knowledgeRepository,
-                            DeviceCatalogRepository catalogRepository) {
+                            AppTradeinMapper tradeinMapper,
+                            StorefrontSeriesRepresentatives seriesRepresentatives) {
         this.properties = properties;
         this.objectMapper = objectMapper;
         this.knowledgeRepository = knowledgeRepository;
-        this.catalogRepository = catalogRepository;
+        this.tradeinMapper = tradeinMapper;
+        this.seriesRepresentatives = seriesRepresentatives;
+    }
+
+    /** Compatibility for in-process callers that supply the legacy E1 repository. */
+    public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper,
+                            SupportKnowledgeRepository knowledgeRepository,
+                            DeviceCatalogRepository legacyCatalogRepository) {
+        this(properties, objectMapper, knowledgeRepository);
     }
 
     public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper,
                             SupportKnowledgeRepository knowledgeRepository) {
-        this(properties, objectMapper, knowledgeRepository, null);
+        this(properties, objectMapper, knowledgeRepository, null, null);
     }
 
     public RagNovaAiGateway(NovaAiProperties properties, ObjectMapper objectMapper) {
-        this(properties, objectMapper, null, null);
+        this(properties, objectMapper, null, null, null);
     }
 
     @Override
@@ -263,14 +274,13 @@ public class RagNovaAiGateway implements NovaAiGateway {
                 || text.contains("lợi suất năm") || text.contains("lãi suất năm"))) return null;
 
         String range = null;
-        if (catalogRepository != null) {
+        if (tradeinMapper != null) {
             try {
-                DeviceSkuView sku = catalogRepository.findSku("cloud-share").orElse(null);
-                if (sku != null && "SHARE".equalsIgnoreCase(sku.productType())
-                        && "on".equalsIgnoreCase(sku.status()) && !Boolean.TRUE.equals(sku.publishBlocked())
-                        && validAnnualRange(sku.shareYieldMin(), sku.shareYieldMax())) {
-                    range = sku.shareYieldMin().stripTrailingZeros().toPlainString() + "%–"
-                            + sku.shareYieldMax().stripTrailingZeros().toPlainString() + "%";
+                String productNo = seriesRepresentatives.currentProductNos().get("CLOUD_SHARE");
+                var annual = productNo == null ? null : tradeinMapper.findShareYieldRange(productNo);
+                if (annual != null && validAnnualRange(annual.minPct(), annual.maxPct())) {
+                    range = annual.minPct().stripTrailingZeros().toPlainString() + "%–"
+                            + annual.maxPct().stripTrailingZeros().toPlainString() + "%";
                 }
             } catch (RuntimeException ignored) {
                 // Missing or unavailable live catalog data must not become a stale numerical claim.

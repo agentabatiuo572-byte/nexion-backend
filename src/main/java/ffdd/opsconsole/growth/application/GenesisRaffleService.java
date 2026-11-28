@@ -197,10 +197,13 @@ public class GenesisRaffleService {
             throw new BizException(422, "RAFFLE_TRANSLATION_INVALID");
     }
 
-    private void covered(){
+    private void covered(boolean approvalReplay){
         var snapshot=coverage.snapshot();
-        if(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null
-                ||snapshot.redlineBreached())throw new BizException(409,"COVERAGE_REDLINE");
+        if(snapshot==null||!snapshot.reliable()||snapshot.coverageRatio()==null||snapshot.redlinePct()==null)
+            throw new BizException(409,"COVERAGE_REDLINE");
+        if(approvalReplay && H4GrowthApproval.confirmedCoverageBreach(snapshot))
+            throw new H4GrowthApproval.ConfirmedRecheckFailure(409,"COVERAGE_REDLINE");
+        if(snapshot.redlineBreached())throw new BizException(409,"COVERAGE_REDLINE");
     }
     @Transactional(rollbackFor=Exception.class)
     public ApiResult<Map<String,Object>> save(String id,GenesisRaffleRequest request,boolean create){
@@ -234,7 +237,7 @@ public class GenesisRaffleService {
         }
         if(enabled){
             if(!parseDate(request.drawAt()).isAfter(now()))throw new BizException(422,"RAFFLE_DATE_ENDED");
-            covered();
+            covered(approved&&!preview);
             Map<String,Integer> requiredStock=new TreeMap<>();
             for(Prize prize:request.prizes())if("DEVICE".equals(prize.rewardType()))requiredStock.merge(prize.productNo(),prize.quantity(),Integer::sum);
             requiredStock.forEach(devices::validatePrize);
@@ -349,7 +352,7 @@ public class GenesisRaffleService {
         Map<String,Object> receipt;
         try{receipt=json.readValue(text(result.get("receipt_json")),new TypeReference<>(){});}catch(Exception ex){throw new BizException(503,"RAFFLE_RECEIPT_INVALID");}
         Long userId=number(result.get("user_id")).longValue();String reference=text(receipt.get("receiptId")),asset=text(receipt.get("rewardType"));
-        covered();
+        covered(false);
         if("DEVICE".equals(asset)){
             var gift=devices.award(userId,reference,text(receipt.get("productNo")),1);
             receipt.put("instances",gift.get("instances"));

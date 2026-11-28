@@ -55,7 +55,8 @@ public class ComputeV2RedisStore {
                 Integer.toString(config.getUnpersistedCapacity()),Integer.toString(config.getDedupRetentionSeconds()),
                 Long.toString(event.userId()),Long.toString(event.kind() == ComputeV2Event.Kind.VERIFIED ? event.task().rewardUsdtMicros() : 0),
                 Long.toString(event.evidence() == null ? 0 : event.evidence().rewardNexMicros()),encode(event.task()),digest(payload),
-                Long.toString(windowEnd(event.userId(),receivedAt).getEpochSecond()),Long.toString(event.deviceId()));
+                Long.toString(windowEnd(event.userId(),receivedAt).getEpochSecond()),Long.toString(event.deviceId()),
+                Long.toString(event.task().leaseExpiresAt().toEpochMilli()),event.task().startedAt() == null ? "0" : "1");
         if (event.evidence() != null && event.evidence().rewardNexMicros() > 0)
             daily(event.evidence().dailyEntitlementKey(),event.eventId());
     }
@@ -70,7 +71,8 @@ public class ComputeV2RedisStore {
                 Long.toString(event.generation()),event.kind().name(),encode(event.task()),encode(event),
                 Long.toString(event.task().issuedAt().toEpochMilli()),
                 Long.toString(event.task().leaseExpiresAt().toEpochMilli()),event.task().requestId(),
-                Integer.toString(persisted ? config.getPostedDedupSeconds() : config.getDedupRetentionSeconds()),persisted ? "1" : "0");
+                Integer.toString(persisted ? config.getPostedDedupSeconds() : config.getDedupRetentionSeconds()),persisted ? "1" : "0",
+                event.task().startedAt() == null ? "0" : "1",event.instanceNo());
         if (event.evidence() != null && event.evidence().rewardNexMicros() > 0)
             daily(event.evidence().dailyEntitlementKey(),event.eventId());
     }

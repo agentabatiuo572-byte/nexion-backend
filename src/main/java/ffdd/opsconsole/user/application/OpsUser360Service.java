@@ -10,6 +10,7 @@ import ffdd.opsconsole.finance.application.OpsFinanceService;
 import ffdd.opsconsole.finance.domain.DepositFlowView;
 import ffdd.opsconsole.finance.domain.WithdrawalOrderView;
 import ffdd.opsconsole.finance.dto.WithdrawalQueryRequest;
+import ffdd.opsconsole.platform.application.AdminObjectDisplayNameService;
 import ffdd.opsconsole.risk.application.OpsRiskService;
 import ffdd.opsconsole.risk.domain.RiskCaseView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
@@ -24,8 +25,10 @@ import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.security.AdminOperatorRoleResolver;
 import ffdd.opsconsole.treasury.application.OpsTreasuryService;
+import ffdd.opsconsole.team.facade.SupportInvitationReadFacade;
 import ffdd.opsconsole.treasury.domain.TreasuryLedgerBillView;
 import ffdd.opsconsole.user.domain.UserAccountView;
+import ffdd.opsconsole.user.domain.UserInviterView;
 import ffdd.opsconsole.user.domain.UserLatestFundActivityView;
 import ffdd.opsconsole.user.domain.UserNotificationView;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
@@ -79,6 +82,10 @@ public class OpsUser360Service {
     private final EventOutboxService outboxService;
     private final ffdd.opsconsole.finance.application.FinanceSupportReadService financeSupport;
     private final ffdd.opsconsole.content.application.SupportOwnershipService supportOwnership;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private SupportInvitationReadFacade invitations = roots -> List.of();
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private AdminObjectDisplayNameService adminDisplayNames;
 
     @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> detail(String userKey) {
@@ -95,6 +102,11 @@ public class OpsUser360Service {
 
     @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public ApiResult<Map<String, Object>> detail(Long userId) {
+        return detail(userId, false);
+    }
+
+    @Transactional(isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public ApiResult<Map<String, Object>> detail(Long userId, boolean supportEntry) {
         if (userId == null || userId <= 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "USER_ID_REQUIRED");
         }
@@ -167,7 +179,7 @@ public class OpsUser360Service {
                 : riskScoreRead.ready() && riskScore != null ? "READY" : "UNAVAILABLE");
         Map<String, Object> deviceSection = devices(devices);
         sourceStatus(deviceSection, deviceRead);
-        Read<Map<String,Object>> totalsRead=canFinance?read(()->ApiResult.ok(financeSupport.totals(userId))):Read.hiddenRead();
+        Read<Map<String,Object>> totalsRead=canFinance?read(()->ApiResult.ok(financeSupport.displayTotals(userId))):Read.hiddenRead();
         Map<String,Object> totals=mapOrEmpty(totalsRead.value());
         Map<String, Object> depositSection = deposits(deposits.getRecords(),totals);
         depositSection.put("total",deposits.getTotal());
@@ -240,7 +252,7 @@ public class OpsUser360Service {
                         "write actions require Idempotency-Key, reason and A2 audit",
                         "media URLs must come from nx_admin media upload APIs",
                         "sunset products are historical compatibility only"));
-        trimForRole(response, role, full, canFinance, canGrowth, canDevices, canCommerce);
+        trimForRole(response, role, full, canFinance, canGrowth, canDevices, canCommerce, inviter(userId, supportEntry));
         if (canFinance) {
             response.put("latestDeposit", latestDepositRead.value());
             response.put("latestDepositStatus", latestDepositRead.ready() ? "READY" : "ERROR");
@@ -339,7 +351,8 @@ public class OpsUser360Service {
             boolean canFinance,
             boolean canGrowth,
             boolean canDevices,
-            boolean canCommerce) {
+            boolean canCommerce,
+            Map<String, Object> inviter) {
         UserAccountView profile = (UserAccountView) response.get("profile");
         Map<String, Object> projectedProfile = section(
                 "id", profile.id(),
@@ -356,6 +369,7 @@ public class OpsUser360Service {
             projectedProfile.put("walletUsdt", profile.walletUsdt());
             projectedProfile.put("walletNex", profile.walletNex());
         }
+        projectedProfile.put("inviter", inviter);
         if (full) {
             projectedProfile.put("twoFactorEnabled", profile.twoFactorEnabled());
             projectedProfile.put("riskScore", profile.riskScore());
@@ -491,12 +505,66 @@ public class OpsUser360Service {
 
     private Map<String, Object> team(Long userId) {
         List<UserTeamMemberView> rows = userRepository.teamMembers(userId, 20);
+        BigDecimal volume = userRepository.sumTeamVolume(userId);
+        SupportInvitationReadFacade.Invitation tree = invitationTree(userId);
+        boolean complete = tree != null && tree.completeness() == SupportInvitationReadFacade.Completeness.COMPLETE;
+        String countStatus = tree == null ? "FAILED" : switch (tree.completeness()) {
+            case COMPLETE -> "AVAILABLE";
+            case PARTIAL -> "PARTIAL";
+            case UNKNOWN -> "UNKNOWN";
+            case FAILED -> "FAILED";
+        };
+        List<String> countReasons = tree == null ? List.of("SOURCE_READ_FAILED")
+                : tree.reasons().stream().map(Enum::name).sorted().toList();
         return section(
-                "teamSize", userRepository.countTeamMembers(userId),
-                "directCount", userRepository.countDirectTeamMembers(userId),
-                "teamVolumeUsd", money(userRepository.sumTeamVolume(userId)),
+                "teamSize", complete ? tree.total() : null,
+                "directCount", complete ? tree.direct() : null,
+                "withinRewardRange", complete ? tree.withinRewardRange() : null,
+                "beyondRewardRange", complete ? tree.beyondRewardRange() : null,
+                "countStatus", countStatus,
+                "countReasons", countReasons,
+                "teamVolumeUsd", money(volume),
                 "records", rows,
                 "sourceStatus", "READY");
+    }
+
+    private SupportInvitationReadFacade.Invitation invitationTree(Long userId) {
+        try {
+            var rows = invitations.readInvitations(List.of(userId));
+            return rows == null || rows.isEmpty() ? null : rows.get(0);
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private Map<String, Object> inviter(Long userId, boolean supportEntry) {
+        UserInviterView view;
+        try {
+            view = userService.inviters(List.of(userId)).get(userId);
+        } catch (RuntimeException ex) {
+            view = null;
+        }
+        if (view == null) view = UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED);
+        boolean present = view.state() == UserInviterView.State.PRESENT && view.userNo() != null;
+        boolean scoped = supportEntry || supportOwnership.currentSupportReader();
+        Long target = null;
+        if (present && scoped) {
+            try {
+                target = userRepository.findUserIdByLookupKey(view.userNo()).orElse(null);
+            } catch (RuntimeException ex) {
+                target = null;
+            }
+        }
+        boolean navigable = present;
+        if (present && scoped) {
+            try {navigable = target != null && supportOwnership.canRead(supportOwnership.actorId(), target);}
+            catch (RuntimeException ex) {navigable = false;}
+        }
+        Map<String, Object> result = section(
+                "state", view.state(), "userNo", view.userNo(), "nickname", view.nickname(),
+                "reason", view.reason(), "navigable", navigable);
+        if (supportEntry) result.put("customerId", navigable ? String.valueOf(target) : null);
+        return result;
     }
 
     private Map<String, Object> notifications(Long userId) {
@@ -585,13 +653,17 @@ public class OpsUser360Service {
         return section(
                 "teamSize", teamSection.get("teamSize"),
                 "directCount", teamSection.get("directCount"),
+                "withinRewardRange", teamSection.get("withinRewardRange"),
+                "beyondRewardRange", teamSection.get("beyondRewardRange"),
+                "countStatus", teamSection.get("countStatus"),
+                "countReasons", teamSection.get("countReasons"),
                 "teamVolumeUsd", teamSection.get("teamVolumeUsd"),
                 "members", teamSection.get("records"),
                 "commissionRows", commissionRows,
                 "commissionUsdt", money(sumAsset(commissionRows, "USDT")),
                 "commissionNex", money(sumAsset(commissionRows, "UVT")),
-                "sources", List.of("nx_team_member", "nx_wallet_ledger"),
-                "sourceStatus", "READY");
+                "sources", List.of("nx_user", "nx_order", "nx_team_member", "nx_wallet_ledger"),
+                "sourceStatus", teamSection.getOrDefault("sourceStatus", "ERROR"));
     }
 
     private Map<String, Object> vrank(UserAccountView profile, Map<String, Object> teamSection) {
@@ -644,10 +716,69 @@ public class OpsUser360Service {
                 .toList();
         return section(
                 "notifications", notificationSection.get("records"),
-                "activityAudit", activityAudit,
+                "activityAudit", withActorDisplayNames(activityAudit),
                 "checkInRewardAsset", "UVT",
                 "sunsetCompatibility", List.of("legacy points records are read-only migration context"),
                 "sourceStatus", "READY");
+    }
+
+    private List<Map<String, Object>> withActorDisplayNames(List<AuditLogRecord> rows) {
+        if (rows.isEmpty()) return List.of();
+        List<Long> ids = rows.stream()
+                .filter(this::isTrustedAdminActor)
+                .map(AuditLogRecord::getActorId)
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        List<String> usernames = rows.stream()
+                .filter(this::isTrustedAdminActor)
+                .filter(record -> record.getActorId() == null || record.getActorId() <= 0)
+                .map(AuditLogRecord::getActorUsername)
+                .filter(value -> value != null && !value.trim().isEmpty())
+                .map(String::trim)
+                .distinct()
+                .toList();
+        Map<Long, String> namesById = adminDisplayNames == null ? Map.of() : adminDisplayNames.byIds(ids);
+        Map<String, String> namesByUsername = adminDisplayNames == null || usernames.isEmpty()
+                ? Map.of() : adminDisplayNames.byUsernames(usernames);
+        return rows.stream().map(record -> auditRow(record, actorDisplayName(record, namesById, namesByUsername))).toList();
+    }
+
+    private String actorDisplayName(AuditLogRecord record, Map<Long, String> namesById,
+                                    Map<String, String> namesByUsername) {
+        if (!isTrustedAdminActor(record)) return null;
+        Long actorId = record.getActorId();
+        if (actorId != null && actorId > 0) return namesById.get(actorId);
+        if (record.getActorUsername() == null || record.getActorUsername().trim().isEmpty()) return null;
+        return namesByUsername.get(record.getActorUsername().trim());
+    }
+
+    private boolean isTrustedAdminActor(AuditLogRecord record) {
+        return "ADMIN".equals(text(record.getActorType()));
+    }
+
+    private Map<String, Object> auditRow(AuditLogRecord record, String actorDisplayName) {
+        return section(
+                "id", record.getId(),
+                "traceId", record.getTraceId(),
+                "serviceName", record.getServiceName(),
+                "action", record.getAction(),
+                "resourceType", record.getResourceType(),
+                "resourceId", record.getResourceId(),
+                "bizNo", record.getBizNo(),
+                "userId", record.getUserId(),
+                "actorId", record.getActorId(),
+                "actorType", record.getActorType(),
+                "actorUsername", record.getActorUsername(),
+                "actorDisplayName", actorDisplayName,
+                "clientIp", record.getClientIp(),
+                "method", record.getMethod(),
+                "path", record.getPath(),
+                "result", record.getResult(),
+                "riskLevel", record.getRiskLevel(),
+                "detailJson", record.getDetailJson(),
+                "schemaVersion", record.getSchemaVersion(),
+                "createdAt", record.getCreatedAt());
     }
 
     private Map<String, Object> commerce(List<DeviceOrderView> orders) {

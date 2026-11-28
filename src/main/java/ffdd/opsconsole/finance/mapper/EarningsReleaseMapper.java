@@ -30,6 +30,9 @@ public interface EarningsReleaseMapper {
     @Select(FUND_ENTRY+" WHERE entry_no=#{entryNo} FOR SHARE")
     @org.apache.ibatis.annotations.Options(useCache=false,flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
     Map<String,Object> fundEntry(@Param("entryNo") String entryNo);
+    @Select("SELECT EXISTS (SELECT 1 FROM nx_support_fund_operation WHERE op_key=CONCAT('"
+            +B140TestWalletResetMapper.OPERATION_PREFIX+"',#{entryNo}))")
+    boolean b140ResetReward(@Param("entryNo") String entryNo);
     @Select(FUND_RECOVERY+" WHERE recovery_no=#{recoveryNo} FOR SHARE")
     @org.apache.ibatis.annotations.Options(useCache=false,flushCache=org.apache.ibatis.annotations.Options.FlushCachePolicy.TRUE)
     Map<String,Object> fundRecovery(@Param("recoveryNo") String recoveryNo);
@@ -130,7 +133,10 @@ public interface EarningsReleaseMapper {
     int creditNex(@Param("userId") Long userId,@Param("amount") BigDecimal amount,
                   @Param("sourceEnvironment") String sourceEnvironment,
                   @Param("expectedSandbox") int expectedSandbox);
-    @Select("SELECT asset,bucket,COALESCE(SUM(amount-recovered_amount),0) amount FROM nx_earnings_release_entry WHERE user_id=#{userId} AND status='ACTIVE' AND is_deleted=0 GROUP BY asset,bucket")
+    @Select("SELECT e.asset,e.bucket,COALESCE(SUM(e.amount-e.recovered_amount),0) amount FROM nx_earnings_release_entry e"
+            +" WHERE e.user_id=#{userId} AND e.status='ACTIVE' AND e.is_deleted=0 AND NOT EXISTS ("
+            +"SELECT 1 FROM nx_support_fund_operation o WHERE o.op_key=CONCAT('"
+            +B140TestWalletResetMapper.OPERATION_PREFIX+"',e.entry_no) COLLATE utf8mb4_bin) GROUP BY e.asset,e.bucket")
     List<BucketAmount> buckets(@Param("userId") Long userId);
     @Select("SELECT COALESCE(SUM(amount-recovered_amount),0) FROM nx_earnings_release_entry WHERE user_id=#{userId} AND asset='USDT' AND bucket IN ('pending_review','bonus_locked') AND status='ACTIVE' AND is_deleted=0")
     BigDecimal protectedAmount(@Param("userId") Long userId);

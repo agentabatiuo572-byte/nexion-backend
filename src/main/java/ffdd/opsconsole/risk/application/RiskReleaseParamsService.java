@@ -91,10 +91,22 @@ public class RiskReleaseParamsService {
 
     @Transactional(rollbackFor=Exception.class)
     protected ApiResult<Map<String,Object>> updateOnce(String key,String value,RiskReleaseParamUpdateRequest request){
-        long version;
-        try{version=Long.parseLong(config.activeValueForUpdate(VERSION_KEY).orElseThrow());}catch(Exception e){throw new BizException(503,"K1_RELEASE_CONFIG_UNAVAILABLE");}
+        long version = lockVersion();
         if(version!=request.expectedVersion())throw new BizException(409,"K1_RELEASE_VERSION_CONFLICT");
-        Map<String,String> before=values();Map<String,String> after=new LinkedHashMap<>(before);after.put(key,value);validateCross(after);
+        return applyChange(key, value, request, version, values());
+    }
+
+    private long lockVersion() {
+        try {
+            return Long.parseLong(config.activeValueForUpdate(VERSION_KEY).orElseThrow());
+        } catch (Exception missingOrInvalid) {
+            throw new BizException(503, "K1_RELEASE_CONFIG_UNAVAILABLE");
+        }
+    }
+
+    private ApiResult<Map<String,Object>> applyChange(String key, String value, RiskReleaseParamUpdateRequest request,
+                                                      long version, Map<String,String> before) {
+        Map<String,String> after=new LinkedHashMap<>(before);after.put(key,value);validateCross(after);
         boolean loosening=isLoosening(key,before.get(key),value);
         if(loosening&&!A2ReplayContext.isReplaying())throw new BizException(409,"K1_RELEASE_PARAM_APPROVAL_REQUIRED");
         TreasuryCoverageSnapshot coverageAtSubmit=loosening?requireCoverageGate():null;
@@ -115,12 +127,7 @@ public class RiskReleaseParamsService {
         Map<String,String> current = values();
         long version = number(VERSION_KEY);
         if (version != expectedVersion) throw new BizException(409, "K1_RELEASE_PARAM_STALE");
-        Map<String,Object> before = new LinkedHashMap<>();
-        before.put("key", normalizedKey);
-        before.put("value", current.get(normalizedKey));
-        before.put("version", String.valueOf(version));
-        before.put("values", new LinkedHashMap<>(current));
-        return before;
+        return snapshot(normalizedKey, version, current);
     }
 
     /** Proposal-time preview; checks direction and current exact B1 but writes nothing. */
@@ -151,12 +158,55 @@ public class RiskReleaseParamsService {
             Map<?,?> expectedBefore) {
         if (!A2ReplayContext.isReplaying()) throw new BizException(403, "K1_APPROVAL_FORBIDDEN");
         String normalizedKey = approvalKey(key);
-        Map<String,Object> current = approvalBefore(normalizedKey, expectedVersion);
-        if (expectedBefore == null || !current.equals(expectedBefore)) {
+        if (expectedVersion == null) throw new BizException(422, "EXPECTED_VERSION_REQUIRED");
+        long version = lockVersion();
+        Map<String,String> current = values();
+        if (version != expectedVersion || !snapshot(normalizedKey, version, current).equals(expectedBefore)) {
+            if (confirmedSnapshotChange(normalizedKey, expectedVersion, expectedBefore, version, current)) {
+                throw new ConfirmedSnapshotChange();
+            }
             throw new BizException(409, "K1_RELEASE_PARAM_STALE");
         }
-        return updateOnce(normalizedKey, normalize(normalizedKey, value),
-                new RiskReleaseParamUpdateRequest(value, expectedVersion, reason, operator));
+        return applyChange(normalizedKey, normalize(normalizedKey, value),
+                new RiskReleaseParamUpdateRequest(value, expectedVersion, reason, operator), version, current);
+    }
+
+    private Map<String,Object> snapshot(String key, long version, Map<String,String> values) {
+        Map<String,Object> before = new LinkedHashMap<>();
+        before.put("key", key);
+        before.put("value", values.get(key));
+        before.put("version", Long.toString(version));
+        before.put("values", new LinkedHashMap<>(values));
+        return before;
+    }
+
+    private boolean confirmedSnapshotChange(String key, long expectedVersion, Map<?,?> expectedBefore,
+                                            long version, Map<String,String> current) {
+        if (expectedVersion < 0 || version < expectedVersion || expectedBefore == null
+                || !(expectedBefore.get("values") instanceof Map<?,?> stored)
+                || !current.keySet().equals(stored.keySet())) return false;
+        Map<String,String> previous = new LinkedHashMap<>();
+        for (String name : KEYS) {
+            if (!(stored.get(name) instanceof String value)) return false;
+            previous.put(name, value);
+        }
+        if (!"1".equals(previous.get("appAttestationReleaseHours"))
+                || !snapshot(key, expectedVersion, previous).equals(expectedBefore)) return false;
+        try {
+            validateCross(previous);
+        } catch (BizException invalidSnapshot) {
+            return false;
+        }
+        // Historical releaseMode values all resolve to manual_only. Compare the effective thresholds.
+        return version > expectedVersion
+                || Integer.parseInt(previous.get("duplicateAccountPendingFrom")) != Integer.parseInt(current.get("duplicateAccountPendingFrom"))
+                || Integer.parseInt(previous.get("duplicateAccountFreezeFrom")) != Integer.parseInt(current.get("duplicateAccountFreezeFrom"));
+    }
+
+    public static final class ConfirmedSnapshotChange extends BizException {
+        private ConfirmedSnapshotChange() {
+            super(409, "K1_RELEASE_PARAM_STALE");
+        }
     }
 
     private String approvalKey(String key) {

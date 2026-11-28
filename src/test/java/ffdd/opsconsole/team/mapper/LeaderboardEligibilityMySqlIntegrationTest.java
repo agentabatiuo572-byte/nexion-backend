@@ -72,7 +72,7 @@ class LeaderboardEligibilityMySqlIntegrationTest {
 
     @Test
     void excludesInactiveDeletedSandboxOrphanAndIneligibleCommissionFacts() {
-        var rows = settlement.leaderboardCandidatesByPeriod("week", FROM, TO, MINIMUM, 100);
+        var rows = settlement.leaderboardCandidatesByPeriod("week", FROM, TO, MINIMUM, 100, 0, null);
         assertThat(ids(rows)).containsExactly(1L, 10L);
         assertThat((BigDecimal) rows.get(0).get("volume")).isEqualByComparingTo("200");
     }
@@ -82,13 +82,13 @@ class LeaderboardEligibilityMySqlIntegrationTest {
         var expected = app.leaderboardEligible("week", 0, FROM, TO, MINIMUM, 100, TO)
                 .stream().map(AppTeamInsightsMapper.LeaderboardRow::userId).toList();
         assertThat(expected).containsExactly(1L, 10L);
-        assertThat(ids(settlement.leaderboardCandidatesByPeriod("week", FROM, TO, MINIMUM, 100)))
+        assertThat(ids(settlement.leaderboardCandidatesByPeriod("week", FROM, TO, MINIMUM, 100, 0, null)))
                 .containsExactlyElementsOf(expected);
     }
 
     @Test
     void excludesIneligibleHighEarnersBeforeApplyingTheTopLimit() {
-        assertThat(ids(settlement.leaderboardCandidatesByPeriod("week", FROM, TO, MINIMUM, 1)))
+        assertThat(ids(settlement.leaderboardCandidatesByPeriod("week", FROM, TO, MINIMUM, 1, 0, null)))
                 .containsExactly(1L);
     }
 

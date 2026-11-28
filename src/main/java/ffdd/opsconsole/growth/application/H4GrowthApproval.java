@@ -1,6 +1,8 @@
 package ffdd.opsconsole.growth.application;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.growth.dto.GenesisRaffleRequest;
 import ffdd.opsconsole.growth.dto.GrowthConfigUpdateRequest;
@@ -18,6 +20,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.exception.H4EventRuleIncompleteException;
 import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
@@ -44,6 +47,8 @@ public class H4GrowthApproval {
     private static final String PROBABILITIES_UPDATE = "h4_wheel_probabilities_update";
     private static final AuditLockTarget WHEEL_POOL = new AuditLockTarget("H", "h4_wheel_pool", "ACTIVE_POOL");
     private static final Set<String> WHEEL_POOL_OPERATIONS = Set.of(TIER_CREATE, TIER_UPDATE, TIER_DELETE, PROBABILITIES_UPDATE);
+    private static final Set<String> WHEEL_SNAPSHOT_FIELDS = Set.of("tier", "reward", "prob", "real",
+            "kind", "amount", "voucherId", "dailyStock");
     private static final Set<String> LEGACY_EVENT_OPERATIONS = Set.of(LEGACY_REWARD, LEGACY_OPEN);
     private static final Set<String> OPERATIONS = Set.of(RULE, RAFFLE, GUARD_CREATE, GUARD_UPDATE,
             TIER_CREATE, TIER_UPDATE, TIER_DELETE, PROBABILITIES_UPDATE, LEGACY_REWARD, LEGACY_OPEN);
@@ -214,7 +219,15 @@ public class H4GrowthApproval {
             growth.lockH4Wheel();
             AppGrowthWheelService.validateTiers(wheelMapper.lockActiveTiers());
         }
-        if (!state(target, command.op()).equals(command.params().get("expectedState"))) return ApiResult.fail(409, "H4_CONFIG_STALE");
+        var current = state(target, command.op());
+        Object expected = command.params().get("expectedState");
+        if (!current.equals(expected)) {
+            if (expected instanceof Map<?, ?> snapshot && command.params().get("proposalReason") instanceof String
+                    && confirmedSnapshotChange(command, target, snapshot, current)) {
+                throw new ConfirmedRecheckFailure(409, "H4_CONFIG_STALE");
+            }
+            return ApiResult.fail(409, "H4_CONFIG_STALE");
+        }
         if (command.params().get("eventCopy") instanceof Map<?, ?> copy
                 && !rules.readEventContent(target.id()).equals(copy)) {
             return ApiResult.fail(409, "H4_CONFIG_STALE");
@@ -270,6 +283,115 @@ public class H4GrowthApproval {
             }
             default -> ApiResult.fail(422, "H4_PROPOSAL_INVALID");
         };
+    }
+
+    public static final class ConfirmedRecheckFailure extends BizException {
+        ConfirmedRecheckFailure(int code, String reason) {
+            super(code, reason);
+        }
+    }
+
+    static boolean confirmedCoverageBreach(TreasuryCoverageSnapshot snapshot) {
+        return snapshot.redlineBreached() && snapshot.redlinePct().signum() > 0
+                && snapshot.ratioLiabilitiesUsd() != null && snapshot.ratioLiabilitiesUsd().signum() > 0;
+    }
+
+    private boolean confirmedSnapshotChange(AuditReplayCommand command, AuditLockTarget target,
+                                            Map<?, ?> expected, Map<String, String> current) {
+        if (WHEEL_POOL.equals(target)) {
+            String before = verifiedWheelSignature(expected);
+            String after = verifiedWheelSignature(current);
+            return before != null && after != null && !before.equals(after)
+                    && before.equals(values(command).get("expectedSignature"));
+        }
+        if (GUARD_UPDATE.equals(command.op()) && "budget".equals(target.id())) {
+            if (!"true".equals(expected.get("exists")) || !"true".equals(current.get("exists"))
+                    || !target.id().equals(expected.get("guard_key")) || !target.id().equals(current.get("guard_key"))
+                    || !"1".equals(expected.get("status")) || !"1".equals(current.get("status"))
+                    || !(expected.get("id") instanceof String id) || !id.matches("[1-9][0-9]{0,18}")
+                    || !id.equals(current.get("id")) || !(expected.get("guard_value") instanceof String oldValue)
+                    || !oldValue.trim().equals(values(command).get("expectedValue"))) {
+                return false;
+            }
+            BigDecimal before = growth.wheelBudgetAmount(oldValue);
+            BigDecimal after = growth.wheelBudgetAmount(current.get("guard_value"));
+            return before != null && after != null && before.compareTo(after) != 0;
+        }
+        String identity;
+        String payloadKey;
+        if (RULE.equals(command.op()) && existingQuest(expected) && existingQuest(current)) {
+            identity = "event_code";
+            payloadKey = "rules_json";
+        } else if (RAFFLE.equals(command.op()) && "DRAFT".equals(expected.get("status"))
+                && Set.of("DRAFT", "OPEN", "PROCESSING", "DRAWN").contains(current.getOrDefault("status", ""))) {
+            identity = "draw_id";
+            payloadKey = "prizes_json";
+        } else {
+            return false;
+        }
+        if (!"true".equals(expected.get("exists")) || !"true".equals(current.get("exists"))
+                || !target.id().equals(expected.get(identity)) || !target.id().equals(current.get(identity))
+                || !(expected.get("revision") instanceof String before) || !before.matches("[1-9][0-9]{0,18}")
+                || !current.getOrDefault("revision", "").matches("[1-9][0-9]{0,18}")) {
+            return false;
+        }
+        var version = new BigDecimal(before);
+        return version.compareTo(new BigDecimal(values(command).get("expectedRevision").toString())) == 0
+                && new BigDecimal(current.get("revision")).compareTo(version) > 0
+                && validRevisionPayload(expected.get(payloadKey), RULE.equals(command.op()))
+                && validRevisionPayload(current.get(payloadKey), RULE.equals(command.op()));
+    }
+
+    private static boolean existingQuest(Map<?, ?> state) {
+        return "0".equals(state.get("q_deleted")) || "false".equals(state.get("q_deleted"));
+    }
+
+    private boolean validRevisionPayload(Object stored, boolean rule) {
+        if (!(stored instanceof String encoded)) return false;
+        try {
+            var decoded = json.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(encoded);
+            return rule ? decoded.isObject() : decoded.isArray() && !decoded.isEmpty();
+        } catch (JsonProcessingException invalid) {
+            return false;
+        }
+    }
+
+    private String verifiedWheelSignature(Map<?, ?> snapshot) {
+        if (!(snapshot.get("tiers") instanceof String encoded)
+                || !(snapshot.get("wheelSignature") instanceof String signature)) return null;
+        List<Map<String, Object>> tiers;
+        try {
+            tiers = json.readerFor(new TypeReference<List<Map<String, Object>>>() {})
+                    .with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS, DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readValue(encoded);
+        } catch (JsonProcessingException invalid) {
+            return null;
+        }
+        if (tiers == null || tiers.size() < 2 || tiers.size() > 12) return null;
+        Set<String> names = new HashSet<>();
+        boolean hasComfortTier = false;
+        BigDecimal total = BigDecimal.ZERO;
+        for (var tier : tiers) {
+            if (tier == null || !tier.keySet().equals(WHEEL_SNAPSHOT_FIELDS)
+                    || !(tier.get("tier") instanceof String name) || name.isBlank() || !names.add(name)
+                    || !(tier.get("reward") instanceof String label) || label.isBlank()
+                    || !(tier.get("prob") instanceof Number probability) || !(tier.get("amount") instanceof Number amount)
+                    || !(tier.get("kind") instanceof String kind) || !Set.of("uvt", "usdt", "coupon").contains(kind)
+                    || !(tier.get("voucherId") instanceof String voucher) || ("coupon".equals(kind) && voucher.isBlank())
+                    || !(tier.get("dailyStock") instanceof Integer stock) || stock < 0) {
+                return null;
+            }
+            Object real = tier.get("real");
+            boolean realOutflow = Boolean.TRUE.equals(real) || Integer.valueOf(1).equals(real);
+            if (!(real instanceof Boolean || Integer.valueOf(0).equals(real) || Integer.valueOf(1).equals(real))
+                    || realOutflow != "usdt".equals(kind)) return null;
+            BigDecimal share = new BigDecimal(probability.toString());
+            if (share.signum() < 0 || new BigDecimal(amount.toString()).signum() <= 0) return null;
+            total = total.add(share);
+            hasComfortTier |= "uvt".equals(kind);
+        }
+        return hasComfortTier && total.compareTo(BigDecimal.valueOf(100)) == 0
+                && signature.equals(growth.wheelPoolSignature(tiers)) ? signature : null;
     }
 
     private Map<String, String> state(AuditLockTarget target, String operation) {

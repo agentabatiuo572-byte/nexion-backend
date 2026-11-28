@@ -121,21 +121,30 @@ public class PromotionQuoteService {
             chosen=row;contract=c;policies=ps;awarded=new ArrayList<>(a);
         }
         if(!selected.isEmpty())require(chosen!=null,"PROMOTION_NOT_ELIGIBLE_OR_UNAVAILABLE");
-        if (reserved!=null) return reserved.at(now);
+        if (reserved!=null) return placementQuote(userId, reserved.at(now), maps(reserved.snapshot().get("awards")));
         var stored = quoteSnapshot(request,items,chosen,contract,policies,price,awarded,now);
         var reusable = equivalentQuote(recent, stored);
-        if (reusable != null && reusable.pending()) return reusable.at(now);
+        if (reusable != null && reusable.pending())
+            return placementQuote(userId, reusable.at(now), maps(reusable.snapshot().get("awards")));
         require(!spentVoucher,"VOUCHER_NOT_AVAILABLE_OR_NOT_APPLICABLE");
         requirePurchaseEligibility(userId,items);
-        require(db.occupiedDeviceSlots(userId)+items.stream().mapToLong(PromotionRules.Selection::quantity).sum()
-                <=db.deviceSlotCap(),"CAPACITY_REPLACEMENT_REQUIRED");
-        if (reusable != null) return reusable.at(now);
+        if (reusable != null) return placementQuote(userId, reusable.at(now), maps(reusable.snapshot().get("awards")));
         var publicQuote=map(stored.get("public"));
         String quoteHash=hash(stored);publicQuote.put("quoteHash",quoteHash);stored.put("public",publicQuote);
         validator.validate("Quote",publicQuote);
         changed(db.write("INSERT INTO nx_promotion_quote(quote_id,user_id,request_hash,quote_hash,quote_json,expires_at) VALUES(?,?,?,?,?,?)",
             publicQuote.get("quoteId"),userId,hash(request),quoteHash,json(stored),timestamp(instant(publicQuote.get("expiresAt")))));
-        return publicQuote;
+        return placementQuote(userId, publicQuote, awarded);
+    }
+
+    private Map<String,Object> placementQuote(long buyerId, Map<String,Object> quote, List<Map<String,Object>> awards) {
+        long slots = Math.max(0, db.deviceSlotCap() - db.occupiedDeviceSlots(buyerId));
+        long buyerGiftQuantity = awards.stream().filter(award -> number(award.get("beneficiaryId")) == buyerId)
+                .map(award -> map(award.get("reward"))).filter(reward -> "DEVICE".equals(reward.get("type")))
+                .mapToLong(reward -> number(reward.get("quantity"))).sum();
+        quote.put("assignableSlots", slots);
+        quote.put("inventoryQuantity", Math.max(0, number(quote.get("quantity")) + buyerGiftQuantity - slots));
+        return quote;
     }
 
     private Map<String,Object> quoteSnapshot(Map<String,Object> request,List<PromotionRules.Selection> items,

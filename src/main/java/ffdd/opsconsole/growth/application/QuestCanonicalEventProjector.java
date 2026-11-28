@@ -111,11 +111,9 @@ public class QuestCanonicalEventProjector {
             }
         }
         List<DayOneSnapshotBinding> snapshotBindings = matchingSnapshotBindings(message, payload);
-        boolean dayOnePageObservation = H3DayOnePageObservationContract.forEventType(message.getEventType()) != null
-                || H3DayOneBusinessFactContract.forEventType(message.getEventType()) != null;
         List<BindingTarget> effectiveBindings = routed.stream()
-                .filter(target -> !dayOnePageObservation || fixedDayOneRuleMatches(
-                        target.binding().producer(), message.getEventType(), target.binding().questCode(), target.binding().userIdField()))
+                .filter(target -> H3DayOneBindingPolicy.permits(target.binding().producer(),
+                        target.binding().eventType(), target.binding().questCode(), target.binding().userIdField()))
                 .filter(target -> !WEEKLY_EVENT_QUESTS.containsKey(message.getEventType())
                         || ("SYSTEM".equals(target.binding().producer())
                         && "user_id".equals(target.binding().userIdField())
@@ -189,19 +187,31 @@ public class QuestCanonicalEventProjector {
     private List<DayOneSnapshotBinding> matchingSnapshotBindings(
             EventOutboxMessage message, Map<String, Object> payload) {
         if (dayOneInstanceMapper == null || message.getEventTs() == null) return List.of();
+        if ("H3_DAY_ONE_S1_ROI_VIEWED".equals(message.getEventType())) {
+            Long userId = positiveLong(payload.get("user_id"));
+            Object instance = payload.get("instanceKey");
+            if (!"H3_DAY_ONE_PAGE".equals(message.getAggregateType()) || userId == null
+                    || !(instance instanceof String instanceKey)
+                    || !"s1-roi".equals(payload.get("surface"))
+                    || !(userId + ":" + instanceKey + ":s1-roi").equals(message.getAggregateId())) return List.of();
+            var item = dayOneInstanceMapper.findInWindowRoiItem(userId, message.getEventTs());
+            return item != null && instanceKey.equals(item.instanceKey()) ? List.of(item) : List.of();
+        }
         List<Long> userIds = snapshotCandidateUserIds(payload);
         if (userIds.isEmpty()) return List.of();
         List<DayOneSnapshotBinding> candidates = dayOneInstanceMapper.listInWindowSnapshotBindings(
                 userIds, message.getEventType(), message.getEventTs());
         if (candidates == null || candidates.isEmpty()) return List.of();
         return candidates.stream().filter(binding -> {
+            if (binding != null && !H3DayOneBindingPolicy.permits(
+                    binding.producer(), binding.eventType(), binding.questCode(), binding.userIdField())) return false;
             validateSnapshotBinding(binding, message.getEventType());
             Long userId = positiveLong(payload.get(binding.userIdField()));
             if (userId == null || !userId.equals(binding.userId())) return false;
             if (!matchesFrozenRule(binding)) {
                 throw new IllegalArgumentException("DAY_ONE_SNAPSHOT_BINDING_RULE_INVALID");
             }
-            return fixedDayOneRuleMatches(binding.producer(), binding.eventType(), binding.questCode(), binding.userIdField());
+            return true;
         }).toList();
     }
 
@@ -221,14 +231,6 @@ public class QuestCanonicalEventProjector {
         } catch (Exception ex) {
             throw new IllegalArgumentException("QUEST_CANONICAL_PAYLOAD_INVALID", ex);
         }
-    }
-
-    private boolean fixedDayOneRuleMatches(String producer, String eventType, String questCode, String userIdField) {
-        var businessRule = H3DayOneBusinessFactContract.forEventType(eventType);
-        if (businessRule != null) return businessRule.matches(producer, questCode, userIdField);
-        if (H3DayOnePageObservationContract.forEventType(eventType) != null)
-            return H3DayOnePageObservationContract.matches(producer, eventType, questCode, userIdField);
-        return true;
     }
 
     private void validateBinding(CanonicalQuestEventBinding binding, String eventType) {

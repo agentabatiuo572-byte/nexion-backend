@@ -36,7 +36,8 @@ class SupportGroupServiceTest {
     private final AuditLogService audit=mock(AuditLogService.class);
     private final org.springframework.context.ApplicationEventPublisher events=mock(org.springframework.context.ApplicationEventPublisher.class);
     private final ffdd.opsconsole.content.mapper.SupportAgentMapper profiles=mock(ffdd.opsconsole.content.mapper.SupportAgentMapper.class);
-    private final SupportGroupService service=new SupportGroupService(mapper,ownership,idempotency,audit,events,profiles);
+    private final SupportGroupService service=new SupportGroupService(mapper,ownership,idempotency,audit,events,profiles,
+            mock(ffdd.opsconsole.platform.application.A2RuntimePolicy.class));
     private final LocalDateTime at=LocalDateTime.of(2026,10,7,0,0);
     @BeforeEach void setup(){
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("1","",List.of(

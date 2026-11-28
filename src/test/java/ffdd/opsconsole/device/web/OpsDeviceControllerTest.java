@@ -48,7 +48,7 @@ class OpsDeviceControllerTest {
     @Test
     void devicesDelegatesQueryToService() {
         DeviceOpsQueryRequest request = new DeviceOpsQueryRequest(
-                "OFFLINE", "HK-1", "NX", null, 1L, 20L);
+                "OFFLINE", "HK-1", "NX", null, 1L, 20L, null);
         when(deviceService.devices(request)).thenReturn(ApiResult.ok(new PageResult<>(0, 1, 20, List.of())));
 
         assertThat(controller.devices(request).getData().getPageNum()).isEqualTo(1);

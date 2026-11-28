@@ -13,7 +13,6 @@ import ffdd.opsconsole.team.domain.VRankPromotionContext;
 import ffdd.opsconsole.team.domain.VRankRewardPayout;
 import ffdd.opsconsole.team.domain.VRankRewardRuleRow;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
-import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -41,10 +40,7 @@ import org.springframework.util.StringUtils;
  *       ② INSERT nx_commission_event(commission_type='vrank_reward',currency='USDT',user_id=被晋升人);
  *       ③ ledgerPostingFacade.postLedgerEntry(direction='IN',status='PENDING',bizType='TEAM_COMMISSION');
  *       ④ INSERT nx_v_rank_reward_payout(status='GRANTED',commission_event_id,bill_id)。</li>
- *   <li><b>nex(培育类 UVT)</b> — 默认派给 L1 上线 sponsor(承接培育奖语义,PRD §8.2.5):
- *       commission_type='cultivation',user_id=sponsor,source_user_id=被晋升人;
- *       若 reward 的 custom_label 含 "self"/"direct" 标记,或 sponsor 不存在 → fallback 派本人(commission_type='vrank_reward')。
- *       其余流程同 usdt(currency='UVT')。B1 预检同 usdt。</li>
+ *   <li><b>uvt</b> — 派给晋级本人，沿用 USDT 的待解锁和覆盖率校验。</li>
  *   <li><b>voucher</b> — 调 H7 {@link VoucherGrantFacade} 原子写入用户券权属,随后 payout 记
  *       {@code GRANTED};H7 内部负责幂等、必达审计与 outbox,权益类不入 D4。</li>
  *   <li><b>sku</b> — 原子创建 PENDING_GRANT payout 与 PENDING 履约队列；后台消费者库存预占、
@@ -61,10 +57,10 @@ import org.springframework.util.StringUtils;
  *
  * <h2>B1 备付金红线联动(D4)</h2>
  * <pre>
- * coverageFacade.snapshot() → coverageRatio < redlinePct?
- *   是 → 抛 BizException(422, "COVERAGE_BELOW_REDLINE") → @Transactional 回滚
+ * coverageFacade.snapshot() → 覆盖率可靠且达到红线?
+ *   否 → 抛 BizException(422, "COVERAGE_BELOW_REDLINE") → @Transactional 回滚
  *                                                   → 整笔晋升(v_rank UPDATE + level_log + 前序 payout)全部撤销
- *   否 → 继续 INSERT commission_event + postLedgerEntry
+ *   是 → 继续 INSERT commission_event + postLedgerEntry
  * </pre>
  *
  * <p><b>TODO Sprint4+:</b> 晋升事件发布(outbox / RocketMQ 通知下游域)。
@@ -80,7 +76,6 @@ public class VRankRewardDispatcher {
 
     /** commission_event.commission_type — 本人奖励 / 培育类给 sponsor。 */
     private static final String COMMISSION_TYPE_VRANK_REWARD = "vrank_reward";
-    private static final String COMMISSION_TYPE_CULTIVATION = "cultivation";
 
     /** payout.status 取值。 */
     private static final String PAYOUT_STATUS_GRANTED = "GRANTED";
@@ -182,8 +177,9 @@ public class VRankRewardDispatcher {
                                 String triggerEventId) {
         switch (rewardType) {
             case REWARD_TYPE_USDT -> dispatchFundReward(userId, rankCode, rule, rewardType,
-                    CURRENCY_USDT, operator, triggerEventId, false);
-            case REWARD_TYPE_NEX -> dispatchNexReward(userId, rankCode, rule, operator, triggerEventId);
+                    CURRENCY_USDT, operator, triggerEventId);
+            case REWARD_TYPE_NEX -> dispatchFundReward(userId, rankCode, rule, rewardType,
+                    CURRENCY_NEX, operator, triggerEventId);
             case REWARD_TYPE_VOUCHER -> dispatchVoucher(userId, rankCode, rule, operator, triggerEventId);
             case REWARD_TYPE_SKU -> dispatchSku(userId, rankCode, rule, operator, triggerEventId);
             case REWARD_TYPE_CUSTOM -> dispatchCustom(userId, rankCode, rule, operator, triggerEventId);
@@ -196,20 +192,13 @@ public class VRankRewardDispatcher {
     // 资金类(USDT/UVT)→ B1 预检 + INSERT commission_event + postLedgerEntry + INSERT payout
     // ============================================================
 
-    /**
-     * 派发资金类奖励(USDT 或 培育类 UVT)。
-     *
-     * @param currency        USDT / UVT
-     * @param isCultivation   true=培育类(派 sponsor),false=本人奖励(派本人)
-     */
     private void dispatchFundReward(Long userId,
                                     String rankCode,
                                     VRankRewardRuleRow rule,
                                     String rewardType,
                                     String currency,
                                     String operator,
-                                    String triggerEventId,
-                                    boolean isCultivation) {
+                                    String triggerEventId) {
         BigDecimal amount = rule.amount() == null ? BigDecimal.ZERO : rule.amount();
         if (amount.compareTo(BigDecimal.ZERO) <= 0) {
             log.warn("V-Rank fund reward amount <= 0, skip: user={}, rank={}, type={}, amount={}",
@@ -217,66 +206,33 @@ public class VRankRewardDispatcher {
             return;
         }
 
-        // ① B1 备付金红线预检(资金类放大平台资金流出,低于红线直接拒,整笔晋升回滚)
-        assertCoverageAboveRedline(userId, rankCode, rewardType, amount);
-
-        // ② 确定接收方:培育类=sponsor(fallback 本人),本人奖励=被晋升人
-        Long recipientUserId = userId;
-        Long sponsorUserId = null;
-        Long sourceUserId = null; // commission_event.source_user_id:触发用户(被晋升人)
-        String commissionType = COMMISSION_TYPE_VRANK_REWARD;
-        if (isCultivation) {
-            sponsorUserId = commissionRepository.findSponsorUserId(userId);
-            if (sponsorUserId != null) {
-                recipientUserId = sponsorUserId;
-                sourceUserId = userId;
-                commissionType = COMMISSION_TYPE_CULTIVATION;
-            } else {
-                log.info("V-Rank cultivation UVT has no sponsor for user {}, fallback to self: rank={}",
-                        userId, rankCode);
-                // sponsor 不存在 → fallback 派本人(commission_type 仍为 vrank_reward)
-            }
+        // V8 升阶只经 A2 人工批准，按 B88 跳过覆盖率预检。
+        if (!"V8".equals(rankCode)) {
+            assertCoverageAboveRedline(userId, rankCode, rewardType, amount);
         }
 
-        // ③ INSERT nx_commission_event
         BigDecimal amountUsdt = CURRENCY_USDT.equals(currency) ? amount : BigDecimal.ZERO;
         BigDecimal amountNex = CURRENCY_NEX.equals(currency) ? amount : BigDecimal.ZERO;
-        String remark = buildCommissionRemark(rankCode, rewardType, operator, isCultivation, sponsorUserId);
-        boolean immediateCultivation = COMMISSION_TYPE_CULTIVATION.equals(commissionType);
-        String commissionStatus = immediateCultivation ? "UNLOCKED" : LEDGER_STATUS_PENDING;
-        int coolingDays = immediateCultivation ? 0 : resolveCoolingDays();
-        String ledgerStatus = immediateCultivation ? "SUCCESS" : LEDGER_STATUS_PENDING;
+        String remark = buildCommissionRemark(rankCode, rewardType, operator);
         Long commissionEventId = commissionRepository.insertCommissionEvent(
-                recipientUserId,
-                commissionType,
-                sourceUserId,
+                userId,
+                COMMISSION_TYPE_VRANK_REWARD,
+                null,
                 currency,
                 amountUsdt,
                 amountNex,
-                commissionStatus,
-                coolingDays,
+                LEDGER_STATUS_PENDING,
+                resolveCoolingDays(),
                 remark);
         if (commissionEventId == null) {
             throw new IllegalStateException("COMMISSION_EVENT_INSERT_FAILED: user=" + userId
                     + ", rank=" + rankCode + ", type=" + rewardType);
         }
 
-        // ④ D4 台账 postLedgerEntry(对齐 OpsTeamService.postCommissionLedgerIfStatusChanged)
-        String billId = immediateCultivation ? "F5-COMMISSION-" + commissionEventId + "-RELEASE"
-                : buildBillId(commissionEventId);
-        if (immediateCultivation) {
-            ledgerPostingFacade.releaseCommissionFunds(commissionEventId);
-        } else {
-            ledgerPostingFacade.postLedgerEntry(
-                billId,
-                recipientUserId,
-                LEDGER_BIZ_TYPE,
-                currency,
-                LEDGER_DIRECTION_IN,
-                amount,
-                ledgerStatus,
-                "F1 V-Rank reward payout | " + remark);
-        }
+        String billId = buildBillId(commissionEventId);
+        ledgerPostingFacade.postLedgerEntry(
+                billId, userId, LEDGER_BIZ_TYPE, currency, LEDGER_DIRECTION_IN, amount,
+                LEDGER_STATUS_PENDING, "F1 V-Rank reward payout | " + remark);
 
         // ⑤ INSERT nx_v_rank_reward_payout(status='GRANTED', commission_event_id, bill_id)
         VRankRewardPayout payout = new VRankRewardPayout(
@@ -288,7 +244,7 @@ public class VRankRewardDispatcher {
                 null,
                 null,
                 rule.customLabel(),
-                sponsorUserId,
+                null,
                 PAYOUT_STATUS_GRANTED,
                 commissionEventId,
                 billId,
@@ -300,35 +256,20 @@ public class VRankRewardDispatcher {
             throw new IllegalStateException("PAYOUT_INSERT_FAILED: user=" + userId
                     + ", rank=" + rankCode + ", type=" + rewardType);
         }
-        log.info("V-Rank fund reward GRANTED: user={}, recipient={}, rank={}, type={}, amount={}, commissionEventId={}, billId={}",
-                userId, recipientUserId, rankCode, rewardType, amount, commissionEventId, billId);
+        log.info("V-Rank fund reward GRANTED: user={}, rank={}, type={}, amount={}, commissionEventId={}, billId={}",
+                userId, rankCode, rewardType, amount, commissionEventId, billId);
     }
 
-    /**
-     * UVT 奖励特殊路由:默认培育类(sponsor 收),custom_label 含 "self"/"direct" 或无 sponsor 时 fallback 本人。
-     */
-    private void dispatchNexReward(Long userId,
-                                   String rankCode,
-                                   VRankRewardRuleRow rule,
-                                   String operator,
-                                   String triggerEventId) {
-        boolean isCultivation = !hasSelfMarker(rule.customLabel());
-        dispatchFundReward(userId, rankCode, rule, REWARD_TYPE_NEX,
-                CURRENCY_NEX, operator, triggerEventId, isCultivation);
-    }
-
-    /**
-     * B1 预检:备付金覆盖率 < 红线 → 抛 COVERAGE_BELOW_REDLINE,事务回滚(整笔晋升撤销)。
-     */
     private void assertCoverageAboveRedline(Long userId, String rankCode, String rewardType, BigDecimal amount) {
-        TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
-        BigDecimal ratio = coverage.coverageRatio() == null ? BigDecimal.ZERO : coverage.coverageRatio();
-        BigDecimal redline = coverage.redlinePct() == null ? BigDecimal.ZERO : coverage.redlinePct();
-        if (ratio.compareTo(redline) < 0) {
-            log.warn("B1 coverage below redline, BLOCK V-Rank fund reward: user={}, rank={}, type={}, amount={}, ratio={}, redline={}",
-                    userId, rankCode, rewardType, amount, ratio, redline);
-            throw new BizException(
-                    OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
+        String block = BinarySettlementPolicyProvider.currentCoverageBlock(coverageFacade.snapshot());
+        if ("B1_COVERAGE_UNRELIABLE".equals(block)) {
+            throw new BizException(OpsErrorCode.COVERAGE_UNAVAILABLE.httpStatus(),
+                    OpsErrorCode.COVERAGE_UNAVAILABLE.name());
+        }
+        if (block != null) {
+            log.warn("B1 coverage below redline, BLOCK V-Rank fund reward: user={}, rank={}, type={}, amount={}",
+                    userId, rankCode, rewardType, amount);
+            throw new BizException(OpsErrorCode.COVERAGE_BELOW_REDLINE.httpStatus(),
                     OpsErrorCode.COVERAGE_BELOW_REDLINE.name());
         }
     }
@@ -490,27 +431,11 @@ public class VRankRewardDispatcher {
                 .orElse(DEFAULT_COOLING_DAYS);
     }
 
-    /** UVT custom_label 含 "self"/"direct" → 视为"本人 UVT"(非培育,派本人)。 */
-    private boolean hasSelfMarker(String customLabel) {
-        if (!StringUtils.hasText(customLabel)) {
-            return false;
-        }
-        String lower = customLabel.toLowerCase(Locale.ROOT);
-        return lower.contains("self") || lower.contains("direct");
-    }
-
-    private String buildCommissionRemark(String rankCode,
-                                         String rewardType,
-                                         String operator,
-                                         boolean isCultivation,
-                                         Long sponsorUserId) {
+    private String buildCommissionRemark(String rankCode, String rewardType, String operator) {
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("rank", rankCode);
         fields.put("type", rewardType);
-        fields.put("cultivation", isCultivation);
-        if (sponsorUserId != null) {
-            fields.put("sponsorUserId", sponsorUserId);
-        }
+        fields.put("cultivation", false);
         fields.put("operator", operator);
         return "F1 V-Rank reward | " + fields;
     }

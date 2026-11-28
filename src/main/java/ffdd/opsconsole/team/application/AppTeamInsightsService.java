@@ -194,7 +194,7 @@ public class AppTeamInsightsService {
         LocalDateTime nextUnlock = null;
         Map<String, Map<String, Object>> byKind = new LinkedHashMap<>();
         int eventCount = 0;
-        for (String kind : List.of("unilevel", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning", "promotion", "other")) {
+        for (String kind : List.of("unilevel", "binary", "peer", "cultivation", "leadership", "genesis", "direct_purchase", "direct_device_earning", "promotion", "other", VRankSalaryService.KIND)) {
             byKind.put(kind, new LinkedHashMap<>(Map.of("usdt", BigDecimal.ZERO, "nex", BigDecimal.ZERO, "count", 0)));
         }
         for (var bucket : buckets) {
@@ -445,7 +445,12 @@ public class AppTeamInsightsService {
 
     private Map<String, Object> commission(AppTeamInsightsMapper.CommissionRow row) {
         Map<String, Object> item = new LinkedHashMap<>();
-        item.put("id", "CM-" + row.id()); item.put("kind", kind(row.commissionType()));
+        String kind = kind(row.commissionType());
+        item.put("id", "CM-" + row.id()); item.put("kind", kind);
+        if (VRankSalaryService.KIND.equals(kind)) {
+            item.put("salaryMonth", row.salaryMonth());
+            item.put("salaryRank", row.salaryRank());
+        }
         item.put("sourceUserName", row.sourceUserName() == null || row.sourceUserName().isBlank() ? "System" : row.sourceUserName());
         item.put("layer", row.layerNo()); item.put("orderId", row.orderNo()); item.put("orderAmountUSD", row.orderAmountUsd());
         item.put("amountUSDT", zero(row.amountUsdt())); item.put("amountNEX", zero(row.amountNex()));
@@ -592,7 +597,7 @@ public class AppTeamInsightsService {
     private String kind(String value) { String normalized=value==null?"":value.toLowerCase(); return switch(normalized){
         case "direct_purchase", "direct_device_earning" -> normalized;
         case "direct","network","unilevel" -> "unilevel"; case "binary" -> "binary"; case "peer" -> "peer";
-        case "cultivation" -> "cultivation"; case "leadership","leaderboard_prize" -> "leadership"; case "genesis" -> "genesis"; case "vrank_reward" -> "promotion"; default -> "other"; }; }
+        case "cultivation" -> "cultivation"; case "leadership","leaderboard_prize" -> "leadership"; case "genesis" -> "genesis"; case "vrank_reward" -> "promotion"; case VRankSalaryService.KIND -> VRankSalaryService.KIND; default -> "other"; }; }
     private String status(String value) { String normalized=value==null?"":value.toUpperCase(); return switch(normalized){
         case "UNLOCKED","AVAILABLE" -> "unlocked";
         case "SETTLED","PAID","WITHDRAWN" -> "withdrawn";

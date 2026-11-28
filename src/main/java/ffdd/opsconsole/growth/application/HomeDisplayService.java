@@ -59,12 +59,36 @@ public class HomeDisplayService {
         catch (Exception ex) { throw new IllegalStateException("HOME_DISPLAY_CACHE_INVALID", ex); }
         HomeDisplayBatch batch = entry == null ? null : entry.batch();
         long now = clock.millis();
-        if (batch == null || now >= entry.validUntil() || batch.enabled() && now >= batch.startAt() + (batch.online().length - 1L) * 1000) {
+        if (batch == null || now >= entry.validUntil() || windowEnded(batch, now)) {
             batch = advance();
             entry = new CachedBatch(batch, clock.millis() + CACHE_TTL_MILLIS);
         }
-        return Map.of("enabled", batch.enabled(), "startAt", batch.startAt(), "serverNow", clock.millis(),
-                "validUntil", entry.validUntil(), "sequence", batch.sequence(), "online", batch.online(),
+        return snapshot(batch, clock.millis(), entry.validUntil());
+    }
+
+    Map<String, Object> published(String state, Map<String, Object> current) {
+        if (state == null) return null;
+        HomeDisplayBatch batch;
+        try { batch = read(state); }
+        catch (IllegalStateException ex) {
+            LOG.warn("Published home display batch unavailable", ex);
+            return null;
+        }
+        long now = clock.millis();
+        if (batch == null || batch.online() == null || batch.paidCents() == null || batch.activeJobs() == null
+                || windowEnded(batch, now)) return null;
+        long validUntil = Objects.equals(batch.sequence(), current.get("sequence"))
+                ? (long) current.get("validUntil") : now + CACHE_TTL_MILLIS;
+        return snapshot(batch, now, validUntil);
+    }
+
+    private boolean windowEnded(HomeDisplayBatch batch, long now) {
+        return batch.enabled() && now >= batch.startAt() + (batch.online().length - 1L) * 1000;
+    }
+
+    private Map<String, Object> snapshot(HomeDisplayBatch batch, long now, long validUntil) {
+        return Map.of("enabled", batch.enabled(), "startAt", batch.startAt(), "serverNow", now,
+                "validUntil", validUntil, "sequence", batch.sequence(), "online", batch.online(),
                 "paidCents", batch.paidCents(), "activeJobs", batch.activeJobs());
     }
 

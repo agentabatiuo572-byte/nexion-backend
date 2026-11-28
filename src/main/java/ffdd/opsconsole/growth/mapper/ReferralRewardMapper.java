@@ -18,9 +18,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                     AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                           REGEXP CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'), '([^0-9]|$)')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+                           REGEXP CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'), '([^0-9]|$)'))
                )
                AND NOT EXISTS (
                  SELECT 1
@@ -47,9 +47,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                    SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
                     WHERE review_risk.is_deleted = 0
                       AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                             REGEXP CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'), '([^0-9]|$)')
                         OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+                             REGEXP CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'), '([^0-9]|$)'))
                  )
                  AND NOT EXISTS (
                    SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
@@ -100,22 +100,36 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                          @Param("accountSandbox") Integer accountSandbox);
 
     @Select("""
+            <script>
             SELECT COUNT(*)
               FROM nx_user invited
               JOIN nx_user owner ON owner.id = #{userId} AND owner.is_deleted = 0 AND owner.status = 'ACTIVE'
               LEFT JOIN nx_referral_reward_settlement s
                 ON s.invited_user_id = invited.id AND s.is_deleted = 0
-             WHERE invited.sponsor_user_id = #{userId} AND invited.id <> #{userId}
+             WHERE invited.sponsor_user_id = #{userId} AND invited.id != #{userId}
                AND invited.is_deleted = 0 AND invited.status = 'ACTIVE'
-               AND invited.created_at >= #{effectiveAt} AND s.id IS NULL
+               AND s.id IS NULL
                AND #{sourceEnvironment} = 'PRODUCTION'
                AND COALESCE(owner.sandbox, 0) = #{accountSandbox}
                AND COALESCE(invited.sandbox, 0) = #{accountSandbox}
+               AND (
+                 <if test="effectiveAt != null">invited.created_at >= #{effectiveAt} OR</if>
+                 <foreach collection="priorWindows" item="window">
+                   (invited.created_at >= #{window.effectiveAt} AND invited.created_at &lt; #{window.effectiveUntil}) OR
+                 </foreach>
+                 1 = 0
+               )
+            </script>
             """)
-    long appPendingCount(@Param("userId") Long userId,
-                         @Param("effectiveAt") LocalDateTime effectiveAt,
-                         @Param("sourceEnvironment") String sourceEnvironment,
-                         @Param("accountSandbox") Integer accountSandbox);
+    long appPendingCountInWindows(@Param("userId") Long userId,
+                                  @Param("effectiveAt") LocalDateTime effectiveAt,
+                                  @Param("priorWindows") List<AppPendingRewardWindow> priorWindows,
+                                  @Param("sourceEnvironment") String sourceEnvironment,
+                                  @Param("accountSandbox") Integer accountSandbox);
+
+    default long appPendingCount(Long userId, LocalDateTime effectiveAt, String sourceEnvironment, Integer accountSandbox) {
+        return appPendingCountInWindows(userId, effectiveAt, List.of(), sourceEnvironment, accountSandbox);
+    }
 
     @Select("""
             SELECT COUNT(*)
@@ -559,9 +573,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                AND (
                  CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                   LIKE CONCAT('%', target.invitedNo, '%')
+                   REGEXP CONCAT(target.invitedNo, '([^0-9]|$)')
                  OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                   LIKE CONCAT('%', target.inviterNo, '%')
+                   REGEXP CONCAT(target.inviterNo, '([^0-9]|$)')
                )
                AND NOT COALESCE(
                  CONCAT('|', CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6), '|')
@@ -779,9 +793,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                   WHERE risk.is_deleted = 0
                     AND risk.disposition IN ('gift_blocked','account_flagged','cluster_frozen')
                     AND (CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                           REGEXP CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'), '([^0-9]|$)')
                       OR CONCAT_WS('|', risk.cell1, risk.cell2, risk.cell3, risk.cell4, risk.cell5, risk.cell6)
-                           LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+                           REGEXP CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'), '([^0-9]|$)'))
                ) OR EXISTS (
                  SELECT 1
                    FROM nx_admin_risk_arbitrage_row risk
@@ -805,9 +819,9 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
                    SELECT 1 FROM nx_admin_risk_arbitrage_row review_risk
                     WHERE review_risk.is_deleted = 0
                       AND (CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0')), '%')
+                             REGEXP CONCAT('U', LPAD(u.id, GREATEST(8, CHAR_LENGTH(CAST(u.id AS CHAR))), '0'), '([^0-9]|$)')
                         OR CONCAT_WS('|', review_risk.cell1, review_risk.cell2, review_risk.cell3, review_risk.cell4, review_risk.cell5, review_risk.cell6)
-                             LIKE CONCAT('%', CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0')), '%'))
+                             REGEXP CONCAT('U', LPAD(inviter.id, GREATEST(8, CHAR_LENGTH(CAST(inviter.id AS CHAR))), '0'), '([^0-9]|$)'))
                  ) OR EXISTS (
                    SELECT 1 FROM nx_admin_risk_multi_account_cluster review_cluster
                     WHERE review_cluster.is_deleted = 0 AND review_cluster.status IN ('detected','flagged')
@@ -947,6 +961,7 @@ public interface ReferralRewardMapper extends BaseMapper<Object> {
     record ReferralRow(Long invitedUserId, Long inviterUserId) {}
     record K2GiftBlock(String clusterId, String hitSource, String riskRowId, String disposition) {}
     record AppReferralAccount(String referralCode, Integer sandbox, BigDecimal walletNexAvailable) {}
+    record AppPendingRewardWindow(LocalDateTime effectiveAt, LocalDateTime effectiveUntil) {}
     record AppReferralLedgerSummary(Long settledCount, BigDecimal lifetimeInviterNex) {}
     record AppReferralLedgerRow(String settlementNo, BigDecimal amountNex, String ledgerStatus,
                                 BigDecimal balanceAfter, String releaseBucket,

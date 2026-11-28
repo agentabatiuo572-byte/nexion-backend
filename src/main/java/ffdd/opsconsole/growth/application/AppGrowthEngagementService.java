@@ -3,6 +3,7 @@ package ffdd.opsconsole.growth.application;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import ffdd.opsconsole.growth.facade.VoucherGrantFacade;
@@ -31,6 +32,8 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.RecoveryResult;
+import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService.RecoveryStatus;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
@@ -49,6 +52,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -315,6 +319,7 @@ public class AppGrowthEngagementService {
                     quest.put("nameLocale", selected != null ? contentLocale(locale) : english != null ? "en" : "und");
                     return quest;
                 }).toList();
+        projectWeeklyCredits(userId, quests);
         BigDecimal responseMultiplier = weekly != null ? weekly.effectiveQuestBonusMultiplier() : liveRhythmAvailable
                 ? positiveOrOne(rhythm.questBonusMultiplier())
                 : positive(dayOneSnapshot.questBonusMultiplier());
@@ -565,8 +570,7 @@ public class AppGrowthEngagementService {
             BigDecimal baseReward = reward.rewardNex();
             BigDecimal amount = positive(baseReward).multiply(multiplier)
                     .setScale(6, RoundingMode.DOWN);
-            String rewardReference = code;
-            creditNex(userId, "QUEST:" + rewardReference + ":" + userId + ":" + reward.instanceKey(),
+            creditNex(userId, questRewardBizNo(userId, code, reward.instanceKey()),
                     "QUEST_REWARD", amount, "H3 quest claim");
             Map<String, Object> detail = linked(
                     "layer", reward.layer(), "rewardNex", amount, "multiplier", multiplier,
@@ -585,6 +589,47 @@ public class AppGrowthEngagementService {
         if (state.definitionStatus() == null || state.definitionStatus() != 1) return "QUEST_DEFINITION_INACTIVE";
         if (state.expired() != null && state.expired() == 1) return "QUEST_EXPIRED";
         return "QUEST_NOT_COMPLETED";
+    }
+
+    private void projectWeeklyCredits(Long userId, List<Map<String, Object>> quests) {
+        Map<String, List<Map<String, Object>>> claimed = new LinkedHashMap<>();
+        Set<String> bizNos = new LinkedHashSet<>();
+        String accountWeekSeparator = ":" + userId + ":WEEK:";
+        for (Map<String, Object> quest : quests) {
+            Object layer = quest.get("layer");
+            if (("WEEKLY_T1".equals(layer) || "WEEKLY_T2".equals(layer))
+                    && "CLAIMED".equals(quest.get("status"))
+                    && quest.get("questCode") instanceof String code && StringUtils.hasText(code)
+                    && quest.get("instanceKey") instanceof String instanceKey && instanceKey.startsWith("WEEK:")) {
+                String bizNo = questRewardBizNo(userId, code, instanceKey);
+                bizNos.add(bizNo);
+                String lookupKey = weeklyCreditLookupKey(bizNo, accountWeekSeparator);
+                claimed.computeIfAbsent(lookupKey, key -> new ArrayList<>()).add(quest);
+            }
+        }
+        if (bizNos.isEmpty()) return;
+        for (var credit : mapper.weeklyQuestCredits(userId, List.copyOf(bizNos))) {
+            var matchingQuests = claimed.get(weeklyCreditLookupKey(credit.bizNo(), accountWeekSeparator));
+            if (matchingQuests != null) {
+                String amount = credit.amount().setScale(6, RoundingMode.UNNECESSARY).toPlainString();
+                matchingQuests.forEach(quest -> quest.put("creditedRewardNex", amount));
+            }
+        }
+    }
+
+    /** Older claims write the request's ASCII quest code after a case-insensitive mission lookup. */
+    private static String weeklyCreditLookupKey(String bizNo, String accountWeekSeparator) {
+        String prefix = "QUEST:";
+        int accountStart = bizNo.lastIndexOf(accountWeekSeparator);
+        if (!bizNo.startsWith(prefix) || accountStart <= prefix.length()) return bizNo;
+        String code = bizNo.substring(prefix.length(), accountStart);
+        return code.matches("[A-Za-z0-9._:-]+")
+                ? prefix + code.toLowerCase(Locale.ROOT) + bizNo.substring(accountStart)
+                : bizNo;
+    }
+
+    private static String questRewardBizNo(Long userId, String code, String instanceKey) {
+        return "QUEST:" + code + ":" + userId + ":" + instanceKey;
     }
 
     /**
@@ -810,6 +855,72 @@ public class AppGrowthEngagementService {
                     "eventId", code, "rewardType", rewardType, "rewardAmount", amount,
                     "badgeCode", "BADGE".equals(rewardType) ? reward.badgeCode() : null));
         });
+    }
+
+    @Transactional(readOnly = true)
+    public ApiResult<Map<String, Object>> eventCommandReceipt(
+            Long userId, String eventCode, String operation, String idempotencyKey) {
+        requireCanonicalEngagementRuntime();
+        String code = reference(eventCode, "EVENT_CODE_REQUIRED");
+        String scope = switch (operation) {
+            case "join" -> "APP:EVENT_JOIN:USER:" + userId;
+            case "claim" -> "APP:EVENT_CLAIM:USER:" + userId;
+            case "reminder" -> H4EventEngine.reminderCommandScope(userId);
+            default -> throw new BizException(422, "EVENT_COMMAND_OPERATION_UNSUPPORTED");
+        };
+        String requestHash = "reminder".equals(operation) ? code : sha256(code);
+        var receipt = idempotencyService.recoveryResult(scope, idempotencyKey, requestHash, JsonNode.class);
+        if ("claim".equals(operation)) {
+            receipt = eventClaimReceipt(userId, code, idempotencyKey, receipt);
+        }
+        return switch (receipt.status()) {
+            case NOT_FOUND -> ApiResult.fail(404, "EVENT_COMMAND_NOT_FOUND", Map.of("status", "NOT_FOUND"));
+            case PROCESSING -> ApiResult.ok(Map.of("status", "PROCESSING"));
+            case FAILED -> failedEventCommand(receipt.response());
+            case SUCCEEDED -> projectEventCommand(code, receipt.response());
+            default -> ApiResult.ok(Map.of("status", "UNKNOWN"));
+        };
+    }
+
+    private RecoveryResult<JsonNode> eventClaimReceipt(Long userId, String eventCode, String key,
+            RecoveryResult<JsonNode> legacy) {
+        // A rule may have been added since the original claim. Recover either write scope.
+        var managed = idempotencyService.recoveryResult("H4_EVENT:" + userId + ":" + eventCode,
+                key, eventCode, JsonNode.class);
+        if (legacy.status() == RecoveryStatus.NOT_FOUND) return managed;
+        if (managed.status() == RecoveryStatus.NOT_FOUND || managed.status() == RecoveryStatus.MISMATCH) return legacy;
+        if (legacy.status() == RecoveryStatus.MISMATCH) return managed;
+        return new RecoveryResult<>(RecoveryStatus.UNKNOWN, null);
+    }
+
+    private ApiResult<Map<String, Object>> projectEventCommand(String eventCode, JsonNode saved) {
+        JsonNode code = saved.path("code");
+        if (!code.isIntegralNumber() || !code.canConvertToInt()) {
+            return ApiResult.ok(Map.of("status", "UNKNOWN"));
+        }
+        int savedCode = code.intValue();
+        if (savedCode != 0) return failedEventCommand(savedCode, saved.path("message").textValue());
+        JsonNode result = saved.path("data");
+        if (!eventCode.equals(result.path("eventId").textValue())) {
+            return ApiResult.ok(Map.of("status", "UNKNOWN"));
+        }
+        return ApiResult.ok(Map.of("status", "SUCCEEDED", "result", result));
+    }
+
+    private ApiResult<Map<String, Object>> failedEventCommand(JsonNode saved) {
+        JsonNode code = saved == null ? null : saved.get("code");
+        if (code == null || !code.isIntegralNumber() || !code.canConvertToInt()
+                || code.intValue() < 400 || code.intValue() >= 500) {
+            return failedEventCommand(500, null);
+        }
+        return failedEventCommand(code.intValue(), saved.path("message").textValue());
+    }
+
+    private ApiResult<Map<String, Object>> failedEventCommand(int code, String reason) {
+        int status = code >= 400 && code <= 599 ? code : 500;
+        String message = reason != null && reason.matches("[A-Z][A-Z0-9_]{0,127}")
+                ? reason : "EVENT_COMMAND_FAILED";
+        return ApiResult.ok(Map.of("status", "FAILED", "error", Map.of("code", status, "message", message)));
     }
 
     @Transactional(rollbackFor = Exception.class)

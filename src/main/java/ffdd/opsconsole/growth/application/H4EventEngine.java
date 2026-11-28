@@ -166,6 +166,30 @@ public class H4EventEngine {
         db.write("INSERT IGNORE INTO nx_growth_event_reminder(event_code,user_id) VALUES(?,?)",code,id);
         return ApiResult.ok(Map.of("eventId",code,"status","SUBSCRIBED"));
     }
+
+    @Transactional(rollbackFor = Exception.class)
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public ApiResult<Map<String, Object>> remind(Long userId, String eventCode, String idempotencyKey) {
+        if (!StringUtils.hasText(idempotencyKey)) return remind(userId, eventCode);
+        return (ApiResult) idempotency.execute(reminderCommandScope(userId), idempotencyKey, eventCode,
+                ApiResult.class, () -> {
+                    try {
+                        return remind(userId, eventCode);
+                    } catch (BizException ex) {
+                        // These rejections happen before the subscription write and can be saved as a receipt.
+                        if ("EVENT_REMINDER_NOT_AVAILABLE".equals(ex.getMessage())
+                                || "USER_NOT_FOUND_OR_INACTIVE".equals(ex.getMessage())) {
+                            return ApiResult.fail(ex.getCode(), ex.getMessage());
+                        }
+                        throw ex;
+                    }
+                });
+    }
+
+    static String reminderCommandScope(Long userId) {
+        return "APP:EVENT_REMINDER:USER:" + userId;
+    }
+
     @Transactional(rollbackFor=Exception.class)
     public void notifyReminder(Long id,String code){
         if("evt-reinvest-bonus".equals(code)&&!commerce.reinvestParticipationOpen(true))return;

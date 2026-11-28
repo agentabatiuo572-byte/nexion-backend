@@ -6,6 +6,7 @@ import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.api.PageResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
@@ -13,6 +14,7 @@ import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.common.boundary.ApplicationService;
 import ffdd.opsconsole.platform.application.A2ReplayContext;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -34,6 +36,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreModelView;
 import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.domain.RiskScoringAccountsView;
 import ffdd.opsconsole.risk.domain.RiskScoringSourceCatalog;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.dto.RiskArbitrageActionRequest;
@@ -71,6 +74,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
@@ -97,6 +101,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 @ApplicationService
 @RequiredArgsConstructor
 public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditReplayable {
+    public static final String K4_SCORE_NOT_YET_SCORED = "K4_SCORE_NOT_YET_SCORED";
+
     private static final Set<String> FINAL_DECISIONS = Set.of("ALLOW", "BLOCK", "REJECT", "DENY");
     private static final Set<String> MANUAL_DECISIONS = Set.of("ALLOW", "BLOCK", "HOLD");
     private static final Set<String> SEVERITIES = Set.of("LOW", "MEDIUM", "HIGH", "CRITICAL");
@@ -114,7 +120,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
     private static final Set<String> CLUSTER_LAYERS = Set.of("ip", "device", "payment");
     private static final Set<String> K1_CLUSTER_SORTS = Set.of("strength_desc", "account_desc");
     private static final Map<String, int[]> K1_INTEGER_PARAMS = Map.of(
-            "maxSignupPerIp24h", new int[]{1, 10},
+            "maxSignupPerIp24h", new int[]{1, 50},
             "maxAccountsPerDevice", new int[]{1, 5},
             "maxAccountsPerPaymentInstrument", new int[]{1, 5});
     private static final Set<String> K1_DECIMAL_PARAMS = Set.of("clusterFreezeSuggestThreshold");
@@ -1343,11 +1349,11 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         "status", Integer.toString(canonical.status()), "deleted", Integer.toString(canonical.deleted())));
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    @SuppressWarnings("unchecked")
     public ApiResult<RiskArbitrageRowView> executeArbitrageAction(String rowId, String action, String idempotencyKey, RiskArbitrageActionRequest request) {
-        ApiResult<RiskArbitrageRowView> guard = requireK2Command(idempotencyKey, request == null ? null : request.reason());
-        if (guard != null) {
-            return guard;
+        if (!StringUtils.hasText(idempotencyKey)) {
+            return ApiResult.fail(OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.httpStatus(), OpsErrorCode.IDEMPOTENCY_KEY_REQUIRED.name());
         }
         String normalizedRowId = trimmed(rowId);
         String normalizedAction = trimmed(action).toLowerCase(Locale.ROOT);
@@ -1362,13 +1368,27 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         ApiResult<RiskArbitrageRowView> permissionGuard = requireK2ActionAuthority(spec.requiredAuthority());
         if (permissionGuard != null) return permissionGuard;
+        String reason = request == null ? null : request.reason();
+        String scope = "K2_ACTION:" + normalizedRowId;
+        String hash = request == null ? null : requestHash(normalizedRowId, normalizedAction,
+                String.valueOf(request.expectedVersion()), String.valueOf(request.clusterExpectedVersion()), reason);
+        try {
+            int minimum = A2RuntimePolicy.parseReasonMinChars(
+                    configFacade.activeValue(A2RuntimePolicy.REASON_MIN_KEY).orElse(null));
+            A2RuntimePolicy.validateReason(reason, minimum);
+        } catch (BizException invalidReason) {
+            if (hash != null) {
+                ApiResult<RiskArbitrageRowView> prior = idempotencyService.replayActiveSuccess(
+                        scope, idempotencyKey, hash, ApiResult.class);
+                if (prior != null) return prior;
+            }
+            return ApiResult.fail(invalidReason.getCode(), invalidReason.getMessage());
+        }
         if (request.expectedVersion() == null || request.expectedVersion() < 0) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_ROW_EXPECTED_VERSION_REQUIRED");
         }
         String actor = authenticatedOperator();
-        return idempotentCommand("K2_ACTION:" + normalizedRowId, idempotencyKey,
-                requestHash(normalizedRowId, normalizedAction, String.valueOf(request.expectedVersion()),
-                        String.valueOf(request.clusterExpectedVersion()), request.reason()), () -> {
+        return idempotentCommand(scope, idempotencyKey, hash, () -> {
                     RiskArbitrageRowView before = riskRepository.findArbitrageRow(normalizedRowId).orElse(null);
                     if (before == null) return ApiResult.fail(404, "K2_ROW_NOT_FOUND");
                     if (!request.expectedVersion().equals(before.version())) {
@@ -1385,6 +1405,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     if (subjectUserIds.isEmpty()) {
                         return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "K2_SIGNAL_SUBJECT_NOT_RESOLVED");
                     }
+                    String auditReason = A2RuntimePolicy.reasonForAudit(reason);
                     boolean linkedClusterFrozen = false;
                     if ("freeze-cluster".equals(normalizedAction)) {
                         String clusterId = trimmed(before.clusterId());
@@ -1407,14 +1428,16 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                         if (!K1_CLUSTER_TRANSITIONS.getOrDefault(clusterBefore.status(), Set.of()).contains("frozen")) {
                             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_FLAG_REQUIRED");
                         }
+                        // The account freeze also writes the linked withdrawal failure_reason VARCHAR(255).
+                        String freezeReason = A2RuntimePolicy.reasonExcerpt(reason, 255);
                         userAccountControlFacade.lockUsersByUserNos(clusterBefore.affectedUserIds());
                         if (!riskRepository.updateMultiAccountClusterStatus(
                                 clusterId, clusterBefore.status(), clusterBefore.version(), "frozen",
-                                request.reason().trim(), actor)) {
+                                freezeReason, actor)) {
                             return ApiResult.fail(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), "K1_CLUSTER_CONCURRENT_UPDATE");
                         }
                         int accountsFrozen = userAccountControlFacade.freezeActiveUsersByUserNos(
-                                clusterBefore.affectedUserIds(), request.reason().trim(), actor, clusterId);
+                                clusterBefore.affectedUserIds(), freezeReason, actor, clusterId);
                         linkedClusterFrozen = true;
                         auditRequired("K1_CLUSTER_STATUS_CHANGED_BY_K2", "RISK_MULTI_ACCOUNT_CLUSTER", clusterId, actor, Map.of(
                                 "clusterId", clusterId,
@@ -1422,7 +1445,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                                 "after", Map.of("status", "frozen", "version", clusterBefore.version() + 1),
                                 "accountsFrozen", accountsFrozen,
                                 "sourceRowId", normalizedRowId,
-                                "reason", request.reason().trim(),
+                                "reason", auditReason,
                                 "idempotencyKey", idempotencyKey.trim()));
                     }
                     RiskArbitrageRowView updated = riskRepository.updateArbitrageDisposition(
@@ -1435,7 +1458,7 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                             "before", k2RowSnapshot(before),
                             "after", k2RowSnapshot(updated),
                             "linkedClusterFrozen", linkedClusterFrozen,
-                            "reason", request.reason().trim(),
+                            "reason", auditReason,
                             "idempotencyKey", idempotencyKey.trim()));
                     return ApiResult.ok(updated);
                 });
@@ -1573,14 +1596,37 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
         return ApiResult.ok(response);
     }
 
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
+    public ApiResult<RiskScoringAccountsView> scoringAccounts(
+            RiskScoringAccountsView.Band band, Integer pageNum, Integer pageSize) {
+        if (band == null) {
+            return ApiResult.fail(400, "RISK_SCORE_BAND_REQUIRED");
+        }
+        return riskRepository.pageScoreAccounts(band, normalizePageNum(pageNum), normalizeLimit(pageSize, 20, 100))
+                .map(ApiResult::ok)
+                .orElseGet(() -> ApiResult.fail(503, "K4_RISK_SCORE_UNAVAILABLE"));
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public ApiResult<RiskScoreUserView> scoreUser(String userNo) {
         String normalized = trimmed(userNo);
         if (!StringUtils.hasText(normalized)) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(), "SCORE_USER_REQUIRED");
         }
         return riskRepository.findScoreUser(normalized)
-                .map(this::withK4ScoreHistory)
-                .map(ApiResult::ok)
+                .map(user -> {
+                    boolean scored = user.scored();
+                    String asOf = scored && user.asOf() != null
+                            ? LocalDateTime.parse(user.asOf().replace(' ', 'T')).atZone(StorageTime.ZONE)
+                                    .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+                            : null;
+                    return ApiResult.ok(new RiskScoreUserView(
+                            user.userNo(), scored ? user.modelScore() : null,
+                            scored || Boolean.TRUE.equals(user.overridden()) ? user.effectiveScore() : null,
+                            user.overridden(), scored ? user.bandLabel() : null, scored ? user.bandTone() : null,
+                            scored ? user.modelVersion() : null, user.rowVersion(), asOf, user.updatedText(),
+                            scored ? user.contributions() : List.of(), riskRepository.scoreHistory(user.userNo(), 20)));
+                })
                 .orElseGet(() -> ApiResult.fail(404, "SCORE_USER_NOT_FOUND"));
     }
 
@@ -1872,6 +1918,10 @@ public class OpsRiskService implements ffdd.opsconsole.platform.domain.AuditRepl
                     if (before == null) {
                         return rejectK4Write("override", normalized, actor, 404,
                                 "SCORE_USER_NOT_FOUND", request.reason(), idempotencyKey);
+                    }
+                    if (!before.scored()) {
+                        return rejectK4Write("override", normalized, actor, 409,
+                                K4_SCORE_NOT_YET_SCORED, request.reason(), idempotencyKey);
                     }
                     RiskScoreOverrideView updated = riskRepository.overrideScore(
                             normalized, request.expectedVersion(), score, request.reason().trim(), actor).orElse(null);

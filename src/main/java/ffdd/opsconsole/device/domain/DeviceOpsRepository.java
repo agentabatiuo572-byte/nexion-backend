@@ -40,6 +40,10 @@ public interface DeviceOpsRepository {
     /** Every activated device plus order, promotion and trial reservations; called with the owner lock held. */
     long countOccupiedSlotsForE5Activation(Long userId);
 
+    boolean deviceHasPendingReplacement(Long userId, Long deviceId);
+
+    boolean restoreOccupiesProductionSlot(Long deviceId);
+
     /** Serializes E5 activations for one owner before capacity is read. */
     default boolean lockUserForE5Activation(Long userId) {
         return false;

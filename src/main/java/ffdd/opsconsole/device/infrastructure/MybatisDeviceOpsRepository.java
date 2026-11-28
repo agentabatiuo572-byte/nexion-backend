@@ -62,7 +62,7 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
             Map.entry("tradeinLadderCredit4", "30"), Map.entry("tradeinLadderCredit5", "15"),
             Map.entry("tradeinRequireHigherPrice", "true"), Map.entry("tradeinMaxDevicesPerOrder", "1"),
             // BUG-522: 存储用稳定代码，后台展示/输入仍按六档中文名映射。
-            Map.entry("eligibility", ffdd.opsconsole.device.domain.TradeinEligibility.L4_PLUS), Map.entry("promoMult", "1.5"),
+            Map.entry("eligibility", ffdd.opsconsole.device.domain.TradeinEligibility.ALL), Map.entry("promoMult", "1.5"),
             Map.entry("promoCooldownDays", "14"), Map.entry("promoMaxPerSession", "3"),
             Map.entry("promoDelaySeconds", "6"), Map.entry("promoMinAgeDays", "30"),
             Map.entry("promoRoutes", "/me/devices"), Map.entry("inventorySoftMax", "0"),
@@ -201,6 +201,16 @@ public class MybatisDeviceOpsRepository implements DeviceOpsRepository {
         Boolean sandbox = mapper.lockUserSandboxForE5Activation(userId);
         if (sandbox == null) throw new BizException(409, "DEVICE_ACTIVATION_LOCK_UNAVAILABLE");
         return canonicalStateMapper.lockOccupiedDeviceSlotCount(userId, sandbox);
+    }
+
+    @Override
+    public boolean deviceHasPendingReplacement(Long userId, Long deviceId) {
+        return mapper.deviceHasPendingReplacement(userId, deviceId);
+    }
+
+    @Override
+    public boolean restoreOccupiesProductionSlot(Long deviceId) {
+        return mapper.restoreOccupiesProductionSlot(deviceId);
     }
 
     @Override

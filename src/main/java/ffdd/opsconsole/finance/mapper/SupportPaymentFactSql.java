@@ -4,6 +4,31 @@ package ffdd.opsconsole.finance.mapper;
 final class SupportPaymentFactSql {
     private SupportPaymentFactSql() {}
     static final String USERS = " <foreach collection='customerIds' item='customer' open='(' separator=',' close=')'>#{customer}</foreach> ";
+    static final String DIRECT_PURCHASES = """
+        <script>
+        SELECT i.intent_no intentNo, i.user_id customerId, i.kind purchaseKind, i.payment_method paymentMethod,
+               i.provider_reference providerReference, i.paid_at providerPaidAt, i.quote_json quoteJson,
+               o.order_no orderNo, p.amount_usdt businessAmountUsdt, i.reason reviewReason,
+               i.refund_receipt_json refundReceiptJson, i.confirmed_bank_amount_vnd confirmedBankAmountVnd
+          FROM nx_purchase_payment_intent i
+          JOIN nx_user u ON u.id=i.user_id AND u.sandbox=0
+          LEFT JOIN nx_payment_record p ON p.payment_no=i.intent_no AND p.user_id=i.user_id
+                AND p.provider=i.payment_method AND p.provider_payment_id=i.provider_reference
+                AND p.payment_status='PAID' AND p.signature_status='VERIFIED' AND p.currency='USDT'
+                AND p.wallet_ledger_id IS NULL AND p.is_deleted=0
+          LEFT JOIN nx_order o ON o.order_no=p.order_no AND o.user_id=i.user_id AND o.payment_no=i.intent_no
+                AND o.order_no=JSON_UNQUOTE(JSON_EXTRACT(i.receipt_json,'$.orderNo'))
+         WHERE i.receipt_json IS NOT NULL AND i.confirmed_at IS NOT NULL
+           AND i.user_id IN
+        """ + USERS + """
+           <if test="from != null">
+             AND ((i.paid_at &gt;= #{from} AND i.paid_at &lt; #{to})
+                  OR i.refund_receipt_json IS NOT NULL
+                  OR (i.paid_at IS NULL AND i.updated_at &gt;= #{from} AND i.updated_at &lt; #{to}))
+           </if>
+         ORDER BY i.user_id, i.paid_at, i.intent_no
+        </script>
+        """;
     static final String LEDGER = """
         l.id ledgerId,l.user_id ledgerCustomerId,l.biz_no ledgerBusinessId,l.biz_type ledgerType,
         l.asset ledgerCurrency,l.amount ledgerAmount,l.direction ledgerDirection,l.status ledgerStatus,

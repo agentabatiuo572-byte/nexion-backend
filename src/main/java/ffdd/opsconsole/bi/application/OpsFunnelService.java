@@ -1,6 +1,7 @@
 package ffdd.opsconsole.bi.application;
 
 import ffdd.opsconsole.bi.domain.B3FunnelAnalytics;
+import ffdd.opsconsole.bi.domain.L1KpiAnalytics;
 import ffdd.opsconsole.bi.dto.B3FunnelViewRequest;
 import ffdd.opsconsole.bi.mapper.BiReportMapper;
 import ffdd.opsconsole.common.boundary.ApplicationService;
@@ -52,7 +53,7 @@ public class OpsFunnelService {
         String normalizedStage = normalizeStage(stage);
         Map<String, Object> result = mutable(B3FunnelAnalytics.calculate(
                 mapper.selectB3EventFacts(), filter.cohort(), filter.phase(), filter.ref(), normalizedStage,
-                a4RuntimePolicyService.day0Seconds()));
+                a4RuntimePolicyService.day0Seconds(), L1KpiAnalytics.firstFullDauDay(mapper.selectFirstDauEventAt())));
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> overviewTrend =
                 (List<Map<String, Object>>) result.getOrDefault("trend", List.of());

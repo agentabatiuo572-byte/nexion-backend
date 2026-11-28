@@ -26,6 +26,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreModelView;
 import ffdd.opsconsole.risk.domain.RiskScoreRawInput;
 import ffdd.opsconsole.risk.domain.RiskScoreUserSearchView;
 import ffdd.opsconsole.risk.domain.RiskScoreUserView;
+import ffdd.opsconsole.risk.domain.RiskScoringAccountsView;
 import ffdd.opsconsole.risk.application.K4RiskScorer;
 import ffdd.opsconsole.risk.application.K4ScoreBackfillInitializer;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
@@ -117,6 +118,9 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         mapper.createScoreContributionTable();
         mapper.createScoreHistoryTable();
         mapper.createScoreOverrideTable();
+        if (!mapper.hasScoreOverrideModelScoredBeforeColumn()) {
+            mapper.addScoreOverrideModelScoredBeforeColumn();
+        }
         tryAlter(mapper::addScoreUserRowVersionColumn);
         tryAlter(mapper::addScoreUserAsOfColumn);
         tryAlter(mapper::addScoreContributionDimKeyColumn);
@@ -283,7 +287,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     private void ensureK1Params() {
-        mapper.upsertK1RiskParam("maxSignupPerIp24h", "同 IP 24h 最大注册数", "3", "个", "范围 1-10", "超过阈值参与多账户聚类", 10);
+        mapper.upsertK1RiskParam("maxSignupPerIp24h", "同 IP 24h 最大注册数", "3", "个", "范围 1-50", "超过阈值参与多账户聚类", 10);
         mapper.upsertK1RiskParam("maxAccountsPerDevice", "同设备最大账户数", "2", "个", "范围 1-5", "设备指纹关联阈值", 20);
         mapper.upsertK1RiskParam("maxAccountsPerPaymentInstrument", "同支付工具最大账户数", "2", "个", "范围 1-5", "支付工具关联阈值", 30);
         mapper.upsertK1RiskParam("linkWeight", "关联权重", "设备 0.50 · 支付 0.40 · IP 0.10", "", "三项总和必须为 1", "只计算建议强度，不自动冻结", 40);
@@ -306,6 +310,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         // Serialize per-user score projection so each event receipt reports only its own applied delta.
         mapper.ensureTamperScoreUser(canonicalUserNo);
         int before = Optional.ofNullable(mapper.lockTamperScoreValue(canonicalUserNo)).orElse(0);
+        mapper.preserveUnscoredOverrideHistory(canonicalUserNo, null, userId);
         int requestedPoints = Math.max(1, Math.min(20, eventCount));
         mapper.applyTamperScore(canonicalUserNo, requestedPoints);
         int after = Optional.ofNullable(mapper.scoreValue(canonicalUserNo)).orElse(before);
@@ -634,6 +639,42 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     }
 
     @Override
+    public Optional<RiskScoringAccountsView> pageScoreAccounts(
+            RiskScoringAccountsView.Band band, int pageNum, int pageSize) {
+        Map<String, Object> snapshot = mapper.scoreAccountSnapshot();
+        if (snapshot == null || !(snapshot.get("bandLowMax") instanceof Number low)
+                || !(snapshot.get("bandHighMin") instanceof Number high)
+                || !(snapshot.get("autoEscalateScore") instanceof Number auto)
+                || low.intValue() < 0 || high.intValue() > 100 || low.intValue() >= high.intValue()
+                || auto.intValue() < 0 || auto.intValue() > 100) {
+            return Optional.empty();
+        }
+        String modelVersion = (String) snapshot.get("modelVersion");
+        String countKey = switch (band) {
+            case AUTO_REPORT -> "autoEscalated";
+            case HIGH -> "highRisk";
+            case HIGH_BELOW_AUTO -> "highBelowAuto";
+            case MEDIUM -> "mediumRisk";
+            case STALE -> "staleScoreUsers";
+        };
+        long total = ((Number) snapshot.get(countKey)).longValue();
+        long offset = ((long) pageNum - 1) * pageSize;
+        List<RiskScoringAccountsView.Row> records = offset >= total ? List.of() : mapper.pageScoreAccounts(
+                band.name(), modelVersion, low.intValue(), high.intValue(), auto.intValue(),
+                (String) snapshot.get("evaluatedAt"), offset, pageSize).stream().map(row -> {
+                    boolean scored = RiskScoreUserView.isScoredModel(row.modelVersion());
+                    return new RiskScoringAccountsView.Row(row.userNo(), scored ? row.modelScore() : null,
+                            scored || row.overridden() ? row.effectiveScore() : null, row.overridden(),
+                            scored ? row.modelVersion() : null,
+                            scored && row.asOf() != null ? row.asOf().atZone(StorageTime.ZONE)
+                                    .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME) : null,
+                            scored);
+                }).toList();
+        return Optional.of(new RiskScoringAccountsView(band, total, pageNum, pageSize,
+                modelVersion, low.intValue(), high.intValue(), auto.intValue(), records));
+    }
+
+    @Override
     public Optional<RiskScoreUserView> findScoreUser(String userNo) {
         RiskOpsMapper.ScoreUserRecord row = mapper.findScoreUser(userNo);
         return mapScoreUser(row);
@@ -734,7 +775,8 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
                             effectiveScore,
                             scoreBandLabel(effectiveScore, config),
                             scoreBandTone(effectiveScore, config),
-                            override.isPresent());
+                            override.isPresent(),
+                            RiskScoreUserView.isScoredModel(row.modelVersion()));
                 })
                 .toList();
     }
@@ -743,12 +785,12 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
     public Optional<RiskScoreOverrideView> overrideScore(String userNo, int score, String reason, String operator) {
         Long userId = mapper.scoreUserId(userNo);
         mapper.lockScoreUserForUpdate(userNo, userId);
-        Optional<RiskScoreUserView> user = findScoreUser(userNo);
-        if (user.isEmpty()) {
+        RiskScoreUserView user = findScoreUser(userNo).orElse(null);
+        if (user == null || !user.scored() || user.modelScore() == null) {
             return Optional.empty();
         }
         mapper.deactivateScoreOverrides(userNo);
-        mapper.insertScoreOverride(userNo, user.get().modelScore(), score, reason, operator, "刚刚", true);
+        mapper.insertScoreOverride(userNo, user.modelScore(), score, reason, operator, "刚刚", true);
         return Optional.ofNullable(mapper.activeScoreOverride(userNo));
     }
 
@@ -757,18 +799,19 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
             String userNo, long expectedVersion, int score, String reason, String operator) {
         Long userId = mapper.scoreUserId(userNo);
         mapper.lockScoreUserForUpdate(userNo, userId);
-        Optional<RiskScoreUserView> user = findScoreUser(userNo);
-        if (user.isEmpty() || mapper.bumpScoreUserVersion(userNo, expectedVersion, userId) == 0) {
+        RiskScoreUserView user = findScoreUser(userNo).orElse(null);
+        if (user == null || !user.scored() || user.modelScore() == null
+                || mapper.bumpScoreUserVersion(userNo, expectedVersion, userId) == 0) {
             return Optional.empty();
         }
         mapper.deactivateScoreOverrides(userNo);
         mapper.insertScoreOverride(
-                userNo, user.get().modelScore(), score, reason, operator,
+                userNo, user.modelScore(), score, reason, operator,
                 java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")), true);
         long modelVersion = activeScoringModel().map(RiskScoreModelView::version).orElse(0L);
         mapper.insertScoreHistory(
-                userNo, modelVersion, user.get().modelScore(), score, "manually-overridden",
-                json(user.get().contributions()), reason, operator);
+                userNo, modelVersion, user.modelScore(), score, "manually-overridden",
+                json(user.contributions()), reason, operator);
         return Optional.ofNullable(mapper.activeScoreOverride(userNo));
     }
 
@@ -813,6 +856,7 @@ public class MybatisRiskOpsRepository implements RiskOpsRepository {
         Long userId = mapper.scoreUserId(userNo);
         mapper.lockScoreUserForUpdate(userNo, userId);
         RiskScoreOverrideView activeOverride = mapper.activeScoreOverride(userNo);
+        mapper.preserveUnscoredOverrideHistory(userNo, expectedVersion, userId);
         if (mapper.updateScoreUserModelIfVersion(
                 userNo, expectedVersion, modelScore, "k4-v" + model.version(), userId) == 0) {
             return Optional.empty();

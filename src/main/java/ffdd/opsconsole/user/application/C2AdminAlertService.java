@@ -1,27 +1,43 @@
 package ffdd.opsconsole.user.application;
 
 import ffdd.opsconsole.shared.api.ApiResult;
+import ffdd.opsconsole.shared.config.StorageTime;
 import ffdd.opsconsole.shared.outbox.EventConsumerDelivery;
 import ffdd.opsconsole.shared.outbox.EventConsumerDeliveryService;
+import ffdd.opsconsole.shared.outbox.mapper.EventConsumerDeliveryMapper.OriginalAlertEvent;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /** Read model for the human-visible C2 high-risk alert feed. */
 @Service
 @RequiredArgsConstructor
 public class C2AdminAlertService {
     private static final int ALERT_LIMIT = 30;
+    private static final Pattern USER_ID = Pattern.compile("[1-9][0-9]{0,18}");
+    private static final Set<String> USER_AGGREGATES = Set.of("USER", "USER_ACCOUNT_LIST", "USER_SECURITY");
     private final EventConsumerDeliveryService deliveryService;
 
+    @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> alerts() {
-        List<Map<String, Object>> alerts = deliveryService
-                .listByStatus(C2HighRiskAdminAlertConsumer.CONSUMER_GROUP, "SUCCESS", ALERT_LIMIT)
-                .stream()
-                .map(this::toAlert)
+        List<EventConsumerDelivery> deliveries = deliveryService
+                .listByStatus(C2HighRiskAdminAlertConsumer.CONSUMER_GROUP, "SUCCESS", ALERT_LIMIT);
+        Map<String, OriginalAlertEvent> events = deliveryService.listOriginalAlertEvents(deliveries.stream()
+                        .map(EventConsumerDelivery::getEventId).toList()).stream()
+                .collect(Collectors.toMap(OriginalAlertEvent::eventId, Function.identity()));
+        List<Map<String, Object>> alerts = deliveries.stream()
+                .map(delivery -> toAlert(delivery, events.get(delivery.getEventId())))
                 .toList();
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("alerts", alerts);
@@ -30,7 +46,7 @@ public class C2AdminAlertService {
         return ApiResult.ok(response);
     }
 
-    private Map<String, Object> toAlert(EventConsumerDelivery delivery) {
+    private Map<String, Object> toAlert(EventConsumerDelivery delivery, OriginalAlertEvent event) {
         String eventType = delivery.getEventType() == null ? "" : delivery.getEventType();
         String target = delivery.getAggregateId() == null ? "未知对象" : delivery.getAggregateId();
         String targetLabel = "USER_IMPERSONATION".equals(delivery.getAggregateType())
@@ -50,7 +66,47 @@ public class C2AdminAlertService {
         alert.put("hint", targetLabel + " · " + time(delivery));
         alert.put("eventType", eventType);
         alert.put("target", target);
+        alert.put("targetUserId", targetUserId(delivery, event));
+        alert.put("occurredAt", occurredAt(event));
         return alert;
+    }
+
+    private String targetUserId(EventConsumerDelivery delivery, OriginalAlertEvent event) {
+        if (event != null) {
+            if (isUserId(event.targetUserId())) {
+                return event.targetUserId();
+            }
+            if (isUserId(event.userId())) {
+                return event.userId();
+            }
+        }
+        String aggregateType = delivery.getAggregateType();
+        String aggregateId = delivery.getAggregateId();
+        return aggregateType != null && USER_AGGREGATES.contains(aggregateType) && isUserId(aggregateId)
+                ? aggregateId : null;
+    }
+
+    private boolean isUserId(String value) {
+        return value != null && USER_ID.matcher(value).matches();
+    }
+
+    private String occurredAt(OriginalAlertEvent event) {
+        if (event == null) {
+            return null;
+        }
+        if (event.occurredAt() != null) {
+            try {
+                var parsed = DateTimeFormatter.ISO_DATE_TIME.parseBest(event.occurredAt(),
+                        OffsetDateTime::from, LocalDateTime::from);
+                OffsetDateTime time = parsed instanceof OffsetDateTime offsetTime ? offsetTime
+                        : ((LocalDateTime) parsed).atZone(StorageTime.ZONE).toOffsetDateTime();
+                return time.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+            } catch (DateTimeParseException ignored) {
+                // A malformed historical field falls back to the original event row's timestamp.
+            }
+        }
+        return event.originalTimestamp().atZone(StorageTime.ZONE)
+                .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
     private String title(String eventType) {

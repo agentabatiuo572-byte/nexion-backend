@@ -1,7 +1,6 @@
 package ffdd.opsconsole.finance.cregis;
 
 import ffdd.opsconsole.finance.mapper.CregisDepositMapper;
-import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -38,9 +37,7 @@ public class CregisPayoutControl {
 
     /** First reconciliation needs the same risk checks without requiring its own prior success. */
     String riskReason() {
-        BigDecimal exposure = db.unresolvedExposure(config.getProjectId());
-        if (exposure == null || exposure.compareTo(new BigDecimal("500")) >= 0
-                || db.criticalHeldDepositCount(config.getProjectId()) != 0
+        if (db.criticalHeldDepositCount(config.getProjectId()) != 0
                 || db.disputedDeliveryCountForProject(config.getProjectId()) != 0
                 || db.pendingAcceptedDeliveryCount(0) != 0
                 || db.openCriticalAlertCountExceptManual(config.getProjectId()) != 0

@@ -134,7 +134,7 @@ class PhoneReplacementServiceTest {
     }
     @Test void firstBindingEligibilityPreservesEveryHardGateAndNeverEnablesH5() {
         offPolicy();
-        for(String block:List.of("LEGAL_TERMS_ACK_REQUIRED","ONBOARDING_CALIBRATION_REQUIRED","PHONE_CALIBRATION_RULES_CHANGED","PHONE_REPLACEMENT_RISK_PAUSED")) {
+        for(String block:List.of("ONBOARDING_CALIBRATION_REQUIRED","PHONE_CALIBRATION_RULES_CHANGED","PHONE_REPLACEMENT_RISK_PAUSED")) {
             var result=service.eligibility(account,"A","hw",true,List.of(block));
             assertThat(result.canReplace()).as(block).isFalse();assertThat(result.blockedReasons()).containsExactly(block);
         }
@@ -146,7 +146,7 @@ class PhoneReplacementServiceTest {
         var result=service.eligibility(account,"A","hw",true,List.of());
         assertThat(result.canReplace()).isTrue();assertThat(result.blockedReasons()).isEmpty();
         assertThat(result.usedCount()).isNull(); // Unknown historical usage is not fabricated as zero.
-        for(String block:List.of("PHONE_REPLACEMENT_RISK_PAUSED","ONBOARDING_CALIBRATION_REQUIRED","LEGAL_TERMS_ACK_REQUIRED")) {
+        for(String block:List.of("PHONE_REPLACEMENT_RISK_PAUSED","ONBOARDING_CALIBRATION_REQUIRED")) {
             var blocked=service.eligibility(account,"A","hw",true,List.of(block));
             assertThat(blocked.canReplace()).isFalse();assertThat(blocked.blockedReasons()).containsExactly(block);
         }

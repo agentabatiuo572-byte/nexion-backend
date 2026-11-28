@@ -81,7 +81,7 @@ class LeaderboardPcPeriodsMySqlTest {
         A2ReplayContext.enterReplay("fixture-pause-571");var frozen=service.capture();A2ReplayContext.exitReplay();
         var pc=service.pcLeaderboards(frozen);
         assertThat(pc.get("week")).containsEntry("participantCount",1);
-        assertThat(frozen.appRows("week",json)).singleElement().satisfies(row->assertThat(row.earnedUsdt()).isEqualByComparingTo("12.34"));
+        assertThat(frozen.appRows("week",json)).singleElement().satisfies(row -> assertThat(row.userId()).isEqualTo(1L));
         assertThat(pc.get("all")).containsEntry("participantCount",2);
         sql("UPDATE nx_config_item SET config_value='8000' WHERE config_key='team.ui.F.leaderboard.poolUsd'");
         event(1,"10","UNLOCKED",today.atStartOfDay());

@@ -116,7 +116,7 @@ class AppSessionAcceptanceMySqlTest {
         assertThat(f.jdbc.queryForObject("SELECT status FROM nx_compute_task WHERE task_no=?",String.class,"task-"+user)).isEqualTo("RUNNING");
         assertThat(f.count("nx_phone_replacement_event",user)).isZero();
     }
-    @Test void takeoverCommitsBeforeTermsAndCalibrationWhileBlockedExecutionCannotRestoreTheOldPhone(){
+    @Test void takeoverCommitsWithoutTermsWhileCalibrationStillBlocksExecution(){
         long user=7402;runningAccount(user);
         String old=f.jdbc.queryForObject("SELECT session_chain_id FROM nx_app_session_state WHERE user_id=?",String.class,user);
         f.jdbc.update("DELETE FROM nx_legal_terms_ack WHERE user_id=?",user);
@@ -132,15 +132,14 @@ class AppSessionAcceptanceMySqlTest {
         assertThat(f.jdbc.queryForObject("SELECT installation_id FROM nx_phone_binding WHERE user_id=?",String.class,user)).isEqualTo("phone-a");
         assertThat(f.jdbc.queryForObject("SELECT execution_installation_id FROM nx_phone_binding WHERE user_id=?",String.class,user)).isEmpty();
         var before=authority(user);
-        assertThat(f.app.eligibility(b).blockedReasons()).contains("LEGAL_TERMS_ACK_REQUIRED","ONBOARDING_CALIBRATION_REQUIRED");
+        assertThat(f.app.eligibility(b).blockedReasons()).contains("ONBOARDING_CALIBRATION_REQUIRED")
+                .doesNotContain("LEGAL_TERMS_ACK_REQUIRED");
         assertThat(authority(user)).isEqualTo(before);
-        assertThatThrownBy(()->f.phone.activate(user,f.action("phone-b",0,1L,"terms-block-7402"),b)).hasMessage("LEGAL_TERMS_ACK_REQUIRED");
-        assertThat(authority(user)).isEqualTo(before);requireCurrent(b);
-        f.ack(user);
         var denied=f.phone.activate(user,f.action("phone-b",0,1L,"calibration-block-7402"),b);
         assertThat(denied.getCode()).isEqualTo(409);assertThat(denied.getMessage()).isEqualTo("ONBOARDING_CALIBRATION_REQUIRED");
         requireCurrent(b);
         assertThat(f.jdbc.queryForObject("SELECT app_session_version FROM nx_app_session_state WHERE user_id=?",Long.class,user)).isEqualTo(2L);
+        assertThat(f.jdbc.queryForObject("SELECT installation_id FROM nx_phone_binding WHERE user_id=?",String.class,user)).isEqualTo("phone-a");
         assertThat(f.jdbc.queryForObject("SELECT status FROM nx_compute_task WHERE task_no=?",String.class,"task-"+user)).isEqualTo("CANCELLED");
         assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM nx_user_session WHERE user_id=? AND revoked_at IS NULL AND session_group='APP'",Integer.class,user)).isEqualTo(1);
         assertThat(f.count("nx_phone_replacement_event",user)).isZero();

@@ -1,5 +1,6 @@
 package ffdd.opsconsole.platform.application;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
 
@@ -8,10 +9,13 @@ import ffdd.opsconsole.growth.application.H8RewardParamApproval;
 import ffdd.opsconsole.growth.application.H5GrowthApproval;
 import ffdd.opsconsole.growth.application.H3GrowthApproval;
 import ffdd.opsconsole.growth.application.H1GrowthApproval;
+import ffdd.opsconsole.growth.facade.GrowthRhythmSnapshot;
 import ffdd.opsconsole.growth.application.H4GrowthApproval;
 import ffdd.opsconsole.growth.application.H7VoucherDisposition;
 import ffdd.opsconsole.device.application.OpsDeviceService;
 import ffdd.opsconsole.growth.application.OpsGrowthService;
+import ffdd.opsconsole.growth.application.OpsReferralRewardService;
+import ffdd.opsconsole.growth.dto.ReferralSettlementRunRequest;
 import ffdd.opsconsole.risk.application.K1RiskApproval;
 import ffdd.opsconsole.risk.application.K2OtpInitialApproval;
 import ffdd.opsconsole.finance.application.WithdrawalConfigApproval;
@@ -21,6 +25,7 @@ import ffdd.opsconsole.market.application.G4CatalogApproval;
 import ffdd.opsconsole.market.application.G4DividendApproval;
 import ffdd.opsconsole.market.application.G4ParamApproval;
 import ffdd.opsconsole.team.application.F5CommissionService;
+import ffdd.opsconsole.team.application.LeadershipPoolService;
 import ffdd.opsconsole.team.application.TeamFundApproval;
 import ffdd.opsconsole.team.application.HardwareQuotaApproval;
 import ffdd.opsconsole.treasury.application.TreasuryThresholdApproval;
@@ -64,6 +69,7 @@ import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import lombok.RequiredArgsConstructor;
@@ -76,6 +82,15 @@ public class AuditReplayBusinessPermissionGuard {
 
 
     static final String E4_REFUND_AUTHORITY = "device_e4_order_refund";
+    static final String DECISION_SUPER_ADMIN_REQUIRED = "A2_SUPER_ADMIN_APPROVAL_REQUIRED";
+    static final String J4_PLAYBOOK_SNAPSHOT_CHANGED = "J4_PLAYBOOK_SNAPSHOT_CHANGED";
+    private static final String J4_EXECUTE_AUTHORITY = "emergency_j4_playbook_execute";
+    private static final String E1_WRITE_AUTHORITY = "device_e1_write";
+    private static final Set<String> E1_RELEASE_RULE_OPERATIONS = Set.of(
+            "e1_phase_create", "e1_phase_patch", "e1_phase_archive", "e1_gate_create", "e1_gate_patch",
+            "e1_gate_archive", "e1_gate_field", "e1_bundle_discount", "e1_early_access_update");
+    private static final Set<String> E1_CATALOG_CHANGE_OPERATIONS = Set.of(
+            "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy");
     public static final Set<String> F5_ACTION_AUTHORITIES = Set.of(
             "network_f5_commission_freeze", "network_f5_commission_suspend", "network_f5_commission_release",
             "network_f5_commission_reverse", "network_f5_commission_reissue");
@@ -167,6 +182,8 @@ public class AuditReplayBusinessPermissionGuard {
     @Autowired
     private H8RewardParamApproval h8RewardParamApproval;
     @Autowired
+    private OpsReferralRewardService referralRewards;
+    @Autowired
     private H1GrowthApproval h1GrowthApproval;
     @Autowired
     private H5GrowthApproval h5GrowthApproval;
@@ -253,7 +270,23 @@ public class AuditReplayBusinessPermissionGuard {
             boolean amplifies,
             AuditLockTarget target,
             TeamFundApproval.Review teamReview,
-            G3MarketApproval.Review marketReview) {
+            G3MarketApproval.Review marketReview,
+            JsonNode withdrawalConfigChanges,
+            String e2PricingMaterialRevision) {
+        public DelegatedProposalDescriptor(
+                String action, String objectId, String beforeValue, String afterValue,
+                String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target,
+                TeamFundApproval.Review teamReview, G3MarketApproval.Review marketReview, JsonNode withdrawalConfigChanges) {
+            this(action, objectId, beforeValue, afterValue, sourceDomain, operationType, amplifies,
+                    target, teamReview, marketReview, withdrawalConfigChanges, null);
+        }
+        public DelegatedProposalDescriptor(
+                String action, String objectId, String beforeValue, String afterValue,
+                String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target,
+                TeamFundApproval.Review teamReview, G3MarketApproval.Review marketReview) {
+            this(action, objectId, beforeValue, afterValue, sourceDomain, operationType, amplifies,
+                    target, teamReview, marketReview, null);
+        }
         public DelegatedProposalDescriptor(
                 String action, String objectId, String beforeValue, String afterValue,
                 String sourceDomain, String operationType, boolean amplifies, AuditLockTarget target,
@@ -271,6 +304,34 @@ public class AuditReplayBusinessPermissionGuard {
         return command != null && "E".equals(command.domain()) && "e4_order_refund".equals(command.op());
     }
 
+    static boolean isE1ReleaseRuleOperation(AuditReplayCommand command) {
+        return command != null && "E".equals(command.domain()) && command.op() != null
+                && E1_RELEASE_RULE_OPERATIONS.contains(command.op());
+    }
+
+    static boolean isE1CatalogChangeOperation(AuditReplayCommand command) {
+        return command != null && "E".equals(command.domain()) && command.op() != null
+                && E1_CATALOG_CHANGE_OPERATIONS.contains(command.op());
+    }
+
+    static boolean isSkuCreate(AuditReplayCommand command) {
+        return command != null && "E".equals(command.domain()) && "e1_sku_create".equals(command.op());
+    }
+
+    static String skuCreateRequestId(AuditReplayCommand command) {
+        return isSkuCreate(command) && command.params() != null
+                && command.params().get("createRequestId") instanceof String id ? id : null;
+    }
+
+    static AuditLockTarget skuCreateTarget(String requestId) {
+        return new AuditLockTarget("E", "device_sku_create", requestId);
+    }
+
+    private static boolean isSkuCreateTarget(AuditLockTarget target) {
+        return target != null && "E".equalsIgnoreCase(Objects.toString(target.domain(), "").trim())
+                && "device_sku_create".equalsIgnoreCase(Objects.toString(target.type(), "").trim());
+    }
+
     static boolean isUserSessionRevocation(AuditReplayCommand command) {
         return command != null && "C".equalsIgnoreCase(command.domain())
                 && "c2_session_revoke_all".equalsIgnoreCase(command.op());
@@ -283,6 +344,39 @@ public class AuditReplayBusinessPermissionGuard {
         }
         String operation = text(command.op()).toLowerCase(Locale.ROOT);
         return "d_cregis_deposit_policy".equals(operation) && grants.contains(requiredAuthority(command, operation));
+    }
+
+    /** Checks permissions for the stored proposal without revalidating its historical business inputs. */
+    boolean hasMappedProposalGrant(AuditReplayCommand command, String domain, long actorId, Set<String> grants) {
+        if (WithdrawalConfigApproval.supports(command)) {
+            return canReadOwnFinanceProposal(command, actorId, grants);
+        }
+        if (isE1ReleaseRuleOperation(command)) {
+            return command.params() != null && !command.params().isEmpty() && grants.contains(E1_WRITE_AUTHORITY);
+        }
+        String operation = text(command.op()).toLowerCase(Locale.ROOT);
+        if ("F".equals(domain) && "f_config_batch".equals(operation)) {
+            return fConfigBatchCommands(command.params()).stream()
+                    .allMatch(item -> hasMappedProposalGrant(item, domain, actorId, grants));
+        }
+        String required = requiredAuthority(command, operation);
+        if (required == null || !grants.contains(required)) return false;
+        if (isE4Refund(command)) return hasRefundMakerRole(actorId);
+        if (isVRankOverride(command)) return grants.contains("network_f1_read");
+        if ("E".equals(domain) && Set.of(HostingCenterService.OPERATION, "e6_onboarding_yield_sku").contains(operation)) {
+            return grants.contains("device_e1_read");
+        }
+        if ("E".equals(domain) && "e6_compute_config_batch".equals(operation)) {
+            var values = canonicalComputeBatchValues(command.params());
+            return values != null && (grants.contains("device_e6_flag_toggle")
+                    || values.keySet().stream().noneMatch(ComputeConfigRegistry::isFlagParamKey));
+        }
+        return true;
+    }
+
+    private boolean hasRefundMakerRole(Long actorId) {
+        return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
+                || permissions.getPermissionGrantRoles(actorId, E4_REFUND_AUTHORITY).contains("FINANCE_LEAD");
     }
 
     public boolean canProposeH7(AuditReplayCommand command) {
@@ -324,7 +418,7 @@ public class AuditReplayBusinessPermissionGuard {
         return authority != null && grants.contains(authority);
     }
 
-    private String f5ActionAuthority(AuditReplayCommand command) {
+    String f5ActionAuthority(AuditReplayCommand command) {
         if (command == null || !"F".equalsIgnoreCase(text(command.domain()))) return null;
         String operation = text(command.op()).toLowerCase(Locale.ROOT);
         return switch (operation) {
@@ -334,7 +428,7 @@ public class AuditReplayBusinessPermissionGuard {
         };
     }
 
-    private boolean isF5StatusUiAlias(AuditReplayCommand command) {
+    boolean isF5StatusUiAlias(AuditReplayCommand command) {
         return command != null && "F".equalsIgnoreCase(text(command.domain()))
                 && "f_ui_config".equalsIgnoreCase(text(command.op()))
                 && OpsTeamService.isCommissionEventStatusKey(value(command.params(), "key"));
@@ -347,9 +441,7 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if (isE4Refund(command)) {
             Long actor = A2ReplayContext.authenticatedAdminId();
-            boolean authorizedRole = superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
-                    || permissions.getPermissionGrantRoles(actor, E4_REFUND_AUTHORITY).contains("FINANCE_LEAD");
-            return authorizedRole && permissions.getPermissionCodes(actor).contains(E4_REFUND_AUTHORITY)
+            return hasRefundMakerRole(actor) && permissions.getPermissionCodes(actor).contains(E4_REFUND_AUTHORITY)
                     ? ApiResult.ok() : ApiResult.fail(403, "E4_REFUND_MAKER_FORBIDDEN");
         }
         if (command != null && OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op())) {
@@ -434,12 +526,7 @@ public class AuditReplayBusinessPermissionGuard {
                     ? ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_COMMAND_REQUIRED")
                     : ApiResult.ok();
         }
-        if ("J".equalsIgnoreCase(command.domain())) {
-            String operation = command.op().trim().toLowerCase(Locale.ROOT);
-            if (operation.startsWith("j1_") && !OpsKillSwitchService.isRestoreCommand(command)) {
-                return ApiResult.fail(409, "J1_DIRECT_EXECUTION_REQUIRED");
-            }
-        }
+        if (requiresDirectJ1Execution(command)) return ApiResult.fail(409, "J1_DIRECT_EXECUTION_REQUIRED");
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
         if ("E".equalsIgnoreCase(command.domain()) && operation.startsWith("e5_datacenter_")) {
             return ApiResult.fail(OpsErrorCode.RETIRED_FEATURE.httpStatus(), OpsErrorCode.RETIRED_FEATURE.name());
@@ -479,13 +566,17 @@ public class AuditReplayBusinessPermissionGuard {
                 ApiResult<Void> clawback = validateF1RewardClawbackProposal(command.params());
                 if (clawback.getCode() != 0) return clawback;
             }
-            if ("f_commission_status".equals(operation)
-                    && "COOLING".equals(OpsTeamService.canonicalCommissionState(value(command.params(), "value")))) {
+            if ("f_commission_status".equals(operation)) {
+                String requestedStatus = OpsTeamService.canonicalCommissionState(value(command.params(), "value"));
                 String key = value(command.params(), "key");
-                if (key.matches("F\\.commission\\.CM-[1-9]\\d*\\.status")) {
+                if (Set.of("COOLING", "REJECTED").contains(requestedStatus)
+                        && key.matches("F\\.commission\\.CM-[1-9]\\d*\\.status")) {
                     Long eventId = strictLong(key.substring("F.commission.CM-".length(), key.length() - ".status".length()), 1, Long.MAX_VALUE);
                     Map<String, Object> event = eventId == null ? null : teamCommissionRepository.commissionEventById(eventId);
-                    if (event != null && (event.get("settlementSourceType") == null
+                    if (event != null && "REJECTED".equals(requestedStatus) && "vrank_salary".equals(event.get("kind"))) {
+                        return ApiResult.fail(409, "VRANK_SALARY_REVERSE_REQUIRES_EVIDENCE");
+                    }
+                    if (event != null && "COOLING".equals(requestedStatus) && (event.get("settlementSourceType") == null
                             || "network".equals(event.get("settlementSourceType")))) {
                         String unfreezeBlocked = OpsTeamService.commissionUnfreezeBlockedReason(
                                 OpsTeamService.canonicalCommissionState(String.valueOf(event.get("status"))), "COOLING", event.get("unlockAt"));
@@ -495,6 +586,9 @@ public class AuditReplayBusinessPermissionGuard {
             }
             if ("f_config".equals(operation) && OpsTeamService.isBinaryPayoutControlKey(value(command.params(), "key"))) {
                 return ApiResult.fail(422, "F3_UI_CONFIG_COMMAND_REQUIRED");
+            }
+            if (Set.of("f_config", "f_ui_config", "f_unilevel_rule").contains(operation)) {
+                OpsTeamService.validateUnilevelUsdtRate(value(command.params(), "key"), value(command.params(), "value"));
             }
             if ("f_ui_config".equals(operation)) {
                 ApiResult<Void> direction = validateF3ConfigProposal(command.params());
@@ -506,7 +600,7 @@ public class AuditReplayBusinessPermissionGuard {
                     if (item instanceof Map<?, ?> change) {
                         String key = value(change, "key");
                         String next = value(change, "value");
-                        OpsTeamService.validateUnilevelRatePrecision(key, next);
+                        OpsTeamService.validateUnilevelUsdtRate(key, next);
                         if (OpsTeamService.isBinaryPayoutControlKey(key)) {
                             ApiResult<Void> direction = validateF3ConfigProposal(change);
                             if (direction.getCode() != 0) return direction;
@@ -565,7 +659,7 @@ public class AuditReplayBusinessPermissionGuard {
                 return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e6_flag_toggle");
             }
         }
-        if (isJ4Execution(command, operation)) {
+        if (isJ4Execution(command)) {
             return validateJ4MakerAuthority(command);
         }
         if ("I".equalsIgnoreCase(command.domain())
@@ -599,6 +693,11 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<AuditReplayCommand> bindProposalCommand(AuditOperationProposalRequest request) {
         AuditReplayCommand command = request.command();
+        if (!isSkuCreate(command) && (isSkuCreateTarget(request.target())
+                || (request.targets() != null && request.targets().stream()
+                        .anyMatch(AuditReplayBusinessPermissionGuard::isSkuCreateTarget)))) {
+            return ApiResult.fail(422, "A2_TARGET_MISMATCH");
+        }
         if (HardwareQuotaApproval.supports(command)) {
             if (!canProposeHardwareQuota(command)) {
                 return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + HardwareQuotaApproval.AUTHORITY);
@@ -708,8 +807,30 @@ public class AuditReplayBusinessPermissionGuard {
     }
 
     public ApiResult<AuditReplayCommand> canonicalizeProposalCommand(AuditReplayCommand command) {
+        if (command != null && "E".equalsIgnoreCase(text(command.domain()))
+                && (E1_CATALOG_CHANGE_OPERATIONS.contains(text(command.op()).toLowerCase(Locale.ROOT))
+                    || "e1_sku_create".equalsIgnoreCase(text(command.op())))
+                && !isE1CatalogChangeOperation(command) && !isSkuCreate(command)) {
+            return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+        }
         if (isF5StatusUiAlias(command)) {
             return ApiResult.fail(422, "F5_COMMISSION_STATUS_COMMAND_REQUIRED");
+        }
+        if (command != null && "F".equalsIgnoreCase(text(command.domain()))
+                && "f_vrank_override".equalsIgnoreCase(text(command.op()))) {
+            return ApiResult.ok(new AuditReplayCommand("F", "f_vrank_override", command.params()));
+        }
+        if (command != null && "F".equalsIgnoreCase(command.domain())
+                && "f5_commission_suspension".equalsIgnoreCase(command.op())
+                && command.params() != null && command.params().get("kinds") instanceof List<?> kinds
+                && kinds.stream().anyMatch(kind -> "vrank_salary".equalsIgnoreCase(text(kind).trim()))) {
+            return ApiResult.fail(422, "COMMISSION_KIND_INVALID");
+        }
+        if (command != null && "F".equalsIgnoreCase(command.domain())
+                && "f4_leaderboard_period_payout".equalsIgnoreCase(text(command.op()).trim())) {
+            Map<String, Object> params = new LinkedHashMap<>(command.params() == null ? Map.of() : command.params());
+            params.put("payoutRule", LeadershipPoolService.LEADERBOARD_PAYOUT_RULE);
+            return ApiResult.ok(new AuditReplayCommand(command.domain(), command.op(), params));
         }
         if (H4GrowthApproval.supports(command)) {
             return ApiResult.ok(h4GrowthApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
@@ -753,7 +874,7 @@ public class AuditReplayBusinessPermissionGuard {
         if (WithdrawalConfigApproval.supports(command)) {
             return ApiResult.ok(withdrawalConfigApproval.bindMaker(command, A2ReplayContext.authenticatedAdminId()));
         }
-        if (command == null || !isJ4Execution(command, text(command.op()).toLowerCase(Locale.ROOT))) {
+        if (!isJ4Execution(command)) {
             return ApiResult.ok(command);
         }
         J4AuthorizationSnapshot snapshot = currentJ4AuthorizationSnapshot(command);
@@ -773,8 +894,53 @@ public class AuditReplayBusinessPermissionGuard {
         return validateDecisionPermission(command, false);
     }
 
+    ApiResult<Void> validateDecisionRole(AuditReplayCommand command) {
+        if (isVRankOverride(command)) {
+            return validateDecisionAuthority(requiredAuthority(command, command.op()));
+        }
+        if (superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) return ApiResult.ok();
+        return ApiResult.fail(403, hasFundCheckerError(command)
+                ? "FUND_APPROVAL_CHECKER_FORBIDDEN" : DECISION_SUPER_ADMIN_REQUIRED);
+    }
+
+    private boolean hasFundCheckerError(AuditReplayCommand command) {
+        if (command == null) return false;
+        String domain = text(command.domain());
+        String operation = text(command.op()).trim().toLowerCase(Locale.ROOT);
+        if ("H".equalsIgnoreCase(domain)) {
+            return "h8_referral_settlement".equals(operation) || "h8_referral_settlement_user".equals(operation);
+        }
+        if (!"F".equalsIgnoreCase(domain)) return false;
+        if (f5ActionAuthority(command) != null) return true;
+        return switch (operation) {
+            case "f_unilevel_bootstrap", "f_seven_layer_activation", "f_direct_referral_policy",
+                    "f4_pool_settle", "f4_leaderboard_period_payout" -> true;
+            case "f_config", "f_ui_config", "f_unilevel_rule" ->
+                    hasFundConfigCheckerError(operation, value(command.params(), "key"));
+            case "f_config_batch" -> command.params() != null
+                    && command.params().get("changes") instanceof List<?> changes
+                    && changes.stream().anyMatch(item -> item instanceof Map<?, ?> change
+                            && hasFundConfigCheckerError("f_ui_config", value(change, "key")));
+            default -> false;
+        };
+    }
+
+    private boolean hasFundConfigCheckerError(String operation, String key) {
+        String source = fSourceDomain(operation, key);
+        return "F2".equals(source) || "F4".equals(source);
+    }
+
     /** Actor, original command and authorization binding only; safe for the A2 read model. */
     ApiResult<Void> validateDecisionPermission(AuditReplayCommand command, boolean approving) {
+        var role = validateDecisionRole(command);
+        if (role.getCode() != 0 && !DECISION_SUPER_ADMIN_REQUIRED.equals(role.getMessage())) return role;
+        var business = validateBusinessDecisionPermission(command, approving, role.getCode() == 0);
+        // Keep the existing business-specific 403 when the actor also fails the shared decision rule.
+        return role.getCode() == 0 || business.getCode() == 403 ? business : role;
+    }
+
+    private ApiResult<Void> validateBusinessDecisionPermission(
+            AuditReplayCommand command, boolean approving, boolean roleAllowed) {
         if (HardwareQuotaApproval.supports(command)) {
             return superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())
                     && hasAuthority("platform_a2_operation_approve") && hasAuthority(HardwareQuotaApproval.AUTHORITY)
@@ -804,27 +970,34 @@ public class AuditReplayBusinessPermissionGuard {
         if (TreasuryThresholdApproval.supports(command)) return treasuryThresholdApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
         if (WithdrawalConfigApproval.supports(command))
             return withdrawalConfigApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId(), approving);
-        if (!approving && !H7VoucherDisposition.isOperation(command)) return ApiResult.ok();
+        if (isE1SuperAdminDecision(command) && !approving) {
+            if (!hasAuthority("device_e1_write")) {
+                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e1_write");
+            }
+            if (!superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+                return ApiResult.fail(403, "E1_SUPER_ADMIN_APPROVAL_REQUIRED");
+            }
+            return ApiResult.ok();
+        }
         if (command == null || command.op() == null)
-            return ApiResult.fail(403, "A2_BUSINESS_COMMAND_REQUIRED");
+            return approving ? ApiResult.fail(403, "A2_BUSINESS_COMMAND_REQUIRED") : ApiResult.ok();
         String operation = command.op().trim().toLowerCase(Locale.ROOT);
+        if (!approving) {
+            return roleAllowed || H7VoucherDisposition.isOperation(command)
+                    ? validateRejectionBusinessPermission(command, operation) : ApiResult.ok();
+        }
         if (ffdd.opsconsole.device.application.LegacyUnknownZeroCreditCases.OP.equals(operation))
             return "E".equals(command.domain()) && hasAuthority("device_e5_write") && hasAuthority("platform_a2_operation_approve")
                     ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e5_write");
-        if (isJ4Execution(command, operation)) {
-            if (!hasAuthority("platform_a2_operation_approve") || !hasAuthority("emergency_j4_playbook_execute"))
-                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:emergency_j4_playbook_execute");
-            return validateJ4SnapshotCurrent(command, false);
-        }
+        if (isJ4Execution(command)) return validateDecisionAuthority(J4_EXECUTE_AUTHORITY);
         boolean genesisParamApproval = "G".equalsIgnoreCase(text(command.domain())) && "g4_genesis_param".equals(operation);
         String authority = genesisParamApproval ? GenesisParamPermissions.forKey(value(command.params(), "paramKey"))
                 : approvalAuthority(command, operation);
-        if (authority != null) return hasAuthority("platform_a2_operation_approve") && hasAuthority(authority)
-                ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + authority);
+        if (authority != null) return validateDecisionAuthority(authority);
         if (genesisParamApproval) return ApiResult.fail(422, "G4_GENESIS_PARAM_KEY_INVALID");
         if (ffdd.opsconsole.market.application.OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op()))
             return ApiResult.fail(422, "RETIRED_FEATURE");
-        if ("J".equalsIgnoreCase(command.domain()) && operation.startsWith("j1_"))
+        if (requiresDirectJ1Execution(command))
             return ApiResult.fail(409, "J1_DIRECT_EXECUTION_REQUIRED");
         if (H1GrowthApproval.supports(command)) {
             ApiResult<Void> h1Checker = h1GrowthApproval.validateChecker(command, A2ReplayContext.authenticatedAdminId());
@@ -839,13 +1012,75 @@ public class AuditReplayBusinessPermissionGuard {
         }
         var permission = validateOrdinaryProposalPermission(command, operation, approving);
         if (permission.getCode() != 0) return permission;
+        if (isE1SuperAdminDecision(command)
+                && !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            return ApiResult.fail(403, "E1_SUPER_ADMIN_APPROVAL_REQUIRED");
+        }
         return "H".equalsIgnoreCase(command.domain()) && "h2_trial_charge".equals(operation)
                 ? ApiResult.fail(410, "TRIAL_EXPLICIT_PURCHASE_REQUIRED") : ApiResult.ok();
+    }
+
+    private ApiResult<Void> validateRejectionBusinessPermission(AuditReplayCommand command, String operation) {
+        if (OpsNexMarketService.isRetiredStakingReplay(command.domain(), command.op())) return ApiResult.ok();
+        if ("F".equalsIgnoreCase(command.domain()) && "f_config_batch".equals(operation)) {
+            List<AuditReplayCommand> changes;
+            try {
+                changes = fConfigBatchCommands(command.params());
+            } catch (ffdd.opsconsole.shared.exception.BizException invalid) {
+                // A historical unusable command can still be dismissed without executing the batch.
+                return ApiResult.ok();
+            }
+            for (AuditReplayCommand change : changes) {
+                var permission = validateRejectionBusinessPermission(change, change.op());
+                if (permission.getCode() != 0) return permission;
+            }
+            return ApiResult.ok();
+        }
+        if ("E".equalsIgnoreCase(command.domain()) && "e2_phone_tier".equals(operation)) {
+            return validateE2PhoneTierPermission(command);
+        }
+        String authority = "G".equalsIgnoreCase(command.domain()) && "g4_genesis_param".equals(operation)
+                ? GenesisParamPermissions.forKey(value(command.params(), "paramKey")) : approvalAuthority(command, operation);
+        if (authority == null) authority = requiredAuthority(command, operation);
+        if (isUserSessionRevocation(command) && hasAuthority("user_c5_session_revoke_all")) return ApiResult.ok();
+        return authority == null ? ApiResult.ok() : validateDecisionAuthority(authority);
+    }
+
+    private ApiResult<Void> validateDecisionAuthority(String authority) {
+        return hasAuthority("platform_a2_operation_approve") && hasAuthority(authority)
+                ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + authority);
     }
 
     public ApiResult<Void> validateApproval(AuditReplayCommand command) {
         var permission = validateDecisionPermission(command, true);
         return permission.getCode() != 0 ? permission : validateApprovalPreconditions(command);
+    }
+
+    ApiResult<Void> validateCurrentJ4CheckerGrants(long actorId) {
+        return permissions.getPermissionCodes(actorId).containsAll(Set.of("platform_a2_operation_approve", J4_EXECUTE_AUTHORITY))
+                ? ApiResult.ok() : ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:" + J4_EXECUTE_AUTHORITY);
+    }
+
+    ApiResult<Void> validateJ4DecisionSnapshot(AuditReplayCommand command) {
+        return validateJ4SnapshotCurrent(command, false);
+    }
+
+    boolean supersededPurchaseRate(AuditReplayCommand command) {
+        if (command == null || !"F".equalsIgnoreCase(command.domain()) || configFacade == null) return false;
+        boolean changesBaseRate = switch (text(command.op()).toLowerCase(Locale.ROOT)) {
+            case "f_unilevel_rule", "f_ui_config" -> purchaseRankBaseKey(command.params());
+            case "f_config_batch" -> fConfigBatchCommands(command.params()).stream()
+                    .anyMatch(item -> purchaseRankBaseKey(item.params()));
+            default -> false;
+        };
+        if (!changesBaseRate) return false;
+        var policies = directPolicies == null ? null : directPolicies.getIfAvailable();
+        if (policies != null) policies.lockSevenLayerRevision();
+        return ffdd.opsconsole.team.application.PurchaseRankPolicy.cutover(configFacade, true) != null;
+    }
+
+    private boolean purchaseRankBaseKey(Map<String, Object> params) {
+        return Set.of("F.unilevel.L1", "F.unilevel.L2").contains(value(params, "key"));
     }
 
     /** Execution preconditions stay on the actual approval path, after its shared qualification. */
@@ -860,8 +1095,7 @@ public class AuditReplayBusinessPermissionGuard {
                 return ApiResult.fail(invalid.getCode(), invalid.getMessage());
             }
         }
-        if (command != null && isJ4Execution(command, text(command.op()).toLowerCase(Locale.ROOT)))
-            return validateJ4SnapshotCurrent(command, true);
+        if (isJ4Execution(command)) return validateJ4SnapshotCurrent(command);
         if (isE4Refund(command) || A4RegistryApproval.isOperation(command) || OpsKillSwitchService.isRestoreCommand(command)
                 || OpsI18nLearningService.isCourseRewardAdjustment(command) || G4CatalogApproval.supports(command)
                 || LearningCourseActivationApproval.supports(command) || H4GrowthApproval.supports(command)
@@ -980,7 +1214,7 @@ public class AuditReplayBusinessPermissionGuard {
 
     private ApiResult<Void> validateJ4SnapshotCurrent(AuditReplayCommand command, boolean lock) {
         J4AuthorizationSnapshot supplied = snapshotFrom(command);
-        if (supplied == null) {
+        if (supplied == null || !supplied.code().equalsIgnoreCase(value(command.params(), "code"))) {
             return ApiResult.fail(OpsErrorCode.VALIDATION_FAILED.httpStatus(),
                     "J4_TARGET_AUTHORIZATION_SNAPSHOT_REQUIRED");
         }
@@ -988,8 +1222,11 @@ public class AuditReplayBusinessPermissionGuard {
         if (current == null) {
             return ApiResult.fail(404, "J4_PLAYBOOK_NOT_FOUND");
         }
+        if (current.requiredAuthorities().isEmpty() || current.version().isBlank()) {
+            return ApiResult.fail(422, "J4_TARGET_AUTHORITY_UNMAPPED");
+        }
         if (!supplied.equals(current)) {
-            return ApiResult.fail(409, "J4_PLAYBOOK_SNAPSHOT_CHANGED");
+            return ApiResult.fail(409, J4_PLAYBOOK_SNAPSHOT_CHANGED);
         }
         return ApiResult.ok();
     }
@@ -1022,7 +1259,7 @@ public class AuditReplayBusinessPermissionGuard {
             String action = text(map.get("action"));
             String ref = text(map.get("ref"));
             String authority = j4TargetAuthority(domain);
-            if (authority == null) {
+            if (authority == null || action.isBlank() || ref.isBlank()) {
                 return new J4AuthorizationSnapshot(code, text(playbook.get("version")), List.of(), "");
             }
             if (!requiredAuthorities.contains(authority)) {
@@ -1045,16 +1282,19 @@ public class AuditReplayBusinessPermissionGuard {
         String version = text(raw.get("version"));
         String hash = text(raw.get("hash"));
         Object rawAuthorities = raw.get("requiredAuthorities");
-        if (!(rawAuthorities instanceof List<?> values) || code.isBlank() || version.isBlank() || hash.isBlank()) {
+        if (!(rawAuthorities instanceof List<?> values) || code.isBlank() || version.isBlank()
+                || !hash.matches("[0-9a-f]{64}")) {
             return null;
         }
-        List<String> authorities = values.stream().map(this::text).filter(value -> !value.isBlank()).toList();
-        return authorities.isEmpty() ? null : new J4AuthorizationSnapshot(code, version, authorities, hash);
+        List<String> authorities = values.stream().map(this::text).toList();
+        return authorities.isEmpty() || authorities.stream().anyMatch(String::isBlank)
+                ? null : new J4AuthorizationSnapshot(code, version, authorities, hash);
     }
 
-    private boolean isJ4Execution(AuditReplayCommand command, String operation) {
-        return command != null && "J".equalsIgnoreCase(text(command.domain()))
-                && "j4_playbook_execute".equals(operation);
+    static boolean isJ4Execution(AuditReplayCommand command) {
+        return command != null && command.domain() != null && command.op() != null
+                && "J".equalsIgnoreCase(command.domain().trim())
+                && "j4_playbook_execute".equalsIgnoreCase(command.op().trim());
     }
 
     private String j4TargetAuthority(String domain) {
@@ -1102,6 +1342,16 @@ public class AuditReplayBusinessPermissionGuard {
                         && ComputeConfigRegistry.isFlagParamKey(value(command.params(), "paramKey"))));
     }
 
+    static boolean isVRankOverride(AuditReplayCommand command) {
+        return command != null && "F".equals(command.domain()) && "f_vrank_override".equals(command.op());
+    }
+
+    static boolean requiresDirectJ1Execution(AuditReplayCommand command) {
+        return command != null && "J".equalsIgnoreCase(command.domain()) && command.op() != null
+                && command.op().trim().toLowerCase(Locale.ROOT).startsWith("j1_")
+                && !OpsKillSwitchService.isRestoreCommand(command);
+    }
+
     /**
      * A delegated proposer may choose a business command, but may not choose a
      * different display object, lock target, risk direction or approval copy.
@@ -1110,6 +1360,22 @@ public class AuditReplayBusinessPermissionGuard {
      */
     ApiResult<DelegatedProposalDescriptor> validateProposalContext(
             AuditOperationProposalRequest request, AuditReplayCommand boundCommand) {
+        if (isVRankOverride(boundCommand)) {
+            if (delegatedProposal()) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_UNMAPPED");
+            }
+            if (!hasAuthority("network_f1_read")) {
+                return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:network_f1_read");
+            }
+            String suppliedId = value(boundCommand.params(), "userId");
+            String userId = positiveIdentifier(suppliedId);
+            if (userId.isEmpty() || !userId.equals(suppliedId)
+                    || !new AuditLockTarget("F", "vrank_override", userId).equals(request.target())
+                    || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(422, "A2_TARGET_MISMATCH");
+            }
+            return ApiResult.ok(null);
+        }
         if (HardwareQuotaApproval.supports(boundCommand)) {
             var target = HardwareQuotaApproval.target(boundCommand);
             if ((request.target() != null && !target.equals(request.target()))
@@ -1171,10 +1437,40 @@ public class AuditReplayBusinessPermissionGuard {
         if (H4GrowthApproval.isRaffleOpen(boundCommand)) {
             return describeH4Proposal(request, boundCommand);
         }
-        if (isVersionedFUiConfigProposal(boundCommand)) {
+        if (isH8Settlement(boundCommand)) {
+            return describeH8SettlementProposal(request, boundCommand);
+        }
+        if (G3MarketApproval.supports(boundCommand) || isVersionedFUiConfigProposal(boundCommand)) {
             return validateRequestContext(request, boundCommand);
         }
         return validateProposalContext(request);
+    }
+
+    private ApiResult<DelegatedProposalDescriptor> describeH8SettlementProposal(
+            AuditOperationProposalRequest request, AuditReplayCommand command) {
+        var context = validateRequestContext(request, command);
+        if (context.getCode() != 0) return context;
+        if (!hasAuthority("growth_h8_settle")) {
+            return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:growth_h8_settle");
+        }
+        var descriptor = context.getData();
+        var params = command.params();
+        boolean targeted = "h8_referral_settlement_user".equalsIgnoreCase(text(command.op()));
+        Long user = targeted ? strictLong(params.get("invitedUserId"), 1, 9_007_199_254_740_991L) : null;
+        Integer limit = targeted ? Integer.valueOf(1) : strictInteger(params.get("limit"), 1, 100);
+        var snapshot = new ReferralSettlementRunRequest(limit, null, null,
+                strictLong(params.get("expectedH8Version"), 0, Long.MAX_VALUE),
+                strictInteger(params.get("expectedRhythmMonth"), 1, 24), value(params, "rewardSnapshotHash"));
+        var review = referralRewards.previewSettlementProposal(user, snapshot);
+        return ApiResult.ok(new DelegatedProposalDescriptor(descriptor.action(), descriptor.objectId(),
+                review.before(), review.after(), descriptor.sourceDomain(), descriptor.operationType(),
+                descriptor.amplifies(), descriptor.target()));
+    }
+
+    private boolean isH8Settlement(AuditReplayCommand command) {
+        return command != null && "H".equalsIgnoreCase(text(command.domain()))
+                && Set.of("h8_referral_settlement", "h8_referral_settlement_user")
+                .contains(text(command.op()).toLowerCase(Locale.ROOT));
     }
 
     private ApiResult<DelegatedProposalDescriptor> describeH4Proposal(
@@ -1212,8 +1508,33 @@ public class AuditReplayBusinessPermissionGuard {
     private ApiResult<DelegatedProposalDescriptor> validateRequestContext(
             AuditOperationProposalRequest request, AuditReplayCommand command) {
         boolean delegated = delegatedProposal();
-        if(command!=null && "E".equals(command.domain()) && Set.of("e1_sku_create","e1_sku_update").contains(command.op()))
-            return ApiResult.ok(delegatedDescriptor(command)); // E1 derives its lock target from the typed SKU, including generated create ids.
+        if (isE1ReleaseRuleOperation(command)
+                && !superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            var permission = devices.validateReplayPermission(command);
+            if (permission.getCode() != 0) return ApiResult.fail(permission.getCode(), permission.getMessage());
+            OpsDeviceService.E1ReleaseProposalReview review;
+            try {
+                review = devices.e1ReleaseProposalReview(command);
+            } catch (ffdd.opsconsole.shared.exception.BizException invalid) {
+                return ApiResult.fail(invalid.getCode(), invalid.getMessage());
+            } catch (IllegalArgumentException invalid) {
+                return ApiResult.fail(422, invalid.getMessage());
+            }
+            if (!"E1".equals(text(request.sourceDomain())) || !review.objectId().equals(text(request.obj()))
+                    || !review.target().equals(request.target())
+                    || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            return ApiResult.ok(new DelegatedProposalDescriptor(review.action(), review.objectId(), review.before(),
+                    review.after(), "E1", review.operationType(), review.amplifies(), review.target()));
+        }
+        if (command != null && "E".equals(command.domain()) && Set.of("e1_sku_create", "e1_sku_update").contains(command.op()))
+            return ApiResult.ok(delegatedDescriptor(command));
+
+        if (isE1CatalogChangeOperation(command)
+                && superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            return ApiResult.ok(null); // Keep the existing super-admin proposal path.
+        }
 
         if (command != null && "E".equals(command.domain()) && HostingCenterService.OPERATION.equals(command.op())) {
             if (!hasAuthority("device_e1_read")) return ApiResult.fail(403, "A2_BUSINESS_PERMISSION_DENIED:device_e1_read");
@@ -1388,7 +1709,8 @@ public class AuditReplayBusinessPermissionGuard {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             }
             return ApiResult.ok(new DelegatedProposalDescriptor(
-                    "放宽任务定价", target.id(), review.before(), review.after(), "E2", "fund", true, target));
+                    "放宽任务定价", target.id(), review.before(), review.after(), "E2", "fund", true, target,
+                    null, null, null, review.materialRevision()));
         }
         if (TreasuryThresholdApproval.supports(command)) {
             String source = TreasuryThresholdApproval.source(command);
@@ -1411,12 +1733,12 @@ public class AuditReplayBusinessPermissionGuard {
                     || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
                 return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
             }
-            ApiResult<Map<String, Object>> preview = withdrawalConfigApproval.preview(command, request.reason());
+            var preview = withdrawalConfigApproval.preview(command, request.reason());
             if (preview.getCode() != 0) return ApiResult.fail(preview.getCode(), preview.getMessage());
             var values = preview.getData();
             return ApiResult.ok(new DelegatedProposalDescriptor(
                     "D5".equals(source) ? "放宽提现参数" : "D6".equals(source) ? "调整敏感汇率" : "放宽越南盾提现参数", target.id(),
-                    (String) values.get("before"), (String) values.get("after"), source, "fund", true, target));
+                    values.before(), values.after(), source, "fund", true, target, null, null, values.changes()));
         }
         if (command != null && "A".equals(command.domain())
                 && A1_ACCOUNT_PROPOSAL_AUTHORITIES.containsKey(text(command.op()))) {
@@ -1444,9 +1766,28 @@ public class AuditReplayBusinessPermissionGuard {
                 && (request.reason() == null || request.reason().trim().length() < 8 || request.reason().trim().length() > 200)) {
             return ApiResult.fail(422, "DIRECT_REFERRAL_POLICY_REQUEST_INVALID");
         }
+        String thresholdDial = GrowthRhythmSnapshot.COMPLIANCE_REVIEW_THRESHOLD_DIAL;
+        if (H1GrowthApproval.supports(command) && thresholdDial.equals(value(command.params(), "dialKey"))) {
+            Integer month = strictInteger(command.params().get("month"), 1, 24);
+            var proposed = GrowthRhythmSnapshot.parseComplianceReviewThreshold(value(command.params(), "value"));
+            if (month == null || proposed == null) return ApiResult.fail(422, "H1_COMPLIANCE_THRESHOLD_INVALID");
+            String id = month + ":" + thresholdDial;
+            var target = new AuditLockTarget("H", "growth_phase_dial", id);
+            if (!"H1".equals(text(request.sourceDomain())) || !id.equals(text(request.obj()))
+                    || !target.equals(request.target()) || (request.targets() != null && !request.targets().isEmpty())) {
+                return ApiResult.fail(403, "A2_BUSINESS_CONTEXT_MISMATCH");
+            }
+            var before = growth.complianceThresholdBeforeIncrease(month, proposed);
+            return ApiResult.ok(new DelegatedProposalDescriptor("调整第 " + month + " 月合规大额线", id,
+                    before.toPlainString(), proposed.toPlainString(), "H1", "param", true, target));
+        }
+        if (supersededPurchaseRate(command)) {
+            throw new ffdd.opsconsole.shared.exception.BizException(422, "F2_PURCHASE_RATE_SET_BY_BENEFICIARY_RANK_IN_F1");
+        }
         DelegatedProposalDescriptor descriptor = delegatedDescriptor(command);
         if (descriptor == null) {
-            return delegated || command != null && "h8_referral_settlement_user".equalsIgnoreCase(text(command.op()))
+            return delegated || isH8Settlement(command)
+                    || command != null && "h8_referral_settlement_user".equalsIgnoreCase(text(command.op()))
                     ? ApiResult.fail(OpsErrorCode.FORBIDDEN.httpStatus(), "A2_BUSINESS_CONTEXT_UNMAPPED")
                     : ApiResult.ok(null);
         }
@@ -1698,7 +2039,8 @@ public class AuditReplayBusinessPermissionGuard {
         }
         if ("f_unilevel_bootstrap".equals(operation)) {
             var request = ffdd.opsconsole.team.dto.TeamCommissionConfigUpdateRequest.UnilevelBootstrap.from(params);
-            var unilevelRows = OpsTeamService.unilevelBootstrapLayerRates(request);
+            var unilevelRows = OpsTeamService.unilevelBootstrapLayerRates(request,
+                    !ffdd.opsconsole.team.application.PurchaseRankPolicy.active(configFacade));
             String unilevelAfter = unilevelRows.stream().map(row -> row.get("level")
                     + ": usdtPct=" + ((java.math.BigDecimal) row.get("usdtPct")).stripTrailingZeros().toPlainString()
                     + ", nexPerUsd=" + ((java.math.BigDecimal) row.get("nexReward")).stripTrailingZeros().toPlainString())
@@ -1737,13 +2079,15 @@ public class AuditReplayBusinessPermissionGuard {
                 throw new ffdd.opsconsole.shared.exception.BizException(409,"DIRECT_REFERRAL_VERSION_CONFLICT");
             boolean amplifies = (Integer.valueOf(2).equals(request.schemaVersion())?service.purchaseAmplifies(request.effectivePurchase(),Integer.valueOf(2).equals(current.get("policySchemaVersion"))?(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"):ffdd.opsconsole.team.domain.DirectReferralPolicy.DISABLED):request.purchase().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase")))
                     || request.deviceEarning().amplifies((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning"));
+            if (amplifies) service.requirePayoutCoverage();
             boolean v2=Integer.valueOf(2).equals(request.schemaVersion());
+            String purchaseBasis = service.purchaseBaseRateSummary();
             var beforePurchase=Integer.valueOf(2).equals(current.get("policySchemaVersion"))?(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("purchase"):ffdd.opsconsole.team.domain.DirectReferralPolicy.DISABLED;
-            String beforeSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；L1原预算 "+service.sevenLayerReference().get("baseRatePct")+"%；统一冷却 "+service.sevenLayerReference().get("coolingDays")+" 天；"+(beforePurchase.enabled()?"购买拆分 USDT "+beforePurchase.usdtSharePct()+"%":"购买未拆分，全额USDT加旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning")):
+            String beforeSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；"+purchaseBasis+"；统一冷却 "+service.sevenLayerReference().get("coolingDays")+" 天；"+(beforePurchase.enabled()?"购买拆分 USDT "+beforePurchase.usdtSharePct()+"%":"购买未拆分，全额USDT加旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary((ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule)current.get("deviceEarning")):
                     directPolicySummary(((Number) current.get("policyVersion")).longValue(),
                             (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("purchase"),
                             (ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule) current.get("deviceEarning"));
-            String afterSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；L1原预算及冷却不变；"+(request.purchaseSplit().enabled()?"购买拆分 USDT "+request.purchaseSplit().usdtSharePct()+"%，拆分UVT替代旧额外UVT":"购买拆分关闭，恢复全额USDT和旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary(request.deviceEarning()):directPolicySummary(request.expectedVersion()+1,request.effectivePurchase(),request.deviceEarning());
+            String afterSummary=v2?"L1–L7 版本 "+request.expectedSevenLayerRevision()+"；"+purchaseBasis+"；统一冷却不变；"+(request.purchaseSplit().enabled()?"购买拆分 USDT "+request.purchaseSplit().usdtSharePct()+"%，拆分UVT替代旧额外UVT":"购买拆分关闭，恢复全额USDT和旧UVT系数 "+service.sevenLayerReference().get("legacyNexPerUsd"))+"；设备 "+directRuleSummary(request.deviceEarning()):directPolicySummary(request.expectedVersion()+1,request.effectivePurchase(),request.deviceEarning());
             return new DelegatedProposalDescriptor("好友奖励双币政策", "current",beforeSummary,afterSummary,
                     "F2", amplifies?"fund":"param", amplifies,
                     new AuditLockTarget("F","direct_referral_policy","current"));
@@ -1872,8 +2216,18 @@ public class AuditReplayBusinessPermissionGuard {
                 // nx_product.name is VARCHAR(128); the 7-character prefix still fits action VARCHAR(160).
                 String name = org.springframework.util.StringUtils.hasText(review.after().name())
                         ? review.after().name().trim() : review.skuId();
-                yield new DelegatedProposalDescriptor(verb + " · " + name,review.skuId(),"以服务器型号快照为准","批准后新任务生效","E1",
-                        review.amplifies()?"fund":"param",review.amplifies(),new AuditLockTarget("E","device_sku",review.skuId()));
+                var target = review.createRequestId() == null ? new AuditLockTarget("E", "device_sku", review.skuId())
+                        : skuCreateTarget(review.createRequestId());
+                String object = review.createRequestId() == null ? review.skuId() : name;
+                yield new DelegatedProposalDescriptor(verb + " · " + name, object, "以服务器型号快照为准", "批准后新任务生效", "E1",
+                        review.amplifies() ? "fund" : "param", review.amplifies(), target);
+            }
+            case "e1_sku_status", "e1_sku_delete" -> e1SkuLifecycleDescriptor(operation, params);
+            case "e1_phone_task_policy" -> {
+                var review = devices.phoneClassReview(new AuditReplayCommand("E", operation, params));
+                yield new DelegatedProposalDescriptor("发布手机可跑任务", "phone",
+                        review.before().isEmpty() ? "未配置" : review.before(), review.after(), "E1", "param", false,
+                        new AuditLockTarget("E", "device_sku", "phone"));
             }
             case "e1_legacy_unknown_zero_credit_cancel" -> legacyUnknownDescriptor(params);
             case "e3_config" -> e3ConfigDescriptor(params);
@@ -1886,6 +2240,30 @@ public class AuditReplayBusinessPermissionGuard {
             case "e6_phone_calibration" -> phoneCalibrationDescriptor(params);
             case "e6_compute_config_batch" -> computeConfigBatchDescriptor(params);
             default -> null;
+        };
+    }
+
+    private DelegatedProposalDescriptor e1SkuLifecycleDescriptor(String operation, Map<String, Object> params) {
+        var review = devices.skuLifecycleReview(new AuditReplayCommand("E", operation, params));
+        var before = review.before();
+        String name = org.springframework.util.StringUtils.hasText(before.name()) ? before.name().trim() : before.skuId();
+        String verb = switch (review.status()) {
+            case "on" -> "上架";
+            case "off" -> "下架";
+            case "deleted" -> "删除商品";
+            default -> "设为待上架";
+        };
+        return new DelegatedProposalDescriptor(verb + " · " + name, before.skuId(), e1SkuStatusLabel(before.status()),
+                e1SkuStatusLabel(review.status()), "E1", "deleted".equals(review.status()) ? "sos" : "param", false,
+                new AuditLockTarget("E", "device_sku", before.skuId()));
+    }
+
+    private static String e1SkuStatusLabel(String status) {
+        return switch (status) {
+            case "on" -> "在售";
+            case "off" -> "下架";
+            case "deleted" -> "已移除";
+            default -> "待上架";
         };
     }
 
@@ -2100,11 +2478,11 @@ public class AuditReplayBusinessPermissionGuard {
 
     private List<String> canonicalF5Kinds(Object raw) {
         if (!(raw instanceof List<?> values) || values.isEmpty()
-                || values.size() > F5CommissionService.KINDS.size()) return List.of();
+                || values.size() > F5CommissionService.SUSPENDABLE_KINDS.size()) return List.of();
         List<String> kinds = values.stream().map(this::text).map(value -> value.toLowerCase(Locale.ROOT)).toList();
         List<String> canonical = kinds.stream().sorted().distinct().toList();
-        Set<String> allowed = F5CommissionService.KINDS;
-        return kinds.equals(canonical) && canonical.stream().allMatch(allowed::contains) ? canonical : List.of();
+        return kinds.equals(canonical) && F5CommissionService.SUSPENDABLE_KINDS.containsAll(canonical)
+                ? canonical : List.of();
     }
 
     private TreeMap<String, Object> canonicalComputeBatchValues(Map<String, Object> params) {
@@ -2375,7 +2753,7 @@ public class AuditReplayBusinessPermissionGuard {
                 default -> null;
             };
             case "E" -> switch (operation) {
-                case HostingCenterService.OPERATION, "e1_sku_create", "e1_sku_update", "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy" -> "device_e1_write";
+                case HostingCenterService.OPERATION, "e1_sku_create", "e1_sku_update", "e1_sku_status", "e1_sku_delete", "e1_phone_task_policy" -> E1_WRITE_AUTHORITY;
                 case "e2_task_create", "e2_task_update", "e2_task_price", "e2_task_status", "e2_task_delete" -> "device_e2_write";
                 case "e1_legacy_unknown_zero_credit_cancel" -> "device_e5_write";
                 case "e3_config", "e3_config_batch" -> "device_e3_write";
@@ -2387,7 +2765,7 @@ public class AuditReplayBusinessPermissionGuard {
                         "e5_device_batch_pause", "e5_device_batch_resume" -> "device_e5_write";
                 case "e6_compute_config" -> e6ComputeAuthority(command.params());
                 case "e6_compute_config_batch", "e6_phone_calibration", "e6_onboarding_yield_sku" -> "device_e6_write";
-                default -> null;
+                default -> isE1ReleaseRuleOperation(command) ? E1_WRITE_AUTHORITY : null;
             };
             // A1 批1a 修复3:F5 佣金事件 A2 越权守卫(原无 F 域 case → 持 platform_a2_proposal_create/approve 可任意处置佣金)。
             // 按 params.value 目标状态分流 freeze/release/reverse;OpsTeamService.updateCommissionEventStatus 二次校验兜底。
@@ -2420,7 +2798,8 @@ public class AuditReplayBusinessPermissionGuard {
 
     private static String directRuleSummary(ffdd.opsconsole.team.domain.DirectReferralPolicy.Rule rule) {
         return (rule.enabled() ? "启用" : "停用")
-                + "，总比例 " + rule.totalRatePct().stripTrailingZeros().toPlainString() + "%"
+                + "，一级 " + rule.totalRatePct().stripTrailingZeros().toPlainString() + "%"
+                + "，二级 " + rule.level2RatePct().stripTrailingZeros().toPlainString() + "%"
                 + "，USDT " + rule.usdtSharePct().stripTrailingZeros().toPlainString() + "%"
                 + " / UVT " + new java.math.BigDecimal("100").subtract(rule.usdtSharePct()).stripTrailingZeros().toPlainString() + "%"
                 + "，等待 " + rule.coolingDays() + " 天";
@@ -2439,6 +2818,10 @@ public class AuditReplayBusinessPermissionGuard {
             case "e6_compute_config", "e6_compute_config_batch", "e6_phone_calibration", "e6_onboarding_yield_sku" -> "device_e6_read";
             default -> null;
         };
+    }
+
+    boolean requiresProductWritePermission(AuditReplayCommand command) {
+        return "E".equals(command.domain()) && E1_WRITE_AUTHORITY.equals(requiredAuthority(command, command.op()));
     }
 
     /** Mirrors the batch writer's ordered key/value items without executing or creating sub-proposals. */
@@ -2599,6 +2982,25 @@ public class AuditReplayBusinessPermissionGuard {
                 : "network_f1_reward_reverse";
     }
 
+    String vRankReissueSummary(AuditReplayCommand command) {
+        if (command == null || !"F".equalsIgnoreCase(command.domain())
+                || !"f_reward_payout_action".equalsIgnoreCase(command.op())
+                || !"reissue".equalsIgnoreCase(value(command.params(), "action"))) {
+            return null;
+        }
+        String payoutId = value(command.params(), "payoutId").trim();
+        Map<String, Object> payout = teamCommissionRepository.findRewardPayoutByPayoutId(payoutId);
+        if (payout == null) return null;
+        String currency = text(payout.get("rewardType")).toUpperCase(Locale.ROOT);
+        Object sponsorUserId = payout.get("sponsorUserId");
+        if (sponsorUserId != null && ("UVT".equals(currency) || "USDT".equals(currency))) {
+            return "补发 " + payout.get("amount") + " " + currency + " 给原收款邀请人 " + sponsorUserId + " · 直接到账";
+        }
+        return "UVT".equals(currency)
+                ? "补发 " + payout.get("amount") + " UVT 给晋级用户 " + payout.get("userId") + " · 冷却后可用"
+                : null;
+    }
+
     /** F1-BE-09:提案阶段就校验「已用券扣不扣回」的参数,不让非法参数拖到批准回放才失败。 */
     private ApiResult<Void> validateF1RewardClawbackProposal(Map<String, Object> params) {
         Object raw = params == null ? null : params.get("usedVoucherClawback");
@@ -2746,6 +3148,11 @@ public class AuditReplayBusinessPermissionGuard {
                 .findFirst()
                 .orElse(false);
         return sensitive ? "content_i4_trust_section_manage" : "content_i4_publish_standard";
+    }
+
+    private static boolean isE1SuperAdminDecision(AuditReplayCommand command) {
+        if (command == null || !"E".equalsIgnoreCase(command.domain()) || command.op() == null) return false;
+        return Set.of("e1_sku_create", "e1_sku_update", HostingCenterService.OPERATION).contains(command.op());
     }
 
     private boolean hasAuthority(String requiredAuthority) {

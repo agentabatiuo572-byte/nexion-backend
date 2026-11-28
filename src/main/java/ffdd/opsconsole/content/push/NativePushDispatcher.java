@@ -3,11 +3,19 @@ package ffdd.opsconsole.content.push;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper;
 import ffdd.opsconsole.content.push.mapper.NativePushMapper.Delivery;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.UserAccountBlocklistVerifier;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
+import java.time.Instant;
 import java.util.UUID;
+import java.util.Map;
+import ffdd.opsconsole.emergency.application.OpsKillSwitchService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.RecoverableDataAccessException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -23,6 +31,8 @@ public class NativePushDispatcher {
     private final Environment env;
     private final TransactionTemplate transaction;
     private final TransactionTemplate discoveryTransaction;
+    @Autowired private OpsKillSwitchService killSwitch;
+    @Autowired private NativePushService pushService;
 
     public NativePushDispatcher(NativePushMapper mapper, AuthSessionMapper sessions, UserAccountBlocklistVerifier blocklist,
             PlatformConfigFacade config, DirectPushClient provider, Environment env, PlatformTransactionManager transactions) {
@@ -42,6 +52,7 @@ public class NativePushDispatcher {
             // Keep the migration cutover fixed. An advancing MAX(id) cursor would skip lower IDs committed out of order.
             // The 24-hour window and unique notification/installation key bound recovery and prevent replay.
             mapper.discover(low, Long.MAX_VALUE, sandbox);
+            if (testBusinessAlerts()) mapper.discoverNova(sandbox, NativePushService.TEST_APNS_TOPIC);
             mapper.expireAmbiguousClaims();
         });
         for (int count = 0; count < 20; count++) {
@@ -50,7 +61,7 @@ public class NativePushDispatcher {
                 if (next == null) return null;
                 String token = UUID.randomUUID().toString();
                 mapper.claim(next.id(), token);
-                return new Delivery(next.id(), next.notificationId(), next.installationId(), next.userId(), next.bindingEpoch(), next.attempts() + 1, token);
+                return new Delivery(next.id(), next.notificationId(), next.installationId(), next.userId(), next.bindingEpoch(), next.attempts() + 1, token, next.expiresAt(), next.threadId());
             });
             if (delivery == null) return;
             send(delivery, sandbox);
@@ -58,6 +69,22 @@ public class NativePushDispatcher {
     }
 
     void send(Delivery delivery, int sandbox) {
+        try {
+            attemptSend(delivery, sandbox);
+        } catch (EarningRouteReadFailure failure) {
+            // The receipt read can mark the send transaction rollback-only.
+            transaction.executeWithoutResult(tx -> {
+                if (failure.expiresAt != null && !Instant.now().isBefore(failure.expiresAt)) {
+                    finish(delivery, "CANCELLED", "PUSH_EXPIRED", null, 0);
+                } else {
+                    String status = delivery.attempts() >= 5 ? "FAILED" : "RETRY";
+                    finish(delivery, status, "EARNING_ROUTE_READ_FAILED", null, retryDelay(delivery));
+                }
+            });
+        }
+    }
+
+    private void attemptSend(Delivery delivery, int sandbox) {
         // ponytail: serialize one installation through the bounded HTTP call. Replace with a fenced gateway if throughput requires it.
         // Locks stay held through send so an accepted registration/removal cannot race with an old binding's send.
         transaction.executeWithoutResult(tx -> {
@@ -75,8 +102,66 @@ public class NativePushDispatcher {
             }
             var notification = mapper.ownedNotification(delivery.notificationId(), delivery.userId());
             if (notification == null) { finish(delivery, "CANCELLED", "NOTIFICATION_REMOVED", null, 0); return; }
+            java.time.Instant effectiveExpiry = effectiveExpiry(delivery, installation);
+            if (effectiveExpiry != null && !java.time.Instant.now().isBefore(effectiveExpiry)) {
+                finish(delivery, "CANCELLED", "PUSH_EXPIRED", null, 0); return;
+            }
+            boolean earning = notification.type().startsWith("EARNING_");
+            if (earning && !earningEligible(notification.type(), delivery.userId(), installation)) {
+                finish(delivery, "CANCELLED", "EARNING_INELIGIBLE", null, 0); return;
+            }
+            if (earning) {
+                try {
+                    // Push carries only the notification ID. Resolve checks the target again when tapped.
+                    pushService.earningRoute(notification, delivery.userId());
+                } catch (BizException invalidRoute) {
+                    finish(delivery, "CANCELLED", "EARNING_RECEIPT_UNAVAILABLE", null, 0); return;
+                } catch (TransientDataAccessException | RecoverableDataAccessException | DataAccessResourceFailureException failure) {
+                    throw new EarningRouteReadFailure(effectiveExpiry, failure);
+                }
+            }
             if (delivery.attempts() > 5) { finish(delivery, "FAILED", "ATTEMPTS_EXHAUSTED", null, 0); return; }
-            var result = provider.send(delivery.id(), delivery.notificationId(), installation.provider(), installation.clientId(), notification.language());
+            boolean nova = notification.isNova();
+            boolean enhanced = testBusinessAlerts();
+            boolean appUpdate = "APP_UPDATE".equals(notification.type());
+            if (appUpdate && (!enhanced || !"ios".equals(installation.platform())
+                    || !NativePushService.TEST_APNS_TOPIC.equals(installation.apnsTopic())
+                    || installation.appBuild() == null || notification.updateBuild() == null
+                    || installation.appBuild() >= notification.updateBuild()
+                    || mapper.activeIosUpdate(notification.updateBuild(), env.getProperty("nexion.app-updates.test-ios-install-url", "")) == 0
+                    || killSwitch.notificationEmergencyStop())) {
+                finish(delivery, "CANCELLED", "APP_UPDATE_NOT_APPLICABLE", null, 0);
+                return;
+            }
+            if (nova && (!enhanced || mapper.novaChannelEnabled(notification.id()) == 0 || killSwitch.notificationEmergencyStop())) {
+                finish(delivery, "CANCELLED", "NOVA_DISABLED", null, 0);
+                return;
+            }
+            boolean support = enhanced && "SUPPORT_REPLY".equals(notification.type());
+            boolean newSignIn = enhanced && "ACCOUNT_SECURITY".equals(notification.type())
+                    && NativePushService.TEST_APNS_TOPIC.equals(installation.apnsTopic())
+                    && mapper.isNewSignInNotice(notification.id(), delivery.userId());
+            DirectPushClient.Result result;
+            if (nova || appUpdate || support || earning || installation.apnsTopic() != null) {
+                String summary = DirectPushClient.message(notification.language());
+                if (support) summary = DirectPushClient.supportReply(notification.language());
+                if (newSignIn) summary = notification.body();
+                Map<String,String> alert = nova || appUpdate || earning
+                        ? Map.of("title", notification.title(), "body", notification.body())
+                        : Map.of("title", "UVEL", "body", summary);
+                boolean configuredAlert = nova || appUpdate || support || newSignIn || earning;
+                if (earning || delivery.expiresAt() != null || delivery.threadId() != null) {
+                    result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert,
+                            installation.apnsTopic(), configuredAlert,
+                            effectiveExpiry,
+                            delivery.threadId());
+                } else {
+                    result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), alert,
+                            installation.apnsTopic(), configuredAlert);
+                }
+            } else {
+                result = provider.send(delivery.id(), notification.id(), installation.provider(), installation.clientId(), notification.language());
+            }
             String status = result.status();
             if ("INVALID_TOKEN".equals(status)) {
                 mapper.deactivate(installation.installationId());
@@ -85,7 +170,7 @@ public class NativePushDispatcher {
                 mapper.cancelPending(installation.installationId());
             } else {
                 if ("RETRY".equals(status) && delivery.attempts() >= 5) status = "FAILED";
-                finish(delivery, status, result.code(), result.taskId(), "BLOCKED".equals(status) ? 300 : Math.max(result.retryAfterSeconds(), Math.min(3600, 30 << Math.min(delivery.attempts(), 6))));
+                finish(delivery, status, result.code(), result.taskId(), "BLOCKED".equals(status) ? 300 : Math.max(result.retryAfterSeconds(), retryDelay(delivery)));
             }
         });
     }
@@ -94,10 +179,59 @@ public class NativePushDispatcher {
         mapper.finish(d.id(), d.leaseToken(), status, error, task, delay);
     }
 
+    private static int retryDelay(Delivery delivery) {
+        return Math.min(3600, 30 << Math.min(delivery.attempts(), 6));
+    }
+
+    private static final class EarningRouteReadFailure extends RuntimeException {
+        private final Instant expiresAt;
+
+        private EarningRouteReadFailure(Instant expiresAt, RuntimeException cause) {
+            super(cause);
+            this.expiresAt = expiresAt;
+        }
+    }
+
     private int idleDays() {
         try {
             int value = config.activeValue("auth.session.idle_ttl_days").map(Integer::parseInt).orElse(30);
             return value >= 7 && value <= 90 ? value : 30;
         } catch (NumberFormatException invalid) { return 30; }
+    }
+
+    private java.time.Instant effectiveExpiry(Delivery delivery, NativePushMapper.Installation installation) {
+        if (delivery.expiresAt() == null) return null;
+        java.time.Instant base = delivery.expiresAt().toInstant(java.time.ZoneOffset.UTC);
+        if (installation.timeZone() == null) return base;
+        try {
+            java.time.ZoneId zone = java.time.ZoneId.of(installation.timeZone());
+            java.time.ZonedDateTime local = java.time.Instant.now().atZone(zone);
+            java.time.ZonedDateTime boundary = local.toLocalDate().atTime(23, 0).atZone(zone);
+            if (!local.isBefore(boundary)) boundary = boundary.plusDays(1);
+            java.time.Instant shortened = boundary.toInstant();
+            return shortened.isBefore(base) ? shortened : base;
+        } catch (RuntimeException failure) {
+            return base;
+        }
+    }
+
+    private boolean earningEligible(String type, long userId, NativePushMapper.Installation installation) {
+        if (!installation.earningPushEligible() || installation.timeZone() == null) return false;
+        var preference = mapper.earningEligibility(userId);
+        String mode = preference == null || preference.mode() == null ? "DAILY" : preference.mode();
+        boolean system = preference == null || !Boolean.FALSE.equals(preference.system());
+        if (!system || "OFF".equals(mode)) return false;
+        if ("EARNING_REALTIME".equals(type) && !"REALTIME".equals(mode)) return false;
+        if ("EARNING_DAILY".equals(type) && !"DAILY".equals(mode)) return false;
+        if ("EARNING_HALF_HOURLY".equals(type) && !"HALF_HOURLY".equals(mode)) return false;
+        java.time.ZoneId zone;
+        try { zone = java.time.ZoneId.of(installation.timeZone()); }
+        catch (RuntimeException failure) { return false; }
+        int hour = java.time.ZonedDateTime.now(zone).getHour();
+        return hour < 23 && hour >= 8;
+    }
+
+    private boolean testBusinessAlerts() {
+        return Boolean.TRUE.equals(env.getProperty("nexion.deployment.public-test", Boolean.class));
     }
 }

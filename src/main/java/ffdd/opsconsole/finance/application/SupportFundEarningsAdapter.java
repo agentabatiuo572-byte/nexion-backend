@@ -85,7 +85,7 @@ public class SupportFundEarningsAdapter {
     private String write(Object value) {
         try{return json.writeValueAsString(normalize(value));}catch(JsonProcessingException ex){throw new IllegalStateException("Earnings source serialization failed",ex);}
     }
-    private static Object normalize(Object value) {
+    static Object normalize(Object value) {
         if(value instanceof java.sql.Timestamp at)return at.toLocalDateTime().toString();
         if(value instanceof java.time.LocalDateTime at)return at.toString();
         if(value instanceof Map<?,?> map){var result=new LinkedHashMap<String,Object>();map.forEach((k,v)->result.put(k.toString(),normalize(v)));return result;}

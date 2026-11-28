@@ -25,6 +25,7 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class E2TaskPricingApproval {
     public static final String MAKER_AUTHORITY = "device_e2_write";
+    public static final String MATERIAL_REVISION_FIELD = "pricingMaterialRevision";
     static final String LIFECYCLE_LOCK = "e2_task_lifecycle";
     private static final String LIFECYCLE_OP = "e2_task_lifecycle_change";
     private static final Set<String> LEGACY_LIFECYCLE_OPS = Set.of("e2_task_create", "e2_task_update", "e2_task_delete");
@@ -43,6 +44,12 @@ public class E2TaskPricingApproval {
 
     public static boolean isLifecycle(AuditReplayCommand command) {
         return command != null && "E".equals(command.domain()) && LIFECYCLE_OP.equals(command.op());
+    }
+
+    public static final class ConfirmedPricingRecheck extends BizException {
+        ConfirmedPricingRecheck(int code, String reason) {
+            super(code, reason);
+        }
     }
 
     public boolean shouldBindLifecycle(AuditReplayCommand command) {
@@ -129,7 +136,7 @@ public class E2TaskPricingApproval {
         if (isLifecycle(command)) {
             return ApiResult.ok(new OpsDeviceService.E2TaskPricingReview(target(command),
                     boundedReview((String) command.params().get("beforeReview")),
-                    boundedReview((String) command.params().get("afterReview"))));
+                    boundedReview((String) command.params().get("afterReview")), null));
         }
         return devices.previewTaskPricingApproval(request(command, reason));
     }
@@ -152,7 +159,9 @@ public class E2TaskPricingApproval {
             values(command).forEach((key, value) -> fields.put((String) key, value));
             return devices.executeApprovedTaskLifecycle(context.idempotencyKey(), fields, reason, revision, target);
         }
-        return devices.executeApprovedTaskPricing(context.idempotencyKey(), request(command, reason), target);
+        Object expectedMaterialRevision = command.params().get(MATERIAL_REVISION_FIELD);
+        return devices.executeApprovedTaskPricing(context.idempotencyKey(), request(command, reason), target,
+                expectedMaterialRevision instanceof String revision ? revision : null);
     }
 
     private static BizException invalidLifecycle() {

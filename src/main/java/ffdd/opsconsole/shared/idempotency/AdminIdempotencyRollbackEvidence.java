@@ -11,6 +11,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class AdminIdempotencyRollbackEvidence {
     private final AdminIdempotencyRecordMapper records;
 
+    static boolean confirmed(AdminIdempotencyRecordEntity original) {
+        return original.getResponseJson() == null && Integer.valueOf(1).equals(original.getRollbackConfirmed())
+                && AdminCommandOrigin.localConfiguration(original.getScope());
+    }
+
     /** Called only by the transaction manager's confirmed ROLLED_BACK completion callback. */
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public void record(long recordId) {

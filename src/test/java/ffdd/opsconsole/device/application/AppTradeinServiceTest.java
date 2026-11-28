@@ -8,6 +8,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
@@ -37,6 +38,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.function.Supplier;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import ffdd.opsconsole.shared.canonical.mapper.PurchaseGateQuotaMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -64,6 +66,10 @@ class AppTradeinServiceTest {
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
         when(idempotency.executeRetained(anyString(), anyString(), anyString(), any(), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
+        var hostingCenters = mock(HostingCenterService.class);
+        when(hostingCenters.requirePool()).thenReturn(new HostingCenterService.Pool(
+                List.of(new HostingCenterService.Center("TEST", "Acceptance Center", true, 1)), 1));
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "hostingCenters", hostingCenters);
         when(mapper.listTradeinConfig()).thenReturn(validConfig());
         when(mapper.findSourceDevice(7L, 11L)).thenReturn(source());
         when(mapper.findTargetProduct(22L, null)).thenReturn(target());
@@ -106,7 +112,7 @@ class AppTradeinServiceTest {
         verify(deviceLifecycle,never()).deactivateOwnedDeviceCas(any(),any(),any());
         verify(mapper,never()).moveSourceDeviceToInventory(any(),any());
         verify(mapper,never()).debitWalletUsdt(any(),any());
-        verify(mapper,never()).decrementTargetStock(any()); verify(mapper,never()).insertTargetDevice(any());
+        verify(mapper,never()).decrementTargetStock(any()); verify(mapper,never()).insertTargetDevice(any(), eq("Acceptance Center"));
     }
 
     @Test
@@ -351,16 +357,16 @@ class AppTradeinServiceTest {
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
     void submitAtomicallyDebitsWalletPostsD4LedgerRecyclesAndDelivers(boolean failCapture) {
         configuredHardwareQuotaHasCapacity();
-        when(mapper.purchaseGateJson("SKU-NEW"))
-                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
-        when(mapper.lockPurchaseGateJson("SKU-NEW"))
-                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
-        when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(1);
+        when(mapper.findGateQuota("SKU-NEW"))
+                .thenReturn(new PurchaseGateQuotaMapper.GateQuota("SKU-NEW", "{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}", 0L, 0L));
+        when(mapper.lockGateQuota("SKU-NEW"))
+                .thenReturn(new PurchaseGateQuotaMapper.GateQuota("SKU-NEW", "{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}", 0L, 0L));
+        when(mapper.consumePurchaseQuota("SKU-NEW", 1, 0L)).thenReturn(1);
         when(mapper.debitWalletUsdt(7L, new BigDecimal("900.000000"))).thenReturn(1);
 
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
         when(mapper.recycleTradeinSourceDevice(7L, 11L, "DEV-11", 1L)).thenReturn(1);
-        when(mapper.insertTargetDevice(any())).thenReturn(1);
+        when(mapper.insertTargetDevice(any(), anyString())).thenReturn(1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);
         when(mapper.insertTradeinApplication(any())).thenReturn(1);
         when(mapper.insertTradeinCompatibilityOrder(any())).thenReturn(1);
@@ -383,11 +389,11 @@ class AppTradeinServiceTest {
         verify(mapper).debitWalletUsdt(7L, new BigDecimal("900.000000"));
         verify(capture).insertLedger(org.mockito.ArgumentMatchers.any(Prepared.class), any(), any(), eq("E3 trade-in upgrade wallet payment"));
         verify(mapper).recycleTradeinSourceDevice(7L, 11L, "DEV-11", 1L);
-        verify(mapper).insertTargetDevice(any());
+        verify(mapper).insertTargetDevice(any(), eq("Acceptance Center"));
         verify(mapper).insertTradeinApplication(any());
         verify(mapper).insertPaidOrder(any());
         verify(mapper).insertPaidOrderItem(any());
-        verify(mapper).consumePurchaseQuota("SKU-NEW", 1);
+        verify(mapper).consumePurchaseQuota("SKU-NEW", 1, 0L);
         verify(outbox, times(3)).publishUserEvent(
                 anyString(), anyString(), anyString(), any(), anyString(), any(), anyString(), any());
         verify(audit).recordRequiredForTrustedActor(any());
@@ -459,7 +465,7 @@ class AppTradeinServiceTest {
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
         when(mapper.insertPaidOrder(any())).thenReturn(1);
         when(mapper.insertPaidOrderItem(any())).thenReturn(1);
-        when(mapper.insertTargetDevice(any())).thenReturn(failDelivery ? 0 : 1);
+        when(mapper.insertTargetDevice(any(), anyString())).thenReturn(failDelivery ? 0 : 1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);
         when(mapper.insertTradeinApplication(any())).thenReturn(1);
         when(mapper.insertTradeinCompatibilityOrder(any())).thenReturn(1);
@@ -479,7 +485,7 @@ class AppTradeinServiceTest {
         var order = org.mockito.ArgumentCaptor.forClass(AppTradeinMapper.PaidOrderWrite.class);
         var delivered = org.mockito.ArgumentCaptor.forClass(AppTradeinMapper.DeliveredDeviceWrite.class);
         verify(mapper).insertPaidOrder(order.capture());
-        verify(mapper).insertTargetDevice(delivered.capture());
+        verify(mapper).insertTargetDevice(delivered.capture(), eq("Acceptance Center"));
         assertThat(order.getValue().activateTarget()).isEqualTo(activated);
         assertThat(delivered.getValue().activated()).isEqualTo(activated);
         var sequence = inOrder(deviceLifecycle, mapper, capture);
@@ -517,7 +523,7 @@ class AppTradeinServiceTest {
         when(mapper.insertWalletLedger(anyString(), any(), any(), any())).thenReturn(1);
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
         when(mapper.recycleTradeinSourceDevice(7L, 11L, "DEV-11", 1L)).thenReturn(1);
-        when(mapper.insertTargetDevice(any())).thenReturn(1);
+        when(mapper.insertTargetDevice(any(), anyString())).thenReturn(1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);
         when(mapper.insertTradeinApplication(any())).thenReturn(1);
         when(mapper.insertTradeinCompatibilityOrder(any())).thenReturn(1);
@@ -635,18 +641,18 @@ class AppTradeinServiceTest {
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
     void capacityReplacementCreatesARealOrderAndRefreshableSourceLinkWithoutTradeinCredit(boolean failCapture) {
         configuredHardwareQuotaHasCapacity();
-        when(mapper.purchaseGateJson("SKU-NEW"))
-                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
-        when(mapper.lockPurchaseGateJson("SKU-NEW"))
-                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
-        when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(1);
+        when(mapper.findGateQuota("SKU-NEW"))
+                .thenReturn(new PurchaseGateQuotaMapper.GateQuota("SKU-NEW", "{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}", 0L, 0L));
+        when(mapper.lockGateQuota("SKU-NEW"))
+                .thenReturn(new PurchaseGateQuotaMapper.GateQuota("SKU-NEW", "{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}", 0L, 0L));
+        when(mapper.consumePurchaseQuota("SKU-NEW", 1, 0L)).thenReturn(1);
         when(mapper.walletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.lockWalletBalanceUsdt(7L)).thenReturn(new BigDecimal("2000.00"));
         when(mapper.debitWalletUsdt(7L, new BigDecimal("1500.000000"))).thenReturn(1);
 
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
         when(mapper.moveSourceDeviceToInventory(7L, 11L)).thenReturn(1);
-        when(mapper.insertTargetDevice(any())).thenReturn(1);
+        when(mapper.insertTargetDevice(any(), anyString())).thenReturn(1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);
         when(mapper.insertTradeinApplication(any())).thenReturn(1);
         when(mapper.insertTradeinCompatibilityOrder(any())).thenReturn(1);
@@ -673,7 +679,7 @@ class AppTradeinServiceTest {
         verify(mapper).moveSourceDeviceToInventory(7L, 11L);
         verify(mapper).insertPaidOrder(any());
         verify(mapper).insertTradeinApplication(any());
-        verify(mapper).consumePurchaseQuota("SKU-NEW", 1);
+        verify(mapper).consumePurchaseQuota("SKU-NEW", 1, 0L);
         verify(mapper, never()).recycleSourceDevice(7L, 11L);
         verify(idempotency).execute(eq("APP:E3_CAPACITY_REPLACE:USER:7"), eq("cap-idem-7"),
                 anyString(), eq(ApiResult.class), any());
@@ -706,8 +712,8 @@ class AppTradeinServiceTest {
 
     @Test
     void negativePurchaseGateFactsFailClosedInsteadOfBecomingA500() {
-        when(mapper.purchaseGateJson("SKU-NEW"))
-                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"rankMin\":1}");
+        when(mapper.findGateQuota("SKU-NEW"))
+                .thenReturn(new PurchaseGateQuotaMapper.GateQuota("SKU-NEW", "{\"mode\":\"all\",\"enforce\":true,\"rankMin\":1}", 0L, 0L));
         when(mapper.purchaseGateFacts(7L))
                 .thenReturn(new AppTradeinMapper.PurchaseGateFacts(-1, 0, BigDecimal.ZERO));
 
@@ -715,23 +721,23 @@ class AppTradeinServiceTest {
                 new AppTradeinSubmitRequest(11L, 22L)))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("PURCHASE_GATE_FACTS_INVALID");
-        verify(mapper, never()).consumePurchaseQuota(anyString(), any());
+        verify(mapper, never()).consumePurchaseQuota(anyString(), any(), anyLong());
         verify(mapper, never()).debitWalletUsdt(any(), any());
     }
 
     @Test
     void quotaCasFailureBlocksSettlementBeforeWalletDebit() {
-        when(mapper.purchaseGateJson("SKU-NEW"))
-                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
-        when(mapper.lockPurchaseGateJson("SKU-NEW"))
-                .thenReturn("{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}");
-        when(mapper.consumePurchaseQuota("SKU-NEW", 1)).thenReturn(0);
+        when(mapper.findGateQuota("SKU-NEW"))
+                .thenReturn(new PurchaseGateQuotaMapper.GateQuota("SKU-NEW", "{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}", 0L, 0L));
+        when(mapper.lockGateQuota("SKU-NEW"))
+                .thenReturn(new PurchaseGateQuotaMapper.GateQuota("SKU-NEW", "{\"mode\":\"all\",\"enforce\":true,\"quotaCap\":1,\"quotaSold\":0}", 0L, 0L));
+        when(mapper.consumePurchaseQuota("SKU-NEW", 1, 0L)).thenReturn(0);
 
         assertThatThrownBy(() -> service.submit(7L, "idem-quota-race",
                 new AppTradeinSubmitRequest(11L, 22L)))
                 .isInstanceOf(BizException.class)
                 .hasMessageContaining("PURCHASE_GATE_SOLD_OUT");
-        verify(mapper).consumePurchaseQuota("SKU-NEW", 1);
+        verify(mapper).consumePurchaseQuota("SKU-NEW", 1, 0L);
         verify(mapper, never()).debitWalletUsdt(any(), any());
         verify(mapper, never()).insertPaidOrder(any());
     }
@@ -763,8 +769,8 @@ class AppTradeinServiceTest {
         verify(mapper, never()).decrementTargetStock(any());
         verify(mapper, never()).insertPaidOrder(any());
         verify(mapper, never()).insertCapacityKeepOrder(any());
-        verify(mapper, never()).insertTargetDevice(any());
-        verify(mapper, never()).insertCapacityKeepTargetDevice(any());
+        verify(mapper, never()).insertTargetDevice(any(), eq("Acceptance Center"));
+        verify(mapper, never()).insertCapacityKeepTargetDevice(any(), eq("Acceptance Center"));
         verify(mapper, never()).recycleSourceDevice(any(), any());
         verify(mapper, never()).moveSourceDeviceToInventory(any(), any());
         verify(mapper, never()).recordHardwarePurchase(any(), any(), any(), any());
@@ -804,7 +810,7 @@ class AppTradeinServiceTest {
         when(mapper.decrementTargetStock(22L)).thenReturn(1);
         when(mapper.insertCapacityKeepOrder(any())).thenReturn(1);
         when(mapper.insertPaidOrderItem(any())).thenReturn(1);
-        when(mapper.insertCapacityKeepTargetDevice(any())).thenReturn(1);
+        when(mapper.insertCapacityKeepTargetDevice(any(), anyString())).thenReturn(1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(44L);
 
         if (failCapture) {
@@ -826,7 +832,7 @@ class AppTradeinServiceTest {
         assertThat(result.getData().targetDeviceId()).isEqualTo(44L);
         assertThat(result.getData().walletDebitUsdt()).isEqualByComparingTo("1500.000000");
         verify(mapper).insertCapacityKeepOrder(any());
-        verify(mapper).insertCapacityKeepTargetDevice(any());
+        verify(mapper).insertCapacityKeepTargetDevice(any(), eq("Acceptance Center"));
         verify(mapper, never()).moveSourceDeviceToInventory(any(), any());
         verify(mapper, never()).recycleSourceDevice(any(), any());
         verify(mapper, never()).insertTradeinApplication(any());
@@ -863,7 +869,7 @@ class AppTradeinServiceTest {
         verify(mapper, never()).debitWalletUsdt(any(), any());
         verify(mapper, never()).decrementTargetStock(any());
         verify(mapper, never()).insertCapacityKeepOrder(any());
-        verify(mapper, never()).insertCapacityKeepTargetDevice(any());
+        verify(mapper, never()).insertCapacityKeepTargetDevice(any(), eq("Acceptance Center"));
         verify(capture, never()).beforeCash(any());
         verify(capture, never()).insertLedger(any(), any(), any(), anyString());
     }
@@ -938,7 +944,7 @@ class AppTradeinServiceTest {
     private ApiResult<?> externalTradein(String kind) {
         return service.settleVerifiedExternal(7L,kind,"PPI-TEST",new AppTradeinSubmitRequest(11L,22L),
                 new AppCapacityReplaceSubmitRequest(11L,"stellarbox-pro-v2",new BigDecimal("1500.00")),
-                new AppCapacityKeepSubmitRequest("stellarbox-pro-v2",new BigDecimal("1500.00")));
+                new AppCapacityKeepSubmitRequest("stellarbox-pro-v2",new BigDecimal("1500.00")), null);
     }
     private void configureExternalDelivery(String kind) {
         configuredHardwareQuotaHasCapacity();
@@ -947,7 +953,7 @@ class AppTradeinServiceTest {
         when(mapper.decrementTargetStock(22L)).thenReturn(1);when(mapper.recycleTradeinSourceDevice(7L,11L,"DEV-11",1L)).thenReturn(1);
         when(mapper.moveSourceDeviceToInventory(7L,11L)).thenReturn(1);when(mapper.insertPaidOrder(any())).thenReturn(1);
         when(mapper.insertCapacityKeepOrder(any())).thenReturn(1);when(mapper.insertPaidOrderItem(any())).thenReturn(1);
-        when(mapper.insertTargetDevice(any())).thenReturn(1);when(mapper.insertCapacityKeepTargetDevice(any())).thenReturn(1);
+        when(mapper.insertTargetDevice(any(), anyString())).thenReturn(1);when(mapper.insertCapacityKeepTargetDevice(any(), anyString())).thenReturn(1);
         when(mapper.findDeviceIdByInstanceNo(anyString())).thenReturn(33L);when(mapper.insertTradeinApplication(any())).thenReturn(1);
         when(mapper.insertTradeinCompatibilityOrder(any())).thenReturn(1);
     }

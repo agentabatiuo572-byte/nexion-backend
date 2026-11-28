@@ -26,6 +26,19 @@ public class TaskPoolController {
     @PostMapping("/task-pools/{code}/random-tasks")
     @PreAuthorize("hasAuthority('device_e2_write')")
     public ApiResult<Map<String,Object>> random(@PathVariable String code,@RequestBody TaskPoolService.RandomAdd body) {return pools.randomAdd(code,body);}
+    @PostMapping("/task-pools/{code}/tasks")
+    @PreAuthorize("hasAuthority('device_e2_write')")
+    public ApiResult<Map<String, Object>> createTask(@PathVariable String code, @RequestBody TaskPoolService.CreateTask body) {
+        return pools.createTask(code, body);
+    }
+
+    @PostMapping("/task-pools/{code}/tasks/{taskTypeId}")
+    @PreAuthorize("hasAuthority('device_e2_write')")
+    public ApiResult<Map<String, Object>> updateTask(@PathVariable String code, @PathVariable String taskTypeId,
+            @RequestBody TaskPoolService.UpdateTask body) {
+        return pools.updateTask(code, taskTypeId, body);
+    }
+
     @PostMapping("/task-pools/{code}/tasks/status")
     @PreAuthorize("hasAuthority('device_e2_write')")
     public ApiResult<Map<String,Object>> status(@PathVariable String code,@RequestBody TaskPoolService.Status body) {return pools.status(code,body);}

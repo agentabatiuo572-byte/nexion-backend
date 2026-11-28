@@ -30,8 +30,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppVietQrIntentService {
     private static final String VIETQR_CHANNEL_ENABLED_KEY = "finance.topup.channel.vietqr.enabled";
-    private static final BigDecimal ABSOLUTE_MAX_DEPOSIT_USDT = new BigDecimal("10000.00");
-    private static final int MAX_ACTIVE_INTENTS = 5;
     private static final int MAX_LIST_LIMIT = 50;
     private static final BigDecimal VIETQR_FEE_VND = BigDecimal.ZERO;
     private static final BigDecimal VIETQR_FEE_USDT = BigDecimal.ZERO;
@@ -140,9 +138,6 @@ public class AppVietQrIntentService {
         if (amount.compareTo(minimumDepositPrincipal()) < 0 || amount.compareTo(max) > 0) {
             throw new BizException(422, "VIETQR_AMOUNT_OUT_OF_RANGE");
         }
-        if (mapper.countActiveIntentsForUser(userId) >= MAX_ACTIVE_INTENTS) {
-            throw new BizException(409, "VIETQR_ACTIVE_INTENT_LIMIT_REACHED");
-        }
 
         Map<String, Object> fx = required(mapper.findFxQuoteConfig(), "FX_QUOTE_UNAVAILABLE");
         BigDecimal rate = VietnamPaymentPolicy.quoteRate(
@@ -193,7 +188,11 @@ public class AppVietQrIntentService {
         mapper.closeInactiveInFlightReconciliationsForUser(userId);
         List<Map<String, Object>> items = new ArrayList<>();
         for (Map<String, Object> row : safeList(mapper.listIntentsForUser(userId, limit))) {
-            items.add(toView(row));
+            Map<String, Object> item = toView(row);
+            if ("hosted".equals(item.get("paymentMode"))) {
+                item.put("createIdempotencyKey", row.get("createIdempotencyKey"));
+            }
+            items.add(item);
         }
         return ApiResult.ok(Map.of("items", items));
     }
@@ -406,8 +405,7 @@ public class AppVietQrIntentService {
         if (value.signum() <= 0
                 || value.scale() < -4
                 || value.stripTrailingZeros().scale() > 2
-                || value.precision() > 10
-                || value.compareTo(ABSOLUTE_MAX_DEPOSIT_USDT) > 0) {
+                || value.precision() > 10) {
             throw new BizException(422, "VIETQR_AMOUNT_SCALE_INVALID");
         }
         try {

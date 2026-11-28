@@ -58,7 +58,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         String context = request.getContextPath();
         boolean recordActivity = !("POST".equals(request.getMethod()) && (context + "/api/app/support/realtime-ticket").equals(path)
                 || "GET".equals(request.getMethod())
-                && ((context + "/ws/conversations").equals(path) || (context + "/api/orders/commands").equals(path)));
+                && ((context + "/ws/conversations").equals(path) || (context + "/api/orders/commands").equals(path)
+                || (context + "/api/app/purchase-payment-intents").equals(path)
+                || path.startsWith(context + "/api/trial/commands/")
+                || path.startsWith(context + "/api/team/rank/salary/claims/")));
         String token = resolveToken(request);
         if (token != null) {
             try {
@@ -297,7 +300,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             var session = authSessionMapper.findOwnedSession(sessionId, userId);
             if (session == null || !Long.valueOf(userId).equals(session.getUserId())) return null;
             String ended = session.getSessionEndedReason();
-            if (java.util.Set.of("APP_REPLACED", "CURRENT_LOGOUT", "SECURITY_REVOKED", "SESSION_EXPIRED", "REAUTH_REQUIRED")
+            if (java.util.Set.of("APP_REPLACED", "H5_REPLACED", "CURRENT_LOGOUT", "SECURITY_REVOKED", "SESSION_EXPIRED", "REAUTH_REQUIRED")
                     .contains(ended == null ? "" : ended)) return ended;
             if (!java.util.Set.of("APP", "H5").contains(session.getSessionGroup() == null ? "" : session.getSessionGroup()))
                 return "REAUTH_REQUIRED";

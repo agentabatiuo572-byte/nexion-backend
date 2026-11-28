@@ -90,7 +90,7 @@ class NotificationTimeCorrectionMySqlTest {
         var roles=mock(AdminOperatorRoleResolver.class);when(roles.resolveCode()).thenReturn("SUPER_ADMIN");
         evidence=proxy(new NotificationTimeEvidenceService(users,session.getMapper(NotificationTimeEvidenceMapper.class),roles,JSON,Clock.fixed(Instant.parse("2026-09-18T04:30:00Z"),DateTimeFormatConfig.BUSINESS_ZONE)));
         var policy=mock(A2RuntimePolicy.class);when(policy.schemaVersion()).thenReturn("fixture-v1");when(policy.retentionMonths()).thenReturn(12);
-        audit=spy(new AuditLogService(session.getMapper(AuditLogMapper.class),new AuditLogSanitizer(JSON),new ApplicationNameProperties(),new AuditProperties(),mock(AdminMapper.class),policy));
+        audit=spy(new AuditLogService(session.getMapper(AuditLogMapper.class),new AuditLogSanitizer(JSON),new ApplicationNameProperties(),new AuditProperties(),mock(AdminMapper.class),policy, new com.fasterxml.jackson.databind.ObjectMapper()));
         realRecords=session.getMapper(AdminIdempotencyRecordMapper.class);records=mock(AdminIdempotencyRecordMapper.class,org.mockito.AdditionalAnswers.delegatesTo(realRecords));
         var expiry=proxy(new AdminIdempotencyExpiryTransitionExecutor(records));
         var executor=proxy(new AdminIdempotencyTransactionExecutor(records,JSON,expiry,new ffdd.opsconsole.shared.idempotency.AdminIdempotencyRollbackEvidence(records)));

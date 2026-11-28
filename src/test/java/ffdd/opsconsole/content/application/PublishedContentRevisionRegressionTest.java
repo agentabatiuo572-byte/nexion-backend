@@ -18,7 +18,8 @@ class PublishedContentRevisionRegressionTest {
     private final PlatformConfigFacade config = mock(PlatformConfigFacade.class);
     private final MockEnvironment environment = new MockEnvironment();
     private final AuditLogService audit = mock(AuditLogService.class);
-    private final PublishedDeveloperDocsService developer = new PublishedDeveloperDocsService(config, environment, audit);
+    private final PublishedDeveloperDocsService developer = new PublishedDeveloperDocsService(config, environment, audit,
+            mock(ffdd.opsconsole.platform.application.A2RuntimePolicy.class));
     private final PublishedHowContentService how = new PublishedHowContentService(config, environment, audit);
     private final PublishedRankHowPolicyService rank = new PublishedRankHowPolicyService(config, environment, audit,
             mock(VRankPromotionEngine.class), mock(LeadershipPoolConfigGuard.class));

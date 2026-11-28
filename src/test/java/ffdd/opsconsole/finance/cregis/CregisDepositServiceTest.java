@@ -695,23 +695,6 @@ class CregisDepositServiceTest {
     }
 
     @Test
-    void exposureAtExactlyFiveHundredTripsAllThreeSwitches() {
-        CregisDepositMapper db = mock(CregisDepositMapper.class);
-        riskReady(db);
-        when(db.unresolvedExposure(88)).thenReturn(new BigDecimal("500.000000"));
-        PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
-        when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
-        CregisDepositService service = DepositPolicyFixture.withPolicy(new CregisDepositService(properties(),
-                mock(CregisGatewayRouter.class), mock(BscDepositProof.class), new CregisSigner(),
-                new ObjectMapper(), db, manager, mock(TreasuryLedgerRepository.class),
-                mock(FinanceWithdrawalControlFacade.class), capture, mock(CregisPayoutControl.class), org.mockito.Mockito.mock(CregisExceptionSourceService.class), org.mockito.Mockito.mock(CregisReorgResolutionService.class), DepositPolicyFixture.policy()));
-        service.tripIfNeeded();
-        verify(db).tripAll("CREGIS_UNRESOLVED_EXPOSURE_500");
-        verify(db).insertRiskAlert(eq(88L), eq("unresolved-exposure-500"), eq("P0"),
-                eq("UNRESOLVED_EXPOSURE"), any());
-    }
-
-    @Test
     void secondReorgEpochUsesItsOwnIncidentLedgerAndDuplicateInSameEpochDoesNothing() {
         CregisDepositMapper db=mock(CregisDepositMapper.class);
         Map<String,Object> event=new java.util.HashMap<>(Map.of("id",12L,"userId",42L,"status","CREDITED","netAmount",new BigDecimal("9")));

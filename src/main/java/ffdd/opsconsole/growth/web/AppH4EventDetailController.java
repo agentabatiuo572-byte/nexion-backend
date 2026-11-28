@@ -18,9 +18,20 @@ public class AppH4EventDetailController {
         catch(NumberFormatException ex){return ApiResult.fail(403,"USER_SUBJECT_REQUIRED");}
     }
     @PostMapping("/api/events/{eventCode}/reminder")
-    public ApiResult<Map<String,Object>> reminder(@PathVariable String eventCode,Authentication auth){
-        if(auth==null||!auth.isAuthenticated()||!(auth.getDetails() instanceof Map<?,?> details)||!"USER".equals(details.get("subjectType")))return ApiResult.fail(403,"USER_SUBJECT_REQUIRED");
-        try{return events.remind(Long.valueOf(String.valueOf(auth.getPrincipal())),eventCode);}
-        catch(NumberFormatException ex){return ApiResult.fail(403,"USER_SUBJECT_REQUIRED");}
+    public ApiResult<Map<String, Object>> reminder(
+            @PathVariable String eventCode,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication auth) {
+        if (auth == null || !auth.isAuthenticated()
+                || !(auth.getDetails() instanceof Map<?, ?> details)
+                || !"USER".equals(details.get("subjectType"))) {
+            return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        }
+        try {
+            Long userId = Long.valueOf(String.valueOf(auth.getPrincipal()));
+            return events.remind(userId, eventCode, idempotencyKey);
+        } catch (NumberFormatException ex) {
+            return ApiResult.fail(403, "USER_SUBJECT_REQUIRED");
+        }
     }
 }

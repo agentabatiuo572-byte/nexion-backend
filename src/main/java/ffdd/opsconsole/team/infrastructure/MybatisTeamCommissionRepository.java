@@ -58,6 +58,14 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
             case "teamGv" -> mapper.updateVRankTeamGv(rank, value) > 0;
             case "legCount" -> mapper.updateVRankLegCount(rank, value) > 0;
             case "legRank" -> mapper.updateVRankLegRank(rank, value == null ? null : String.valueOf(value)) > 0;
+            case "purchaseL1Rate" -> mapper.updatePurchaseL1Rate(rank, value) > 0;
+            case "purchaseL2Rate" -> mapper.updatePurchaseL2Rate(rank, value) > 0;
+            case "monthlySalaryUsdt" -> {
+                if (mapper.updateMonthlySalary(rank, value) != 1 || mapper.insertMonthlySalaryRate(rank, value) != 1) {
+                    throw new IllegalStateException("VRANK_SALARY_RATE_WRITE_FAILED");
+                }
+                yield true;
+            }
             default -> false;
         };
     }
@@ -362,6 +370,11 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
     }
 
     @Override
+    public boolean hasPreviouslyReachedVRank(Long userId, int rankLevel) {
+        return mapper.hasPreviouslyReachedVRank(userId, rankLevel);
+    }
+
+    @Override
     public boolean insertUserLevelLog(Long userId,
                                       String fromCode,
                                       String toCode,
@@ -380,7 +393,8 @@ public class MybatisTeamCommissionRepository implements TeamCommissionRepository
                 snapshotJson,
                 triggerEventId,
                 auditNo,
-                isManual ? 1 : 0) > 0;
+                isManual ? 1 : 0,
+                mapper.lockMonthlySalaryForArrival(toCode)) > 0;
     }
 
     // ============================================================

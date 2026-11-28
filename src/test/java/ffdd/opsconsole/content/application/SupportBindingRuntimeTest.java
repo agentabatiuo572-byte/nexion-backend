@@ -157,12 +157,12 @@ class SupportBindingRuntimeTest {
                 var holding=executor.submit(()->new TransactionTemplate(transactions).execute(status->{
                     as(sendFirst?first:boss);ownership.lockCustomer(customer);held.countDown();
                     try {if(!release.await(10,java.util.concurrent.TimeUnit.SECONDS))throw new IllegalStateException("release timeout");}catch(InterruptedException ex){throw new RuntimeException(ex);}
-                    return sendFirst?conversationCommands.reply(c.conversationNo(),key(),reply).getCode():bindings.transfer(key(),transfer).getCode();
+                    return sendFirst?conversationCommands.reply(c.conversationNo(),key(),reply, new org.springframework.mock.web.MockHttpServletResponse()).getCode():bindings.transfer(key(),transfer).getCode();
                 }));
                 assertThat(held.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
                 var blocked=executor.submit(()->{
                     as(sendFirst?boss:first);
-                    try {return sendFirst?bindings.transfer(key(),transfer).getCode():conversationCommands.reply(c.conversationNo(),key(),reply).getCode();}
+                    try {return sendFirst?bindings.transfer(key(),transfer).getCode():conversationCommands.reply(c.conversationNo(),key(),reply, new org.springframework.mock.web.MockHttpServletResponse()).getCode();}
                     catch(ffdd.opsconsole.shared.exception.BizException ex){return ex.getCode();}
                 });
                 Thread.sleep(100);assertThat(blocked.isDone()).isFalse();release.countDown();

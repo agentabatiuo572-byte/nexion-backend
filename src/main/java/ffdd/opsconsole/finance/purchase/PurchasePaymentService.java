@@ -1,5 +1,6 @@
 package ffdd.opsconsole.finance.purchase;
 
+import com.zaxxer.hikari.HikariDataSource;
 import ffdd.opsconsole.device.application.HostingCenterService;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -7,6 +8,8 @@ import ffdd.opsconsole.commerce.application.AppOrderCommandService;
 import ffdd.opsconsole.device.application.AppTradeinService;
 import ffdd.opsconsole.device.dto.*;
 import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
+import ffdd.opsconsole.growth.application.TrialPurchaseConflict;
+import ffdd.opsconsole.growth.application.TrialPurchaseOptions;
 import ffdd.opsconsole.finance.application.VietnamPaymentPolicy;
 import ffdd.opsconsole.finance.cregis.*;
 import ffdd.opsconsole.finance.hdpay.*;
@@ -20,11 +23,16 @@ import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.math.*;
+import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.*;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.support.JdbcUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -33,13 +41,27 @@ import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 import static ffdd.opsconsole.finance.purchase.PurchasePaymentPolicyService.money;
 
 /** Durable direct purchase intents. No wallet principal transaction belongs to this rail. */
-@Service @RequiredArgsConstructor
+@Service @RequiredArgsConstructor @Slf4j
 public class PurchasePaymentService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
 
     @Value("${PURCHASE_QUOTA_HOLD_ENABLED:false}")
     private boolean quotaHoldEnabled;
+
+    @Value("${NEXION_ORDER_USDT_TOPUP_ENABLED:false}")
+    private boolean orderUsdtTopupEnabled;
+
+    public boolean orderUsdtTopupEnabled() {
+        return orderUsdtTopupEnabled;
+    }
+
+    private void requireDirectMethod(String kind, String method) {
+        if (orderUsdtTopupEnabled && "ORDER_PAY".equals(kind)
+                && ("CREGIS_USDT_BSC".equals(method) || "CREGIS_USDT_ERC20".equals(method))) {
+            throw new BizException(409, "ORDER_USDT_USE_TOPUP");
+        }
+    }
 
     private final PurchasePaymentMapper db;
     private final PurchaseQuotaHolds quotaHolds;
@@ -62,10 +84,19 @@ public class PurchasePaymentService {
     private final Clock clock;
     private static final Set<String> KINDS=Set.of("ORDER_PAY","TRIAL_CONVERT","TRADE_IN","CAPACITY_REPLACE","CAPACITY_KEEP");
     private static final String TRIAL_CLAIM_SNAPSHOT = "trialClaimNo";
+    private static final String TRADEIN_PRICE_BASIS = "tradeinPricingBasis";
+    private static final String CATALOG_PRICE = "CATALOG_PRICE_V1";
+    private static final Set<String> NON_DELIVERABLE_FUNDS = Set.of("PAYMENT_AMOUNT_MISMATCH",
+            "PAYMENT_LATE_REVIEW", "PAYMENT_MULTIPLE_ARRIVALS", "PAYMENT_BEFORE_ALLOCATION",
+            "PAYMENT_TIME_UNVERIFIED", "PAYMENT_REFUNDED_REVIEW");
     private Instant now(){return clock.instant();}
     private static final String SELECT="SELECT * FROM nx_purchase_payment_intent WHERE intent_no=?";
+    // Match the purchase command unique index's case- and accent-insensitive key comparison.
+    private static final String COMMAND_WEIGHT = "HEX(WEIGHT_STRING(CONVERT(? USING utf8mb4) COLLATE utf8mb4_0900_ai_ci))";
+    private static final String CREATE_LOCK = "SHA2(CONCAT(DATABASE(), ':purchase-intent:', ?, ':', "
+            + COMMAND_WEIGHT + ", ':', " + COMMAND_WEIGHT + "), 256)";
     /** 报价、建单、超时和订单找回共用。已交付的付款可以进入财务核对，仍属于已完成的购买。 */
-    private static final String IN_PROGRESS="p.receipt_json IS NULL AND p.status NOT IN ('DELIVERED','EXPIRED')";
+    private static final String IN_PROGRESS="p.receipt_json IS NULL AND p.refund_receipt_json IS NULL AND p.status NOT IN ('DELIVERED','EXPIRED')";
 
     private <T> T tx(java.util.function.Supplier<T> work) {
         return new TransactionTemplate(transactions).execute(status -> work.get());
@@ -91,16 +122,79 @@ public class PurchasePaymentService {
         };
     }
     private static String method(CregisNetwork network){return network==CregisNetwork.BEP20?"CREGIS_USDT_BSC":"CREGIS_USDT_"+network.network();}
+
+    /** Channel availability for the original trial SKU, independent of its price and eligibility. */
+    public List<String> availableTrialPaymentMethods() {
+        Set<String> configured = new HashSet<>();
+        try {
+            for (var channel : maps(policy.current().get("channels"))) {
+                if (Boolean.TRUE.equals(channel.get("configured"))) {
+                    configured.add(text(channel.get("paymentMethod")));
+                }
+            }
+        } catch (RuntimeException unavailable) {
+            log.warn("Could not read trial purchase payment policy", unavailable);
+            return List.of("WALLET");
+        }
+
+        List<String> methods = new ArrayList<>();
+        methods.add("WALLET");
+        List<CregisNetwork> openNetworks = new ArrayList<>();
+        for (var network : CregisNetwork.values()) {
+            if (!configured.contains(method(network)) || !cregisDirectConfigured(network)) continue;
+            try {
+                cregisGate(network, true, false);
+                openNetworks.add(network);
+            } catch (BizException closed) {
+                // The provision gate or network switch is closed.
+            } catch (org.springframework.dao.DataAccessException unavailable) {
+                log.warn("Could not read trial purchase payment switch for {}", network, unavailable);
+            }
+        }
+        if (!openNetworks.isEmpty()) {
+            try {
+                var coins = crGateway.provider().projectCoins();
+                for (var network : openNetworks) {
+                    if (cregisAssetEnabled(network, coins)) methods.add(method(network));
+                }
+            } catch (CregisGatewayException unavailable) {
+                log.warn("Could not read Cregis purchase assets for trial: {}", unavailable.getMessage());
+            }
+        }
+        if (configured.contains("HDPAY_BANK")) {
+            try {
+                ready("HDPAY_BANK");
+                bankQuoteRate(fx.findFxQuoteConfig());
+                methods.add("HDPAY_BANK");
+            } catch (BizException | HdPayGatewayException closed) {
+                // The bank provider, server IP or quote configuration is unavailable.
+            } catch (RuntimeException unavailable) {
+                log.warn("Could not read trial purchase bank quote configuration", unavailable);
+            }
+        }
+        return methods;
+    }
+
+    private boolean cregisDirectConfigured(CregisNetwork network) {
+        return cr.getMode() == CregisProperties.Mode.PROVIDER && cr.isDepositEnabled()
+                && cr.isDepositCreditEnabled() && cr.getProjectId() > 0 && cr.confirmations(network) >= 15
+                && cr.networkConfigured(network) && cr.depositNetworkEnabled(network);
+    }
+
+    private static boolean cregisAssetEnabled(CregisNetwork network, List<CregisGateway.Coin> coins) {
+        return coins.stream().anyMatch(coin -> coin.addressEnabled() && network.chainId().equals(coin.chainId())
+                && network.tokenMatches(coin.tokenId()));
+    }
+
     private void ready(String method){
         if("HDPAY_BANK".equals(method)){
             if(!hd.ready())throw new BizException(503,"HDPAY_CONFIGURATION_INCOMPLETE");
             HdPayServerIp.requirePublicIpv4(hd.getServerIp());
         }else if(cregis(method)){
             var network=network(method);
-            if(cr.getMode()!=CregisProperties.Mode.PROVIDER||!cr.isDepositEnabled()||!cr.isDepositCreditEnabled()||cr.getProjectId()<=0||cr.confirmations(network)<15||!cr.networkConfigured(network)||!cr.depositNetworkEnabled(network))
+            if(!cregisDirectConfigured(network))
                 throw new BizException(503,"CREGIS_DIRECT_PAYMENT_UNAVAILABLE");
-            if(crGateway.provider().projectCoins().stream().noneMatch(coin->coin.addressEnabled()
-                    &&network.chainId().equals(coin.chainId())&&network.tokenMatches(coin.tokenId())))
+            if(!cregisAssetEnabled(network, crGateway.provider().projectCoins()))
                 throw new BizException(503,"CREGIS_DIRECT_PAYMENT_ASSET_UNAVAILABLE");
             cregisGate(network,true,false);
         }else throw new BizException(422,"PURCHASE_PAYMENT_METHOD_INVALID");
@@ -133,16 +227,25 @@ public class PurchasePaymentService {
         if(payload.containsKey("paymentPassword")||payload.containsKey("credentialVersion")||payload.containsKey("attemptNo"))
             throw new BizException(422,"EXTERNAL_PAYMENT_CREDENTIAL_FORBIDDEN");
         user(owner,false);
-        requireNoActiveIntent(owner, kind, payload, Map.of());
-        ready(method);
-        return tx(()->{
+        if (!"TRIAL_CONVERT".equals(kind)) {
+            requireNoActiveIntent(owner, kind, payload, Map.of());
+            requireDirectMethod(kind, method);
+        }
+        if ("CAPACITY_REPLACE".equals(kind)) throw new BizException(409,"CAPACITY_REPLACEMENT_PURCHASE_RETIRED");
+        return writeTx(()->{
             user(owner,true);
             requireNoActiveIntent(owner, kind, payload, Map.of());
+            requireDirectMethod(kind, method);
             Instant trialDeadline = "TRIAL_CONVERT".equals(kind) ? trials.requireExternalPaymentConversion(owner) : null;
             Instant pricingAt=now();
             var target=new ReplacementTarget();
-            var pricing=pricing(owner,kind,payload,pricingAt,false,true,target,false,null);
-            if("ORDER_PAY".equals(kind))payload.put("orderNo",pricing.get("orderNo"));
+            var pricing=pricing(owner,kind,payload,pricingAt,false,false,true,target,false,null,Map.of(),true,false);
+            if ("ORDER_PAY".equals(kind)) {
+                payload.put("orderNo", pricing.get("orderNo"));
+                requireOrdinaryOrderPayment(owner, payload);
+            }
+            if ("TRIAL_CONVERT".equals(kind)) trials.requireExternalPaymentProduct(owner, text(payload.get("productNo")));
+            ready(method);
             BigDecimal subtotal=money(pricing.get("subtotalUsdt"));
             if(subtotal.signum()<=0)throw new BizException(409,"ZERO_PAYMENT_REQUIRES_WALLET");
             checkPurchaseQuota(owner,kind,payload,pricing,target);
@@ -160,24 +263,40 @@ public class PurchasePaymentService {
                     "roundingAdjustmentUsdt",subtotal.subtract(new BigDecimal(text(pricing.get("businessAmountUsdt")))).setScale(6,RoundingMode.UNNECESSARY).toPlainString(),"channelFeeRatePct",rate.toPlainString(),"channelFeeFixed",fixed.toPlainString(),
                     "channelFeeUsdt",fee.toPlainString(),"networkConfirmFeeUsdt",network.toPlainString(),"totalUsdt",total.toPlainString(),
                     "feePolicyVersion",current.get("version"),"paymentFeesConfigured",true,"pricingAsOf",pricingAt.toString(),"expiresAt",expires.toString(),"deadlineAt",deadline.toString(),"confirmationGraceEndsAt",graceEnd(method,deadline).toString(),"currency","HDPAY_BANK".equals(method)?"VND":"USDT");
-            if("TRIAL_CONVERT".equals(kind))quote.put("trialOffsetBasis","ACCRUED");
+            if ("TRIAL_CONVERT".equals(kind)) quote.put("trialOffsetBasis", "ACCRUED_B90");
             if("HDPAY_BANK".equals(method)){
-                var config=fx.findFxQuoteConfig();if(config==null)throw new BizException(503,"FX_QUOTE_UNAVAILABLE");
-                BigDecimal quoted=VietnamPaymentPolicy.quoteRate(new BigDecimal(text(config.get("baseRateVndPerUsdt"))),new BigDecimal(text(config.get("buySpreadPct"))));
-                if(quoted.signum()<=0)throw new BizException(503,"FX_QUOTE_UNAVAILABLE");
+                var config=fx.findFxQuoteConfig();
+                BigDecimal quoted=bankQuoteRate(config);
                 quote.put("fxRateVndPerUsdt",quoted.toPlainString());quote.put("fxVersion",config.get("version"));
                 quote.put("amountVnd",total.multiply(quoted).setScale(0,RoundingMode.HALF_UP).toPlainString());
             }
             var snapshot = quote;
-            if ("TRIAL_CONVERT".equals(kind)) {
+            if ("TRADE_IN".equals(kind)) {
                 snapshot = new LinkedHashMap<>(quote);
-                snapshot.put(TRIAL_CLAIM_SNAPSHOT, map(pricing.get("trial")).get("claimNo"));
+                snapshot.put(TRADEIN_PRICE_BASIS, CATALOG_PRICE);
+            } else if ("TRIAL_CONVERT".equals(kind)) {
+                var trialPricing = map(pricing.get("trial"));
+                snapshot = new LinkedHashMap<>(quote);
+                snapshot.put(TRIAL_CLAIM_SNAPSHOT, trialPricing.get("claimNo"));
+                snapshot.putAll(trials.externalDeviceSnapshot(owner, text(payload.get("productNo")), trialPricing));
+                snapshot.put("trialPricingPolicy", trialPricing.get("trialPricingPolicy"));
+                var breakdown = new LinkedHashMap<>(map(snapshot.get("trialPurchaseBreakdown")));
+                exposeTrialQuoteTerms(breakdown, trialPricing);
+                quote.put("trialPurchaseBreakdown", breakdown);
             }
             db.write("INSERT INTO nx_purchase_payment_quote(quote_id,user_id,kind,payment_method,payload_json,quote_json,pricing_hash,expires_at) VALUES(?,?,?,?,?,?,?,?)",
                     id,owner,kind,method,json(payload),json(snapshot),hash(pricing),timestamp(expires));
             return quote;
         });
     }
+    private BigDecimal bankQuoteRate(Map<String, Object> config) {
+        if (config == null) throw new BizException(503, "FX_QUOTE_UNAVAILABLE");
+        BigDecimal rate = VietnamPaymentPolicy.quoteRate(new BigDecimal(text(config.get("baseRateVndPerUsdt"))),
+                new BigDecimal(text(config.get("buySpreadPct"))));
+        if (rate.signum() <= 0) throw new BizException(503, "FX_QUOTE_UNAVAILABLE");
+        return rate;
+    }
+
     private List<Map<String,Object>> activeIntents(Object owner,Object kind,String payload,String excluding){
         // Resolve legacy aliases with the actual order column's collation, not JSON/string equality.
         return db.rows("SELECT p.intent_no,p.kind,p.status,p.reason,p.confirmed_at,p.receipt_json FROM nx_purchase_payment_intent p WHERE p.user_id=? AND p.kind=? AND p.intent_no<>? AND "+IN_PROGRESS+" AND ((p.kind='ORDER_PAY' AND EXISTS(SELECT 1 FROM nx_order o WHERE o.order_no=JSON_UNQUOTE(JSON_EXTRACT(p.payload_json,'$.orderNo')) AND o.order_no=?)) OR (p.kind<>'ORDER_PAY' AND p.payload_json=CAST(? AS JSON)))",owner,kind,excluding,text(parse(payload).get("orderNo")),payload);
@@ -189,7 +308,11 @@ public class PurchasePaymentService {
      * 客户端可凭它读回原单。写入路径不变，不新建单据、不扣款。
      */
     private void requireNoActiveIntent(long owner, String kind, Map<String,Object> payload, Map<String,Object> quote) {
-        String intentNo = hasActiveBusinessIntent(owner, kind, payload, quote);
+        if ("TRIAL_CONVERT".equals(kind)) {
+            trials.requireNoOriginalPurchase(owner, true);
+            return;
+        }
+        String intentNo = hasActiveBusinessIntent(owner, kind, payload);
         if (intentNo == null) return;
         // 覆盖置换、换容量、保留全部设备与试用转购；普通订单(ORDER_PAY)保持原回包不变。
         if ("ORDER_PAY".equals(kind)) throw new BizException(409, "PURCHASE_PAYMENT_EXISTING_INTENT_REQUIRED");
@@ -197,7 +320,7 @@ public class PurchasePaymentService {
     }
 
     /** 已核对（owner + kind + 同一业务身份）且仍在途的原付款单号；不打单时返回 null。 */
-    private String hasActiveBusinessIntent(long owner, String kind, Map<String,Object> payload, Map<String,Object> quote) {
+    private String hasActiveBusinessIntent(long owner, String kind, Map<String,Object> payload) {
         if ("ORDER_PAY".equals(kind)) {
             var active = activeIntents(owner, kind, json(payload), "");
             return active.isEmpty() ? null : text(active.get(0).get("intent_no"));
@@ -206,21 +329,6 @@ public class PurchasePaymentService {
         var active = db.rows("SELECT p.intent_no,p.payload_json,p.quote_json FROM nx_purchase_payment_intent p"
                 + " WHERE p.user_id=? AND p.kind=? AND " + IN_PROGRESS, owner, kind);
         if (active.isEmpty()) return null;
-        if ("TRIAL_CONVERT".equals(kind)) {
-            var currentClaim = trials.currentExternalPaymentClaim(owner);
-            String claimNo = trialClaimNo(quote, currentClaim);
-            if (claimNo == null) return null;
-            return active.stream()
-                    .filter(intent -> claimNo.equals(trialClaimNo(parse(intent.get("quote_json")), currentClaim)))
-                    .findFirst()
-                    .map(intent -> {
-                        var originalPayload = parse(intent.get("payload_json"));
-                        AppTrialLifecycleService.requireExternalPaymentProduct(
-                                text(payload.get("productNo")), text(originalPayload.get("productNo")));
-                        return text(intent.get("intent_no"));
-                    }).orElse(null);
-        }
-
         var identity = replacementIdentity(kind, payload);
         if (identity == null) return null;
         return active.stream()
@@ -231,12 +339,8 @@ public class PurchasePaymentService {
 
     private String trialClaimNo(Map<String,Object> quote, AppTrialLifecycleService.ExternalPaymentClaim currentClaim) {
         if (quote.get(TRIAL_CLAIM_SNAPSHOT) instanceof String claimNo) return claimNo;
-        if (currentClaim == null) return null;
-        // A restarted claim has a new number and start time. Older snapshots carry only the quote instant.
-        if (!quote.isEmpty() && Instant.parse(text(quote.get("pricingAsOf"))).isBefore(currentClaim.claimedAt())) {
-            return null;
-        }
-        return currentClaim.claimNo();
+        return currentClaim != null && (quote.isEmpty() || currentClaim.matches(null, text(quote.get("pricingAsOf"))))
+                ? currentClaim.claimNo() : null;
     }
 
     private record ReplacementIdentity(Long sourceDeviceId, String targetProductNo) { }
@@ -290,10 +394,46 @@ public class PurchasePaymentService {
         if (!deadline.isAfter(current)) throw new BizException(409, "ORDER_PAYMENT_EXPIRED");
     }
     static Instant graceEnd(Object method,Instant deadline){return deadline.plusSeconds("CREGIS_USDT_BSC".equals(method)?180:300);}
+    public boolean lateTrialPaymentCanReselect(String intentNo, String method, Instant deadline, Instant providerDeadline,
+            String reason, String status, Instant paidAt, Instant confirmedAt, Instant now) {
+        return "MANUAL_REVIEW".equals(status) && "PAYMENT_LATE_REVIEW".equals(reason)
+                && confirmedAt != null && paidAt != null && !paidAt.isAfter(confirmedAt)
+                && !paidAt.isBefore(effectivePaymentDeadline(deadline, providerDeadline))
+                && !now.isBefore(graceEnd(method, deadline))
+                && verifiedLateTrialArrival(intentNo, method);
+    }
+
+    // Old quota-release processing could label any arrival as late. Check the persisted payment evidence.
+    private boolean verifiedLateTrialArrival(String intentNo, String method) {
+        if ("HDPAY_BANK".equals(method)) {
+            return db.one("""
+                    SELECT 1 FROM nx_purchase_payment_intent
+                     WHERE intent_no=? AND paid_at>=created_at AND confirmed_bank_amount_vnd>0
+                       AND confirmed_bank_amount_vnd=CAST(JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.amountVnd')) AS DECIMAL(20,0))
+                    """, intentNo) != null;
+        }
+        if (!cregis(method)) return false;
+        return db.one("""
+                SELECT 1 FROM nx_purchase_payment_arrival a
+                  JOIN nx_purchase_payment_intent p ON p.intent_no=a.intent_no AND p.provider_project=a.provider_project
+                  JOIN nx_cregis_deposit_address d ON d.purchase_intent_no=a.intent_no AND d.chain_id=a.chain_id
+                   AND d.purpose='PURCHASE_DIRECT' AND d.state='DIRECT_PURCHASE'
+                 WHERE a.intent_no=? AND a.chain_id=?
+                   AND a.block_number>d.allocation_block AND a.amount>0
+                   AND a.amount=CAST(JSON_UNQUOTE(JSON_EXTRACT(p.quote_json,'$.totalUsdt')) AS DECIMAL(38,18))
+                   AND NOT EXISTS (SELECT 1 FROM nx_purchase_payment_arrival other
+                                   WHERE other.intent_no=a.intent_no AND other.id<>a.id)
+                """, intentNo, network(method).chainId()) != null;
+    }
+
+    public static Instant effectivePaymentDeadline(Instant deadline, Instant providerDeadline) {
+        return providerDeadline != null && providerDeadline.isBefore(deadline) ? providerDeadline : deadline;
+    }
+
     private Instant deadline(Map<String,Object> row){return instant(row.get("expires_at"));}
     private Instant paymentDeadline(Map<String,Object> row){
-        Instant deadline=deadline(row);
-        return row.get("provider_expires_at")!=null&&instant(row.get("provider_expires_at")).isBefore(deadline)?instant(row.get("provider_expires_at")):deadline;
+        return effectivePaymentDeadline(deadline(row),
+                row.get("provider_expires_at") == null ? null : instant(row.get("provider_expires_at")));
     }
     static String arrivalReason(Instant deadline,Instant graceEndsAt,Instant paidAt,Instant observedAt){
         if(!observedAt.isBefore(graceEndsAt))return "PAYMENT_LATE_REVIEW";
@@ -306,8 +446,9 @@ public class PurchasePaymentService {
         db.write("INSERT IGNORE INTO nx_purchase_payment_result(notification_key,intent_no,outcome,user_id,order_no) VALUES(?,?,?,?,?)",key,row.get("intent_no"),status,row.get("user_id"),orderNo);
     }
     private Map<String,Object> pricing(long owner,String kind,Map<String,Object> payload,Instant pricingAt,
-                                      boolean legacyTrialQuote, boolean checkReplacementSource, ReplacementTarget target,
-                                      boolean lockReplacement, PurchaseQuotaReservation reservation){
+                                      boolean legacyTrialQuote, boolean legacyTrialVersion, boolean checkReplacementSource, ReplacementTarget target,
+                                      boolean lockReplacement, PurchaseQuotaReservation reservation, Map<String, String> trialPolicy,
+                                      boolean newQuote, boolean legacyTradeinPricing){
         hostingCenters.requirePool();
         switch(kind){
             case "ORDER_PAY":{
@@ -322,39 +463,59 @@ public class PurchasePaymentService {
                 var q = require(tradeins.externalPaymentQuote(owner,
                         new AppTradeinQuoteRequest(optionalLong(payload.get("sourceDeviceId")),
                                 optionalLong(payload.get("targetProductId")), text(payload.get("targetProductNo"))),
-                        lockReplacement, reservation));
+                        lockReplacement, reservation, legacyTradeinPricing));
                 if(payload.get("expectedSourceVersion")==null||number(payload.get("expectedSourceVersion"))!=q.sourceRowVersion())
                     throw new BizException(409,"TRADEIN_SOURCE_VERSION_CONFLICT");
+                if (newQuote) {
+                    var reviewed = jsonMapper.convertValue(payload, AppTradeinSubmitRequest.class);
+                    if (reviewed.expectedPayableUsdt() == null || reviewed.expectedDiscountUsdt() == null) {
+                        throw new BizException(409, "TRADEIN_QUOTE_CHANGED");
+                    }
+                    AppTradeinService.requireExpectedAmounts(reviewed.expectedPayableUsdt(), reviewed.expectedDiscountUsdt(), q);
+                }
                 if(checkReplacementSource)tradeins.requireRecyclableSource(owner,q.sourceDeviceId());
                 if(target!=null)target.productNo=q.targetProductNo();
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"sourceVersion",q.sourceRowVersion(),"sourceDeviceId",q.sourceDeviceId(),
                         "targetProductId",q.targetProductId(),"targetPrice",q.targetPriceUsdt().toPlainString(),"discount",q.discountUsdt().toPlainString());
             }
             case "CAPACITY_REPLACE":case "CAPACITY_KEEP":{
+                boolean replace = "CAPACITY_REPLACE".equals(kind);
                 var q = require(tradeins.externalCapacityQuote(owner,
-                        new AppCapacityReplaceQuoteRequest(text(payload.get("targetProductNo"))), lockReplacement, reservation));
-                String wanted="CAPACITY_REPLACE".equals(kind)?"REPLACE_REQUIRED":"CAPACITY_AVAILABLE";
-                if(!wanted.equals(q.decision()))throw new BizException(409,"CAPACITY_REPLACEMENT_SOURCE_CHANGED");
-                if (checkReplacementSource && "CAPACITY_REPLACE".equals(kind)) {
+                        new AppCapacityReplaceQuoteRequest(text(payload.get("targetProductNo"))), lockReplacement, replace, reservation));
+                if (replace && !"REPLACE_REQUIRED".equals(q.decision()))
+                    throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
+                if (checkReplacementSource && replace) {
                     Long requestedSourceId = capacitySourceId(payload);
                     if (requestedSourceId == null || !requestedSourceId.equals(q.sourceDeviceId())) {
                         throw new BizException(409, "CAPACITY_REPLACEMENT_SOURCE_CHANGED");
                     }
                     tradeins.requireRecyclableSource(owner, q.sourceDeviceId());
                 }
-                var source=q.sourceDeviceId()==null?null:db.one("SELECT id,row_version,status,ownership_status FROM nx_user_device WHERE id=? AND user_id=?",q.sourceDeviceId(),owner);
+                var source=replace&&q.sourceDeviceId()!=null?db.one("SELECT id,row_version,status,ownership_status FROM nx_user_device WHERE id=? AND user_id=?",q.sourceDeviceId(),owner):null;
                 if(target!=null)target.productNo=q.targetProductNo();
                 return values("businessAmountUsdt",q.payableUsdt().toPlainString(),"subtotalUsdt",money(q.payableUsdt()).toPlainString(),"targetProductId",q.targetProductId(),"source",source);
             }
             case "TRIAL_CONVERT":{
-                var q=require(trials.externalPaymentPricing(owner,pricingAt,legacyTrialQuote));
-                if(payload.get("quoteVersion")!=null&&!text(payload.get("quoteVersion")).equals(text(q.get("quoteVersion"))))throw new BizException(409,"TRIAL_QUOTE_CHANGED");
-                if(!legacyTrialQuote){
-                    String expected=text(payload.get("expectedAmountUsdt"));
-                    if(!expected.matches("[0-9]{1,7}(\\.[0-9]{1,2})?")||new BigDecimal(expected).compareTo(new BigDecimal("1000000"))>0)throw new BizException(409,"TRIAL_AMOUNT_INVALID");
-                    if(money(q.get("amountUsdt")).compareTo(new BigDecimal(expected))>0)throw new BizException(409,"TRIAL_AMOUNT_MISMATCH");
+                var q = require(trials.externalPaymentPricing(owner, pricingAt, legacyTrialQuote, legacyTrialVersion, trialPolicy));
+                if (!legacyTrialVersion) {
+                    trials.requireExternalPaymentProduct(text(payload.get("productNo")), text(q.get("productNo")));
                 }
-                return values("businessAmountUsdt",text(q.get("amountUsdt")),"subtotalUsdt",money(q.get("amountUsdt")).toPlainString(),"quoteVersion",q.get("quoteVersion"),"productNo",payload.get("productNo"),"trial",q);
+                if ((!legacyTrialVersion || payload.get("quoteVersion") != null)
+                        && !text(payload.get("quoteVersion")).equals(text(q.get("quoteVersion")))) {
+                    throw trialQuoteConflict("TRIAL_QUOTE_CHANGED", payload, q);
+                }
+                String expected = text(payload.get("expectedAmountUsdt"));
+                if (!legacyTrialQuote && (!expected.matches("[0-9]{1,7}(\\.[0-9]{1,2})?")
+                        || new BigDecimal(expected).compareTo(new BigDecimal("1000000")) > 0)) {
+                    throw new BizException(409, "TRIAL_AMOUNT_INVALID");
+                }
+                Object businessAmount = q.get("amountUsdt");
+                if (newQuote) requireExternalTrialAmount(businessAmount);
+                BigDecimal subtotal = money(businessAmount);
+                if (!legacyTrialQuote && subtotal.compareTo(new BigDecimal(expected)) > 0) {
+                    throw trialQuoteConflict("TRIAL_AMOUNT_MISMATCH", payload, q);
+                }
+                return values("businessAmountUsdt",text(businessAmount),"subtotalUsdt",subtotal.toPlainString(),"quoteVersion",q.get("quoteVersion"),"productNo",payload.get("productNo"),"trial",q);
             }
             default:throw new BizException(422,"PURCHASE_PAYMENT_KIND_INVALID");
         }
@@ -404,39 +565,182 @@ public class PurchasePaymentService {
 
     private static <T> T require(ApiResult<T> response){if(response==null||response.getCode()!=0)throw new BizException(response==null?503:response.getCode(),response==null?"PURCHASE_PAYMENT_UNAVAILABLE":response.getMessage());return response.getData();}
     private static Long optionalLong(Object value){return value==null?null:number(value);}
+
+    private static void requireExternalTrialAmount(Object amount) {
+        if (amount != null && TrialPurchaseOptions.isPositiveSubcent(new BigDecimal(text(amount)))) {
+            throw new BizException(409, "TRIAL_PAYMENT_AMOUNT_REQUIRES_WALLET");
+        }
+    }
+
     private void requireUnusedQuote(String quoteId) {
         if (db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE quote_id=?", quoteId) != null) {
             throw new BizException(409, "PURCHASE_PAYMENT_QUOTE_ALREADY_USED");
         }
     }
 
-    private record CreatePreflight(Map<String,Object> quote, Map<String,Object> replay) { }
+    private TrialPurchaseConflict trialQuoteConflict(String code, Map<String, Object> payload, Map<String, Object> current) {
+        var quote = new LinkedHashMap<>(current);
+        exposeTrialQuoteTerms(quote, current);
+        quote.remove("trialPricingPolicy");
+        quote.replaceAll((key, value) -> value instanceof BigDecimal amount ? TrialPurchaseOptions.amount(amount) : value);
+        return new TrialPurchaseConflict(code, values("claimNo", quote.get("claimNo"), "productNo", payload.get("productNo"),
+                "quoteVersion", quote.get("quoteVersion"), "quote", quote));
+    }
+
+    private void exposeTrialQuoteTerms(Map<String, Object> view, Map<String, Object> pricing) {
+        var terms = map(pricing.get("trialPricingPolicy"));
+        if (terms.isEmpty()) return;
+        view.put("discountRate", new BigDecimal(text(terms.get("discountRate"))).stripTrailingZeros().toPlainString());
+        view.put("discountCapUsdt", TrialPurchaseOptions.amount(new BigDecimal(text(terms.get("discountCapUSD")))));
+        view.put("earlyDiscountConfiguredUsdt", TrialPurchaseOptions.amount((BigDecimal) pricing.get("earlyDiscountConfiguredUsdt")));
+    }
+
+    private Map<String, String> frozenTrialPolicy(Map<String, Object> quote) {
+        var policy = new LinkedHashMap<String, String>();
+        map(quote.get("trialPricingPolicy")).forEach((key, value) -> policy.put(key, text(value)));
+        return policy;
+    }
+
+    private record CreatePreflight(Map<String,Object> quote, Map<String,Object> replay, TrialPurchaseConflict rejection) { }
+
+    private void requireOrdinaryOrderPayment(long owner, Map<String, Object> payload) {
+        if (orders.requiresTrialConversionForPendingOrder(owner, text(payload.get("orderNo")))) {
+            throw new BizException(409, AppTrialLifecycleService.ORDER_TRIAL_DEVICE_REQUIRES_CONVERSION);
+        }
+    }
 
     private CreatePreflight createPreflight(long owner, String key, String quoteId) {
         var originalQuote=db.one("SELECT * FROM nx_purchase_payment_quote WHERE quote_id=? AND user_id=?",quoteId,owner);
         if(originalQuote==null)throw new BizException(404,"PURCHASE_PAYMENT_QUOTE_NOT_FOUND");
+        String kind = text(originalQuote.get("kind"));
+        boolean trial = "TRIAL_CONVERT".equals(kind);
+        boolean order = "ORDER_PAY".equals(kind);
+        if (trial) user(owner, true);
         var existing=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,originalQuote.get("kind"),key);
         if(existing!=null){
             if(!quoteId.equals(existing.get("quote_id")))throw new BizException(409,"IDEMPOTENCY_KEY_CONFLICT");
-            return new CreatePreflight(originalQuote, existing);
+            return new CreatePreflight(originalQuote, existing, null);
         }
-        requireUnusedQuote(quoteId);
-        requireNoActiveIntent(owner, text(originalQuote.get("kind")), parse(originalQuote.get("payload_json")),
+        if (trial) {
+            var prior = externalRejection(owner, key, quoteId);
+            if (prior != null) return new CreatePreflight(originalQuote, null, prior);
+        }
+        if (order) user(owner, true);
+        // New replacement quotes are retired. The owner's original stored quote
+        // can still proceed through the existing one-use, expiry and pricing checks.
+        var payload = parse(originalQuote.get("payload_json"));
+        requireNoActiveIntent(owner, kind, payload,
                 parse(originalQuote.get("quote_json")));
-        return new CreatePreflight(originalQuote, null);
+        requireUnusedQuote(quoteId);
+        requireDirectMethod(kind, text(originalQuote.get("payment_method")));
+        if (order) requireOrdinaryOrderPayment(owner, payload);
+        return new CreatePreflight(originalQuote, null, trial ? checkTrialConfirmation(owner, key, originalQuote) : null);
+    }
+
+    private TrialPurchaseConflict externalRejection(long owner, String key, String quoteId) {
+        var prior = db.one("SELECT quote_id,receipt_json FROM nx_trial_external_rejection WHERE user_id=? AND command_key=?", owner, key);
+        if (prior == null) return null;
+        if (quoteId != null && !quoteId.equals(prior.get("quote_id"))) throw new BizException(409, "IDEMPOTENCY_KEY_CONFLICT");
+        var receipt = parse(prior.get("receipt_json"));
+        return new TrialPurchaseConflict(text(receipt.get("message")), map(receipt.get("data")));
+    }
+
+    private TrialPurchaseConflict checkTrialConfirmation(long owner, String key, Map<String, Object> storedQuote) {
+        trials.requireExternalPaymentConversion(owner);
+        var frozen = parse(storedQuote.get("quote_json"));
+        var payload = parse(storedQuote.get("payload_json"));
+        var current = require(trials.externalPaymentPricing(owner, now(), false, false, Map.of()));
+        if (frozen.get(TRIAL_CLAIM_SNAPSHOT) instanceof String claim && !claim.equals(current.get("claimNo"))) {
+            throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+        }
+        if ("ACCRUED_B90".equals(frozen.get("trialOffsetBasis"))
+                && text(payload.get("quoteVersion")).equals(text(current.get("quoteVersion")))) {
+            var currentAmount = (BigDecimal) current.get("amountUsdt");
+            if (currentAmount.signum() == 0) {
+                throw new BizException(409, "ZERO_PAYMENT_REQUIRES_WALLET");
+            }
+            requireExternalTrialAmount(currentAmount);
+            requireExternalTrialAmount(frozen.get("businessAmountUsdt"));
+            return null;
+        }
+        var rejection = trialQuoteConflict("TRIAL_QUOTE_CHANGED", payload, current);
+        db.write("INSERT INTO nx_trial_external_rejection(user_id,command_key,quote_id,receipt_json) VALUES(?,?,?,?)",
+                owner, key, storedQuote.get("quote_id"), json(values("message", rejection.getMessage(), "data", rejection.errorData())));
+        return rejection;
     }
 
     public Map<String,Object> create(long owner,String key,String quoteId){
         if(key==null||key.isBlank()||key.length()>128)throw new BizException(422,"IDEMPOTENCY_KEY_REQUIRED");
-        var preflight=tx(()->createPreflight(owner,key,quoteId));
-        if(preflight.replay()!=null)return get(owner,text(preflight.replay().get("intent_no")));
+        var quote = db.one("SELECT kind FROM nx_purchase_payment_quote WHERE quote_id=? AND user_id=?", quoteId, owner);
+        if (quote == null) throw new BizException(404, "PURCHASE_PAYMENT_QUOTE_NOT_FOUND");
+        var reservation = reserveWithCreationLock(owner, text(quote.get("kind")), key, quoteId);
+        if (reservation.get("rejection") instanceof TrialPurchaseConflict rejection) throw rejection;
+        var intent = map(reservation.get("intent"));
+        if (Boolean.TRUE.equals(reservation.get("winner"))) submit(intent);
+        return get(owner, text(intent.get("intent_no")));
+    }
+
+    private Map<String, Object> reserveWithCreationLock(long owner, String kind, String key, String quoteId) {
+        var source = Objects.requireNonNull(((DataSourceTransactionManager) transactions).getDataSource());
+        // A session lock keeps the existing preflight and reservation transactions independent.
+        Connection connection = null;
+        try {
+            connection = source.getConnection();
+            if (creationLockCommand(connection, "SELECT GET_LOCK(" + CREATE_LOCK + ", 0)", owner, kind, key) == 0) {
+                throw new BizException(409, "PURCHASE_PAYMENT_INTENT_PROCESSING");
+            }
+            try {
+                return reserveIntent(owner, key, quoteId);
+            } finally {
+                try {
+                    if (creationLockCommand(connection, "SELECT RELEASE_LOCK(" + CREATE_LOCK + ")", owner, kind, key) != 1) {
+                        throw new SQLException("Purchase creation lock was lost");
+                    }
+                } catch (SQLException failure) {
+                    // The reservation or rejection may already be committed. Preserve its original outcome.
+                    if (source instanceof HikariDataSource pooled) pooled.evictConnection(connection);
+                    log.warn("Purchase creation lock release failed; discarded lock session");
+                }
+            }
+        } catch (SQLException failure) {
+            if (connection != null && source instanceof HikariDataSource pooled) pooled.evictConnection(connection);
+            throw new BizException(503, "PURCHASE_PAYMENT_CREATE_UNAVAILABLE");
+        } finally {
+            JdbcUtils.closeConnection(connection);
+        }
+    }
+
+    private int creationLockCommand(Connection connection, String statement, long owner, String kind, String key)
+            throws SQLException {
+        try (var command = connection.prepareStatement(statement)) {
+            command.setLong(1, owner);
+            command.setString(2, kind);
+            command.setString(3, key);
+            try (var row = command.executeQuery()) {
+                if (row.next()) {
+                    int value = row.getInt(1);
+                    if (!row.wasNull()) return value;
+                }
+                throw new SQLException("Purchase creation lock result is unavailable");
+            }
+        }
+    }
+
+    private Map<String, Object> reserveIntent(long owner, String key, String quoteId) {
+        var preflight=writeTx(()->createPreflight(owner,key,quoteId));
+        if (preflight.rejection() != null) throw preflight.rejection();
+        if (preflight.replay() != null) return values("intent", preflight.replay(), "winner", false);
         var originalQuote=preflight.quote();
+        if ("TRADE_IN".equals(originalQuote.get("kind"))
+                && !CATALOG_PRICE.equals(parse(originalQuote.get("quote_json")).get(TRADEIN_PRICE_BASIS))) {
+            throw new BizException(409, "PURCHASE_PAYMENT_PRICING_CHANGED");
+        }
         boolean bsc=cregis(originalQuote.get("payment_method"));
         CregisNetwork network=bsc?network(originalQuote.get("payment_method")):null;
         ready(text(originalQuote.get("payment_method")));
         Map<String,Object> candidate=bsc?dedicatedAddress(network):null;
         // HDPay commits the immutable intent before create; BSC atomically dedicates an existing proven pool address.
-        var reservation=writeTx(()->{
+        return writeTx(()->{
             if(bsc)cregisGate(network,true,true);
             if ("ORDER_PAY".equals(originalQuote.get("kind"))) {
                 String orderNo = text(parse(originalQuote.get("payload_json")).get("orderNo"));
@@ -449,11 +753,21 @@ public class PurchasePaymentService {
             if(quote==null)throw new BizException(404,"PURCHASE_PAYMENT_QUOTE_NOT_FOUND");
             var prior=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,quote.get("kind"),key);
             if(prior!=null){if(!quoteId.equals(prior.get("quote_id")))throw new BizException(409,"IDEMPOTENCY_KEY_CONFLICT");return values("intent",prior,"winner",false);}
-            requireUnusedQuote(quoteId);
             var frozenQuote=parse(quote.get("quote_json"));
             String kind=text(quote.get("kind"));
             var payload=parse(quote.get("payload_json"));
+            if ("TRIAL_CONVERT".equals(kind)) {
+                var rejection = externalRejection(owner, key, quoteId);
+                if (rejection != null) return values("rejection", rejection);
+            }
             requireNoActiveIntent(owner, kind, payload, frozenQuote);
+            requireUnusedQuote(quoteId);
+            if ("ORDER_PAY".equals(kind)) requireOrdinaryOrderPayment(owner, payload);
+            if ("TRIAL_CONVERT".equals(kind)) {
+                var rejection = checkTrialConfirmation(owner, key, quote);
+                if (rejection != null) return values("rejection", rejection);
+                trials.lockExternalPaymentProduct(owner, text(payload.get("productNo")));
+            }
             Instant trialDeadline = "TRIAL_CONVERT".equals(kind) ? trials.requireExternalPaymentConversion(owner) : null;
             Instant pricingAt = Instant.parse(text(frozenQuote.get("pricingAsOf")));
             Instant calculatedDeadline = deadline(kind, payload, pricingAt, trialDeadline);
@@ -465,8 +779,14 @@ public class PurchasePaymentService {
             if(feeVersion==null||number(feeVersion.get("version"))!=number(frozenQuote.get("feePolicyVersion")))
                 throw new BizException(409,"PURCHASE_PAYMENT_FEE_POLICY_CHANGED");
             var target=new ReplacementTarget();
-            var pricing=pricing(owner,kind,payload,pricingAt,!frozenQuote.containsKey("trialOffsetBasis"),true,target,quotaHoldEnabled,null);
+            var pricing=pricing(owner, kind, payload, pricingAt, !frozenQuote.containsKey("trialOffsetBasis"),
+                    !"ACCRUED_B90".equals(frozenQuote.get("trialOffsetBasis")), true, target, quotaHoldEnabled, null,
+                    frozenTrialPolicy(frozenQuote), false, false);
             if(!hash(pricing).equals(quote.get("pricing_hash")))throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
+            if ("TRIAL_CONVERT".equals(kind) && frozenQuote.get("businessAmountUsdt") == null) {
+                // Legacy quotes without an exact amount rely on the revalidated original business pricing.
+                requireExternalTrialAmount(pricing.get("businessAmountUsdt"));
+            }
             ready(text(quote.get("payment_method")));
             if (!quotaHoldEnabled) {
                 checkPurchaseQuota(owner,kind,payload,pricing,target);
@@ -491,9 +811,6 @@ public class PurchasePaymentService {
             }
             return values("intent",db.one(SELECT,no),"winner",!bsc);
         });
-        var intent=map(reservation.get("intent"));String no=text(intent.get("intent_no"));
-        if(Boolean.TRUE.equals(reservation.get("winner")))submit(intent);
-        return get(owner,no);
     }
     private void submit(Map<String,Object> intent){
         String no=text(intent.get("intent_no"));String method=text(intent.get("payment_method"));
@@ -514,9 +831,26 @@ public class PurchasePaymentService {
         }
     }
     public Map<String,Object> lookup(long owner,String kind,String key){
-        var row=db.one("SELECT * FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?",owner,kind,key);
-        if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");return get(owner,text(row.get("intent_no")));
+        String intent = intentNoByCommand(owner, kind, key);
+        if (intent != null) return get(owner, intent);
+        var attempt = db.one("SELECT CAST(IS_USED_LOCK(" + CREATE_LOCK + ") IS NOT NULL AS UNSIGNED) held",
+                owner, kind, key);
+        // A creation that finished during the read may already have committed its result.
+        intent = intentNoByCommand(owner, kind, key);
+        if (intent != null) return get(owner, intent);
+        if ("TRIAL_CONVERT".equals(kind)) {
+            var rejection = externalRejection(owner, key, null);
+            if (rejection != null) throw rejection;
+        }
+        if (number(attempt.get("held")) == 1) throw new BizException(409, "PURCHASE_PAYMENT_INTENT_PROCESSING");
+        throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");
     }
+
+    private String intentNoByCommand(long owner, String kind, String key) {
+        var row = db.one("SELECT intent_no FROM nx_purchase_payment_intent WHERE user_id=? AND kind=? AND command_key=?", owner, kind, key);
+        return row == null ? null : text(row.get("intent_no"));
+    }
+
     /**
      * 按本人订单号找回进行中的外部付款单:只读,不改任何付款单/订单状态,也不需要客户端留着原命令键。
      * 订单归属沿用 ORDER_PAY 报价分支的同一判据(他人订单与不存在的订单一样只有 404);
@@ -536,6 +870,31 @@ public class PurchasePaymentService {
         }catch(BizException refused){throw refused;}
         catch(RuntimeException unavailable){throw new BizException(503,"PURCHASE_PAYMENT_LOOKUP_UNAVAILABLE");}
     }
+    @org.springframework.transaction.annotation.Transactional(readOnly = true,
+            isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public Map<String,Object> orderTopupFacts(long owner, String orderNo, CregisNetwork network) {
+        if (!orderUsdtTopupEnabled) throw new BizException(409, "ORDER_USDT_TOPUP_DISABLED");
+        var facts = orders.orderTopupFacts(owner, orderNo.trim());
+        Object intentNo = facts.remove("intentNo");
+        Map<String,Object> openIntent = null;
+        if (intentNo != null) {
+            var intent = db.one(SELECT+" AND user_id=?", intentNo, owner);
+            if (intent == null) throw new BizException(503, "ORDER_TOPUP_READ_FAILED");
+            openIntent = Map.of("intentNo", intentNo, "paymentMethod", intent.get("payment_method"),
+                    "paymentAllowed", view(intent, false).get("paymentAllowed"));
+        }
+        var recharge = policy.rechargePolicy();
+        BigDecimal shortfall = new BigDecimal((String) facts.get("shortfallUsdt"));
+        BigDecimal suggested = shortfall.signum() == 0 ? BigDecimal.ZERO
+                : shortfall.add(recharge.feeUsdt()).max(recharge.minDepositUsdt());
+        facts.put("openIntent", openIntent);
+        facts.put("network", network.network());
+        facts.put("minDepositUsdt", recharge.minDepositUsdt().toPlainString());
+        facts.put("depositFeeUsdt", recharge.feeUsdt().toPlainString());
+        facts.put("suggestedTransferUsdt", suggested.toPlainString());
+        return facts;
+    }
+
     /** Called only after the existing callback verifier accepted the provider signature. */
     public boolean observeHdCallback(HdPayCallbackVerifier.VerifiedCallback callback){
         var row=db.one(SELECT,callback.merchantOrderId());if(row==null)return false;
@@ -585,8 +944,13 @@ public class PurchasePaymentService {
         return view(row,false);
     }
     private void refresh(Map<String,Object> row){
-        if(row.get("receipt_json")!=null){
-            try{if(cregis(row.get("payment_method"))){auditCanonical(row);observeBsc(row);}else observeHd(row);}catch(RuntimeException unavailable){}
+        if(row.get("receipt_json")!=null||row.get("refund_receipt_json")!=null){
+            try {
+                if(cregis(row.get("payment_method"))){
+                    if(row.get("receipt_json")!=null)auditCanonical(row);
+                    observeBsc(row);
+                }else if(row.get("refund_receipt_json")==null)observeHd(row);
+            }catch(RuntimeException unavailable){}
             return;
         }
         try{
@@ -614,7 +978,7 @@ public class PurchasePaymentService {
         expiration.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
         expiration.execute(status->{
             var row=db.one(SELECT+" FOR UPDATE",snapshot.get("intent_no"));
-            if(row==null||row.get("receipt_json")!=null)return null;
+            if(row==null||row.get("receipt_json")!=null||row.get("refund_receipt_json")!=null)return null;
             boolean lateReview=isLateOrderReview(row);
             if(!lateReview&&(row.get("confirmed_at")!=null||"MANUAL_REVIEW".equals(row.get("status"))))return null;
             String orderNo="ORDER_PAY".equals(row.get("kind"))?text(parse(row.get("payload_json")).get("orderNo")):null;
@@ -626,24 +990,37 @@ public class PurchasePaymentService {
                 // The user mutex makes this a current business-state check without reversing promotion -> order locks.
                 var order=db.one("SELECT order_no,created_at,payment_status,order_status FROM nx_order WHERE order_no=? AND user_id=?",orderNo,row.get("user_id"));
                 if(order==null)throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
+                if(lateReview && "EXPIRED".equals(order.get("payment_status")) && "EXPIRED".equals(order.get("order_status"))){
+                    releaseLateOrderQuota(row);
+                    return null;
+                }
                 if(!"PENDING".equals(order.get("payment_status"))||!"PENDING_PAYMENT".equals(order.get("order_status")))return null;
                 cutoff=orderDeadline(order);
             }
             if(now().isBefore(lateReview?cutoff:graceEnd(row.get("payment_method"),cutoff)))return null;
-            // A failed attempt can have been replaced before the order deadline. Never cancel its successor.
-            var active=activeIntents(row.get("user_id"),row.get("kind"),text(row.get("payload_json")),text(row.get("intent_no")));
-            if(active.stream().anyMatch(intent->!isLateOrderReview(intent)))return null;
+            if ("TRIAL_CONVERT".equals(row.get("kind")) && "QUERY_UNKNOWN".equals(row.get("reconciliation_status"))) return null;
+            // Trial timeout releases only this intent's quota. Its claim has a separate, claim-scoped payment hold.
+            if (!"TRIAL_CONVERT".equals(row.get("kind"))) {
+                var active=activeIntents(row.get("user_id"),row.get("kind"),text(row.get("payload_json")),text(row.get("intent_no")));
+                if(active.stream().anyMatch(intent->!isLateOrderReview(intent)))return null;
+            }
             if (!lateReview && !"EXPIRED".equals(row.get("status"))) {
                 int changed = db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_TIMEOUT',expires_at=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NULL AND receipt_json IS NULL AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT')",
                         timestamp(cutoff), row.get("intent_no"));
                 if (changed != 1) return null;
                 quotaHolds.finish(quotaHolds.read(row), PurchaseQuotaReservation.State.RELEASED, null, "PAYMENT_TIMEOUT");
             }
+            if(lateReview)releaseLateOrderQuota(row);
             if(orderNo!=null&&!orders.expireDirectPaymentOrder(number(row.get("user_id")),orderNo))throw new BizException(409,"PURCHASE_PAYMENT_TIMEOUT_ORDER_CONFLICT");
             // A confirmed late payment keeps its evidence and review notification.
             if (!lateReview && (orderNo != null || !"EXPIRED".equals(row.get("status")))) outcome(row,"PAYMENT_TIMEOUT");
             return null;
         });
+    }
+    private void releaseLateOrderQuota(Map<String,Object> row){
+        var reservation=quotaHolds.read(row);
+        if(reservation!=null && reservation.state()==PurchaseQuotaReservation.State.HELD)
+            quotaHolds.finish(reservation,PurchaseQuotaReservation.State.RELEASED,null,"PAYMENT_LATE_REVIEW");
     }
     private boolean observeHd(Map<String,Object> row){
         if(!hd.ready())return false;String no=text(row.get("intent_no"));var observed=hdGateway.queryPayOrder(no);
@@ -651,18 +1028,36 @@ public class PurchasePaymentService {
         Instant observedAt=now();
         return writeTx(()->{
             var locked=db.one(SELECT+" FOR UPDATE",no);
+            if(locked.get("refund_receipt_json")!=null)return true;
             db.write("UPDATE nx_purchase_payment_intent SET reconciliation_status=? WHERE intent_no=? AND confirmed_at IS NULL AND receipt_json IS NULL",observed.orderStatus()==5?"PROVIDER_FAILED":"OBSERVED_PENDING",no);
             if(observed.expirationTime()!=null){
                 db.write("UPDATE nx_purchase_payment_intent SET provider_expires_at=? WHERE intent_no=?",timestamp(observed.expirationTime()),no);
                 locked.put("provider_expires_at",timestamp(observed.expirationTime()));
             }
-            if(observed.orderStatus()==4){confirm(no,observed.providerOrderId(),"PAYMENT_REFUNDED_REVIEW",null,observedAt);}
+            if(observed.orderStatus()==4){
+                if(locked.get("provider_reference")!=null&&!observed.providerOrderId().equals(locked.get("provider_reference")))return false;
+                if(!"PAYMENT_REFUNDED_REVIEW".equals(locked.get("reason")))
+                    confirm(no,observed.providerOrderId(),"PAYMENT_REFUNDED_REVIEW",null,observedAt);
+            }
             else if(observed.orderStatus()==3){
-                if(locked.get("confirmed_at")!=null)return true;
+                boolean verifiedAmount = observed.paidAt() != null && observed.transAmt() != null
+                        && new BigDecimal(text(parse(locked.get("quote_json")).get("amountVnd"))).compareTo(observed.transAmt()) == 0;
+                if(locked.get("confirmed_at")!=null){
+                    if (verifiedAmount && observed.providerOrderId().equals(locked.get("provider_reference"))
+                            && locked.get("paid_at") != null && observed.paidAt().equals(instant(locked.get("paid_at")))) {
+                        db.write("UPDATE nx_purchase_payment_intent SET confirmed_bank_amount_vnd=? WHERE intent_no=? AND confirmed_bank_amount_vnd IS NULL",
+                                observed.transAmt(), no);
+                    }
+                    return true;
+                }
                 String reason=observed.paidAt()!=null&&observed.paidAt().isBefore(instant(locked.get("created_at")))?"PAYMENT_BEFORE_ALLOCATION":
                         observed.transAmt()==null||new BigDecimal(text(parse(locked.get("quote_json")).get("amountVnd"))).compareTo(observed.transAmt())!=0?"PAYMENT_AMOUNT_MISMATCH":arrivalReason(paymentDeadline(locked),graceEnd(locked.get("payment_method"),deadline(locked)),observed.paidAt(),observedAt);
                 confirm(no, observed.providerOrderId(), arrivalReasonAfterQuotaRelease(locked, reason),
                         observed.paidAt(), observedAt);
+                if (verifiedAmount) {
+                    db.write("UPDATE nx_purchase_payment_intent SET confirmed_bank_amount_vnd=? WHERE intent_no=? AND provider_reference=?",
+                            observed.transAmt(), no, observed.providerOrderId());
+                }
             }else if(observed.orderStatus()==5){
                 int changed = db.write("UPDATE nx_purchase_payment_intent SET status='EXPIRED',reason='PAYMENT_FAILED',provider_reference=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NULL AND receipt_json IS NULL AND status IN ('CREATING','SUBMIT_UNKNOWN','AWAITING_PAYMENT')",observed.providerOrderId(),no);
                 if (changed == 1) {
@@ -698,6 +1093,12 @@ public class PurchasePaymentService {
                 throw new BizException(409,"CREGIS_DIRECT_ALLOCATION_ANCHOR_INVALID");
             int inserted=db.write("INSERT IGNORE INTO nx_purchase_payment_arrival(intent_no,provider_project,chain_id,txid,log_index,amount,block_number,block_hash,confirmations,from_address,status) VALUES(?,?,?,?,?,?,?,?,?,?,'CONFIRMED')",no,cr.getProjectId(),network.chainId(),incoming.txid(),incoming.logIndex(),incoming.amount(),proof.blockNumber(),proof.blockHash(),proof.confirmations(),proof.fromAddress());
             if(inserted==1){
+                if(locked.get("refund_receipt_json")!=null){
+                    db.write("UPDATE nx_purchase_payment_arrival SET status='MANUAL_REVIEW' WHERE provider_project=? AND chain_id=? AND txid=? AND log_index=?",cr.getProjectId(),network.chainId(),incoming.txid(),incoming.logIndex());
+                    db.write("UPDATE nx_purchase_payment_intent SET status='MANUAL_REVIEW',reason='PAYMENT_AFTER_REFUND_REVIEW',reconciliation_status='REVIEW',version=version+1,updated_at=NOW(6) WHERE intent_no=?",no);
+                    outcome(locked,"MANUAL_REVIEW");
+                    return null;
+                }
                 Instant paidAt=chain.blockTime(network,proof.blockNumber(),proof.blockHash()),observedAt=now();
                 BigDecimal expected=new BigDecimal(text(parse(locked.get("quote_json")).get("totalUsdt")));
                 String reason=incoming.blockNumber()<=number(allocation.get("allocation_block"))?"PAYMENT_BEFORE_ALLOCATION":incoming.amount().compareTo(expected)!=0?"PAYMENT_AMOUNT_MISMATCH":arrivalReason(paymentDeadline(locked),graceEnd(locked.get("payment_method"),deadline(locked)),paidAt,observedAt);
@@ -734,7 +1135,9 @@ public class PurchasePaymentService {
     }
     private String arrivalReasonAfterQuotaRelease(Map<String, Object> locked, String reason) {
         var reservation = quotaHolds.read(locked);
+        // Keep a trial's specific review reason. A released quota can prevent delivery but cannot prove late payment.
         return reservation != null && reservation.state() == PurchaseQuotaReservation.State.RELEASED
+                && (!"TRIAL_CONVERT".equals(locked.get("kind")) || reason.isBlank())
                 ? "PAYMENT_LATE_REVIEW" : reason;
     }
 
@@ -744,7 +1147,7 @@ public class PurchasePaymentService {
     }
     private void deliver(String no,boolean explicit){
         var before=db.one(SELECT,no);
-        if(before==null||!verifyFunds(before))return;
+        if(before==null||before.get("refund_receipt_json")!=null||!verifyFunds(before))return;
         boolean joined=org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive();
         var delivery=new TransactionTemplate(transactions);delivery.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         delivery.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
@@ -752,8 +1155,8 @@ public class PurchasePaymentService {
             testCloudAdmission.lock();
             if(cregis(before.get("payment_method")))cregisGate(network(before.get("payment_method")),false,true);
             var intent=db.one(SELECT+" FOR UPDATE",no);
-            if(intent==null||intent.get("receipt_json")!=null||intent.get("confirmed_at")==null)return null;
-            if(Set.of("PAYMENT_AMOUNT_MISMATCH","PAYMENT_LATE_REVIEW","PAYMENT_MULTIPLE_ARRIVALS","PAYMENT_BEFORE_ALLOCATION","PAYMENT_TIME_UNVERIFIED","PAYMENT_REFUNDED_REVIEW").contains(text(intent.get("reason"))))return null;
+            if(intent==null||intent.get("receipt_json")!=null||intent.get("refund_receipt_json")!=null||intent.get("confirmed_at")==null)return null;
+            if(NON_DELIVERABLE_FUNDS.contains(text(intent.get("reason"))))return null;
             if(!explicit&&"MANUAL_REVIEW".equals(intent.get("status")))return null;
             var reservation = quotaHolds.read(intent);
             if (reservation != null && reservation.state() == PurchaseQuotaReservation.State.RELEASED) return null;
@@ -764,15 +1167,33 @@ public class PurchasePaymentService {
             if("ORDER_PAY".equals(kind))orders.lockDirectPaymentOrderParticipants(text(payload.get("orderNo")));
             user(owner,true);var quote=parse(intent.get("quote_json"));
             boolean legacyTrialQuote=!quote.containsKey("trialOffsetBasis");
+            boolean legacyTrialVersion = !"ACCRUED_B90".equals(quote.get("trialOffsetBasis"));
+            boolean legacyTradeinPricing = !CATALOG_PRICE.equals(quote.get(TRADEIN_PRICE_BASIS));
+            var trialPolicy = frozenTrialPolicy(quote);
             Instant pricingAt = Instant.parse(text(quote.get("pricingAsOf")));
+            String trialClaimNo;
+            if ("TRIAL_CONVERT".equals(kind)) {
+                var currentClaim = trials.currentExternalPaymentClaim(owner);
+                trialClaimNo = trialClaimNo(quote, currentClaim);
+                if (currentClaim == null || !currentClaim.claimNo().equals(trialClaimNo)) {
+                    throw new BizException(409, "TRIAL_NOT_CONVERTIBLE");
+                }
+            } else {
+                trialClaimNo = null;
+            }
             // Fulfilment checks the replacement source under the existing submission rules.
-            var pricing = pricing(owner, kind, payload, pricingAt, legacyTrialQuote, false, null, false, reservation);
+            var pricing = pricing(owner, kind, payload, pricingAt, legacyTrialQuote, legacyTrialVersion,
+                    false, null, false, reservation, trialPolicy, false, legacyTradeinPricing);
             if (!hash(pricing).equals(intent.get("pricing_hash"))) throw new BizException(409,"PURCHASE_PAYMENT_PRICING_CHANGED");
             if (reservation != null) {
                 if (!reservation.businessId().equals(reservationBusiness(kind, pricing))) throw PurchaseQuotaReservation.conflict();
                 if ("ORDER_PAY".equals(kind)) quotaHolds.requireOrder(reservation, owner, text(pricing.get("orderNo")));
             }
-            var result=VerifiedPurchasePayment.settle(owner,text(intent.get("payment_method")),no,money(quote.get("subtotalUsdt")),pricingAt,intent.get("paid_at")==null?instant(intent.get("confirmed_at")):instant(intent.get("paid_at")),()->fulfil(owner,kind,payload,no,legacyTrialQuote,reservation));
+            Instant paidAt = instant(intent.get("paid_at") == null ? intent.get("confirmed_at") : intent.get("paid_at"));
+            var result = VerifiedPurchasePayment.settle(owner, text(intent.get("payment_method")), no,
+                    money(quote.get("subtotalUsdt")), pricingAt, paidAt,
+                    () -> fulfil(owner, kind, payload, no, legacyTrialQuote, legacyTrialVersion, reservation,
+                            trialClaimNo, trialPolicy, legacyTradeinPricing));
             Object receipt=require(result);
             Map<String,Object> canonical=jsonMapper.convertValue(receipt,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});
             canonical.put("walletDebitUsdt","0.00");canonical.put("amountUsdt",quote.get("businessAmountUsdt"));
@@ -797,7 +1218,7 @@ public class PurchasePaymentService {
             if(joined)throw failure;
             String code=failure.getMessage();if(code==null||!code.matches("[A-Z0-9_:]{1,128}"))code="PURCHASE_PAYMENT_DELIVERY_BLOCKED";
             String reason=code;
-            tx(()->{int changed=db.write("UPDATE nx_purchase_payment_intent SET status='MANUAL_REVIEW',reconciliation_status='REVIEW',reason=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NOT NULL AND status<>'DELIVERED'",reason,no);if(changed==1)outcome(db.one(SELECT,no),"MANUAL_REVIEW");return null;});
+            tx(()->{int changed=db.write("UPDATE nx_purchase_payment_intent SET status='MANUAL_REVIEW',reconciliation_status='REVIEW',reason=?,version=version+1,updated_at=NOW(6) WHERE intent_no=? AND confirmed_at IS NOT NULL AND status<>'DELIVERED' AND refund_receipt_json IS NULL",reason,no);if(changed==1)outcome(db.one(SELECT,no),"MANUAL_REVIEW");return null;});
         }
     }
     private boolean verifyFunds(Map<String,Object> intent){
@@ -820,13 +1241,14 @@ public class PurchasePaymentService {
             return trades.size()==1&&amount.compareTo(new BigDecimal(text(parse(intent.get("quote_json")).get("totalUsdt"))))==0;
         }catch(RuntimeException unavailable){return false;}
     }
-    private ApiResult<?> fulfil(long owner,String kind,Map<String,Object> payload,String no,boolean legacyTrialQuote, PurchaseQuotaReservation reservation){
+    private ApiResult<?> fulfil(long owner,String kind,Map<String,Object> payload,String no,boolean legacyTrialQuote, boolean legacyTrialVersion, PurchaseQuotaReservation reservation,
+            String trialClaimNo, Map<String, String> trialPolicy, boolean legacyTradeinPricing){
         return switch(kind){
             case "ORDER_PAY"->orders.settleVerifiedExternal(owner,text(payload.get("orderNo")),reservation);
-            case "TRADE_IN"->tradeins.settleVerifiedExternal(owner,"TRADE_IN",no,jsonMapper.convertValue(payload,AppTradeinSubmitRequest.class),null,null,reservation);
+            case "TRADE_IN"->tradeins.settleVerifiedExternal(owner,"TRADE_IN",no,jsonMapper.convertValue(payload,AppTradeinSubmitRequest.class),null,null,reservation,legacyTradeinPricing);
             case "CAPACITY_REPLACE"->tradeins.settleVerifiedExternal(owner,"CAPACITY_REPLACE",no,null,jsonMapper.convertValue(payload,AppCapacityReplaceSubmitRequest.class),null,reservation);
             case "CAPACITY_KEEP"->tradeins.settleVerifiedExternal(owner,"CAPACITY_KEEP",no,null,null,jsonMapper.convertValue(payload,AppCapacityKeepSubmitRequest.class),reservation);
-            case "TRIAL_CONVERT"->trials.settleVerifiedExternal(owner,text(payload.get("productNo")),new BigDecimal(text(payload.get("expectedAmountUsdt"))),text(payload.get("quoteVersion")),legacyTrialQuote,reservation);
+            case "TRIAL_CONVERT"->trials.settleVerifiedExternal(owner,text(payload.get("productNo")),new BigDecimal(text(payload.get("expectedAmountUsdt"))),text(payload.get("quoteVersion")),legacyTrialQuote,legacyTrialVersion,reservation,trialClaimNo,trialPolicy);
             default->throw new BizException(422,"PURCHASE_PAYMENT_KIND_INVALID");
         };
     }
@@ -860,6 +1282,147 @@ public class PurchasePaymentService {
         return values("items",rows.stream().map(row->view(row,true)).toList(),"total",total.get("total"),"pageNum",number,"pageSize",limit);
     }
     public Map<String,Object> detail(String no){var row=db.one(SELECT,no);if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");return view(row,true);}
+
+    /** Finance confirms an already completed external refund. The command commits no money movement. */
+    public Map<String,Object> closeRefunded(String no, String key, Map<String,Object> request) {
+        return recordRefund(no, key, request, false);
+    }
+
+    /** Record proof for reporting while preserving an already fulfilled purchase and its receipt. */
+    public Map<String,Object> recordDeliveredRefund(String no, String key, Map<String,Object> request) {
+        return recordRefund(no, key, request, true);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String,Object> recordRefund(String no, String key, Map<String,Object> request, boolean delivered) {
+        PurchasePaymentPolicyService.reason(request);
+        String actorId=AdminActorResolver.subjectId();
+        if(actorId==null)throw new BizException(401,"ADMIN_AUTH_REQUIRED");
+        Object version=request.get("expectedVersion");
+        if(!(version instanceof Integer || version instanceof Long)||number(version)<0)
+            throw new BizException(422,"PURCHASE_PAYMENT_REFUND_VERSION_REQUIRED");
+        String actor=AdminActorResolver.resolve("admin:"+actorId);
+        String commandScope = delivered ? "D1:PURCHASE_REFUND_EVIDENCE:" : "D1:PURCHASE_REFUND_CLOSEOUT:";
+        return commands.executeRetained(commandScope+actorId,key,
+                hash(values("intentNo",no,"request",request)),Map.class,()->{
+            var row=db.one(SELECT+" FOR UPDATE",no);
+            if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");
+            if(row.get("refund_receipt_json")!=null)throw new BizException(409,"PURCHASE_PAYMENT_REFUND_ALREADY_CLOSED");
+            if(number(row.get("version"))!=number(version))throw new BizException(409,"PURCHASE_PAYMENT_REFUND_VERSION_CONFLICT");
+            boolean eligible = delivered
+                    ? row.get("receipt_json") != null && row.get("paid_at") != null
+                    : row.get("receipt_json") == null
+                        && Set.of("FUNDS_CONFIRMED","MANUAL_REVIEW").contains(text(row.get("status")));
+            if(!eligible || row.get("confirmed_at")==null)
+                throw new BizException(409,"PURCHASE_PAYMENT_REFUND_NOT_ELIGIBLE");
+            var proof=refundProof(row,request,delivered);
+            long owner=number(row.get("user_id"));
+            String orderNo="ORDER_PAY".equals(row.get("kind"))?text(parse(row.get("payload_json")).get("orderNo")):null;
+            if(!delivered) {
+                if(orderNo!=null)orders.lockDirectPaymentOrderParticipants(orderNo);
+                db.one("SELECT id FROM nx_user WHERE id=? FOR UPDATE",owner);
+            }
+            String refundKey=proof.containsKey("txid")?proof.get("chainId")+":"+proof.get("txid")+":"+proof.get("logIndex"):null;
+            proof.putAll(values("closedAt",now().toString(),"reason",text(request.get("reason")).trim(),"adminId",actorId));
+            try {
+                int changed=delivered ? db.write("""
+                        UPDATE nx_purchase_payment_intent SET refund_receipt_json=?,refund_transfer_key=?,
+                            version=version+1,updated_at=NOW(6)
+                        WHERE intent_no=? AND version=? AND confirmed_at IS NOT NULL
+                          AND receipt_json IS NOT NULL AND refund_receipt_json IS NULL
+                        """,json(proof),refundKey,no,number(version)) : db.write("""
+                        UPDATE nx_purchase_payment_intent SET status='REFUNDED',reason='PAYMENT_REFUNDED',
+                            reconciliation_status='REFUNDED',refund_receipt_json=?,refund_transfer_key=?,
+                            version=version+1,updated_at=NOW(6)
+                        WHERE intent_no=? AND version=? AND confirmed_at IS NOT NULL
+                          AND receipt_json IS NULL AND refund_receipt_json IS NULL
+                        """,json(proof),refundKey,no,number(version));
+                if(changed!=1)throw new BizException(409,"PURCHASE_PAYMENT_REFUND_VERSION_CONFLICT");
+            } catch(org.springframework.dao.DuplicateKeyException used) {
+                throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_ALREADY_USED");
+            }
+            if(!delivered) {
+                quotaHolds.finish(quotaHolds.read(row),PurchaseQuotaReservation.State.RELEASED,null,"PAYMENT_REFUNDED");
+                if(orderNo!=null && activeIntents(owner,row.get("kind"),text(row.get("payload_json")),no).isEmpty())
+                    orders.closeRefundedDirectPaymentOrder(owner,orderNo);
+            }
+            audit.recordRequired(AuditLogWriteRequest.builder().action(delivered
+                            ? "PURCHASE_PAYMENT_REFUND_EVIDENCE_RECORDED" : "PURCHASE_PAYMENT_REFUND_CLOSED")
+                    .resourceType("PURCHASE_PAYMENT_INTENT").resourceId(no).bizNo(no).userId(owner)
+                    .actorType("ADMIN").actorId(Long.parseLong(actorId)).actorUsername(actor)
+                    .riskLevel("HIGH").result("SUCCESS").detail(proof).build());
+            return detail(no);
+        });
+    }
+
+    private Map<String,Object> refundProof(Map<String,Object> row, Map<String,Object> request, boolean delivered) {
+        if ("HDPAY_BANK".equals(row.get("payment_method"))) {
+            if (delivered) throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_UNAVAILABLE");
+            HdPayGateway.PayOrder observed;
+            try { observed=hdGateway.queryPayOrder(text(row.get("intent_no"))); }
+            catch(HdPayGatewayException unavailable) { throw new BizException(503,"PURCHASE_PAYMENT_REFUND_PROOF_UNAVAILABLE"); }
+            if(observed==null||observed.orderStatus()!=4||!text(row.get("intent_no")).equals(observed.merchantOrderId())
+                    ||text(row.get("provider_reference")).isBlank()||!text(row.get("provider_reference")).equals(observed.providerOrderId())
+                    ||!"BANKQR".equalsIgnoreCase(observed.payType())||observed.transAmt()==null
+                    ||new BigDecimal(text(parse(row.get("quote_json")).get("amountVnd"))).compareTo(observed.transAmt())!=0)
+                throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_MISMATCH");
+            return values("channel","HDPAY","currency","VND","amount",observed.transAmt().toPlainString(),
+                    "providerOrderId",observed.providerOrderId(),"providerStatus",observed.orderStatus());
+        }
+        var network=network(row.get("payment_method"));
+        String txid=text(request.get("refundTxid")).trim();
+        Object logIndex=request.get("refundLogIndex");
+        if(!network.validTxid(txid)||!(logIndex instanceof Integer index)||index<0)
+            throw new BizException(422,"PURCHASE_PAYMENT_REFUND_TRANSFER_REQUIRED");
+        txid=network.normalizeTxid(txid);
+        var arrivals=db.rows("SELECT * FROM nx_purchase_payment_arrival WHERE intent_no=?",row.get("intent_no"));
+        if(arrivals.size()!=1||cr.getProjectId()<=0||number(row.get("provider_project"))!=cr.getProjectId())
+            throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_MISMATCH");
+        var arrival=arrivals.get(0);
+        String paymentAddress=text(row.get("address"));
+        String payer=text(arrival.get("from_address"));
+        var amount=new BigDecimal(text(arrival.get("amount")));
+        BigDecimal returned = amount;
+        if (delivered && request.get("refundAmountUsdt") != null) {
+            String rawAmount = text(request.get("refundAmountUsdt"));
+            if (!rawAmount.matches("[0-9]{1,12}(\\.[0-9]{1,6})?")) {
+                throw new BizException(422,"PURCHASE_PAYMENT_REFUND_AMOUNT_INVALID");
+            }
+            returned = new BigDecimal(rawAmount);
+            if (returned.signum() <= 0 || returned.compareTo(amount) > 0) {
+                throw new BizException(422,"PURCHASE_PAYMENT_REFUND_AMOUNT_INVALID");
+            }
+            BigDecimal principal = new BigDecimal(text(parse(row.get("quote_json")).get("businessAmountUsdt")));
+            if (returned.compareTo(amount) < 0 && returned.compareTo(principal) > 0) {
+                throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_MISMATCH");
+            }
+        }
+        if(!network.chainId().equals(text(arrival.get("chain_id")))||number(arrival.get("provider_project"))!=cr.getProjectId()
+                ||!network.validAddress(payer)||!network.validAddress(paymentAddress)
+                ||db.one("""
+                        SELECT id FROM nx_cregis_deposit_address
+                         WHERE project_id=? AND chain_id=? AND purchase_intent_no=? AND address=?
+                           AND purpose='PURCHASE_DIRECT' AND state='DIRECT_PURCHASE'
+                        """,cr.getProjectId(),network.chainId(),row.get("intent_no"),paymentAddress)==null)
+            throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_MISMATCH");
+        BscDepositProof.TransferProof incoming;
+        BscDepositProof.TransferProof refund;
+        try {
+            incoming=chain.verifyExact(network,text(arrival.get("txid")),(int)number(arrival.get("log_index")),
+                    paymentAddress,amount,number(arrival.get("block_number")));
+            refund=chain.verifyExact(network,txid,index,payer,returned,null);
+        } catch(IllegalStateException invalid) {
+            throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_MISMATCH");
+        }
+        if(incoming==null||refund==null||!incoming.blockHash().equalsIgnoreCase(text(arrival.get("block_hash")))
+                ||!network.addressEquals(payer,incoming.fromAddress())||refund.blockNumber()<=incoming.blockNumber()
+                ||network.addressEquals(payer,paymentAddress)||!network.addressEquals(paymentAddress,refund.fromAddress()))
+            throw new BizException(409,"PURCHASE_PAYMENT_REFUND_PROOF_MISMATCH");
+        return values("channel","CREGIS","currency","USDT","amount",returned.toPlainString(),
+                "chainId",network.chainId(),"txid",txid,"logIndex",index,"blockNumber",refund.blockNumber(),
+                "blockHash",refund.blockHash(),"fromAddress",refund.fromAddress(),"toAddress",payer,
+                "arrivalTxid",arrival.get("txid"),"arrivalLogIndex",arrival.get("log_index"));
+    }
     @SuppressWarnings("unchecked")
     public Map<String,Object> revalidate(String no,String key,Map<String,Object> request){
         PurchasePaymentPolicyService.reason(request);String actor=AdminActorResolver.resolve("admin");
@@ -868,6 +1431,7 @@ public class PurchasePaymentService {
             var snapshot=db.one(SELECT,no);
             if(snapshot!=null&&cregis(snapshot.get("payment_method")))cregisGate(network(snapshot.get("payment_method")),false,true);
             var row=db.one(SELECT+" FOR UPDATE",no);if(row==null)throw new BizException(404,"PURCHASE_PAYMENT_INTENT_NOT_FOUND");
+            if(row.get("refund_receipt_json")!=null)throw new BizException(409,"PURCHASE_PAYMENT_REFUND_ALREADY_CLOSED");
             if(number(row.get("version"))!=number(request.get("expectedVersion")))throw new BizException(409,"PURCHASE_PAYMENT_REVALIDATE_VERSION_CONFLICT");
             refresh(row);deliver(no,true);var result=detail(no);
             audit.recordRequired(AuditLogWriteRequest.builder().action("PURCHASE_PAYMENT_REVALIDATE").resourceType("PURCHASE_PAYMENT_INTENT").resourceId(no)
@@ -879,6 +1443,23 @@ public class PurchasePaymentService {
         var result=parse(row.get("quote_json"));result.putAll(values("intentNo",row.get("intent_no"),"commandKey",row.get("command_key"),"status",row.get("status"),
                 "reason",row.get("reason"),"version",row.get("version"),"expiresAt",deadline(row).toString(),"deadlineAt",deadline(row).toString(),"confirmationGraceEndsAt",graceEnd(row.get("payment_method"),deadline(row)).toString()));
         result.remove(TRIAL_CLAIM_SNAPSHOT);
+        result.remove(TRADEIN_PRICE_BASIS);
+        result.remove("trialPricingPolicy");
+        result.remove("trialDeviceName");
+        result.remove("trialImageSku");
+        result.remove("trialImageAssetId");
+        result.remove("trialImageObjectKey");
+        if ("TRIAL_CONVERT".equals(row.get("kind"))) {
+            result.put("claimNo", parse(row.get("quote_json")).get(TRIAL_CLAIM_SNAPSHOT));
+            if ("EXPIRED".equals(row.get("status")) && row.get("confirmed_at") == null
+                    && !"QUERY_UNKNOWN".equals(row.get("reconciliation_status"))) {
+                result.put("trialPurchaseOutcome", "UNPAID_TERMINAL");
+            } else if (lateTrialPaymentCanReselect(text(row.get("intent_no")), text(row.get("payment_method")), deadline(row), paymentDeadline(row),
+                    text(row.get("reason")), text(row.get("status")), row.get("paid_at") == null ? null : instant(row.get("paid_at")),
+                    row.get("confirmed_at") == null ? null : instant(row.get("confirmed_at")), now())) {
+                result.put("trialPurchaseOutcome", "LATE_PAYMENT_REVIEW");
+            }
+        }
         if(row.get("provider_expires_at")!=null)result.put("expirationTime",instant(row.get("provider_expires_at")).toString());
         if(row.get("payment_url")!=null&&"AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)))result.put("paymentUrl",row.get("payment_url"));
         boolean networkOpen=true;
@@ -891,7 +1472,7 @@ public class PurchasePaymentService {
                     && number(global.get("assign_enabled"))==1 && number(global.get("credit_enabled"))==1
                     && business!=null && number(business.get("deposit_enabled"))==1;
         }
-        if(row.get("address")!=null&&(admin||networkOpen&&now().isBefore(paymentDeadline(row))))result.put("address",row.get("address"));
+        if(row.get("address")!=null&&(admin||row.get("refund_receipt_json")==null&&networkOpen&&now().isBefore(paymentDeadline(row))))result.put("address",row.get("address"));
         result.put("paymentAllowed",networkOpen&&"AWAITING_PAYMENT".equals(row.get("status"))&&now().isBefore(paymentDeadline(row)));
         result.put("fulfilmentStatus",row.get("receipt_json")==null?"NOT_DELIVERED":"DELIVERED");
         if(row.get("receipt_json")!=null){
@@ -900,6 +1481,15 @@ public class PurchasePaymentService {
             result.put("receipt",receipt);
         }
         result.put("reconciliationStatus",row.get("reconciliation_status"));
+        if(row.get("refund_receipt_json")!=null && row.get("receipt_json")==null) {
+            result.put("refundStatus","REFUNDED");
+            // Installed App and PC clients only accept their existing payment status enum.
+            if(!admin||"REFUNDED".equals(row.get("status")))
+                result.putAll(values("status","MANUAL_REVIEW","reason","PAYMENT_REFUNDED_REVIEW","reconciliationStatus","REFUNDED"));
+            if(admin)result.put("refundReceipt",parse(row.get("refund_receipt_json")));
+        }
+        if(admin && row.get("receipt_json")!=null && row.get("refund_receipt_json")!=null)
+            result.put("refundReceipt",parse(row.get("refund_receipt_json")));
         if(admin)result.putAll(values("userId",text(row.get("user_id")),"request",parse(row.get("payload_json")),"providerReference",row.get("provider_reference"),
                 "providerActualFeeUsdt",row.get("provider_actual_fee_usdt")==null?null:new BigDecimal(text(row.get("provider_actual_fee_usdt"))).toPlainString(),
                 "createdAt",row.get("created_at")==null?null:instant(row.get("created_at")).toString(),"updatedAt",row.get("updated_at")==null?null:instant(row.get("updated_at")).toString()));

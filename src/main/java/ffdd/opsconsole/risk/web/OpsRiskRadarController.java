@@ -9,9 +9,11 @@ import ffdd.opsconsole.risk.dto.B5TriageRequest;
 import ffdd.opsconsole.risk.dto.B5SignalStatusRequest;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.io.IOException;
+import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.MediaType;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.access.AccessDeniedException;
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -93,6 +96,26 @@ public class OpsRiskRadarController {
     @GetMapping("/radar/inbox")
     @PreAuthorize("hasAuthority('overview_b5_read')")
     public ApiResult<List<Map<String, Object>>> inbox() { return service.alertInbox(); }
+
+    @GetMapping("/radar/signals")
+    @PreAuthorize("hasAuthority('overview_b5_read')")
+    public ApiResult<Map<String, Object>> signals(
+            @RequestParam(required = false) List<String> signalType,
+            @RequestParam(required = false) List<String> category,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime startAt,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime endAt,
+            @RequestParam(required = false) String handlingStatus,
+            @RequestParam(required = false) String userNo,
+            @RequestParam(defaultValue = "1") int pageNum,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        return service.signals(signalType, category, startAt, endAt, handlingStatus, userNo, pageNum, pageSize);
+    }
+
+    @GetMapping("/radar/signals/{signalNo}")
+    @PreAuthorize("hasAuthority('overview_b5_read')")
+    public ApiResult<Map<String, Object>> signal(@PathVariable String signalNo) {
+        return service.signal(signalNo);
+    }
 
     @PostMapping("/radar/inbox/{deliveryId}/acknowledge")
     @PreAuthorize("hasAuthority('overview_b5_triage')")

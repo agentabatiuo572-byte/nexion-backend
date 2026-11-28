@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 public record DeviceSkuView(
         String skuId,
@@ -54,7 +55,12 @@ public record DeviceSkuView(
         String productType,
         String inventoryMode,
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes,long productTaskPolicyVersion,LocalDateTime productTaskPolicyEffectiveAt, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, BigDecimal derivedDailyEarnUsdt, BigDecimal derivedShareYieldMinPct, BigDecimal derivedShareYieldMaxPct, String seriesCode, boolean seriesLocked,
-        Long purchaseQuotaHeld, Long purchaseQuotaRemaining) {
+        Long purchaseQuotaHeld, Long purchaseQuotaRemaining,
+        @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+        Map<String, String> taglineTranslations,
+        int displaySoldBase,
+        boolean liveActivityVisible,
+        int storeSortOrder) {
     public DeviceSkuView(
         String skuId,
         String name,
@@ -104,8 +110,19 @@ public record DeviceSkuView(
         String productType,
         String inventoryMode,
         Boolean trialEligible, String specDocumentTitle, String specDocumentUrl, Long computePoints, List<String> allowedPoolCodes,long productTaskPolicyVersion,LocalDateTime productTaskPolicyEffectiveAt, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, BigDecimal derivedDailyEarnUsdt, BigDecimal derivedShareYieldMinPct, BigDecimal derivedShareYieldMaxPct) {
-        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, publishBlocked, publishBlockReason, createdAt, updatedAt, productType, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl, computePoints, allowedPoolCodes, productTaskPolicyVersion, productTaskPolicyEffectiveAt, monthlyTargetUsdt, monthlyTargetBandPct, derivedDailyEarnUsdt, derivedShareYieldMinPct, derivedShareYieldMaxPct, null, false, null, null);
+        this(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime, warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax, baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour, aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase, purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, publishBlocked, publishBlockReason, createdAt, updatedAt, productType, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl, computePoints, allowedPoolCodes, productTaskPolicyVersion, productTaskPolicyEffectiveAt, monthlyTargetUsdt, monthlyTargetBandPct, derivedDailyEarnUsdt, derivedShareYieldMinPct, derivedShareYieldMaxPct, null, false, null, null, null, 0, true, 0);
     }
 
-    public DeviceSkuView withTaskPolicy(ffdd.opsconsole.device.application.SimulatedTaskPolicyService.ProductView value) { return new DeviceSkuView(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,features,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGate,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,productType,inventoryMode,trialEligible,specDocumentTitle,specDocumentUrl,computePoints,value.allowedPoolCodes(),value.productTaskPolicyVersion(),value.productTaskPolicyEffectiveAt(),monthlyTargetUsdt,monthlyTargetBandPct,derivedDailyEarnUsdt,derivedShareYieldMinPct,derivedShareYieldMaxPct,seriesCode,seriesLocked,purchaseQuotaHeld,purchaseQuotaRemaining); }
+    public DeviceSkuView withTaskPolicy(ffdd.opsconsole.device.application.SimulatedTaskPolicyService.ProductView value) {
+        return new DeviceSkuView(skuId, name, tier, tagline, badge, gpu, vram, hashRate, power, datacenter, uptime,
+                warranty, phoneDailyEarn, phoneDailyEarnNex, price, dailyEarn, dailyEarnNex, shareYieldMin, shareYieldMax,
+                baseRate, sold, stock, rating, reviews, aiImageGenPerMin, aiLlmTokensPerSec, aiVideoMinPerHour,
+                aiFineTuneMins, aiUnlocks, features, generation, lifecycle, supersededBy, tradeinDiscount, unlockPhase,
+                purchaseGate, imageAssetId, imageObjectKey, imagePreviewUrl, tag, status, publishBlocked, publishBlockReason,
+                createdAt, updatedAt, productType, inventoryMode, trialEligible, specDocumentTitle, specDocumentUrl,
+                computePoints, value.allowedPoolCodes(), value.productTaskPolicyVersion(), value.productTaskPolicyEffectiveAt(),
+                monthlyTargetUsdt, monthlyTargetBandPct, derivedDailyEarnUsdt, derivedShareYieldMinPct, derivedShareYieldMaxPct,
+                seriesCode, seriesLocked, purchaseQuotaHeld, purchaseQuotaRemaining, taglineTranslations,
+                displaySoldBase, liveActivityVisible, storeSortOrder);
+    }
 }

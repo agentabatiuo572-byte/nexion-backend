@@ -469,6 +469,7 @@ CREATE TABLE IF NOT EXISTS nx_user_preference (
   notify_market TINYINT NOT NULL DEFAULT 1,
   notify_genesis TINYINT NOT NULL DEFAULT 1,
   notify_system TINYINT NOT NULL DEFAULT 1,
+  earning_push VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'DAILY',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -1325,6 +1326,7 @@ CREATE TABLE IF NOT EXISTS nx_product (
   detail_image_urls TEXT NULL,
   badge VARCHAR(64) NULL,
   tagline VARCHAR(255) NULL,
+  tagline_translations_json JSON NULL,
   store_status VARCHAR(32) NULL,
   store_visible TINYINT NOT NULL DEFAULT 1,
   sort_order INT NOT NULL DEFAULT 0,
@@ -1367,6 +1369,10 @@ SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEM
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'tagline') = 0,
   'ALTER TABLE nx_product ADD COLUMN tagline VARCHAR(255) NULL AFTER badge',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'tagline_translations_json') = 0,
+  'ALTER TABLE nx_product ADD COLUMN tagline_translations_json JSON NULL AFTER tagline',
   'SELECT 1');
 PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_product' AND COLUMN_NAME = 'store_status') = 0,
@@ -1484,6 +1490,7 @@ CREATE TABLE IF NOT EXISTS nx_order (
   activation_status VARCHAR(32) NOT NULL DEFAULT 'WAITING_PAYMENT',
   inventory_reserved TINYINT NOT NULL DEFAULT 1 COMMENT '1=stock already consumed, 0=consume atomically on payment',
   paid_at DATETIME(6) NULL,
+  user_hidden_at DATETIME(6) NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   is_deleted TINYINT NOT NULL DEFAULT 0,
@@ -2453,7 +2460,7 @@ CREATE TABLE IF NOT EXISTS nx_audit_operation_ticket (
   before_value VARCHAR(1024) NOT NULL,
   after_value VARCHAR(1024) NOT NULL,
   operator_name VARCHAR(128) NOT NULL,
-  operator_role VARCHAR(32) NOT NULL,
+  operator_role VARCHAR(80) NOT NULL,
   operation_type VARCHAR(32) NOT NULL,
   amplifies TINYINT NOT NULL DEFAULT 0,
   sos TINYINT NOT NULL DEFAULT 0,
@@ -3281,6 +3288,31 @@ CREATE TABLE IF NOT EXISTS nx_team_ambassador_application (
   KEY idx_ambassador_user_scope (user_id, source_environment, run_id, status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS nx_e1_sku_create_request (
+  request_id CHAR(36) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  maker_id BIGINT NOT NULL,
+  business_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  operation_id VARCHAR(64) NULL,
+  result_sku_id VARCHAR(64) NULL,
+  result_json JSON NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_e1_sku_number_sequence (
+  prefix VARCHAR(16) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+  last_number SMALLINT UNSIGNED NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_b140_test_wallet_reset (
+  entry_no VARCHAR(64) COLLATE utf8mb4_bin PRIMARY KEY,
+  customer_id BIGINT NOT NULL UNIQUE,
+  wallet_id BIGINT NOT NULL,
+  original_operation_id BIGINT NOT NULL UNIQUE,
+  original_receipt_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  server_uuid CHAR(36) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  amount DECIMAL(24,6) NOT NULL CHECK (amount > 0),
+  recorded_db_utc DATETIME(6) NOT NULL DEFAULT (UTC_TIMESTAMP(6))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
 CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   monthly_target_usdt DECIMAL(12,2) NULL,
   monthly_target_band_pct DECIMAL(4,1) NULL,
@@ -3289,6 +3321,7 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   name VARCHAR(128) NOT NULL,
   tier VARCHAR(32) NULL,
   tagline VARCHAR(255) NULL,
+  tagline_translations_json JSON NULL,
   badge VARCHAR(64) NULL,
   gpu VARCHAR(128) NULL,
   vram VARCHAR(64) NULL,
@@ -3339,6 +3372,10 @@ CREATE TABLE IF NOT EXISTS nx_admin_device_sku (
   KEY idx_admin_device_sku_status (status,is_deleted),
   KEY idx_admin_device_sku_name (name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+SET @sql = IF((SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'nx_admin_device_sku' AND COLUMN_NAME = 'tagline_translations_json') = 0,
+  'ALTER TABLE nx_admin_device_sku ADD COLUMN tagline_translations_json JSON NULL AFTER tagline',
+  'SELECT 1');
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- Gen-2 uses the same server-owned structured gate in read, quote and every
 -- order/replace command. Preserve any rule already edited in E1.
@@ -4148,6 +4185,33 @@ CREATE TABLE IF NOT EXISTS nx_points_ledger (
   is_deleted TINYINT NOT NULL DEFAULT 0,
   UNIQUE KEY uk_points_ledger_biz (biz_no),
   KEY idx_points_user_time (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS nx_earning_push_task (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  task_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  user_id BIGINT NOT NULL,
+  kind VARCHAR(24) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  reason VARCHAR(64) NULL,
+  receipt_no VARCHAR(96) NULL,
+  window_start DATETIME(6) NULL,
+  window_end DATETIME(6) NULL,
+  business_zone VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL,
+  event_count INT NOT NULL DEFAULT 0,
+  device_count INT NOT NULL DEFAULT 0,
+  usdt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  uvt DECIMAL(18,6) NOT NULL DEFAULT 0,
+  title VARCHAR(160) NULL,
+  body VARCHAR(512) NULL,
+  cta_href VARCHAR(255) NULL,
+  notification_id BIGINT NULL,
+  expires_at DATETIME(6) NULL,
+  created_at DATETIME(6) NOT NULL,
+  updated_at DATETIME(6) NOT NULL,
+  UNIQUE KEY uk_earning_push_task_key (task_key),
+  KEY ix_earning_push_task_user (user_id, created_at),
+  KEY ix_earning_push_task_window (user_id, kind, window_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS nx_notification (

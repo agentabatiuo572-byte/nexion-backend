@@ -35,30 +35,45 @@ public class CregisDepositReviewService {
     }
 
     public Map<String, Object> preview(long cid) {
+        return preview(null,cid);
+    }
+
+    public Map<String, Object> preview(CregisNetwork network,long cid) {
         if (cid <= 0 || config.getMode() != CregisProperties.Mode.PROVIDER)
             throw new BizException(400, "CREGIS_REVIEW_REQUEST_INVALID");
-        Long eventId = db.eventId(config.getProjectId(), cid);
+        Long eventId = reviewEventId(network,cid);
         if (eventId == null) throw new BizException(404, "CREGIS_REVIEW_EVENT_MISSING");
         return preflight(eventId).summary();
     }
 
+    public CregisNetwork proposalNetwork(CregisNetwork requested,long cid) {
+        if (requested != null) return requested;
+        if (cid > 0 && config.getMode() == CregisProperties.Mode.PROVIDER
+                && db.eventId(CregisNetwork.ERC20, config.getProjectId(), cid) != null)
+            return CregisNetwork.ERC20;
+        return CregisNetwork.BEP20;
+    }
+
     @Transactional(propagation=Propagation.NOT_SUPPORTED)
     public Map<String, Object> propose(long adminId, long cid, String reason, String evidenceHash) {
+        return propose(adminId,null,cid,reason,evidenceHash);
+    }
+
+    @Transactional(propagation=Propagation.NOT_SUPPORTED)
+    public Map<String, Object> propose(long adminId,CregisNetwork network,long cid,String reason,String evidenceHash) {
         requireAdmin(adminId);
         requireReason(reason);
         if (cid <= 0 || evidenceHash == null || !evidenceHash.matches("(?i)[0-9a-f]{64}"))
             throw new BizException(400, "CREGIS_REVIEW_EVIDENCE_INVALID");
         if (config.getMode() != CregisProperties.Mode.PROVIDER)
             throw new BizException(503, "CREGIS_PROVIDER_DISABLED");
-        Long preflightEventId = db.eventId(config.getProjectId(), cid);
-        if (preflightEventId == null || !evidenceHash.equalsIgnoreCase(
-                preflight(preflightEventId).evidenceHash()))
+        Long eventId = reviewEventId(network,cid);
+        if (eventId == null || !evidenceHash.equalsIgnoreCase(preflight(eventId).evidenceHash()))
             throw new BizException(409, "CREGIS_REVIEW_EVIDENCE_CHANGED");
         return new TransactionTemplate(txManager).execute(ignored -> {
-                List<Map<String, Object>> events = db.lockEvent(config.getProjectId(), cid);
+                List<Map<String, Object>> events = db.lockReviewEvent(eventId);
                 if (events.size() != 1 || !"REVIEW_HOLD".equals(events.get(0).get("status")))
                     throw new BizException(409, "CREGIS_REVIEW_EVENT_CHANGED");
-                long eventId = ((Number) events.get(0).get("id")).longValue();
                 if (db.pendingReviewCaseCount(config.getProjectId(), eventId) != 0)
                     throw new BizException(409, "CREGIS_REVIEW_CASE_EXISTS");
                 if (db.createReviewCase(config.getProjectId(), eventId, reason.trim(),
@@ -80,7 +95,6 @@ public class CregisDepositReviewService {
         if (caseId <= 0 || expectedVersion < 0
                 || !("APPROVE".equals(decision) || "REJECT".equals(decision)))
             throw new BizException(400, "CREGIS_REVIEW_REQUEST_INVALID");
-        deposits.tripIfNeeded();
         CregisDepositService.ReviewProof proof = null;
         if ("APPROVE".equals(decision)) {
             Map<String, Object> snapshot = db.reviewCaseSnapshot(caseId);
@@ -152,6 +166,11 @@ public class CregisDepositReviewService {
                 throw new BizException(409, reason);
             throw new BizException(503, "CREGIS_REVIEW_PREFLIGHT_UNAVAILABLE");
         }
+    }
+
+    private Long reviewEventId(CregisNetwork network,long cid) {
+        long projectId=config.getProjectId();
+        return network==null ? db.reviewEventIdByCid(projectId,cid) : db.eventId(network,projectId,cid);
     }
 
     private static AuditLogWriteRequest entry(String action, long caseId, long adminId,

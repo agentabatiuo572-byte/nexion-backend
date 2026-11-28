@@ -1,5 +1,8 @@
 package ffdd.opsconsole.finance.hdpay;
 
+import static ffdd.opsconsole.finance.hdpay.HdPayOrderMapper.CONFIRMED_QUERY_FAILURE;
+import static ffdd.opsconsole.finance.hdpay.HdPayOrderMapper.isSubmissionUnknown;
+
 import ffdd.opsconsole.content.facade.SupportPaymentAttributionFacade;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.finance.mapper.AppVietQrIntentMapper;
@@ -230,6 +233,7 @@ public class HdPayCallbackSettlementService {
         }
         String providerOrderId = text(order.get("providerOrderId"));
         if (providerOrderId.isEmpty()) providerOrderId = confirmed.providerOrderId();
+        boolean unconfirmed = isSubmissionUnknown(order);
         PaidCallbackFact fact = new PaidCallbackFact(
                 sha256("ORDER_QUERY|" + merchantOrderId + "|" + claimedVersion),
                 merchantOrderId, providerOrderId, confirmed.orderStatus(), confirmed.transAmt());
@@ -239,6 +243,15 @@ public class HdPayCallbackSettlementService {
                 || decimal(order.get("amountVnd"), "HDPAY_ORDER_AMOUNT_INVALID")
                         .compareTo(confirmed.transAmt()) != 0) {
             return manualReview(fact, null, "HDPAY_ORDER_QUERY_MISMATCH", true);
+        }
+        if (unconfirmed && confirmed.orderStatus() == 1 && !text(confirmed.appLink()).isEmpty()
+                && hdPayMapper.resolvePayableOrderQuery(order, confirmed, claimedVersion) == 1) {
+            return SUCCESS;
+        }
+        if (unconfirmed && confirmed.orderStatus() == 5
+                && hdPayMapper.rejectUnknownOrderByQuery(merchantOrderId, claimedVersion, confirmed.transAmt(),
+                        providerOrderId, CONFIRMED_QUERY_FAILURE) == 1) {
+            return SUCCESS;
         }
         if (confirmed.orderStatus() == 0 || confirmed.orderStatus() == 1) {
             requireOne(hdPayMapper.finishOrderQueryAttempt(merchantOrderId, claimedVersion,
@@ -269,7 +282,7 @@ public class HdPayCallbackSettlementService {
             return manualReview(fact, claimToken, "HDPAY_SETTLEMENT_ALREADY_UNDER_REVIEW", orderQuery);
         }
         String submissionStatus = code(order.get("submissionStatus"));
-        if (!"CREATED".equals(submissionStatus) && !"SUBMIT_UNKNOWN".equals(submissionStatus)) {
+        if (!"CREATED".equals(submissionStatus) && !isSubmissionUnknown(order)) {
             return manualReview(fact, claimToken, "HDPAY_ORDER_NOT_SUBMITTED", orderQuery);
         }
 

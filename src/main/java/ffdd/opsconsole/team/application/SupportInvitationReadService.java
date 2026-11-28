@@ -35,12 +35,13 @@ public class SupportInvitationReadService implements SupportInvitationReadFacade
         var nodes = new TreeMap<Long, Row>();
         var edges = new HashMap<Long, Set<Long>>();
         var problems = new HashMap<Long, Set<Reason>>();
+        var inviterProblems = new HashMap<Long, Set<Reason>>();
         var batchProblems = EnumSet.noneOf(Reason.class);
         try {
             addUsers(mapper.readUsers(List.copyOf(roots)), roots, nodes, problems, batchProblems);
         } catch (DataAccessException ex) {
-            return roots.stream().map(root -> new Invitation(root, null, List.of(), List.of(), Completeness.FAILED,
-                Set.of(Reason.SOURCE_READ_FAILED))).toList();
+            return roots.stream().map(root -> new Invitation(root, null, List.of(), List.of(), 0, 0,
+                Completeness.FAILED, Set.of(Reason.SOURCE_READ_FAILED), Set.of())).toList();
         }
         var frontier = new TreeSet<Long>();
         roots.stream().filter(nodes::containsKey).forEach(frontier::add);
@@ -48,7 +49,10 @@ public class SupportInvitationReadService implements SupportInvitationReadFacade
         while (!frontier.isEmpty()) {
             List<Row> rows;
             try { rows = mapper.children(List.copyOf(frontier)); }
-            catch (DataAccessException ex) { batchProblems.add(Reason.SOURCE_READ_FAILED); break; }
+            catch (DataAccessException ex) {
+                for (long parent : frontier) problem(problems, parent, Reason.SOURCE_READ_FAILED);
+                break;
+            }
             if (rows == null) { batchProblems.add(Reason.INVALID_ROW); break; }
             // Validate the entire returned scope before interpreting any malformed local row.
             for (var row : rows)
@@ -67,29 +71,41 @@ public class SupportInvitationReadService implements SupportInvitationReadFacade
             }
             frontier = next;
         }
-        // Only referenced parents of observed nodes are checked; this is not a global orphan certificate.
-        var parents = new TreeSet<Long>();
-        for (var node : nodes.values())
-            if (node.sponsorCustomerId() != null && node.sponsorCustomerId() > 0 && !nodes.containsKey(node.sponsorCustomerId()))
-                parents.add(node.sponsorCustomerId());
-        if (!parents.isEmpty()) {
-            var existingParents = new TreeMap<Long, Row>();
-            try {
-                var parentRows = mapper.readUsers(List.copyOf(parents));
-                addUsers(parentRows, parents, existingParents, problems, batchProblems);
-                boolean validRows = parentRows != null && parentRows.stream().noneMatch(row -> row == null || row.customerId() == null);
-                for (var node : nodes.values()) {
-                    if (node.sponsorCustomerId() == null || !parents.contains(node.sponsorCustomerId())) continue;
-                    Row parent = existingParents.get(node.sponsorCustomerId());
-                    if (parent == null) {
-                        if (validRows) problem(problems, node.customerId(), Reason.DANGLING_SPONSOR);
-                    } else if (!environmentKnown(parent)) problem(problems, node.customerId(), Reason.UNKNOWN_ENVIRONMENT);
-                    else if (environmentKnown(node) && !parent.sandbox().equals(node.sandbox()))
-                        problem(problems, node.customerId(), Reason.ENVIRONMENT_CONFLICT);
-                }
-            } catch (DataAccessException ex) { batchProblems.add(Reason.SOURCE_READ_FAILED); }
+        // Root-only upward checks stay separate: an unreadable/foreign inviter never invalidates a downward count.
+        var parentIds = new TreeSet<Long>();
+        for (long root : roots) {
+            Row owner = nodes.get(root);
+            Long sponsor = owner == null ? null : owner.sponsorCustomerId();
+            if (sponsor != null && sponsor > 0 && !nodes.containsKey(sponsor)) parentIds.add(sponsor);
         }
-        return roots.stream().map(root -> invitation(root, nodes, edges, problems, batchProblems)).toList();
+        var parentRows = new TreeMap<Long, Row>();
+        boolean parentReadFailed = false;
+        if (!parentIds.isEmpty()) {
+            try {
+                var rows = mapper.readUsers(List.copyOf(parentIds));
+                if (rows == null || rows.stream().anyMatch(row -> row == null || row.customerId() == null)) {
+                    parentReadFailed = true;
+                } else {
+                    for (var row : rows) parentRows.put(row.customerId(), row);
+                }
+            } catch (DataAccessException ex) { parentReadFailed = true; }
+        }
+        for (long root : roots) {
+            Row owner = nodes.get(root);
+            Long sponsor = owner == null ? null : owner.sponsorCustomerId();
+            if (sponsor == null || sponsor <= 0) continue;
+            Row parent = nodes.get(sponsor);
+            if (parent == null && parentIds.contains(sponsor)) {
+                if (parentReadFailed) { problem(inviterProblems, root, Reason.SOURCE_READ_FAILED); continue; }
+                parent = parentRows.get(sponsor);
+                if (parent == null) { problem(inviterProblems, root, Reason.DANGLING_SPONSOR); continue; }
+            }
+            if (parent == null) { problem(inviterProblems, root, Reason.DANGLING_SPONSOR); continue; }
+            if (!environmentKnown(parent)) problem(inviterProblems, root, Reason.UNKNOWN_ENVIRONMENT);
+            else if (environmentKnown(owner) && !parent.sandbox().equals(owner.sandbox()))
+                problem(inviterProblems, root, Reason.ENVIRONMENT_CONFLICT);
+        }
+        return roots.stream().map(root -> invitation(root, nodes, edges, problems, inviterProblems, batchProblems)).toList();
     }
 
     private static void addUsers(List<Row> rows, Set<Long> scope, Map<Long, Row> nodes,
@@ -116,26 +132,30 @@ public class SupportInvitationReadService implements SupportInvitationReadFacade
                 || row.status() == null || row.status().isBlank()
                 || row.sponsorCustomerId() != null && row.sponsorCustomerId() < 0)
             problem(problems, row.customerId(), Reason.INVALID_ROW);
-        if (Integer.valueOf(1).equals(row.deleted())) problem(problems, row.customerId(), Reason.DELETED_NODE);
     }
 
     private static Invitation invitation(long root, Map<Long, Row> nodes, Map<Long, Set<Long>> edges,
-                                         Map<Long, Set<Reason>> problems, Set<Reason> batchProblems) {
+                                         Map<Long, Set<Reason>> problems, Map<Long, Set<Reason>> inviterProblems,
+                                         Set<Reason> batchProblems) {
         var reasons = EnumSet.noneOf(Reason.class);
         reasons.addAll(batchProblems);
+        var upward = EnumSet.noneOf(Reason.class);
+        upward.addAll(inviterProblems.getOrDefault(root, Set.of()));
         Row owner = nodes.get(root);
         if (owner == null) {
             reasons.add(Reason.MISSING_ROOT);
-            return new Invitation(root, null, List.of(), List.of(), Completeness.UNKNOWN, reasons);
+            return new Invitation(root, null, List.of(), List.of(), 0, 0, Completeness.UNKNOWN, reasons, upward);
         }
         boolean knownEnvironment = environmentKnown(owner);
         if (!knownEnvironment) reasons.add(Reason.UNKNOWN_ENVIRONMENT);
         var direct = new TreeSet<Long>();
         var descendants = new TreeSet<Long>();
+        int withinRewardRange = 0;
+        int beyondRewardRange = 0;
         var visited = new HashSet<Long>();
         var predecessors = new HashMap<Long, Long>();
         var pending = new ArrayDeque<Path>();
-        pending.add(new Path(root, knownEnvironment));
+        pending.add(new Path(root, knownEnvironment, 0));
         visited.add(root);
         while (!pending.isEmpty()) {
             Path path = pending.removeFirst();
@@ -151,21 +171,24 @@ public class SupportInvitationReadService implements SupportInvitationReadFacade
                 predecessors.put(child, path.customerId());
                 Row node = nodes.get(child);
                 if (node == null) { reasons.add(Reason.INVALID_ROW); continue; }
+                int depth = path.depth() + 1;
                 boolean sameEnvironment = environmentKnown(node) && knownEnvironment && node.sandbox().equals(owner.sandbox());
                 if (!environmentKnown(node)) reasons.add(Reason.UNKNOWN_ENVIRONMENT);
                 else if (knownEnvironment && !node.sandbox().equals(owner.sandbox())) reasons.add(Reason.ENVIRONMENT_CONFLICT);
                 boolean eligible = path.eligible() && sameEnvironment;
                 if (eligible && Integer.valueOf(0).equals(node.deleted())) {
                     descendants.add(child);
-                    if (path.customerId() == root) direct.add(child);
+                    if (depth == 1) direct.add(child);
+                    if (depth <= 7) withinRewardRange++; else beyondRewardRange++;
                 }
                 // Even deleted, disabled or conflicting environment nodes are expanded; contaminated paths stay excluded.
-                pending.addLast(new Path(child, eligible));
+                pending.addLast(new Path(child, eligible, depth));
             }
         }
         Completeness completeness = reasons.isEmpty() ? Completeness.COMPLETE : !knownEnvironment ? Completeness.UNKNOWN
-            : reasons.contains(Reason.SOURCE_READ_FAILED) && descendants.isEmpty() ? Completeness.FAILED : Completeness.PARTIAL;
-        return new Invitation(root, owner.sandbox(), List.copyOf(direct), List.copyOf(descendants), completeness, reasons);
+            : Completeness.PARTIAL;
+        return new Invitation(root, owner.sandbox(), List.copyOf(direct), List.copyOf(descendants),
+                withinRewardRange, beyondRewardRange, completeness, reasons, upward);
     }
 
     private static boolean environmentKnown(Row row) {
@@ -176,5 +199,5 @@ public class SupportInvitationReadService implements SupportInvitationReadFacade
         problems.computeIfAbsent(customer, ignored -> EnumSet.noneOf(Reason.class)).add(reason);
     }
 
-    private record Path(long customerId, boolean eligible) { }
+    private record Path(long customerId, boolean eligible, int depth) { }
 }

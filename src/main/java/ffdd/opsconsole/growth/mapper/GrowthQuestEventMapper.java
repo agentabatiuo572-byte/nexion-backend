@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import ffdd.opsconsole.shared.canonical.mapper.StandardTrialSkuMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -12,7 +13,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 @Mapper
-public interface GrowthQuestEventMapper extends BaseMapper<Object> {
+public interface GrowthQuestEventMapper extends BaseMapper<Object>, StandardTrialSkuMapper {
     @Update("""
             CREATE TABLE IF NOT EXISTS nx_growth_trial_policy (
               id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -192,6 +193,15 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> listEvents();
 
+    /** Called while holding H4_EVENT. A current read includes a concurrently committed draft. */
+    @Select("""
+            SELECT quest_code
+              FROM nx_event_quest
+             WHERE target_type = 'wheel' AND is_deleted = 0
+             LIMIT 1 FOR UPDATE
+            """)
+    String lockExistingWheelEvent();
+
     @Select("""
             SELECT id AS rowId, quest_code AS eventCode, target_type AS targetType, target_value AS targetValue,
                    CAST(status AS SIGNED) AS status, is_deleted AS deleted, starts_at AS startsAt, ends_at AS endsAt,
@@ -205,6 +215,20 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
              FOR UPDATE
             """)
     Map<String, Object> lockEventForMutation(@Param("eventId") String eventId);
+
+    /** Non-locking committed read for the side-effect-free legacy reward preview. */
+    @Select("""
+            SELECT id AS rowId, quest_code AS eventCode, target_type AS targetType, target_value AS targetValue,
+                   CAST(status AS SIGNED) AS status, is_deleted AS deleted, starts_at AS startsAt, ends_at AS endsAt,
+                   reward_name AS rewardName, reward_type AS rewardType, reward_amount AS rewardAmount,
+                   (target_value > 0 AND LOWER(target_type) <> 'wheel'
+                    AND (ends_at IS NULL OR (ends_at > UTC_TIMESTAMP()
+                         AND (starts_at IS NULL OR starts_at < ends_at)))) AS rewardWindow
+              FROM nx_event_quest
+             WHERE quest_code = #{eventId}
+               AND target_type IN ('discount','referral','wheel','regional','boost','seasonal','onboarding')
+            """)
+    Map<String, Object> findEventForPreview(@Param("eventId") String eventId);
 
     @Select("""
             SELECT policy_key AS `key`,
@@ -339,6 +363,26 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                      ' UVT'
                    ) AS shadow,
                    claim_no AS cardTok,
+                   CASE WHEN quota_snapshot LIKE '%productCode=%' THEN
+                     REPLACE(SUBSTRING_INDEX(SUBSTRING_INDEX(quota_snapshot,'productCode=',-1),',',1),
+                             'device-trial-standard', (""" + STANDARD_S1_SQL + """
+                       ))
+                   END AS trialProductNo,
+                   device_name AS trialProductName,
+                   (SELECT i.product_no FROM nx_user_device d
+                     JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=nx_trial_claim.user_id
+                     JOIN nx_order_item i ON i.order_no=o.order_no AND i.is_deleted=0
+                    WHERE d.id=nx_trial_claim.user_device_id AND o.order_type='TRIAL_CONVERT'
+                      AND UPPER(nx_trial_claim.status)='REDEEMED' LIMIT 1) AS purchasedProductNo,
+                   (SELECT i.product_name FROM nx_user_device d
+                     JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=nx_trial_claim.user_id
+                     JOIN nx_order_item i ON i.order_no=o.order_no AND i.is_deleted=0
+                    WHERE d.id=nx_trial_claim.user_device_id AND o.order_type='TRIAL_CONVERT'
+                      AND UPPER(nx_trial_claim.status)='REDEEMED' LIMIT 1) AS purchasedProductName,
+                   (UPPER(status) IN ('CLAIMED','ACTIVE','GRACE','EXTENDED') AND NOW() <
+                       CASE WHEN UPPER(status)='EXTENDED' THEN expires_at
+                            ELSE DATE_ADD(expires_at, INTERVAL COALESCE(grace_days_snapshot,7) DAY)
+                        END) AS canConvert,
                    claimed_at AS claimedAt,
                    expires_at AS expiresAt,
                    cooldown_until AS cooldownUntil
@@ -432,6 +476,7 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
                    COUNT(CASE WHEN UPPER(status) = 'REDEEMED' THEN 1 END) AS redeemed,
                    COUNT(CASE WHEN UPPER(status) = 'REDEEMED'
                                    AND LOCATE(',settlementPolicy=FULL_TERM_ON_CONVERSION,', settlement_snapshot) > 0
+                                   AND LOCATE(',earlyDiscountConfiguredUsdt=0,', settlement_snapshot) = 0
                               THEN 1 END) AS earlyRedeemed,
                    COUNT(CASE WHEN UPPER(status) = 'REDEEMED'
                                    AND (LOCATE(',settlementPolicy=FULL_TERM_ON_CONVERSION,', settlement_snapshot) > 0
@@ -525,6 +570,19 @@ public interface GrowthQuestEventMapper extends BaseMapper<Object> {
 
     @Select("SELECT COUNT(*) FROM nx_growth_quest_event_binding WHERE quest_code=#{questCode} AND status=1 AND is_deleted=0")
     int activeBindingCountByQuestCode(@Param("questCode") String questCode);
+
+    @Select("""
+            <script>
+            SELECT producer, event_type eventType, quest_code questCode, user_id_field userIdField
+              FROM nx_growth_quest_event_binding
+             WHERE status=1 AND is_deleted=0 AND quest_code IN
+               <foreach collection="questCodes" item="code" open="(" separator="," close=")">#{code}</foreach>
+             ORDER BY binding_code
+            </script>
+            """)
+    List<ActiveBindingRule> activeBindingRules(@Param("questCodes") List<String> questCodes);
+
+    record ActiveBindingRule(String producer, String eventType, String questCode, String userIdField) {}
 
     @Select("SELECT COUNT(*) FROM nx_growth_quest_event_binding WHERE quest_code=#{questCode} AND producer='SYSTEM' AND event_type='H3_STOREFRONT_THREE_PRODUCTS_VIEWED' AND user_id_field='user_id' AND status=1 AND is_deleted=0")
     int activeStorefrontThreeProductBindingCount(@Param("questCode") String questCode);

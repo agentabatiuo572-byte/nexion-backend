@@ -84,7 +84,7 @@ class TrialConversionSlotMySqlTest {
     void converted(){
         assertThat(trial.insertConversionOrder(7L,"TRC-FIXTURE",11L,new BigDecimal("1299"),new BigDecimal("53"),new BigDecimal("1246"))).isEqualTo(1);
         assertThat(trial.insertConversionOrderItem("TRC-FIXTURE",11L,"stellarbox-s1","S1",new BigDecimal("1299"))).isEqualTo(1);
-        assertThat(trial.insertPurchasedDevice(7L,"TRC-FIXTURE",11L,"stellarbox-s1","S1","DEVICE","fixture-unit","S1",new BigDecimal("1299"))).isEqualTo(1);
+        assertThat(trial.insertPurchasedDevice(7L,"TRC-FIXTURE",11L,"stellarbox-s1","S1","DEVICE","fixture-unit","S1",new BigDecimal("1299"), "DEVICE")).isEqualTo(1);
         jdbc.update("INSERT INTO nx_trial_claim SELECT 1,7,id,'REDEEMED',NOW(),0,'TRIAL-FIXTURE',1246 FROM nx_user_device");
     }
     void legacy(){converted();jdbc.update("UPDATE nx_order SET order_status='PAID',activation_status='ACTIVE'");}

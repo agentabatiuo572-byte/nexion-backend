@@ -23,9 +23,12 @@ public record GrowthRhythmSnapshot(
         BigDecimal binaryDailyCap,
         BigDecimal questBonusMultiplier,
         boolean complianceHoldEnabled,
+        BigDecimal complianceReviewThresholdUsdt,
         List<String> sourceKeys,
         boolean reliable,
         List<String> reliabilityErrors) {
+    public static final String COMPLIANCE_REVIEW_THRESHOLD_DIAL = "complianceReviewThresholdUsdt";
+    private static final BigDecimal MAX_COMPLIANCE_REVIEW_THRESHOLD = new BigDecimal("999999999999");
     private static final String CURRENT_MONTH_KEY = "growth.phase.current_month";
     private static final String CURRENT_PHASE_KEY = "growth.phase.current";
     private static final String RHYTHM_TOTAL_MONTHS_KEY = "H1.rhythm.totalMonths";
@@ -61,6 +64,16 @@ public record GrowthRhythmSnapshot(
         this(totalMonths, currentMonth, currentPhase, phaseProgressPct, newUserBonusMultiplier,
                 inviteRewardMultiplier, reinvestMultiplier, withdrawPenaltyFeeRate, withdrawCooldownDays,
                 binaryDailyCap, questBonusMultiplier, complianceHoldEnabled, sourceKeys, true, List.of());
+    }
+
+    public GrowthRhythmSnapshot(int totalMonths, int currentMonth, String currentPhase, int phaseProgressPct,
+            BigDecimal newUserBonusMultiplier, BigDecimal inviteRewardMultiplier, BigDecimal reinvestMultiplier,
+            BigDecimal withdrawPenaltyFeeRate, int withdrawCooldownDays, BigDecimal binaryDailyCap,
+            BigDecimal questBonusMultiplier, boolean complianceHoldEnabled, List<String> sourceKeys,
+            boolean reliable, List<String> reliabilityErrors) {
+        this(totalMonths, currentMonth, currentPhase, phaseProgressPct, newUserBonusMultiplier,
+                inviteRewardMultiplier, reinvestMultiplier, withdrawPenaltyFeeRate, withdrawCooldownDays,
+                binaryDailyCap, questBonusMultiplier, complianceHoldEnabled, null, sourceKeys, reliable, reliabilityErrors);
     }
 
     public static GrowthRhythmSnapshot from(PlatformConfigFacade configFacade, OpsReadTimeSeedPolicy readTimeSeedPolicy) {
@@ -99,7 +112,8 @@ public record GrowthRhythmSnapshot(
                 RHYTHM_PHASE_PROGRESS_KEY,
                 prefix + "newUserBonusMultiplier", prefix + "inviteRewardMultiplier", prefix + "reinvestMultiplier",
                 prefix + "withdrawPenaltyFeeRate", prefix + "withdrawCooldownDays", prefix + "binaryDailyCap",
-                prefix + "questBonusMultiplier", prefix + "complianceHoldEnabled")));
+                prefix + "questBonusMultiplier", prefix + "complianceHoldEnabled",
+                prefix + COMPLIANCE_REVIEW_THRESHOLD_DIAL)));
         List<String> reliabilityErrors = validateRequiredFacts(configValues, totalMonths, currentMonth, currentPhase);
         return new GrowthRhythmSnapshot(
                 totalMonths,
@@ -114,6 +128,7 @@ public record GrowthRhythmSnapshot(
                 monthDial(configValues, currentMonth, "binaryDailyCap", defaultMonthDial(currentMonth, "binaryDailyCap"), allowFallback),
                 monthDial(configValues, currentMonth, "questBonusMultiplier", defaultMonthDial(currentMonth, "questBonusMultiplier"), allowFallback),
                 monthDial(configValues, currentMonth, "complianceHoldEnabled", defaultMonthDial(currentMonth, "complianceHoldEnabled"), allowFallback).signum() > 0,
+                parseComplianceReviewThreshold(configValues.get(prefix + COMPLIANCE_REVIEW_THRESHOLD_DIAL)),
                 List.of(
                         RHYTHM_TOTAL_MONTHS_KEY,
                         RHYTHM_CURRENT_MONTH_KEY,
@@ -124,6 +139,17 @@ public record GrowthRhythmSnapshot(
                         "growth.withdraw_nex_gate.*"),
                 reliabilityErrors.isEmpty(),
                 reliabilityErrors);
+    }
+
+    public static BigDecimal parseComplianceReviewThreshold(String raw) {
+        if (!StringUtils.hasText(raw)) return null;
+        try {
+            BigDecimal value = new BigDecimal(raw.trim());
+            return value.signum() > 0 && value.compareTo(MAX_COMPLIANCE_REVIEW_THRESHOLD) <= 0
+                    && value.stripTrailingZeros().scale() <= 0 ? value.setScale(0) : null;
+        } catch (NumberFormatException invalid) {
+            return null;
+        }
     }
 
     public Map<String, Object> summary() {

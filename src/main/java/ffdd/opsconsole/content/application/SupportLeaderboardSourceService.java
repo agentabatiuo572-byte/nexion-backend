@@ -276,7 +276,7 @@ public class SupportLeaderboardSourceService {
         return new Read(context,sourceVersion,candidateCoverage,versioned,List.of(currentMonth),raw);
     }
 
-    private static boolean completeHistory(Account account,List<QualificationInterval> qualifications,List<MemberInterval> members,
+    static boolean completeHistory(Account account,List<QualificationInterval> qualifications,List<MemberInterval> members,
             Set<Long> groups,LocalDateTime from,LocalDateTime cutoff,LocalDateTime cutover,LocalDateTime earliestOwnership) {
         if(SupportLeaderboardPolicy.PRODUCTION_START!=null) {
             LocalDateTime start=LocalDateTime.ofInstant(SupportLeaderboardPolicy.PRODUCTION_START,ZoneOffset.UTC);

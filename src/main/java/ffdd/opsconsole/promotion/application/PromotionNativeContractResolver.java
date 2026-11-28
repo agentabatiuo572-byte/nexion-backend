@@ -57,8 +57,9 @@ public class PromotionNativeContractResolver {
         return values("system",system,"resourceId",resource,"revision",revision,"contentHash",hash(data),"content",data);
     }
     private Map<String,Object> productContract(String resource,Map<String,Object> product,Map<String,Object> sku){
-        // Operational counters and retired rating/review remnants do not change the new rights contract.
-        var p=new TreeMap<>(product);p.keySet().removeAll(Set.of("stock","sold_count","updated_at","created_at","rating_value","review_count"));
+        // Operational counters, storefront display controls and retired rating/review remnants are outside the rights contract.
+        var p=new TreeMap<>(product);p.keySet().removeAll(Set.of("stock","sold_count","updated_at","created_at","rating_value","review_count",
+                "display_sold_base","live_activity_visible"));
         var s=new TreeMap<>(sku);s.keySet().removeAll(Set.of("stock_text","sold","updated_at","created_at","rating","reviews"));
         var data=values("product",p,"sku",s);
         return values("system","E1_PRODUCT","resourceId",resource,"revision",Math.max(1,number(sku.get("purchase_gate_generation"))),"contentHash",hash(data),"content",data);
@@ -68,7 +69,8 @@ public class PromotionNativeContractResolver {
      * shape plus the NULL/0 variants E1 used to write, without changing the stored reference.
      */
     private boolean legacyContract(Map<String,Object> reference,String resource,Map<String,Object> product,Map<String,Object> sku){
-        var p=new TreeMap<>(product);p.keySet().removeAll(Set.of("stock","sold_count","updated_at","created_at"));
+        var p=new TreeMap<>(product);p.keySet().removeAll(Set.of("stock","sold_count","updated_at","created_at",
+                "display_sold_base","live_activity_visible"));
         var s=new TreeMap<>(sku);s.keySet().removeAll(Set.of("stock_text","sold","updated_at","created_at"));
         var pRating=legacyValues(p.get("rating_value"),new java.math.BigDecimal("0.00"));
         var pReviews=legacyValues(p.get("review_count"),Integer.valueOf(0));

@@ -41,7 +41,6 @@ public class CregisAutoForwardService {
 
     public Map<String,Object> status(CregisNetwork network) {
         admins.require(false);
-        if (config.getProjectId() <= 0) throw configurationRequired();
         return status(network, true);
     }
     private Map<String,Object> status(CregisNetwork network, boolean requireReady) {
@@ -76,7 +75,9 @@ public class CregisAutoForwardService {
         var request=new TreeMap<String,Object>();if(network!=CregisNetwork.BEP20)request.put("network",network.network());request.put("action",action);request.put("version",version);
         request.put("collect",collect);request.put("pay",pay);request.put("reason",reason.trim());
         return command(actor,key,request,()->tx(()->{
-            gate();var p=required(db.lockPolicy(project(),network));
+            long project=project();
+            gate();var p=db.lockPolicy(project,network);
+            if(p==null)throw configurationRequired();
             if(!"PAUSE".equals(action)&&number(p,"version")!=version)throw conflict();
             int changed;
             switch(action) {
@@ -226,7 +227,8 @@ public class CregisAutoForwardService {
                 ?Map.<String,Object>of("id",id,"version",version,"stage",stage,"cid",cid,"retry",retry,"reason",reason.trim())
                 :Map.<String,Object>of("network",network.network(),"id",id,"version",version,"stage",stage,"cid",cid,"retry",retry,"reason",reason.trim());
         return command(actor,key,request,()->tx(()->{
-            gate();db.lockPolicy(project(),network);var row=locked(id,network);if(number(row,"version")!=version)throw conflict();snapshot(row);
+            long project=project();
+            gate();db.lockPolicy(project,network);var row=locked(id,network);if(number(row,"version")!=version)throw conflict();snapshot(row);
             String state=text(row,"state"),cidField=stage.equals("COLLECTION")?"collectionCid":"paymentCid";
             if(retry){
                 if(!state.equals(stage+"_FAILED")||number(row,cidField)!=0||!"CREGIS_AUTO_CREATE_REJECTED".equals(row.get("lastError")))throw conflict();
@@ -244,6 +246,7 @@ public class CregisAutoForwardService {
     /** An authenticated callback is only a query hint, never a success or a send authorization. */
     public boolean callback(Map<String,Object> body,String peer) {
         if(config.getMode()!=CregisProperties.Mode.PROVIDER||!config.allowsCallbackSourceIp(peer)||body==null)return false;
+        if(config.getProjectId()<=0)throw invalid();
         var row=db.byKey(project(),Objects.toString(body.get("third_party_id"),""));if(row==null||row.get("intentAt")==null)return false;
         var network=network(row);
         Object raw=body.get("cid");if(!(raw instanceof Integer||raw instanceof Long)||((Number)raw).longValue()<=0)return false;
@@ -275,7 +278,7 @@ public class CregisAutoForwardService {
         if(!config.autoForwardAddressesConfigured(network))return false;
         return network!=CregisNetwork.BEP20||CregisFundsConfiguration.matchesBep20(config,addresses.config(project()));
     }
-    private void fixedAddresses(CregisNetwork network){if(!addressesConfigured(network))throw invalid();}
+    private void fixedAddresses(CregisNetwork network){if(!addressesConfigured(network))throw configurationRequired();}
     private void snapshot(Map<String,Object> row){var network=network(row);fixedAddresses(network);
         if(!network.addressEquals(config.autoForwardPlatform(network),text(row,"platformAddress"))
                 ||!network.addressEquals(config.autoForwardCounterparty(network),text(row,"counterpartyAddress")))throw invalid();money(row);}
@@ -302,7 +305,7 @@ public class CregisAutoForwardService {
             return idempotency.executeRetained("CREGIS_AUTO_FORWARD:"+actor,key,hash,Map.class,action::get);
         }catch(java.security.NoSuchAlgorithmException|com.fasterxml.jackson.core.JsonProcessingException failure){throw new IllegalStateException("CREGIS_AUTO_HASH_FAILED");}}
     private void record(String action,String id,long actor,Object detail){audit.recordRequired(AuditLogWriteRequest.builder().action("CREGIS_AUTO_FORWARD_"+action).resourceType("CREGIS_AUTO_FORWARD").resourceId(id).bizNo(id).actorId(actor).actorType(actor==0?"SYSTEM":"ADMIN").actorUsername(actor==0?"cregis-auto-forward":"admin:"+actor).riskLevel("HIGH").result("SUCCESS").detail(detail).build());}
-    private long project(){if(config.getProjectId()<=0)throw invalid();return config.getProjectId();}
+    private long project(){if(config.getProjectId()<=0)throw configurationRequired();return config.getProjectId();}
     private static void reason(String r){if(r==null||r.trim().length()<10||r.trim().length()>300)throw invalid();}
     private static Map<String,Object> required(Map<String,Object> row){if(row==null)throw invalid();return row;}
     static String text(Map<String,Object> row,String name){return Objects.toString(row.get(name),"");}

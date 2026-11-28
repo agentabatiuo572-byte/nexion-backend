@@ -35,6 +35,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -44,6 +45,7 @@ import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -161,8 +163,27 @@ public class AppTradeinService {
         }
 
         List<AppTradeinMapper.SourceDevice> candidates = mapper.listTradeinSourceCandidates(userId);
-        List<AppTradeinEligibilityResponse.Source> sources = candidates == null ? List.of()
-                : candidates.stream().map(source -> eligibilitySource(source, target, policy)).toList();
+        List<AppTradeinEligibilityResponse.Source> sources = List.of();
+        if (candidates != null && !candidates.isEmpty()) {
+            var outputByDevice = mapper.cumulativeTradeinOutputs(candidates.stream()
+                            .map(AppTradeinMapper.SourceDevice::id).toList()).stream()
+                    .collect(Collectors.toMap(AppTradeinMapper.DeviceOutput::deviceId,
+                            AppTradeinMapper.DeviceOutput::outputUsdt));
+            BigDecimal targetPrice = money(target.priceUsdt());
+            sources = candidates.stream()
+                    .map(source -> {
+                        var eligibility = eligibilitySource(source, target, policy);
+                        BigDecimal discount = eligibility.eligible()
+                                ? tradeinCredit(policy, money(source.currentPriceUsdt()), targetPrice,
+                                        money(outputByDevice.get(source.id()))).discount()
+                                : null;
+                        return new RankedSource(eligibility, discount);
+                    })
+                    .sorted(Comparator.comparing(RankedSource::discount, Comparator.nullsLast(Comparator.reverseOrder()))
+                            .thenComparing(candidate -> candidate.source().sourceDeviceId()))
+                    .map(RankedSource::source)
+                    .toList();
+        }
         boolean eligible = sources.stream().anyMatch(AppTradeinEligibilityResponse.Source::eligible);
         return ApiResult.ok(eligibilityResponse(policy, eligible, eligible ? "ELIGIBLE" : "NO_ELIGIBLE_SOURCE",
                 target, targetProductNo, sources));
@@ -170,32 +191,35 @@ public class AppTradeinService {
 
     @Transactional(readOnly = true)
     public ApiResult<AppTradeinQuoteResponse> quote(Long userId, AppTradeinQuoteRequest request) {
-        return externalPaymentQuote(userId, request, false, null);
+        return externalPaymentQuote(userId, request, false, null, false);
     }
 
     public ApiResult<AppTradeinQuoteResponse> externalPaymentQuote(
-            Long userId, AppTradeinQuoteRequest request, boolean locked, PurchaseQuotaReservation reservation) {
+            Long userId, AppTradeinQuoteRequest request, boolean locked, PurchaseQuotaReservation reservation,
+            boolean legacyTradeinPricing) {
         requireCanonicalTradeinUser(userId);
         requireRequest(request == null ? null : request.sourceDeviceId(),
                 request == null ? null : request.targetProductId(), request == null ? null : request.targetProductNo());
-        Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), locked, reservation);
+        Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(),
+                request.targetProductNo(), locked, reservation, legacyTradeinPricing);
         return ApiResult.ok(evaluation.response());
     }
 
     @Transactional(readOnly = true)
     public ApiResult<AppCapacityReplaceQuoteResponse> capacityQuote(
             Long userId, AppCapacityReplaceQuoteRequest request) {
-        return externalCapacityQuote(userId, request, false, null);
+        return externalCapacityQuote(userId, request, false, false, null);
     }
 
     public ApiResult<AppCapacityReplaceQuoteResponse> externalCapacityQuote(
-            Long userId, AppCapacityReplaceQuoteRequest request, boolean locked, PurchaseQuotaReservation reservation) {
+            Long userId, AppCapacityReplaceQuoteRequest request, boolean locked, boolean legacyReplacement,
+            PurchaseQuotaReservation reservation) {
         requireCanonicalTradeinUser(userId);
         String targetProductNo = requireTargetProductNo(request == null ? null : request.targetProductNo());
         if (!StringUtils.hasText(mapper.userLevel(userId))) {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
         }
-        return ApiResult.ok(evaluateCapacity(userId, targetProductNo, locked, reservation));
+        return ApiResult.ok(evaluateCapacity(userId, targetProductNo, locked, legacyReplacement, reservation));
     }
 
     @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NOT_SUPPORTED)
@@ -283,18 +307,25 @@ public class AppTradeinService {
             throw new BizException(404, "TRADEIN_USER_NOT_FOUND");
         }
         return executeOnce(userId, idempotencyKey, request,
-                () -> submitInternal(userId, idempotencyKey, request, null));
+                () -> submitInternal(userId, idempotencyKey, request, null, false));
     }
 
     @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
     public ApiResult<?> settleVerifiedExternal(Long owner,String kind,String key,AppTradeinSubmitRequest tradein,
             AppCapacityReplaceSubmitRequest replace, AppCapacityKeepSubmitRequest keep, PurchaseQuotaReservation reservation) {
+        return settleVerifiedExternal(owner, kind, key, tradein, replace, keep, reservation, false);
+    }
+
+    @Transactional(propagation=org.springframework.transaction.annotation.Propagation.MANDATORY,rollbackFor=Exception.class)
+    public ApiResult<?> settleVerifiedExternal(Long owner,String kind,String key,AppTradeinSubmitRequest tradein,
+            AppCapacityReplaceSubmitRequest replace, AppCapacityKeepSubmitRequest keep, PurchaseQuotaReservation reservation,
+            boolean legacyTradeinPricing) {
         if (!VerifiedPurchasePayment.active()) throw new BizException(403,"PURCHASE_PAYMENT_SCOPE_REQUIRED");
         testCloudAdmission.lock();
         requireProductionTradeinAvailable(); requireProductionTradeinUser(owner);
         if (mapper.lockActiveUser(owner)==null) throw new BizException(404,"TRADEIN_USER_NOT_FOUND");
         return switch(kind) {
-            case "TRADE_IN" -> submitInternal(owner,key,tradein,reservation);
+            case "TRADE_IN" -> submitInternal(owner,key,tradein,reservation,legacyTradeinPricing);
             case "CAPACITY_REPLACE" -> capacityReplaceInternal(owner,key,replace,reservation);
             case "CAPACITY_KEEP" -> capacityKeepInternal(owner,key,keep,reservation);
             default -> throw new BizException(422,"PURCHASE_PAYMENT_KIND_INVALID");
@@ -302,24 +333,21 @@ public class AppTradeinService {
     }
 
     private ApiResult<AppTradeinSubmitResponse> submitInternal(
-            Long userId, String idempotencyKey, AppTradeinSubmitRequest request, PurchaseQuotaReservation reservation) {
+            Long userId, String idempotencyKey, AppTradeinSubmitRequest request, PurchaseQuotaReservation reservation,
+            boolean legacyTradeinPricing) {
         String nonce = UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT);
         String tradeinNo = "TIN-" + nonce;
         String orderNo = "TIO-" + nonce;
         String instanceNo = "DEV-TI-" + nonce;
         var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.TRADE_IN, orderNo);
-        Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(), request.targetProductNo(), true, reservation);
+        Evaluation evaluation = evaluate(userId, request.sourceDeviceId(), request.targetProductId(),
+                request.targetProductNo(), true, reservation, legacyTradeinPricing);
         if (evaluation.source().rowVersion() == null
                 || !request.expectedSourceVersion().equals(evaluation.source().rowVersion())) {
             throw new BizException(409, "TRADEIN_SOURCE_VERSION_CONFLICT");
         }
         AppTradeinQuoteResponse quote = evaluation.response();
-        if ((request.expectedPayableUsdt() != null
-                && money(request.expectedPayableUsdt()).compareTo(quote.payableUsdt()) != 0)
-                || (request.expectedDiscountUsdt() != null
-                && money(request.expectedDiscountUsdt()).compareTo(quote.discountUsdt()) != 0)) {
-            throw new BizException(409, "TRADEIN_QUOTE_CHANGED");
-        }
+        requireExpectedAmounts(request.expectedPayableUsdt(), request.expectedDiscountUsdt(), quote);
         if (VerifiedPurchasePayment.active()) VerifiedPurchasePayment.require(userId,quote.payableUsdt());
         if (!VerifiedPurchasePayment.active() && !quote.sufficientFunds()) {
             throw new BizException(409, "TRADEIN_INSUFFICIENT_FUNDS");
@@ -400,6 +428,9 @@ public class AppTradeinService {
                 "creditRatePct", quote.creditRatePct(),
                 "discountUsdt", quote.discountUsdt(),
                 "walletDebitUsdt", VerifiedPurchasePayment.active() ? BigDecimal.ZERO : quote.payableUsdt());
+        if (quote.sourceCurrentPriceUsdt() != null) {
+            event.put("sourceCurrentPriceUsdt", quote.sourceCurrentPriceUsdt());
+        }
         outboxService.publishUserEvent(
                 "TRADEIN", tradeinNo, "tradein.completed", userId, normalizePhase(attribution.phase()),
                 attribution.accountAgeMonths(), attribution.cohort(), event);
@@ -476,7 +507,7 @@ public class AppTradeinService {
         String orderNo = "CPO-" + nonce;
         String instanceNo = "DEV-CPR-" + nonce;
         var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.TRADE_IN, orderNo);
-        AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true, reservation);
+        AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true, true, reservation);
         if (!"REPLACE_REQUIRED".equals(quote.decision()) || quote.sourceDeviceId() == null) {
             throw new BizException(409, "CAPACITY_REPLACEMENT_NOT_REQUIRED");
         }
@@ -593,10 +624,8 @@ public class AppTradeinService {
         String orderNo = "CKO-" + nonce;
         String instanceNo = "DEV-CPK-" + nonce;
         var prepared = VerifiedPurchasePayment.active() ? null : paymentAttribution.prepare(userId, Source.CAPACITY_KEEP, orderNo);
-        AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true, reservation);
-        if (!"CAPACITY_AVAILABLE".equals(quote.decision())) {
-            throw new BizException(409, "DEVICE_SLOT_CAP_EXCEEDED");
-        }
+        AppCapacityReplaceQuoteResponse quote = evaluateCapacity(userId, request.targetProductNo(), true, false, reservation);
+        boolean activate = "CAPACITY_AVAILABLE".equals(quote.decision());
         if (money(request.expectedPayableUsdt()).compareTo(quote.payableUsdt()) != 0) {
             throw new BizException(409, "CAPACITY_KEEP_QUOTE_CHANGED");
         }
@@ -617,7 +646,7 @@ public class AppTradeinService {
             throw new BizException(409, "CAPACITY_KEEP_QUOTE_CHANGED");
         }
         String hostingCenter = hostingCenters.requirePool().assign(instanceNo);
-        testCloudAdmission.requireCapacity(1);
+        testCloudAdmission.requireCapacity(activate ? 1 : 0);
         if (reservation == null) reservePurchaseQuotaAtSettlement(userId, target.productNo());
         var hardwareQuota = reservation == null ? HardwareQuotaPurchaseGuard.reserve(mapper, userId, target.productNo(),
                 java.time.LocalDateTime.now(java.time.ZoneOffset.UTC)) : null;
@@ -638,7 +667,7 @@ public class AppTradeinService {
 
         AppTradeinMapper.PaidOrderWrite order = new AppTradeinMapper.PaidOrderWrite(
                 userId, orderNo, target.id(), target.productNo(), target.name(),
-                quote.targetPriceUsdt(), BigDecimal.ZERO.setScale(6), quote.payableUsdt(), null);
+                quote.targetPriceUsdt(), BigDecimal.ZERO.setScale(6), quote.payableUsdt(), null, activate);
         if (mapper.insertCapacityKeepOrder(order) != 1 || mapper.insertPaidOrderItem(order) != 1) {
             throw new BizException(409, "CAPACITY_KEEP_ORDER_CREATE_CONFLICT");
         }
@@ -646,7 +675,7 @@ public class AppTradeinService {
         AppTradeinMapper.DeliveredDeviceWrite delivered = new AppTradeinMapper.DeliveredDeviceWrite(
                 userId, orderNo, target.id(), target.productNo(), target.tier(), instanceNo, target.name(),
                 target.deviceType(), target.generation(), target.gpuModel(), target.vramTotalGb(),
-                nz(target.hashrate()), nz(target.dailyUsdt()), nz(target.dailyNex()), quote.targetPriceUsdt());
+                nz(target.hashrate()), nz(target.dailyUsdt()), nz(target.dailyNex()), quote.targetPriceUsdt(), activate);
         if (mapper.insertCapacityKeepTargetDevice(delivered, hostingCenter) != 1) {
             throw new BizException(409, "CAPACITY_KEEP_TARGET_DELIVERY_CONFLICT");
         }
@@ -655,10 +684,11 @@ public class AppTradeinService {
             throw new BizException(409, "CAPACITY_KEEP_TARGET_DELIVERY_NOT_FOUND");
         }
 
+        String deviceStatus = activate ? "ACTIVE" : "INACTIVE";
         Map<String, Object> event = linked(
                 "operationNo", operationNo, "orderNo", orderNo, "targetDeviceId", targetDeviceId,
                 "targetProductNo", target.productNo(), "walletDebitUsdt", VerifiedPurchasePayment.active() ? BigDecimal.ZERO : quote.payableUsdt(),
-                "deviceStatus", "ACTIVE");
+                "deviceStatus", deviceStatus);
         outboxService.publishUserEvent(
                 "ORDER", orderNo, "checkout.completed", userId, normalizePhase(attribution.phase()),
                 attribution.accountAgeMonths(), attribution.cohort(), linked(
@@ -676,12 +706,13 @@ public class AppTradeinService {
                 .build());
         if (!VerifiedPurchasePayment.active() && quote.payableUsdt().signum() > 0) paymentAttribution.record(prepared);
         return ApiResult.ok(new AppCapacityKeepSubmitResponse(
-                operationNo, orderNo, targetDeviceId, "ACTIVE", "COMPLETED",
+                operationNo, orderNo, targetDeviceId, deviceStatus, "COMPLETED",
                 VerifiedPurchasePayment.active() ? BigDecimal.ZERO : quote.payableUsdt(), balanceAfter));
     }
 
     private AppCapacityReplaceQuoteResponse evaluateCapacity(
-            Long userId, String targetProductNo, boolean locked, PurchaseQuotaReservation reservation) {
+            Long userId, String targetProductNo, boolean locked, boolean legacyReplacement,
+            PurchaseQuotaReservation reservation) {
         int activeDevices = Math.max(0, locked ? mapper.lockActiveDeviceCount(userId) : mapper.countActiveDevices(userId));
         int slotCap = Math.max(1, locked ? mapper.lockDeviceSlotCap() : mapper.deviceSlotCap());
         AppTradeinMapper.TargetProduct target = locked
@@ -696,22 +727,24 @@ public class AppTradeinService {
         BigDecimal targetPrice = money(target.priceUsdt());
         BigDecimal wallet = money(nz(locked ? mapper.lockWalletBalanceUsdt(userId) : mapper.walletBalanceUsdt(userId)));
         AppTradeinMapper.SourceDevice source = null;
-        String decision = "CAPACITY_AVAILABLE";
         int trial = locked ? mapper.lockReservedTrialSlotCount(userId) : mapper.reservedTrialSlotCount(userId);
         int reserved = Math.max(0, locked ? mapper.lockReservedDeviceOrderCount(userId) : mapper.reservedDeviceOrderCount(userId));
-        if ((long) activeDevices + reserved + trial >= slotCap) {
+        int assignableSlots = (int) Math.max(0, slotCap - (long) activeDevices - reserved - trial);
+        String decision = assignableSlots == 0 ? "INVENTORY_ONLY" : "CAPACITY_AVAILABLE";
+        if (assignableSlots == 0 && legacyReplacement) {
             source = locked ? currentReplacementSource(mapper.lockCapacityReplacementSources(userId)) : currentReplacementSource(mapper.findCapacityReplacementSources(userId));
             decision = source == null ? "NO_ACTIVE_DEVICE" : "REPLACE_REQUIRED";
         }
         return new AppCapacityReplaceQuoteResponse(
-                decision, activeDevices, slotCap,
+                decision, activeDevices, slotCap, assignableSlots,
                 source == null ? null : source.id(), source == null ? null : source.productName(),
                 target.id(), target.productNo(), target.name(), targetPrice, targetPrice, wallet,
                 wallet.compareTo(targetPrice) >= 0, "server");
     }
 
     private Evaluation evaluate(
-            Long userId, Long sourceDeviceId, Long targetProductId, String targetProductNo, boolean locked, PurchaseQuotaReservation reservation) {
+            Long userId, Long sourceDeviceId, Long targetProductId, String targetProductNo, boolean locked,
+            PurchaseQuotaReservation reservation, boolean legacyTradeinPricing) {
         TradeinPolicy policy = policy();
         if (!policy.enabled()) throw new BizException(409, "TRADEIN_DISABLED");
         requireEligibility(mapper.userLevel(userId), policy.eligibility());
@@ -741,24 +774,26 @@ public class AppTradeinService {
         requirePurchaseEligibility(userId, target, locked, reservation);
 
         BigDecimal sourcePaid = money(source.actualPaidUsdt());
+        BigDecimal sourceCurrentPrice = legacyTradeinPricing ? null
+                : money(locked ? mapper.lockSourceCurrentPrice(source.productId()) : source.currentPriceUsdt());
+        BigDecimal creditBase = legacyTradeinPricing ? sourcePaid : sourceCurrentPrice;
         BigDecimal targetPrice = money(target.priceUsdt());
-        if (policy.requireHigherPrice() && targetPrice.compareTo(sourcePaid) <= 0) {
-            throw new BizException(409, "TRADEIN_HIGHER_PRICE_REQUIRED");
+        String priceFailure = tradeinPriceFailure(policy, creditBase, targetPrice);
+        if (priceFailure != null) {
+            throw new BizException(409, "TRADEIN_" + priceFailure);
         }
         BigDecimal output = money(nz(mapper.cumulativeDeviceOutputUsdt(source.id())));
-        BigDecimal ratio = output.multiply(BigDecimal.valueOf(100))
-                .divide(sourcePaid, 6, RoundingMode.HALF_UP);
-        BigDecimal creditRate = creditRate(policy, ratio);
-        BigDecimal discount = sourcePaid.multiply(creditRate)
-                .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP)
-                .min(targetPrice);
-        BigDecimal payable = targetPrice.subtract(discount).setScale(6, RoundingMode.HALF_UP);
+        TradeinCredit credit = tradeinCredit(policy, creditBase, targetPrice, output);
+        BigDecimal payable = targetPrice.subtract(credit.discount()).setScale(6, RoundingMode.HALF_UP);
         BigDecimal wallet = money(nz(locked ? mapper.lockWalletBalanceUsdt(userId) : mapper.walletBalanceUsdt(userId)));
         BigDecimal shortfall = payable.subtract(wallet).max(BigDecimal.ZERO).setScale(6, RoundingMode.HALF_UP);
         AppTradeinQuoteResponse response = new AppTradeinQuoteResponse(
-                source.id(), source.productName(), target.id(), target.productNo(), target.name(), sourcePaid, output, ratio,
-                creditRate, discount, targetPrice, payable, wallet, shortfall,
-                shortfall.signum() == 0, false, "nx_compute_receipt + source paid price + nx_compute_e3_config",
+                source.id(), source.productName(), target.id(), target.productNo(), target.name(), sourcePaid,
+                sourceCurrentPrice, output,
+                credit.ratio(), credit.rate(), credit.discount(), targetPrice, payable, wallet, shortfall,
+                shortfall.signum() == 0, false, legacyTradeinPricing
+                        ? "nx_compute_receipt + source paid price + nx_compute_e3_config"
+                        : "nx_compute_receipt + nx_product.price_usdt + nx_compute_e3_config",
                 source.rowVersion(), source.activated() ? "ACTIVE" : "INACTIVE");
         return new Evaluation(source, target, response);
     }
@@ -861,6 +896,37 @@ public class AppTradeinService {
                 earlyAccessLeadDays);
     }
 
+    public static void requireExpectedAmounts(BigDecimal expectedPayable, BigDecimal expectedDiscount,
+                                              AppTradeinQuoteResponse quote) {
+        if ((expectedPayable != null && expectedPayable.setScale(6, RoundingMode.HALF_UP).compareTo(quote.payableUsdt()) != 0)
+                || (expectedDiscount != null && expectedDiscount.setScale(6, RoundingMode.HALF_UP).compareTo(quote.discountUsdt()) != 0)) {
+            throw new BizException(409, "TRADEIN_QUOTE_CHANGED");
+        }
+    }
+
+    private String tradeinPriceFailure(TradeinPolicy policy, BigDecimal sourceCurrentPrice, BigDecimal targetPrice) {
+        if (sourceCurrentPrice.signum() <= 0) return "SOURCE_CURRENT_PRICE_UNAVAILABLE";
+        if (policy.requireHigherPrice() && targetPrice.compareTo(sourceCurrentPrice) <= 0) {
+            return "HIGHER_PRICE_REQUIRED";
+        }
+        return null;
+    }
+
+    private TradeinCredit tradeinCredit(
+            TradeinPolicy policy, BigDecimal sourceCurrentPrice, BigDecimal targetPrice, BigDecimal output) {
+        BigDecimal ratio = output.multiply(BigDecimal.valueOf(100))
+                .divide(sourceCurrentPrice, 6, RoundingMode.HALF_UP);
+        BigDecimal rate = creditRate(policy, ratio);
+        BigDecimal discount = sourceCurrentPrice.multiply(rate)
+                .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP)
+                .min(targetPrice);
+        return new TradeinCredit(ratio, rate, discount);
+    }
+
+    private record TradeinCredit(BigDecimal ratio, BigDecimal rate, BigDecimal discount) { }
+
+    private record RankedSource(AppTradeinEligibilityResponse.Source source, BigDecimal discount) { }
+
     private BigDecimal creditRate(TradeinPolicy policy, BigDecimal ratio) {
         for (int i = 0; i < policy.cuts().size(); i++) {
             // Admin/App wording defines [0, cut1), [cut1, cut2) ... [cut4, +inf).
@@ -913,22 +979,18 @@ public class AppTradeinService {
             AppTradeinMapper.SourceDevice source,
             AppTradeinMapper.TargetProduct target,
             TradeinPolicy policy) {
-        String reasonCode = "OK";
-        boolean eligible = true;
+        String reasonCode;
         if (source == null || source.productId() == null || source.productId() <= 0
                 || source.actualPaidUsdt() == null || source.actualPaidUsdt().signum() <= 0) {
-            eligible = false;
             reasonCode = "SOURCE_PAID_PRICE_UNAVAILABLE";
         } else if (target.id().equals(source.productId())) {
-            eligible = false;
             reasonCode = "TARGET_MUST_DIFFER";
-        } else if (policy.requireHigherPrice()
-                && money(target.priceUsdt()).compareTo(money(source.actualPaidUsdt())) <= 0) {
-            eligible = false;
-            reasonCode = "HIGHER_PRICE_REQUIRED";
+        } else {
+            reasonCode = tradeinPriceFailure(policy, money(source.currentPriceUsdt()), money(target.priceUsdt()));
         }
         return new AppTradeinEligibilityResponse.Source(
-                source == null ? null : source.id(), source == null ? null : source.productName(), eligible, reasonCode);
+                source == null ? null : source.id(), source == null ? null : source.productName(),
+                reasonCode == null, reasonCode == null ? "OK" : reasonCode);
     }
 
     private BigDecimal decimal(Map<String, String> values, String key) {

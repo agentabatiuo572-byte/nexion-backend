@@ -111,6 +111,17 @@ public class AppGrowthEngagementController {
         return userId == null ? forbidden() : service.claimEvent(userId, eventCode, idempotencyKey);
     }
 
+    @GetMapping("/api/events/{eventCode}/commands/{operation}")
+    public ApiResult<Map<String, Object>> eventCommandReceipt(
+            @PathVariable String eventCode,
+            @PathVariable String operation,
+            @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden()
+                : service.eventCommandReceipt(userId, eventCode, operation, idempotencyKey);
+    }
+
     @PostMapping("/api/events/{eventCode}/spin")
     public ApiResult<Map<String, Object>> spin(
             @PathVariable String eventCode,

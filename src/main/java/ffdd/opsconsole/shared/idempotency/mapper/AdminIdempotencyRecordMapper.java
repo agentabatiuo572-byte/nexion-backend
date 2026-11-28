@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.idempotency.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyRecordEntity;
 import java.util.List;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Select;
@@ -166,15 +167,49 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
                    rollback_confirmed = 0,
                    response_json = NULL,
                    error_message = NULL,
-                   expires_at = #{expiresAt},
+                   expires_at = IF(REGEXP_LIKE(scope, '^A3_(DEVELOPER_DOCS|HOW_CONTENT)_UPDATE:[1-9][0-9]{0,18}$', 'c'),
+                       expires_at, #{expiresAt}),
                    updated_at = NOW()
              WHERE id = #{id}
                AND status = 'FAILED'
                AND is_deleted = 0
+               AND (scope <> 'D3_RESERVE_INJECTION' OR origin_admin_id IS NULL OR response_json IS NULL)
+               AND (expires_at > NOW()
+                    OR NOT REGEXP_LIKE(scope, '^A3_(DEVELOPER_DOCS|HOW_CONTENT)_UPDATE:[1-9][0-9]{0,18}$', 'c'))
             """)
     int resetFailedById(@Param("id") Long id,
                         @Param("requestHash") String requestHash,
                         @Param("expiresAt") java.time.LocalDateTime expiresAt);
+
+    @Update("""
+            UPDATE nx_admin_idempotency_record
+               SET status = 'PROCESSING', rollback_confirmed = 0, response_json = NULL,
+                   error_message = NULL, expires_at = #{expiresAt}, updated_at = NOW()
+             WHERE id = #{id} AND status = 'FAILED' AND is_deleted = 0
+               AND request_hash = #{requestHash}
+               AND response_json <=> CAST(#{previousResponse,jdbcType=VARCHAR} AS JSON)
+            """)
+    int resetSupportBulkCreateFailure(@Param("id") Long id,
+                                      @Param("requestHash") String requestHash,
+                                      @Param("expiresAt") java.time.LocalDateTime expiresAt,
+                                      @Param("previousResponse") String previousResponse);
+
+    @Insert("""
+            INSERT INTO nx_admin_operation_mutex (lock_key) VALUES (#{scopePrefix})
+            ON DUPLICATE KEY UPDATE updated_at=updated_at
+            """)
+    int lockA3ContentClaims(@Param("scopePrefix") String scopePrefix);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_admin_idempotency_record
+             WHERE is_deleted=0 AND origin_admin_id IS NOT NULL
+               AND (status IN ('UNKNOWN','PROCESSING')
+                    OR (status='FAILED' AND (rollback_confirmed<>1 OR response_json IS NOT NULL)))
+               AND REGEXP_LIKE(scope, #{scopePattern}, 'c')
+               AND NOT (scope=#{scope} AND BINARY idempotency_key=BINARY #{key})
+            """)
+    int countUnresolvedA3Content(@Param("scopePattern") String scopePattern, @Param("scope") String scope,
+                                 @Param("key") String key);
 
     @Select("""
             SELECT COUNT(*) FROM nx_admin_idempotency_record
@@ -248,12 +283,20 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
      * Do not recycle it: callers cannot know whether an external side effect
      * happened.  UNKNOWN is deliberately terminal and therefore fail-closed.
      */
+    // Salary completion commits the wallet and receipt together under this row lock.
+    String EXPIRED_PROCESSING_RESULT = """
+               SET status = IF(scope LIKE 'APP:VRANK_SALARY:USER:%', 'FAILED', 'UNKNOWN'),
+                   response_json = IF(scope LIKE 'APP:VRANK_SALARY:USER:%',
+                       JSON_OBJECT('status','REJECTED','month',request_hash,'rejectionCode','SALARY_CLAIM_EXPIRED','httpStatus',503),
+                       NULL),
+                   error_message = IF(scope LIKE 'APP:VRANK_SALARY:USER:%',
+                       'SALARY_CLAIM_EXPIRED','IDEMPOTENCY_RESULT_UNKNOWN_AFTER_EXPIRY'),
+                   updated_at = NOW()
+            """;
+
     @Update("""
             UPDATE nx_admin_idempotency_record
-               SET status = 'UNKNOWN',
-                   response_json = NULL,
-                   error_message = 'IDEMPOTENCY_RESULT_UNKNOWN_AFTER_EXPIRY',
-                   updated_at = NOW()
+            """ + EXPIRED_PROCESSING_RESULT + """
              WHERE id = #{id}
                AND scope = #{scope}
                AND idempotency_key = #{idempotencyKey}
@@ -286,10 +329,7 @@ public interface AdminIdempotencyRecordMapper extends BaseMapper<AdminIdempotenc
     @Update("""
             <script>
             UPDATE nx_admin_idempotency_record
-               SET status = 'UNKNOWN',
-                   response_json = NULL,
-                   error_message = 'IDEMPOTENCY_RESULT_UNKNOWN_AFTER_EXPIRY',
-                   updated_at = NOW()
+            """ + EXPIRED_PROCESSING_RESULT + """
              WHERE id IN
              <foreach collection='ids' item='id' open='(' separator=',' close=')'>
                #{id}

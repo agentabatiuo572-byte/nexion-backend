@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.application;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import ffdd.opsconsole.finance.dto.PayoutVndConfigUpdateRequest;
@@ -67,9 +68,16 @@ public class WithdrawalConfigApproval {
     }
 
     public boolean canReadOwnProposal(AuditReplayCommand command, long adminId, Set<String> grants) {
+        if (!supports(command)) return false;
         Object maker = command.params() == null ? null : command.params().get(MAKER);
-        return maker instanceof Number && Long.toString(adminId).equals(maker.toString())
-                && canMakeProposal(command, grants::contains);
+        if (!(maker instanceof Number) || !Long.toString(adminId).equals(maker.toString())) return false;
+        try {
+            // D6 authorization has no field-specific grants, so it does not parse the stored values itself.
+            if (D6.equals(command.op())) request(command, null, FxQuoteUpdateRequest.class);
+            return canMakeProposal(command, grants::contains);
+        } catch (BizException invalid) {
+            return false;
+        }
     }
 
     private boolean canMakeProposal(AuditReplayCommand command, Predicate<String> authorized) {
@@ -110,11 +118,18 @@ public class WithdrawalConfigApproval {
         return ApiResult.ok();
     }
 
-    public ApiResult<Map<String, Object>> preview(AuditReplayCommand command, String reason) {
-        if (D6.equals(command.op())) return vietnam.previewFxQuote(request(command, reason, FxQuoteUpdateRequest.class));
-        return D5.equals(command.op())
-                ? finance.previewWithdrawalLimits(request(command, reason, WithdrawalLimitsUpdateRequest.class))
-                : payoutVnd.previewUpdate(request(command, reason, PayoutVndConfigUpdateRequest.class));
+    public record Preview(String before, String after, JsonNode changes) {}
+
+    public ApiResult<Preview> preview(AuditReplayCommand command, String reason) {
+        ApiResult<Map<String, Object>> result = switch (command.op()) {
+            case D5 -> finance.previewWithdrawalLimits(request(command, reason, WithdrawalLimitsUpdateRequest.class));
+            case D6 -> vietnam.previewFxQuote(request(command, reason, FxQuoteUpdateRequest.class));
+            default -> payoutVnd.previewUpdate(request(command, reason, PayoutVndConfigUpdateRequest.class));
+        };
+        if (result.getCode() != 0) return ApiResult.fail(result.getCode(), result.getMessage());
+        var values = result.getData();
+        return ApiResult.ok(new Preview((String) values.get("before"), (String) values.get("after"),
+                values.containsKey("changes") ? objectMapper.valueToTree(values.get("changes")) : null));
     }
 
     public ApiResult<?> replay(AuditReplayCommand command, AuditReplayContext ctx) {

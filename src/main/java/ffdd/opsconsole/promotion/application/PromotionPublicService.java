@@ -12,6 +12,7 @@ import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 @Service
 @RequiredArgsConstructor
 public class PromotionPublicService {
+    private static final Set<String> FIRST_PURCHASE_MODES=Set.of("FIRST_ELIGIBLE_ORDER","FIRST_ELIGIBLE_UNIT");
     private final PromotionMapper db;
     private final PromotionEvaluationService evaluator;
     private final PromotionRewardService rewards;
@@ -100,12 +101,24 @@ public class PromotionPublicService {
             }
             publicRules.add(visible);
         }
+        // B69: the invitation page needs the published first-purchase mode that qualifies the
+        // inviter reward. Only the whitelisted mode/restore pair is public; policy ids, executor
+        // codes and the rest of the snapshot stay internal, and a promotion without an inviter
+        // reward keeps its original payload (null).
+        // text() never returns null, so a published snapshot without $firstPurchase yields an
+        // empty mode that fails the whitelist instead of probing an immutable set with null.
+        Map<String,Object> firstPurchaseCondition=null;
+        String firstMode=text(first==null?null:first.get("mode"));
+        if("DIRECT_REFERRAL".equals(contract.get("template"))
+                &&publishedRules.stream().anyMatch(rule->rule.get("inviterReward")!=null)
+                &&firstMode!=null&&FIRST_PURCHASE_MODES.contains(firstMode))
+            firstPurchaseCondition=values("mode",firstMode,"restoreAfterRefund",Boolean.TRUE.equals(first.get("restoreAfterRefund")));
         return values("activityId",row.get("activity_id"),"version",number(row.get("active_version")),"template",contract.get("template"),"state",state,
             "startsAt",contract.get("startsAt"),"endsAt",contract.get("endsAt"),"serverTime",now.toString(),"title",publicText(contract.get("title")),"terms",publicText(contract.get("terms")),
             "placement",contract.get("placement"),"bannerImageUrl","ACTIVE".equals(state)&&!exhausted?banners.issueUrl(text(row.get("activity_id")),number(row.get("active_version")),contract.get("bannerAssetId")):null,"target","STORE","productNos",(all?publishedRules:rules).stream().map(r->r.get("productNo")).distinct().toList(),
             "minimumClientCapabilities",contract.get("minimumClientCapabilities"),"eligibility",eligibility,"eligibilityMessage",exhausted?publicText(values("zh","当前没有可新增领取的活动奖励。","en","This promotion’s rewards are currently unavailable.","vi","Ưu đãi này hiện không có phần thưởng khả dụng.")):null,
             "repurchaseWindow",repurchase?values("minDays",interval.get("minDays"),"maxDays",interval.get("maxDays")):null,
-            "lastValidPurchaseAt",lastValidPurchaseAt,"rewardRules",publicRules);
+            "lastValidPurchaseAt",lastValidPurchaseAt,"firstPurchaseCondition",firstPurchaseCondition,"rewardRules",publicRules);
     }
     private List<Map<String,Object>> availableRules(Map<String,Object> row,Map<String,Object> contract,
             List<Map<String,Object>> rules,Map<String,Object> policies,PromotionRules.Account buyer,Instant now,boolean all){

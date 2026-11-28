@@ -3,6 +3,7 @@ package ffdd.opsconsole.platform.application;
 import ffdd.opsconsole.platform.domain.PlatformConfigItem;
 import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
 import ffdd.opsconsole.shared.exception.BizException;
+import java.text.Normalizer;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -111,22 +112,65 @@ public class A2RuntimePolicy {
         if (visible > 200) throw new BizException(422, "REASON_TOO_LONG_MAX_200");
     }
 
-    /** Counts user-visible code points; whitespace, controls and zero-width formatting cannot satisfy the policy. */
+    /** Counts visible code points after NFC normalization, excluding whitespace, controls, formatting and marks. */
     public static int visibleCodePointCount(String value) {
         if (value == null || value.isEmpty()) return 0;
+        String normalized = Normalizer.normalize(value, Normalizer.Form.NFC);
         int visible = 0;
-        for (int offset = 0; offset < value.length();) {
-            int codePoint = value.codePointAt(offset);
+        for (int offset = 0; offset < normalized.length();) {
+            int codePoint = normalized.codePointAt(offset);
             offset += Character.charCount(codePoint);
-            int type = Character.getType(codePoint);
-            if (Character.isWhitespace(codePoint) || Character.isISOControl(codePoint)
-                    || type == Character.FORMAT || type == Character.NON_SPACING_MARK
-                    || type == Character.ENCLOSING_MARK || type == Character.COMBINING_SPACING_MARK) {
-                continue;
-            }
-            visible++;
+            if (!isInvisibleReasonCodePoint(codePoint)) visible++;
         }
         return visible;
+    }
+
+    /** Preserves words separated by long runs of invisible padding before bounding a stored reason. */
+    public static String compactOversizedReason(String reason, int maxCodePoints) {
+        if (reason.codePointCount(0, reason.length()) <= maxCodePoints) return reason;
+        return stripReasonPadding(Normalizer.normalize(reason, Normalizer.Form.NFC))
+                .replaceAll("[\\p{javaWhitespace}\\p{Z}\\p{Cc}\\p{Cf}]{2,}", " ");
+    }
+
+    /** Bounds a stored reason summary without splitting a Unicode character. */
+    public static String reasonExcerpt(String value, int maxCodePoints) {
+        String reason = value.trim();
+        if (reason.codePointCount(0, reason.length()) <= maxCodePoints) return reason;
+        // Ignore oversized edge padding before choosing a readable excerpt.
+        reason = stripReasonPadding(Normalizer.normalize(reason, Normalizer.Form.NFC));
+        if (reason.codePointCount(0, reason.length()) <= maxCodePoints) return reason;
+        int head = maxCodePoints / 2;
+        int tail = maxCodePoints - head - 1;
+        return reason.substring(0, reason.offsetByCodePoints(0, head)) + "…"
+                + reason.substring(reason.offsetByCodePoints(reason.length(), -tail));
+    }
+
+    public static String reasonForAudit(String value) {
+        String reason = value.trim();
+        // Keep ordinary reasons intact and reserve space for the other structured audit fields.
+        if (reason.length() <= 768
+                && reason.length() + 5 * reason.chars().filter(c -> c < ' ').count() <= 768) return reason;
+        return reasonExcerpt(reason, 256);
+    }
+
+    private static boolean isInvisibleReasonCodePoint(int codePoint) {
+        int type = Character.getType(codePoint);
+        return Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint)
+                || Character.isISOControl(codePoint) || type == Character.FORMAT
+                || type == Character.NON_SPACING_MARK || type == Character.ENCLOSING_MARK
+                || type == Character.COMBINING_SPACING_MARK;
+    }
+
+    private static String stripReasonPadding(String reason) {
+        int start = 0;
+        int end = reason.length();
+        while (start < end && isInvisibleReasonCodePoint(reason.codePointAt(start))) {
+            start += Character.charCount(reason.codePointAt(start));
+        }
+        while (end > start && isInvisibleReasonCodePoint(reason.codePointBefore(end))) {
+            end -= Character.charCount(reason.codePointBefore(end));
+        }
+        return reason.substring(start, end);
     }
 
     private int boundedInteger(

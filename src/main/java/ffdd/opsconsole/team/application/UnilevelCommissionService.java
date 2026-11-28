@@ -227,14 +227,20 @@ public class UnilevelCommissionService {
     }
 
     /** Freeze every layer decision, including zero/paused/capped layers, before any asset is written. */
-    public Map<String, Object> prepareBudget(Long buyer, Long sponsor, BigDecimal subtotal) {
-        if(subtotal==null||subtotal.signum()<0||subtotal.stripTrailingZeros().scale()>6||subtotal.precision()-subtotal.scale()>12)throw new BizException(422,"UNILEVEL_ORDER_AMOUNT_INVALID");
-        var layerRates = requireCompleteLayerRates(teamCommissionMapper.unilevelRatesForUpdate());
+    public Map<String, Object> prepareBudget(Long buyer, Long sponsor, BigDecimal paidUsdt) {
+        return prepareBudget(buyer, sponsor, paidUsdt, false);
+    }
+
+    public Map<String, Object> prepareBudget(Long buyer, Long sponsor, BigDecimal paidUsdt, boolean rankBased) {
+        if(paidUsdt==null||paidUsdt.signum()<0||paidUsdt.stripTrailingZeros().scale()>6||paidUsdt.precision()-paidUsdt.scale()>12)throw new BizException(422,"UNILEVEL_ORDER_AMOUNT_INVALID");
+        boolean purchaseRankActive = PurchaseRankPolicy.cutover(configFacade, true) != null;
+        var layerRates = requireCompleteLayerRates(teamCommissionMapper.unilevelRatesForUpdate(), !purchaseRankActive && !rankBased);
+        var rankRates = rankBased ? teamCommissionMapper.purchaseRankRates() : List.<Map<String, Object>>of();
         var rates = layerRates.usdtPct();
         var nexRates = layerRates.nexPerUsd();
         int gate = resolveDepthGateLayer(true), rank = resolveDepthGateRankNum(true), cooling = resolveCoolingDays(true);
         BigDecimal promo = resolvePromoMultiplier(true), capPct = configDecimal(CONFIG_KEY_MERGE_EXIT_MAX_PCT, new BigDecimal("25"),true);
-        BigDecimal cap = subtotal.multiply(capPct).divide(HUNDRED, 6, RoundingMode.DOWN), allocated = ZERO;
+        BigDecimal cap = paidUsdt.multiply(capPct).divide(HUNDRED, 6, RoundingMode.DOWN), allocated = ZERO;
         List<Map<String,Object>> chain = teamCommissionMapper.listUplineChain(buyer, MAX_DEPTH);
         if (chain == null) chain = List.of();
         var members = new java.util.HashSet<Long>();
@@ -249,24 +255,28 @@ public class UnilevelCommissionService {
         var decisions = new java.util.ArrayList<Map<String,Object>>();
         for (int layer=1; layer<=MAX_DEPTH; layer++) {
             var member=byLayer.get(layer); Long id=member==null?null:asLong(member.get("userId"));
-            BigDecimal pct=rates.get("L"+layer), coefficient=nexRates.get("L"+layer);
+            String memberRank = member == null ? null : "V" + parseRankNum(asString(member.get("vRank")));
+            BigDecimal pct = rankBased && layer <= 2
+                    ? (memberRank == null ? ZERO : purchaseRankPct(rankRates, memberRank, layer))
+                    : (purchaseRankActive && layer == 1 ? BigDecimal.TEN : rates.get("L"+layer));
+            BigDecimal coefficient=nexRates.get("L"+layer);
             String reason=id==null?"NO_UPLINE":isLayerPaused(layer,true)?"LAYER_PAUSED":
                     layer>=gate&&parseRankNum(asString(member.get("vRank")))<rank?"DEPTH_GATE_NOT_MET":"";
             BigDecimal influence=id!=null&&layer>=2?resolveInfluenceScore(id,true):BigDecimal.ONE;
-            BigDecimal original=subtotal.multiply(pct).divide(HUNDRED,6,RoundingMode.HALF_UP)
+            BigDecimal original=paidUsdt.multiply(pct).divide(HUNDRED,6,RoundingMode.HALF_UP)
                     .multiply(influence).setScale(6,RoundingMode.HALF_UP).multiply(promo).setScale(6,RoundingMode.HALF_UP);
             BigDecimal budget=reason.isEmpty()?original.min(cap.subtract(allocated).max(ZERO)).setScale(6,RoundingMode.DOWN):ZERO;
             if (budget.signum()==0&&reason.isEmpty()) reason=original.signum()==0?"ZERO_PAID_SOURCE":"CHAIN_CAP_EXHAUSTED";
             allocated=allocated.add(budget);
             var item=new LinkedHashMap<String,Object>();
-            item.put("layer",layer);item.put("beneficiaryUserId",id);item.put("vRank",member==null?null:member.get("vRank"));
+            item.put("layer",layer);item.put("beneficiaryUserId",id);item.put("vRank",rankBased ? memberRank : member==null?null:member.get("vRank"));
             item.put("usdtPct",pct);item.put("nexPerUsd",coefficient);item.put("influence",influence);
             item.put("originalBudgetUsdt",original);item.put("budgetUsdt",budget);
             item.put("legacyNex",budget.multiply(coefficient).setScale(6,RoundingMode.HALF_UP));item.put("reason",reason);
             decisions.add(item);
         }
-        var result=new LinkedHashMap<String,Object>();result.put("formulaVersion","UNILEVEL_ORIGINAL_1");
-        result.put("layers",decisions);result.put("orderBasisUsdt",subtotal);result.put("allocatedBudgetUsdt",allocated);result.put("mergeExitCap",cap);
+        var result=new LinkedHashMap<String,Object>();result.put("formulaVersion",rankBased ? "UNILEVEL_PURCHASE_RANK_2" : "UNILEVEL_ORIGINAL_1");
+        result.put("layers",decisions);result.put("orderBasisUsdt",paidUsdt);result.put("allocatedBudgetUsdt",allocated);result.put("mergeExitCap",cap);
         result.put("promoMultiplier",promo);result.put("depthGate",gate);result.put("depthGateRank",rank);result.put("coolingDays",cooling);
         return result;
     }
@@ -305,7 +315,17 @@ public class UnilevelCommissionService {
         return map;
     }
 
+    private static BigDecimal purchaseRankPct(List<Map<String, Object>> rates, String rank, int layer) {
+        return rates.stream().filter(row -> rank.equals(row.get("rankCode")))
+                .map(row -> asBigDecimal(row.get("purchaseL" + layer + "Rate")).movePointRight(2))
+                .findFirst().orElseThrow(() -> new BizException(503, "VRANK_PURCHASE_RATE_NOT_CONFIGURED"));
+    }
+
     static LayerRates requireCompleteLayerRates(List<Map<String, Object>> rows) {
+        return requireCompleteLayerRates(rows, true);
+    }
+
+    static LayerRates requireCompleteLayerRates(List<Map<String, Object>> rows, boolean fixedL1) {
         var usdtRates = ratesByLevel(rows, "usdtPct");
         var nexRates = ratesByLevel(rows, "nexReward");
         for (int layer = 1; layer <= MAX_DEPTH; layer++) {
@@ -314,7 +334,7 @@ public class UnilevelCommissionService {
                 throw new BizException(503, "UNILEVEL_RULES_NOT_CONFIGURED");
             }
         }
-        if (usdtRates.get("L1").compareTo(BigDecimal.TEN) != 0) {
+        if (fixedL1 && usdtRates.get("L1").compareTo(BigDecimal.TEN) != 0) {
             throw new BizException(503, "F2_L1_DIRECT_RATE_FIXED_AT_10_PERCENT");
         }
         return new LayerRates(usdtRates, nexRates);
@@ -344,7 +364,9 @@ public class UnilevelCommissionService {
             if (Boolean.parseBoolean(paused)) {
                 return new PreviewBudget(false, DirectReferralPolicyService.PAUSED_ERROR, List.of());
             }
-            var layerRates = requireCompleteLayerRates(teamCommissionMapper.unilevelRates());
+            boolean rankBased = PurchaseRankPolicy.active(configFacade);
+            var rankRates = rankBased ? teamCommissionMapper.purchaseRankRates() : List.<Map<String, Object>>of();
+            var layerRates = requireCompleteLayerRates(teamCommissionMapper.unilevelRates(), !rankBased);
             var rates = layerRates.usdtPct();
             var nexRates = layerRates.nexPerUsd();
             int gate = resolveDepthGateLayer(false);
@@ -360,7 +382,10 @@ public class UnilevelCommissionService {
                 String reason = memberRank == null ? "NO_UPLINE"
                         : isLayerPaused(layer, false) ? "LAYER_PAUSED"
                         : layer >= gate && memberRank < rank ? "DEPTH_GATE_NOT_MET" : "";
-                BigDecimal pct = rates.get("L" + layer), coefficient = nexRates.get("L" + layer);
+                BigDecimal pct = rankBased && layer <= 2
+                        ? (memberRank == null ? ZERO : purchaseRankPct(rankRates, "V" + memberRank, layer))
+                        : rates.get("L" + layer);
+                BigDecimal coefficient = nexRates.get("L" + layer);
                 BigDecimal original = subtotal.multiply(pct).divide(HUNDRED, 6, RoundingMode.HALF_UP)
                         .multiply(promo).setScale(6, RoundingMode.HALF_UP);
                 BigDecimal budget = reason.isEmpty()

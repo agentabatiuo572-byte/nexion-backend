@@ -1,6 +1,7 @@
 package ffdd.opsconsole.promotion.application;
 
 import ffdd.opsconsole.device.application.HostingCenterService;
+import ffdd.opsconsole.device.application.DeviceSlotReplacementCompletion;
 import ffdd.opsconsole.device.application.TestCloudActivationAdmission;
 import ffdd.opsconsole.device.application.DeviceMonthlyTargetService;
 import ffdd.opsconsole.device.mapper.SimulatedTaskMapper;
@@ -27,6 +28,8 @@ import ffdd.opsconsole.common.domain.LegacyUvtProof;
 public class PromotionRewardService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
+    @org.springframework.beans.factory.annotation.Autowired
+    private DeviceSlotReplacementCompletion slotReplacement;
 
     private final PromotionMapper db;
     private final PromotionOrderService orders;
@@ -93,7 +96,6 @@ public class PromotionRewardService {
         Map<String,Object> reserved=reservation(reward),snapshot=verifiedSnapshot(reward);
         require(hash(snapshot).equals(reward.get("snapshot_hash"))&&"COMMITTED".equals(reserved.get("status")),"PROMOTION_REWARD_SNAPSHOT_INVALID");
         Map<String,Object> spec=map(map(snapshot.get("award")).get("reward"));String asset=asset(spec.get("type"));
-        if("DEVICE".equals(asset)) testCloudAdmission.requireCapacity(Math.toIntExact(number(spec.get("quantity"))));
         String attempt=id("PA"),posting="PROMOTION-ISSUE-"+obligationId,entry=null;
         changed(db.write("INSERT INTO nx_promotion_reward_attempt(attempt_id,obligation_id,command_id,action,status,evidence_json,started_at) VALUES(?,?,?,'ISSUE','PROCESSING',JSON_OBJECT(),NOW(6))",attempt,obligationId,commandId));
         changed(db.write("UPDATE nx_promotion_reward SET status='PROCESSING',last_command_id=?,revision=revision+1,updated_at=NOW(6) WHERE obligation_id=?",commandId,obligationId));
@@ -117,7 +119,6 @@ public class PromotionRewardService {
         return currentView(obligationId);
     }
     private void issueDevices(Map<String,Object> reward,Map<String,Object> snapshot,Map<String,Object> spec){
-        require(db.occupiedDeviceSlots(number(reward.get("beneficiary_id")))<=db.deviceSlotCap(),"PROMOTION_DEVICE_CAPACITY_UNAVAILABLE");
         String productNo=text(spec.get("giftProductNo"));Map<String,Object> currentSku = db.product(productNo,true);
         Map<String,Object> profile=PromotionPolicyResolver.resolveReference(map(snapshot.get("policies")),map(spec.get("deviceRightsProfile")));
         Map<String,Object> rights=map(profile.get("resolvedDeviceRights"));
@@ -132,16 +133,23 @@ public class PromotionRewardService {
         require(watts!=null,"PROMOTION_GIFT_POWER_UNAVAILABLE");
         var hostingPool = hostingCenters.requirePool();
         int count=Math.toIntExact(number(spec.get("quantity")));
+        long occupied = db.occupiedDeviceSlots(number(reward.get("beneficiary_id")));
+        if (!Boolean.TRUE.equals(snapshot.get("inventoryOverflowAllowed"))) occupied -= count;
+        int activatedQuantity = (int) Math.max(0, Math.min(count, db.deviceSlotCap() - occupied));
+        testCloudAdmission.requireCapacity(activatedQuantity);
         for(int i=0;i<count;i++){
+            boolean activate = i < activatedQuantity;
             String instance="PG-"+sha256(text(reward.get("obligation_id"))+":"+i).substring(0,48);
             changed(db.write("""
                 INSERT INTO nx_user_device(user_id,source_order_no,product_id,product_code,product_tier,series_code,instance_no,name,device_type,
                   generation,gpu_model,vram_total_gb,base_power_w,dc_location,price_usdt_snapshot,ownership_status,source_channel,
-                  source_environment,run_id,status,hashrate,daily_usdt,daily_nex,last_seen_at,purchased_at,activated_at,pending_deactivate,row_version,is_deleted)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','','ACTIVE',?,?,?,NOW(),NOW(),NOW(),0,0,0)
+                  source_environment,run_id,status,hashrate,daily_usdt,daily_nex,last_seen_at,purchased_at,activated_at,activated_on_delivery,
+                  pending_deactivate,row_version,is_deleted)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,'OWNED','PROMOTION_GIFT','PRODUCTION','',?,?,?,?,IF(?,NOW(),NULL),NOW(),IF(?,NOW(),NULL),?,0,0,0)
                 """,reward.get("beneficiary_id"),reward.get("order_no"),product.get("id"),productNo,product.get("tier"),currentSku.get("series_code"),instance,product.get("name"),type,
                 product.get("generation"),product.get("gpu_model"),product.get("vram_total_gb"),watts,hostingPool.assign(instance),
-                decimal(product.get("hashrate")),decimal(product.get("estimated_daily_usdt")),decimal(product.get("daily_nex"))));
+                activate ? "ACTIVE" : "INVENTORY",decimal(product.get("hashrate")),decimal(product.get("estimated_daily_usdt")),
+                decimal(product.get("daily_nex")),activate,activate,activate));
             Map<String,Object> device=db.requiredRow("SELECT id FROM nx_user_device WHERE instance_no=?",instance);
             changed(db.write("INSERT INTO nx_promotion_device_receipt(obligation_id,device_unit_seq,device_id,instance_no,profile_id,profile_version,rights_snapshot_json) VALUES(?,?,?,?,?,?,?)",
                 reward.get("obligation_id"),i,device.get("id"),instance,profile.get("policyId"),number(profile.get("version")),json(rights)));
@@ -214,8 +222,10 @@ public class PromotionRewardService {
             WHERE obligation_id=? AND basis_type='APPROVED_CORRECTION' AND status='MANUAL_REVIEW' AND outstanding>0 FOR UPDATE
             """,obligationId);
     }
+    record GiftRevocation(int deviceCount,List<Long> revokedDeviceIds) {}
+
     // The executed refund locks the same participant rows as compute settlement before revoking the gift.
-    static int revokeRefundGifts(PromotionMapper db,SimulatedTaskMapper simulatedTasks,
+    static GiftRevocation revokeRefundGifts(PromotionMapper db,SimulatedTaskMapper simulatedTasks,
             DeviceMonthlyTargetService monthlyTargets,Map<String,Object> reward){
         List<Map<String,Object>> devices=db.list("""
             SELECT d.id,d.ownership_status FROM nx_promotion_device_receipt r JOIN nx_user_device d
@@ -225,6 +235,7 @@ public class PromotionRewardService {
               AND (d.ownership_status='OWNED' OR (d.ownership_status='REVOKED' AND d.status='DEACTIVATED'))
             ORDER BY d.id FOR UPDATE
             """,reward.get("obligation_id"),reward.get("beneficiary_id"),reward.get("order_no"));
+        List<Long> revokedDeviceIds=new ArrayList<>();
         for(var device:devices){
             Object deviceId=device.get("id"),userId=reward.get("beneficiary_id");
             db.write("""
@@ -248,10 +259,12 @@ public class PromotionRewardService {
                 WHERE user_device_id=? AND user_id=?
                   AND (state<>'STOPPED' OR NOT (last_error <=> 'PROMOTION_REFUND') OR current_task_no IS NOT NULL OR next_action_at IS NOT NULL)
                 """,deviceId,userId);
-            if("OWNED".equals(device.get("ownership_status")))
+            if("OWNED".equals(device.get("ownership_status"))){
                 changed(db.write("UPDATE nx_user_device SET ownership_status='REVOKED',status='DEACTIVATED',deactivated_at=NOW(6),pending_deactivate=0,row_version=row_version+1,updated_at=NOW(6) WHERE id=? AND ownership_status='OWNED'",deviceId));
+                revokedDeviceIds.add(number(deviceId));
+            }
         }
-        return devices.size();
+        return new GiftRevocation(devices.size(),revokedDeviceIds);
     }
     private Map<String,Object> reverseLocked(Map<String,Object> row,Map<String,Object> basis,String commandId,String reason){
         String id=text(row.get("obligation_id"));String basisType=text(basis.get("type"));
@@ -273,9 +286,12 @@ public class PromotionRewardService {
         BigDecimal recovered=priorRecovered;
         Map<String,Object> evidence=historical?new LinkedHashMap<>(parse(previous.get("evidence_json"))):new LinkedHashMap<>();
         Map<String,Object> platformLoss=new LinkedHashMap<>();
+        List<Long> revokedDeviceIds=new ArrayList<>();
         if(correction!=null)evidence.put("priorCorrectionId",correction.get("reversal_id"));
         if("DEVICE".equals(asset)&&wholeRefund){
-            recovered=BigDecimal.valueOf(revokeRefundGifts(db,simulatedTasks,monthlyTargets,row)).subtract(corrected).max(priorRecovered);
+            var revocation=revokeRefundGifts(db,simulatedTasks,monthlyTargets,row);
+            recovered=BigDecimal.valueOf(revocation.deviceCount()).subtract(corrected).max(priorRecovered);
+            revokedDeviceIds.addAll(revocation.revokedDeviceIds());
             Map<String,BigDecimal> posted=new LinkedHashMap<>();
             for(var earned:db.list("""
                 SELECT e.asset,e.amount FROM nx_earning_event e
@@ -299,6 +315,7 @@ public class PromotionRewardService {
                     &&db.list("SELECT id FROM nx_compute_share_enrollment WHERE user_device_id=? FOR UPDATE",deviceId).isEmpty();
                 if(!unused)continue;
                 changed(db.write("UPDATE nx_user_device SET ownership_status='REVOKED',status='DEACTIVATED',deactivated_at=NOW(6),pending_deactivate=0,row_version=row_version+1,updated_at=NOW(6) WHERE id=? AND ownership_status='OWNED'",deviceId));
+                revokedDeviceIds.add(deviceId);
                 recovered=recovered.add(BigDecimal.ONE);
             }
             evidence.put("revokedDeviceCount",recovered.intValueExact());
@@ -310,6 +327,7 @@ public class PromotionRewardService {
             if(recovered.signum()>0){posting="PROMOTION-REVERSE-"+id+(correction==null?"":"-REFUND");
                 ledger.postLedgerEntry(posting,number(row.get("beneficiary_id")),"PROMOTION_REWARD_REVERSAL",asset,"OUT",recovered,"SUCCESS",reason);}
         }
+        if(slotReplacement!=null&&!revokedDeviceIds.isEmpty())slotReplacement.afterOwnershipLoss(revokedDeviceIds);
         BigDecimal recoveredDelta=recovered.subtract(priorRecovered),outstanding=amount.subtract(recovered);
         if("DEVICE".equals(asset)&&recoveredDelta.signum()>0&&!"UNLIMITED".equals(db.product(text(reserved.get("product_no")),true).get("inventory_mode")))
             changed(db.write("UPDATE nx_product SET stock=stock+?,updated_at=NOW(6) WHERE product_no=? AND is_deleted=0",recoveredDelta.intValueExact(),reserved.get("product_no")));
@@ -420,7 +438,11 @@ public class PromotionRewardService {
     private Map<String,Object> view(Map<String,Object> row,boolean admin,boolean currentRead){
         String id=text(row.get("obligation_id"));Map<String,Object> snapshot=verifiedSnapshot(row),spec=ffdd.opsconsole.promotion.domain.PromotionLegacyAssetView.reward(map(map(snapshot.get("award")).get("reward")));
         String lock=currentRead?" FOR UPDATE":"";
-        List<Map<String,Object>> devices=db.list("SELECT device_id,instance_no,created_at FROM nx_promotion_device_receipt WHERE obligation_id=? ORDER BY device_unit_seq"+lock,id);
+        List<Map<String,Object>> devices=db.list("""
+            SELECT r.device_id,r.instance_no,r.created_at,CAST(d.activated_on_delivery AS UNSIGNED) activated_on_delivery
+              FROM nx_promotion_device_receipt r LEFT JOIN nx_user_device d ON d.id=r.device_id
+             WHERE r.obligation_id=? ORDER BY r.device_unit_seq
+            """+lock,id);
         List<Map<String,Object>> holds=db.list("SELECT refund_request_id FROM nx_promotion_refund_hold WHERE order_no=? AND status IN ('HELD','OUTCOME_UNKNOWN','EXECUTED') ORDER BY refund_request_id"+lock,row.get("order_no"));
         List<Map<String,Object>> reversalRows=db.list("SELECT basis_type,recovered,outstanding,evidence_json FROM nx_promotion_reversal WHERE obligation_id=?"+lock,id);
         var refund=reversalRows.stream().filter(r->"WHOLE_ORDER_REFUND".equals(r.get("basis_type"))).findFirst();
@@ -428,9 +450,14 @@ public class PromotionRewardService {
             "outstanding",refund.map(r->decimal(r.get("outstanding"))).orElseGet(()->reversalRows.stream().map(r->decimal(r.get("outstanding"))).reduce(BigDecimal.ZERO,BigDecimal::add)));
         Object issuedAt=devices.isEmpty()?null:devices.get(0).get("created_at");
         if(devices.isEmpty()&&row.get("original_earnings_entry_no")!=null)issuedAt=db.requiredRow("SELECT created_at FROM nx_wallet_ledger WHERE biz_no=? AND user_id=? AND asset=? AND biz_type='PROMOTION_REWARD' AND direction='IN' AND status='SUCCESS'"+lock,row.get("original_ledger_no"),row.get("beneficiary_id"),spec.get("type")).get("created_at");
-        Object receipt=row.get("original_earnings_entry_no")!=null||!devices.isEmpty()?values("ledgerBizNo",row.get("original_ledger_no"),"earningsEntryNo",row.get("original_earnings_entry_no"),
+        Map<String,Object> receipt=row.get("original_earnings_entry_no")!=null||!devices.isEmpty()?values("ledgerBizNo",row.get("original_ledger_no"),"earningsEntryNo",row.get("original_earnings_entry_no"),
             "deviceIds",devices.stream().map(d->number(d.get("device_id"))).toList(),"instanceNos",devices.stream().map(d->text(d.get("instance_no"))).toList(),
             "source","DEVICE".equals(spec.get("type"))?"PROMOTION_GIFT":"PROMOTION_REWARD","issuedAt",instant(issuedAt).toString()):null;
+        if (!devices.isEmpty() && devices.stream().allMatch(device -> device.get("activated_on_delivery") != null)) {
+            var deliveries = devices.stream().map(device -> new ffdd.opsconsole.shared.canonical.OrderDeviceDelivery(
+                    text(row.get("order_no")), number(device.get("device_id")), number(device.get("activated_on_delivery")) == 1)).toList();
+            ffdd.opsconsole.shared.canonical.OrderDeviceDelivery.project(receipt, deliveries);
+        }
         Map<String,Object> result=values("obligationId",id,"activityId",row.get("activity_id"),"version",number(row.get("version")),"orderNo",row.get("order_no"),"orderLineId",text(row.get("order_line_id")),
             "ruleId",row.get("rule_id"),"rewardRuleId",row.get("reward_rule_id"),"unitSeq",number(row.get("unit_seq")),"beneficiaryRole",row.get("beneficiary_role"),"reward",spec,
             "state",row.get("status"),"revision",number(row.get("revision")),"refundHold",!holds.isEmpty(),"refundRequestIds",holds.stream().map(h->text(h.get("refund_request_id"))).toList(),

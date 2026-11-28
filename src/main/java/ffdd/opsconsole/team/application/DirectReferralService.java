@@ -25,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor(onConstructor_=@org.springframework.beans.factory.annotation.Autowired)
 public class DirectReferralService {
     public static final Set<String> KINDS=Set.of("direct_purchase","direct_device_earning");
+    private static final Set<String> CLOSED_GROUP_STATES=Set.of("REJECTED","RECOVERY_PENDING","REVERSED");
     private static final int NEW_REJECTED_EARNING=-1;
     private final DirectReferralMapper mapper;
     private final DirectReferralPolicyService policies;
@@ -50,6 +51,15 @@ public class DirectReferralService {
     }
 
     public String groupForEvent(Long id){return mapper.groupForEvent(id);}
+
+    public Long pairedOperationEventId(Long eventId) {
+        String no = groupForEvent(eventId);
+        if (no == null) return null;
+        var group = mapper.group(no);
+        if (group == null || "network".equals(text(group, "source_type"))) return null;
+        return eventId.equals(number(group, "usdt_event_id"))
+                ? number(group, "nex_event_id") : number(group, "usdt_event_id");
+    }
 
     public int settle(String kind,String ref,Long claimedUserId) {
         var target=self==null?this:self.getObject();
@@ -116,11 +126,14 @@ public class DirectReferralService {
     private boolean releaseSelected(String no,Long selectedEvent){
         lockPurchaseSource(no);var row=lock(no);String status=text(row,"status");
         boolean networkAsset=selectedEvent!=null&&"network".equals(text(row,"source_type"));
-        if(!(networkAsset?Set.of("COOLING","FROZEN","UNLOCKED"):Set.of("COOLING","UNLOCKED")).contains(status)||flag(row,"reversal_recorded"))throw new BizException(409,"DIRECT_REFERRAL_RELEASE_STATE_CONFLICT");
+        if(flag(row,"reversal_recorded")||CLOSED_GROUP_STATES.contains(status)||(!networkAsset&&"FROZEN".equals(status)))
+            throw new LockedStatusConflict("DIRECT_REFERRAL_RELEASE_STATE_CONFLICT");
+        if(!Set.of("COOLING","FROZEN","UNLOCKED").contains(status))throw new BizException(409,"DIRECT_REFERRAL_RELEASE_STATE_CONFLICT");
         if(time(row,"release_at").isAfter(now()))throw new BizException(409,"DIRECT_REFERRAL_COOLING_ACTIVE");
         if(Set.of("direct_purchase","network").contains(text(row,"source_type"))){
             var source=purchaseSource(text(row,"source_ref"));
-            if(source==null||Integer.valueOf(1).equals(source.refunded()))throw new BizException(409,"DIRECT_REFERRAL_SOURCE_REFUNDED");
+            if(source==null)throw new BizException(409,"DIRECT_REFERRAL_SOURCE_REFUNDED");
+            if(Integer.valueOf(1).equals(source.refunded()))throw new LockedStatusConflict("DIRECT_REFERRAL_SOURCE_REFUNDED");
             var scope=policies.scope();var order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),text(row,"source_ref"));
             if(order!=null&&"CONFLICT".equals(text(order,"settlement_mode")))throw new BizException(409,"UNILEVEL_SOURCE_REQUIRES_REVIEW");
         }
@@ -130,19 +143,28 @@ public class DirectReferralService {
         var events=mapper.lockEvents(number(row,"usdt_event_id"),number(row,"nex_event_id"));
         int expected=(money(row,"amount_usdt").signum()>0?1:0)+(money(row,"amount_nex").signum()>0?1:0);
         if(events.size()!=expected)throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
-        String type=sandbox==1?"MOCK_DIRECT_REFERRAL":"DIRECT_REFERRAL";boolean changed=false,newUsdt=false;
+        record ReleasableAsset(Long eventId, String currency, BigDecimal amount) {}
+        List<ReleasableAsset> releasable=new ArrayList<>();
         for(var event:events){
-            if(selectedEvent!=null&&!selectedEvent.equals(number(event,"id")))continue;
+            Long eventId=number(event,"id");
+            if(selectedEvent!=null&&!selectedEvent.equals(eventId))continue;
             String asset=text(event,"currency"),suffix=("USDT".equals(asset)?"usdt":"nex");BigDecimal amount=money(row,"amount_"+suffix);
             if(amount.signum()<=0||money(row,"cancelled_"+suffix).compareTo(amount)>=0||assetCredited(row,suffix))continue;
-            if(!Set.of("COOLING","PENDING","UNLOCKED").contains(text(event,"status")))throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
+            String eventStatus=text(event,"status");
+            if(!Set.of("COOLING","PENDING","UNLOCKED").contains(eventStatus))
+                throw groupStateConflict(CLOSED_GROUP_STATES.contains(eventStatus)||Set.of("FROZEN","SETTLED","PAID","WITHDRAWN").contains(eventStatus));
+            releasable.add(new ReleasableAsset(eventId,asset,amount));
+        }
+        String type=sandbox==1?"MOCK_DIRECT_REFERRAL":"DIRECT_REFERRAL";boolean changed=false,newUsdt=false;
+        for(var entry:releasable){
+            String asset=entry.currency();BigDecimal amount=entry.amount();
             earnings.creditReward(id,type,no+":"+("USDT".equals(asset)?"USDT":"NEX"),asset,amount,text(row,"source_environment"),no+":"+("USDT".equals(asset)?"USDT":"NEX"));
             if ("USDT".equals(asset)) {
                 ledger.postLedgerEntryWithActualBalance(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
             } else {
                 ledger.postLedgerEntry(no+"-RELEASE",id,"TEAM_COMMISSION",asset,"IN",amount,"SUCCESS","Direct referral wallet release | "+no);
             }
-            mapper.creditedAsset(no,asset);mapper.recoveredEventStatus(number(event,"id"),"UNLOCKED");changed=true;if("USDT".equals(asset))newUsdt=true;
+            mapper.creditedAsset(no,asset);mapper.recoveredEventStatus(entry.eventId(),"UNLOCKED");changed=true;if("USDT".equals(asset))newUsdt=true;
         }
         var after=mapper.group(no);int credited=0;boolean all=true;
         for(String suffix:List.of("usdt","nex")){
@@ -184,23 +206,37 @@ public class DirectReferralService {
         else if(!sevenLayerActive&&policy.policyVersion()>0)reason="SEVEN_LAYER_NOT_ACTIVE";
         else if(!rule.enabled())reason="POLICY_DISABLED_OR_NOT_EFFECTIVE";
         else if(source.sponsorUserId()==null||source.sponsorUserId().equals(source.userId()))reason="NO_ELIGIBLE_DIRECT_SPONSOR";
-        else if(mapper.lockUser(source.sponsorUserId(),scope.sandbox())==null||mapper.lockWallet(source.sponsorUserId(),scope.sandbox())==null)reason="SPONSOR_UNAVAILABLE";
         else if(zero(source.amountUsdt()).signum()<=0&&zero(source.amountNex()).signum()<=0)reason="ZERO_PAID_SOURCE";
-        BigDecimal price=null,basis=zero(source.amountUsdt()),usdt=BigDecimal.ZERO,nex=BigDecimal.ZERO;
+        boolean mayPaySecond = reason.isEmpty() && !purchase && rule.level2RatePct().signum() > 0;
+        if (reason.isEmpty() && (mapper.lockUser(source.sponsorUserId(), scope.sandbox()) == null
+                || mapper.lockWallet(source.sponsorUserId(), scope.sandbox()) == null)) reason = "SPONSOR_UNAVAILABLE";
+        BigDecimal basis = zero(source.amountUsdt());
         String status=reason.isEmpty()?"WAITING_CALCULATION":"REJECTED";
-        if("REJECTED".equals(status)){usdt=BigDecimal.ZERO;nex=BigDecimal.ZERO;}
         String no="DR-"+UUID.randomUUID().toString().replace("-","").toUpperCase(Locale.ROOT);
         LocalDateTime releaseAt=source.sourceOccurredAt().plusDays(rule.coolingDays());
         var row=new LinkedHashMap<String,Object>();
         row.put("settlementNo",no);row.put("sourceEnvironment",scope.sourceEnvironment());row.put("runId",scope.runId());
         row.put("sourceType",kind);row.put("sourceRef",ref);row.put("sourceUserId",source.userId());row.put("beneficiaryUserId",source.sponsorUserId());
         row.put("sourceUserName",mask(source.sourceUserName()));row.put("sourceDeviceId",source.sourceDeviceId());row.put("sourceOccurredAt",source.sourceOccurredAt());
-        row.put("policyVersion",policy.policyVersion());row.put("policySnapshot",encode(Map.of("policy",policy,"sourceAmountNex",zero(source.amountNex()),"orderBudget",false)));row.put("basisUsdt",basis);row.put("nexUsdtPrice",price);
+        row.put("policyVersion",policy.policyVersion());row.put("policySnapshot",encode(Map.of("policy",policy,"sourceAmountNex",zero(source.amountNex()),"orderBudget",false)));row.put("basisUsdt",basis);row.put("nexUsdtPrice",null);
         row.put("layerNo",1);row.put("priceLockedAt",null);
-        row.put("amountUsdt",usdt);row.put("amountNex",nex);row.put("status",status);row.put("releaseAt",releaseAt);row.put("reason",reason);
+        row.put("amountUsdt",BigDecimal.ZERO);row.put("amountNex",BigDecimal.ZERO);row.put("status",status);row.put("releaseAt",releaseAt);row.put("reason",reason);
         if(mapper.insertSettlement(row)!=1)throw new BizException(409,"DIRECT_REFERRAL_INSERT_CONFLICT");
-        if(!"REJECTED".equals(status))return 1;
-        return "direct_device_earning".equals(kind)?NEW_REJECTED_EARNING:0;
+        int prepared = reason.isEmpty() ? 1 : 0;
+        if (mayPaySecond) {
+            Long second = mapper.earningUpline(source.sponsorUserId(), scope.sandbox());
+            if (second != null && !second.equals(source.userId()) && !second.equals(source.sponsorUserId())
+                    && mapper.lockUser(second, scope.sandbox()) != null && mapper.lockWallet(second, scope.sandbox()) != null) {
+                row.put("settlementNo", "DR-" + UUID.randomUUID().toString().replace("-", "").toUpperCase(Locale.ROOT));
+                row.put("beneficiaryUserId", second);
+                row.put("layerNo", 2);
+                row.put("status", "WAITING_CALCULATION");
+                row.put("reason", "");
+                if (mapper.insertSettlement(row) != 1) throw conflict();
+                prepared++;
+            }
+        }
+        return !purchase && prepared == 0 ? NEW_REJECTED_EARNING : prepared;
     }
 
     @SuppressWarnings("unchecked")
@@ -211,17 +247,21 @@ public class DirectReferralService {
             long revision=policies.lockSevenLayerRevision();
             int network=mapper.historicalNetwork(ref),direct=mapper.historicalDirect(ref);
             String mode=network>0&&direct>0?"CONFLICT":network>0?"LEGACY_7":direct>0?"DIRECT_ONLY_V1":"SEVEN_V2";
-            if("SEVEN_V2".equals(mode)&&policies.sevenLayerPausedForUpdate())throw new BizException(409,DirectReferralPolicyService.PAUSED_ERROR);
+            boolean sevenV2="SEVEN_V2".equals(mode);
+            if(sevenV2&&policies.sevenLayerPausedForUpdate())throw new BizException(409,DirectReferralPolicyService.PAUSED_ERROR);
             var policy=policies.atForUpdate(source.sourceOccurredAt());
-            var plan="SEVEN_V2".equals(mode)?requireUnilevel().prepareBudget(source.userId(),source.sponsorUserId(),zero(mapper.purchaseSubtotal(ref))):Map.<String,Object>of();
-            if("SEVEN_V2".equals(mode))for(var item:(List<Map<String,Object>>)plan.get("layers")){
+            BigDecimal paidUsdt=source.amountUsdt();
+            var plan=sevenV2?requireUnilevel().prepareBudget(source.userId(),source.sponsorUserId(),
+                    paidUsdt, policies.rankPurchaseForUpdate(source.sourceOccurredAt())):Map.<String,Object>of();
+            if(sevenV2)for(var item:(List<Map<String,Object>>)plan.get("layers")){
                 Long id=(Long)item.get("beneficiaryUserId");if(id!=null&&mapper.sourceMember(id,scope.sandbox())==null)throw new BizException(409,"UNILEVEL_CHAIN_ENVIRONMENT_MISMATCH");
             }
             var value=new LinkedHashMap<String,Object>();value.put("sourceEnvironment",scope.sourceEnvironment());value.put("runId",scope.runId());value.put("orderNo",ref);
             value.put("sourceUserId",source.userId());value.put("sourceOccurredAt",source.sourceOccurredAt());value.put("preparedAt",now());value.put("settlementMode",mode);
             value.put("splitEnabled",policy.schemaVersion()==2&&policy.purchase().enabled());value.put("policyVersion",policy.policyVersion());value.put("sevenLayerRevision",revision);
             value.put("policySnapshot",encode(policy));value.put("chainAndRules",encode(plan));value.put("allocatedBudgetUsdt",plan.getOrDefault("allocatedBudgetUsdt",BigDecimal.ZERO));
-            value.put("status","CONFLICT".equals(mode)?"REQUIRES_REVIEW":"PREPARED");value.put("reason","CONFLICT".equals(mode)?"MIXED_HISTORICAL_MODES":"");
+            value.put("status","CONFLICT".equals(mode)?"REQUIRES_REVIEW":"PREPARED");
+            value.put("reason","CONFLICT".equals(mode)?"MIXED_HISTORICAL_MODES":sevenV2&&paidUsdt.signum()==0?"ZERO_PAID_SOURCE":"");
             if(mapper.insertOrder(value)!=1)throw conflict();order=mapper.lockOrder(scope.sourceEnvironment(),scope.runId(),ref);
         }
         if(!"SEVEN_V2".equals(text(order,"settlement_mode")))return 0;
@@ -257,15 +297,51 @@ public class DirectReferralService {
             if(order!=null&&"CONFLICT".equals(text(order,"settlement_mode")))throw new BizException(409,"UNILEVEL_SOURCE_REQUIRES_REVIEW");
             if(source!=null&&Integer.valueOf(1).equals(source.refunded())){target.refund(ref);return;}
         }
-        List<String> groups="direct_purchase".equals(kind)?mapper.orderGroups(scope.sourceEnvironment(),scope.runId(),ref):
-                Optional.ofNullable(mapper.existing(scope.sourceEnvironment(),scope.runId(),kind,ref)).map(List::of).orElse(List.of());
+        if ("direct_device_earning".equals(kind)) {
+            if (!target.resumeEarning(ref)) throw new BizException(503, "DIRECT_REFERRAL_PRICE_UNAVAILABLE");
+            return;
+        }
+        var groups = mapper.orderGroups(scope.sourceEnvironment(),scope.runId(),ref);
         RuntimeException failed=null;
         for(String no:groups)try{target.resumeGroup(no);}catch(RuntimeException failure){failed=failure;}
         // Deep layers remain independently recoverable when the L1 price/asset write fails.
         if(failed!=null)throw failed;
     }
     public void resumeGroup(String no) {
-        var target=self==null?this:self.getObject();target.calculateWaiting(no);target.materializeGroup(no);
+        var target=self==null?this:self.getObject();
+        var row=mapper.group(no);
+        if (row != null && "direct_device_earning".equals(text(row,"source_type"))) {
+            scope(row);
+            target.resumeEarning(text(row,"source_ref"));
+            return;
+        }
+        target.calculateWaiting(no);
+        target.materializeGroup(no);
+    }
+
+    @Transactional(rollbackFor=Exception.class)
+    public boolean resumeEarning(String ref) {
+        var scope = policies.scope();
+        mapper.lockEarningReceipt(ref);
+        var groups = mapper.lockEarningGroups(scope.sourceEnvironment(), scope.runId(), ref);
+        if (groups.stream().anyMatch(row -> "WAITING_CALCULATION".equals(text(row, "status")))) {
+            var priced = groups.stream().filter(row -> row.get("nex_usdt_price") != null).findFirst();
+            BigDecimal price = priced.isPresent() ? money(priced.get(), "nex_usdt_price") : policies.price();
+            if (price == null) return false;
+            LocalDateTime lockedAt = priced.isPresent() ? time(priced.get(), "price_locked_at") : now();
+            for (var row : groups) {
+                if ("WAITING_CALCULATION".equals(text(row, "status"))
+                        || row.get("nex_usdt_price") == null && "SPONSOR_UNAVAILABLE".equals(text(row, "reason"))) {
+                    calculate(row, price, lockedAt);
+                }
+            }
+        }
+        for (var row : groups) {
+            if (row.get("usdt_event_id") == null) {
+                materializeGroup(text(row, "settlement_no"));
+            }
+        }
+        return true;
     }
     @Transactional(rollbackFor=Exception.class)
     public void materializeGroup(String no){
@@ -311,13 +387,28 @@ public class DirectReferralService {
         if(!"WAITING_CALCULATION".equals(text(row,"status")))return false;
         if("direct_purchase".equals(text(row,"source_type"))){var source=purchaseSource(text(row,"source_ref"));if(source==null||Integer.valueOf(1).equals(source.refunded())){reverse(no,BigDecimal.ONE);return false;}}
         BigDecimal price=policies.price();if(price==null)return false;
+        return calculate(row, price, now());
+    }
+
+    private boolean calculate(Map<String,Object> row, BigDecimal price, LocalDateTime lockedAt) {
+        String no = text(row, "settlement_no");
         try{
             var snapshot=json.readTree(text(row,"policy_snapshot"));var policy=json.treeToValue(snapshot.has("policy")?snapshot.get("policy"):snapshot,DirectReferralPolicy.class);
             boolean budget=snapshot.path("orderBudget").asBoolean();String kind=text(row,"source_type");var rule="direct_device_earning".equals(kind)?policy.deviceEarning():policy.purchase();
-            BigDecimal basis=money(row,"basis_usdt");if("direct_device_earning".equals(kind))basis=basis.add(snapshot.path("sourceAmountNex").decimalValue().multiply(price));
+            BigDecimal basis=money(row,"basis_usdt");
+            if ("direct_device_earning".equals(kind)) {
+                basis = basis.add(snapshot.path("sourceAmountNex").decimalValue().multiply(price));
+                if ("REJECTED".equals(text(row, "status"))) {
+                    if (mapper.priceRejectedEarning(no, price, lockedAt, basis) != 1) throw conflict();
+                    return true;
+                }
+                if (number(row, "layer_no") != null && number(row, "layer_no") == 2) {
+                    rule = new DirectReferralPolicy.Rule(true, rule.level2RatePct(), rule.usdtSharePct(), rule.coolingDays());
+                }
+            }
             var amounts=(budget?new DirectReferralPolicy.Rule(true,new BigDecimal("100"),rule.usdtSharePct(),rule.coolingDays()):rule).calculate(basis,price);
             String status=!amounts.payable()?"REJECTED":held(number(row,"beneficiary_user_id"),kind)?"FROZEN":"COOLING";
-            if(mapper.calculated(no,price,now(),basis,amounts.payable()?amounts.usdt():BigDecimal.ZERO,amounts.payable()?amounts.nex():BigDecimal.ZERO,status,!amounts.payable()?"BELOW_DUAL_ASSET_PRECISION":"")!=1)throw conflict();
+            if(mapper.calculated(no,price,lockedAt,basis,amounts.payable()?amounts.usdt():BigDecimal.ZERO,amounts.payable()?amounts.nex():BigDecimal.ZERO,status,!amounts.payable()?"BELOW_DUAL_ASSET_PRECISION":"")!=1)throw conflict();
             return true;
         }catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException("DIRECT_REFERRAL_SNAPSHOT_INVALID",e);}
     }
@@ -335,7 +426,8 @@ public class DirectReferralService {
             if("USDT".equals(asset))usdtId=mapper.lastId();else nexId=mapper.lastId();
         }
         if(mapper.linkEvents(no,usdtId,nexId)!=1)throw conflict();
-        if("COOLING".equals(text(row,"status"))&&!time(row,"release_at").isAfter(now()))release(no);
+        if (!"direct_device_earning".equals(text(row, "source_type"))
+                && "COOLING".equals(text(row, "status")) && !time(row, "release_at").isAfter(now())) release(no);
     }
 
     private boolean held(Long id,String kind){
@@ -363,7 +455,8 @@ public class DirectReferralService {
                 if("COOLING".equals(target)&&held(number(row,"beneficiary_user_id"),"network"))throw new BizException(409,"DIRECT_REFERRAL_SPONSOR_FROZEN");
                 mapper.recoveredEventStatus(eventId,target);return;
             }
-            throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
+            throw groupStateConflict(Set.of("FROZEN","COOLING").contains(target)
+                    &&(CLOSED_GROUP_STATES.contains(from)||Set.of("COOLING","PENDING","FROZEN","UNLOCKED").contains(from)));
         }
         if("UNLOCKED".equals(target)){release(no);return;}
         if("REJECTED".equals(target))throw new BizException(409,"DIRECT_REFERRAL_REVERSE_REQUIRES_F5_COMMAND");
@@ -371,7 +464,8 @@ public class DirectReferralService {
             if("COOLING".equals(target)&&held(number(row,"beneficiary_user_id"),text(row,"source_type")))throw new BizException(409,"DIRECT_REFERRAL_SPONSOR_FROZEN");
             mapper.groupStatus(no,target,"F5_GROUP_STATUS");mapper.eventStatus(number(row,"usdt_event_id"),number(row,"nex_event_id"),target);return;
         }
-        throw new BizException(409,"DIRECT_REFERRAL_GROUP_STATE_CONFLICT");
+        throw groupStateConflict(Set.of("FROZEN","COOLING").contains(target)
+                &&(CLOSED_GROUP_STATES.contains(current)||Set.of("COOLING","FROZEN","UNLOCKED").contains(current)));
     }
 
     public void refund(String orderNo){
@@ -517,4 +611,14 @@ public class DirectReferralService {
     private static boolean flag(Map<String,Object> row,String key){Object n=row.get(key);return Boolean.TRUE.equals(n)||(n instanceof Number v&&v.intValue()!=0);}
     private static LocalDateTime time(Map<String,Object> row,String key){Object t=row.get(key);return t instanceof java.sql.Timestamp ts?ts.toLocalDateTime():(LocalDateTime)t;}
     private static BizException conflict(){return new BizException(409,"DIRECT_REFERRAL_WRITE_CONFLICT");}
+
+    private static BizException groupStateConflict(boolean confirmed) {
+        String reason = "DIRECT_REFERRAL_GROUP_STATE_CONFLICT";
+        return confirmed ? new LockedStatusConflict(reason) : new BizException(409, reason);
+    }
+
+    /** Positive evidence from a locked row before any commission writes. */
+    public static final class LockedStatusConflict extends BizException {
+        private LockedStatusConflict(String reason) { super(409, reason); }
+    }
 }

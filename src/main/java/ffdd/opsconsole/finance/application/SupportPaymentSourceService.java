@@ -24,6 +24,7 @@ import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -43,6 +44,63 @@ import static ffdd.opsconsole.finance.application.SupportPaymentFactService.*;
 /** The before proof is private, tied to this service and the actual physical transaction resource. */
 @ApplicationService
 public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFacade {
+    private static final int HISTORY_LEDGER_BATCH_SIZE = 200;
+    @Override
+    public List<WalletReference> walletReferences(Collection<Long> customers, Instant from, Instant to) {
+        var ids = List.copyOf(customers);
+        var zone = ffdd.opsconsole.shared.config.StorageTime.ZONE;
+        var first = LocalDateTime.ofInstant(from, zone);
+        var last = LocalDateTime.ofInstant(to, zone);
+        var rows = new ArrayList<WalletReference>();
+        for (int offset = 0; offset < ids.size(); offset += 200) {
+            for (var row : mapper.walletReferences(ids.subList(offset, Math.min(offset + 200, ids.size())), first, last)) {
+                rows.add(new WalletReference(row.ledgerId(), row.customerId(), row.businessNo(), row.kind(), row.amount(),
+                        row.at().atZone(zone).toInstant()));
+            }
+        }
+        return List.copyOf(rows);
+    }
+
+    @Override
+    public Map<Long, BigDecimal> bankTopupOriginalAmounts(List<Fact> provedFacts) {
+        var ids = provedFacts.stream().filter(f -> f.kind() == Kind.DEPOSIT
+                && (f.source() == Source.HDPAY || f.source() == Source.VIETQR)).map(Fact::ledgerId).distinct().toList();
+        var amounts = new HashMap<Long, BigDecimal>();
+        var ambiguous = new HashSet<Long>();
+        for (int offset = 0; offset < ids.size(); offset += 200) {
+            for (var row : mapper.bankTopupVnd(ids.subList(offset, Math.min(offset + 200, ids.size())))) {
+                if (amounts.putIfAbsent(row.ledgerId(), row.amountVnd()) != null) ambiguous.add(row.ledgerId());
+            }
+        }
+        ambiguous.forEach(amounts::remove);
+        return Map.copyOf(amounts);
+    }
+
+    @Override
+    public Map<Long, ChainTopupEvidence> chainTopupEvidence(List<Fact> provedFacts) {
+        var sources = new HashMap<Long, Fact>();
+        for (var fact : provedFacts) {
+            if (fact.kind() == Kind.DEPOSIT && fact.source() == Source.DEPOSIT_ORDER
+                    && fact.sourceBusinessId().matches("CR-[0-9]+")) sources.put(fact.ledgerId(), fact);
+        }
+        var ids = sources.keySet().stream().sorted().toList();
+        var result = new HashMap<Long, ChainTopupEvidence>();
+        var ambiguous = new HashSet<Long>();
+        for (int offset = 0; offset < ids.size(); offset += 200) {
+            for (var row : mapper.chainTopups(ids.subList(offset, Math.min(offset + 200, ids.size())))) {
+                var source = sources.get(row.ledgerId());
+                if (source.customerId() != row.customerId() || !source.sourceBusinessId().equals("CR-" + row.cid())
+                        || source.amount().compareTo(row.creditedUsdt()) != 0) continue;
+                String network = ffdd.opsconsole.finance.cregis.CregisNetwork.fromChainId(row.chainId()).name();
+                if (result.putIfAbsent(row.ledgerId(), new ChainTopupEvidence(network, row.feeUsdt())) != null) {
+                    ambiguous.add(row.ledgerId());
+                }
+            }
+        }
+        ambiguous.forEach(result::remove);
+        return Map.copyOf(result);
+    }
+
     private final SupportPaymentSourceMapper mapper;
     private final SupportPaymentFactService history;
     private final DataSource dataSource;
@@ -72,6 +130,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             throw new IllegalArgumentException("Explicit positive customer scope required");
         requireHistorySnapshot();
         var ids=List.copyOf(new TreeSet<>(customers));
+        var customerScope=Set.copyOf(ids);
         var registration=registrationBoundary(ids);
         var candidates=new ArrayList<VerifiedCandidate>();
         var issues=new ArrayList<Issue>();
@@ -85,7 +144,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
         }
         try {refundOrigins=mapper.historyRefundOrigins(ids);}
         catch(DataAccessException ex) {issues.add(new Issue(Source.ORDER_REFUND,null,"BACKEND_REFUND_SOURCE_READ_FAILED"));}
-        for(var row:refundOrigins)if(row==null || !ids.contains(number(row,"customerId")))throw failure("CAPTURED_CUSTOMER_OUTSIDE_SCOPE");
+        for(var row:refundOrigins)if(row==null || !customerScope.contains(number(row,"customerId")))throw failure("CAPTURED_CUSTOMER_OUTSIDE_SCOPE");
         List<Envelope> envelopes;
         try { envelopes=capturedHistory.readNewFinancialProofs(ids); }
         catch(DataAccessException ex) {
@@ -98,7 +157,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
         }
         // A returned out-of-scope actor remains a hard boundary failure, never partial financial data.
         for(var envelope:envelopes)
-            if(envelope==null || envelope.identity()==null || !ids.contains(envelope.identity().customerId()))
+            if(envelope==null || envelope.identity()==null || !customerScope.contains(envelope.identity().customerId()))
                 throw failure("CAPTURED_CUSTOMER_OUTSIDE_SCOPE");
         var decoded=new LinkedHashMap<Envelope,Fact>();
         for(var envelope:envelopes) {
@@ -130,16 +189,22 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
             }
         }
         if(!decoded.isEmpty()) {
-            List<Map<String,Object>> ledgers;
-            try { ledgers=mapper.historyLedgers(ids,decoded.values().stream().map(Fact::ledgerId).distinct().sorted().toList()); }
+            Map<Long,List<Map<String,Object>>> ledgers;
+            try { ledgers=historyLedgers(decoded.values()); }
             catch(DataAccessException ex) {
                 historyReadFailure(issues);
                 return history.readWithCapturedHistory(ids,captured(candidates,issues,conflicts,registration,production,refundOrigins));
             }
+            var auditsByOrder=new HashMap<HistoryOrder,List<Map<String,Object>>>();
+            for(var row:paymentAudits) {
+                if(row==null)continue;
+                var order=new HistoryOrder(auditNumber(row,"customerId"),text(row,"orderNo"));
+                auditsByOrder.computeIfAbsent(order,ignored -> new ArrayList<>()).add(row);
+            }
             var sourceReads=historySourceReads(ids,decoded);
             for(var entry:decoded.entrySet()) {
                 var fact=entry.getValue();
-                var matches=ledgers.stream().filter(row -> number(row,"id")==fact.ledgerId()).toList();
+                var matches=ledgers.getOrDefault(fact.ledgerId(),List.of());
                 String problem=matches.isEmpty()?"MISSING_SETTLEMENT_LEDGER":matches.size()!=1?"SETTLEMENT_MISMATCH":ledgerProblem(matches.get(0),fact);
                 if(problem==null) {
                     try { problem=historySourceProblem(fact,entry.getKey().sourcePartition(),sourceReads); }
@@ -160,11 +225,32 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
                         else registration.problems().get(fact.customerId()).add(lifecycle);
                     }
                     if(birth!=null && lifecycle==null && registration.problems().get(fact.customerId()).isEmpty()
-                        && historicalPurchaseProduction(fact,entry.getKey(),paymentAudits))production.add(fact.factId());
+                        && historicalPurchaseProduction(fact,entry.getKey(),
+                            auditsByOrder.getOrDefault(new HistoryOrder(fact.customerId(),fact.orderNo()),List.of())))
+                        production.add(fact.factId());
                 }
             }
         }
         return history.readWithCapturedHistory(ids,captured(candidates,issues,conflicts,registration,production,refundOrigins));
+    }
+
+    private record HistoryOrder(long customerId,String orderNo) {}
+
+    private Map<Long,List<Map<String,Object>>> historyLedgers(Collection<Fact> facts) {
+        var ownersByLedger=new TreeMap<Long,Set<Long>>();
+        for(var fact:facts) {
+            ownersByLedger.computeIfAbsent(fact.ledgerId(),ignored -> new TreeSet<>()).add(fact.customerId());
+        }
+        var ids=List.copyOf(ownersByLedger.keySet());
+        var byId=new HashMap<Long,List<Map<String,Object>>>();
+        for(int offset=0;offset<ids.size();offset+=HISTORY_LEDGER_BATCH_SIZE) {
+            var batch=ids.subList(offset,Math.min(offset+HISTORY_LEDGER_BATCH_SIZE,ids.size()));
+            var owners=batch.stream().flatMap(id -> ownersByLedger.get(id).stream()).distinct().toList();
+            for(var row:mapper.historyLedgers(owners,batch)) {
+                byId.computeIfAbsent(number(row,"id"),ignored -> new ArrayList<>()).add(row);
+            }
+        }
+        return byId;
     }
 
     private static CapturedFinancialHistory captured(List<VerifiedCandidate> candidates,List<Issue> issues,Set<String> conflicts,
@@ -258,7 +344,7 @@ public class SupportPaymentSourceService implements FinanceSupportPaymentFactsFa
         }
         if(rows==null)return birthFailure(births,problems,"INVALID_NEW_ACCOUNT_BIRTH");
         for(var row:rows) {
-            if(row==null || row.customerId()==null || !ids.contains(row.customerId()))
+            if(row==null || row.customerId()==null || !problems.containsKey(row.customerId()))
                 throw failure("CAPTURED_CUSTOMER_OUTSIDE_SCOPE");
             if(births.putIfAbsent(row.customerId(),row)!=null)
                 return birthFailure(births,problems,"INVALID_NEW_ACCOUNT_BIRTH");

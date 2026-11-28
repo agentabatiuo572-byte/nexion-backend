@@ -25,7 +25,7 @@ class BinaryAssignmentReadControllerTest {
     static class Config {
         @Bean BinaryCommissionSettlementService service() { return mock(BinaryCommissionSettlementService.class); }
         @Bean OpsBinarySettlementController controller(BinaryCommissionSettlementService service) {
-            return new OpsBinarySettlementController(service);
+            return new OpsBinarySettlementController(service, mock(ffdd.opsconsole.team.application.BinaryCurrentPeriodService.class));
         }
     }
     AnnotationConfigApplicationContext context;

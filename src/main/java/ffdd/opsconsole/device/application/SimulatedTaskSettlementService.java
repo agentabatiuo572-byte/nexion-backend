@@ -46,7 +46,7 @@ public class SimulatedTaskSettlementService {
             if(existing==null)daily=dailyUvt;
         }
         BigDecimal usdt="USDT".equals(task.asset())?task.rewardAmount():BigDecimal.ZERO;
-        BigDecimal baseNex="UVT".equals(task.asset())?task.rewardAmount():BigDecimal.ZERO;
+        BigDecimal baseNex=task.baseRewardNex();
         BigDecimal nex=baseNex.add(daily);
         mapper.task(task,usdt,postedAt);
         mapper.receipt(task,usdt,nex,postedAt);
@@ -77,6 +77,7 @@ public class SimulatedTaskSettlementService {
                 .actorId(0L).actorType("SYSTEM").actorUsername("system").method("SCHEDULED")
                 .path("/internal/simulated-tasks/settle").result("SUCCESS").riskLevel("HIGH")
                 .detail(Map.of("executionMode","SIMULATED","taskNo",task.taskNo(),"deviceId",task.deviceId(),
-                        "receiptNo",task.receiptNo(),"asset",task.asset(),"reward",task.rewardAmount(),"completedAt",task.dueAt(),"postedAt",postedAt)).build());
+                        "receiptNo",task.receiptNo(),"asset",task.asset(),"reward",task.rewardAmount(),"rewardNex",nex,
+                        "completedAt",task.dueAt(),"postedAt",postedAt)).build());
     }
 }

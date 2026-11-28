@@ -151,6 +151,11 @@ public class TestCloudActivationAdmission {
     public void requireActivationCapacity(long deviceId) {
         requireActivationCapacity(Path.of("/run/uvel-task-control/capacity.json"),deviceId);
     }
+    public void requireSlotReplacementCapacity(long oldDeviceId, long newDeviceId) {
+        if (enabled() && !logicalDevices().contains(newDeviceId)) {
+            requireReplacementCapacity(oldDeviceId, mapper.activationResourceDelta(newDeviceId));
+        }
+    }
     void requireActivationCapacity(Path snapshot,long deviceId) {
         if(enabled() && !logicalDevices().contains(deviceId)) requireCapacity(snapshot,mapper.activationResourceDelta(deviceId));
     }

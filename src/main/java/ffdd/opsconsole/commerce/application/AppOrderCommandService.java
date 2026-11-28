@@ -11,11 +11,14 @@ import ffdd.opsconsole.finance.facade.SupportPaymentFacts.Source;
 import ffdd.opsconsole.commerce.mapper.AppOrderCommandMapper;
 import ffdd.opsconsole.commerce.mapper.CommerceAcceptanceSandboxMapper;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
+import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
 import ffdd.opsconsole.promotion.application.PromotionOrderService;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
+import ffdd.opsconsole.shared.canonical.AppCanonicalBoundaryService;
 import ffdd.opsconsole.shared.canonical.HardwareQuotaPurchaseGuard;
+import ffdd.opsconsole.shared.canonical.OrderDeviceDelivery;
 import ffdd.opsconsole.shared.canonical.mapper.CanonicalStateMapper;
 import ffdd.opsconsole.shared.canonical.StorefrontPurchaseGatePolicy;
 import ffdd.opsconsole.emergency.domain.KillSwitchState;
@@ -48,6 +51,8 @@ import org.springframework.util.StringUtils;
 public class AppOrderCommandService {
     @org.springframework.beans.factory.annotation.Autowired
     private HostingCenterService hostingCenters;
+    @Autowired
+    private AppTrialLifecycleService trialLifecycle;
 
     private final ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade paymentAuthorization;
     private static final int MAX_IDEMPOTENCY_KEY_LENGTH = 128;
@@ -146,11 +151,41 @@ public class AppOrderCommandService {
         if (!sandboxGuard.isStrictProductionRuntime()) {
             return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
         }
+        requireOrderOwner(userId, normalized);
         if (promotions != null) promotions.lockOrderParticipants(normalized);
         CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
         if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
         if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
         return execute("ORDER_CANCEL", userId, normalized, idempotencyKey, () -> cancelProduction(userId, normalized));
+    }
+
+    /**
+     * Hide one of the caller's doubly-expired orders from their own order list. The order row,
+     * payment state, operations reads, refunds and audit history remain untouched.
+     */
+    @Transactional(isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public ApiResult<Map<String, Object>> hide(Long userId, String orderNo, String idempotencyKey) {
+        if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) {
+            return ApiResult.fail(422, "ORDER_HIDE_INPUT_INVALID");
+        }
+        if (!StringUtils.hasText(idempotencyKey)) return ApiResult.fail(400, "IDEMPOTENCY_KEY_REQUIRED");
+        if (TransactionSynchronizationManager.isActualTransactionActive()
+                && !Integer.valueOf(TransactionDefinition.ISOLATION_READ_COMMITTED).equals(
+                        TransactionSynchronizationManager.getCurrentTransactionIsolationLevel())) {
+            return ApiResult.fail(503, "ORDER_HIDE_ISOLATION_UNAVAILABLE");
+        }
+        if (sandboxGuard.isLocalSandboxEnabled()) return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
+        if (!sandboxGuard.isStrictProductionRuntime()) {
+            return ApiResult.fail(503, "COMMERCE_SANDBOX_UNAVAILABLE");
+        }
+        String normalized = orderNo.trim();
+        requireOrderOwner(userId, normalized);
+        // Same account lock order as cancel/payment; the idempotency action then locks the order.
+        CanonicalStateMapper.UserLock user = mapper.lockUser(userId);
+        if (user == null) return ApiResult.fail(404, "USER_NOT_FOUND");
+        if (user.sandbox()) return ApiResult.fail(403, "COMMERCE_SANDBOX_USER_FORBIDDEN");
+        return execute("ORDER_HIDE", userId, normalized, idempotencyKey,
+                () -> hideProduction(userId, normalized));
     }
 
     /** User-confirmed checkout payment. Commerce settles only from the canonical NexGrid wallet. */
@@ -165,6 +200,9 @@ public class AppOrderCommandService {
         if (userId==null || userId<1 || !StringUtils.hasText(orderNo)) return ApiResult.fail(422,"ORDER_PAYMENT_INPUT_INVALID");
         if (paymentAuthorization==null) return ApiResult.fail(503,"PAYMENT_PASSWORD_UNAVAILABLE");
         String normalized=orderNo.trim();
+        if (sandboxGuard.isStrictDevelopmentRuntime() || sandboxGuard.isStrictProductionRuntime()) {
+            requireOrderOwner(userId, normalized);
+        }
         return paymentAuthorization.execute(userId,"order-pay",idempotencyKey,userId+"|"+normalized,
                 authorization,() -> (sandboxGuard.isStrictDevelopmentRuntime() || sandboxGuard.isStrictProductionRuntime())
                         && mapper.countCompletedPaidOrder(userId,normalized)==1 ? payFromWallet(userId,normalized) : null,
@@ -209,6 +247,67 @@ public class AppOrderCommandService {
         return payFromWallet(userId, orderNo, reservation);
     }
 
+    public Map<String, Object> orderTopupFacts(long userId, String orderNo) {
+        var order = mapper.orderTopupSnapshot(userId, orderNo, pendingOrderTtlMinutes);
+        if (order == null) throw new BizException(404, "ORDER_NOT_FOUND");
+        BigDecimal amount = order.amountUsdt();
+        BigDecimal balance = order.balanceUsdt();
+        if (amount == null || amount.signum() < 0 || balance == null || order.deadlineAt() == null) {
+            throw new BizException(503, "ORDER_TOPUP_READ_FAILED");
+        }
+
+        String canonical = AppCanonicalBoundaryService.storedOrderCanonicalStatus(
+                order.paymentStatus(), order.orderStatus(), order.activationStatus(), order.paidAt(), order.activatedAt());
+        boolean pending = "PENDING".equalsIgnoreCase(order.paymentStatus())
+                && "PENDING_PAYMENT".equalsIgnoreCase(order.orderStatus())
+                && "WAITING_PAYMENT".equalsIgnoreCase(order.activationStatus());
+        var payment = pending ? null : mapper.orderTopupPayment(userId, order.orderNo());
+        boolean paid = payment != null || order.paidAt() != null
+                || "PAID".equalsIgnoreCase(order.paymentStatus())
+                || "refunded".equals(canonical) || "chargeback".equals(canonical);
+        String state = paid ? "PAID" : pending ? "PENDING" : "CLOSED";
+
+        String blocker = "NONE";
+        String reviewReason = null;
+        String intentNo = null;
+        if ("PENDING".equals(state)) {
+            var direct = mapper.activeDirectPaymentForTopup(order.orderNo());
+            if (direct != null && direct.userId() != userId) throw new BizException(503, "ORDER_TOPUP_READ_FAILED");
+            if (direct != null && !"MANUAL_REVIEW".equals(direct.status())) {
+                blocker = "OPEN_INTENT";
+                intentNo = direct.intentNo();
+            } else if (direct != null) {
+                blocker = "NEEDS_REVIEW";
+                reviewReason = "FINANCE_REVIEW";
+            } else if (mapper.countNonCancellableHdPaySessions(order.orderNo()) > 0) {
+                blocker = "NEEDS_REVIEW";
+                reviewReason = "BANK_SESSION";
+            }
+        }
+
+        boolean payable = "PENDING".equals(state) && !order.expired() && "NONE".equals(blocker);
+        BigDecimal shortfall = payable && amount.signum() > 0
+                ? amount.subtract(balance).max(BigDecimal.ZERO) : BigDecimal.ZERO;
+        LocalDateTime paidAt = order.paidAt() != null ? order.paidAt() : payment == null ? null : payment.paidAt();
+        Map<String, Object> facts = new LinkedHashMap<>();
+        facts.put("orderNo", order.orderNo());
+        facts.put("state", state);
+        facts.put("canonicalStatus", canonical);
+        facts.put("payable", payable);
+        facts.put("deadlineAt", "PENDING".equals(state)
+                ? order.deadlineAt().atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toString() : null);
+        facts.put("amountDueUsdt", amount.signum() == 0 ? "0" : amount.toPlainString());
+        facts.put("walletAvailableUsdt", balance.toPlainString());
+        facts.put("shortfallUsdt", shortfall.signum() == 0 ? "0" : shortfall.toPlainString());
+        facts.put("blocker", blocker);
+        facts.put("intentNo", intentNo);
+        facts.put("reviewReason", reviewReason);
+        facts.put("paidAt", paid && paidAt != null
+                ? paidAt.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toString() : null);
+        facts.put("paidAmountUsdt", paid && payment != null ? payment.paidAmountUsdt() : null);
+        return facts;
+    }
+
     private ApiResult<Map<String, Object>> payFromWallet(Long userId, String orderNo) {
         return payFromWallet(userId, orderNo, null);
     }
@@ -248,13 +347,14 @@ public class AppOrderCommandService {
         AppOrderCommandMapper.DevelopmentWallet wallet = null;
         if ("PAID".equalsIgnoreCase(order.paymentStatus())
                 && "COMPLETED".equalsIgnoreCase(order.orderStatus())
-                && "ACTIVATED".equalsIgnoreCase(order.activationStatus())) {
+                && ("ACTIVATED".equalsIgnoreCase(order.activationStatus())
+                    || "INVENTORY".equalsIgnoreCase(order.activationStatus()))) {
             if (!paymentNo.equals(order.paymentNo())) return ApiResult.fail(409, "ORDER_PAYMENT_STATE_CONFLICT");
             if (!fullyDiscounted && !external) {
                 wallet = mapper.lockDevelopmentWallet(userId);
                 if (!validWallet(wallet)) return ApiResult.fail(409, "ORDER_WALLET_UNAVAILABLE");
             }
-            return developmentPaymentReceipt(order, paymentNo,
+            return developmentPaymentReceipt(order, paymentNo, order.activationStatus().toUpperCase(Locale.ROOT),
                     wallet == null ? null : wallet.usdtAvailable(), paymentRail, true);
         }
         // A wallet-paid order remains replayable even when a stale legacy HDPay
@@ -270,6 +370,9 @@ public class AppOrderCommandService {
         }
         if (!external && mapper.countExpiredPayableOrder(orderNo, userId, pendingOrderTtlMinutes) > 0) {
             return ApiResult.fail(409, "ORDER_PAYMENT_EXPIRED");
+        }
+        if (!external && order.quantity() == 1 && requiresTrialConversionForPendingOrder(userId, orderNo)) {
+            return ApiResult.fail(409, AppTrialLifecycleService.ORDER_TRIAL_DEVICE_REQUIRES_CONVERSION);
         }
         if (promotions != null) promotions.beforePay(userId, orderNo);
         // A pending order preserves its price, never an authority
@@ -313,15 +416,7 @@ public class AppOrderCommandService {
         } else if (!"SINGLE".equals(orderType) || order.productId() == null || order.productId() < 1) {
             return ApiResult.fail(409, "ORDER_PAYMENT_FACT_INVALID");
         }
-        // prepare() holds the same account row lock as trial/order/activation commands.
-        // Legacy inventory reservations are counted once; a new unpaid order owns no slot.
-        // Replays above remain valid for historical assets, even if the account is now over cap.
         boolean consumeInventory = Boolean.FALSE.equals(order.inventoryReserved());
-        if (mapper.lockOccupiedDeviceSlotCount(userId) + (consumeInventory ? order.quantity() : 0L)
-                > Math.max(1, mapper.deviceSlotCap())) {
-            // Releasing another reservation is recoverable with the same payment intent.
-            throw new BizException(409, "CAPACITY_REPLACEMENT_REQUIRED");
-        }
         // F4 monthly capacity is distinct from E1 stock/lifetime quota. Serialize
         // checkout against the tier row and use current locking reads, not an
         // earlier repeatable-read snapshot. Pending/cancelled orders consume none.
@@ -373,8 +468,13 @@ public class AppOrderCommandService {
             }
         }
         var hostingPool = hostingCenters.requirePool();
-        testCloudAdmission.requireCapacity(order.quantity());
         if (consumeInventory) consumePaymentInventory(userId, orderNo, order.quantity(), reservation);
+        // The account lock is shared with activation and trial. Exclude this order's
+        // purchased units from occupancy and keep other reservations and older gift slot promises.
+        long availableSlots = Math.max(1, mapper.deviceSlotCap()) - mapper.lockOccupiedDeviceSlotCount(userId, orderNo);
+        int activatedQuantity = (int) Math.max(0, Math.min(order.quantity(), availableSlots));
+        String activationStatus = activatedQuantity == order.quantity() ? "ACTIVATED" : "INVENTORY";
+        testCloudAdmission.requireCapacity(activatedQuantity);
         BigDecimal balanceAfter = fullyDiscounted || external ? null : wallet.usdtAvailable().subtract(order.amountUsdt());
         if (!fullyDiscounted && !external) {
             paymentAttribution.beforeCash(prepared);
@@ -386,11 +486,12 @@ public class AppOrderCommandService {
                 throw new BizException(409, "ORDER_WALLET_LEDGER_CONFLICT");
             }
         }
-        if (mapper.markDevelopmentOrderActivated(orderNo, userId, paymentNo) != 1) {
+        var verifiedPaidAt = external ? java.time.LocalDateTime.ofInstant(
+                VerifiedPurchasePayment.paidInstant(), DateTimeFormatConfig.BUSINESS_ZONE) : null;
+        if (mapper.markDevelopmentOrderDelivered(orderNo, userId, paymentNo, activationStatus, verifiedPaidAt) != 1) {
             throw new BizException(409, "ORDER_STATE_CONFLICT");
         }
-        if (external && mapper.recordVerifiedPaidAt(orderNo, java.time.LocalDateTime.ofInstant(
-                VerifiedPurchasePayment.paidInstant(), DateTimeFormatConfig.BUSINESS_ZONE)) != 1) {
+        if (external && mapper.recordVerifiedPaidAt(orderNo, verifiedPaidAt) != 1) {
             throw new BizException(409,"ORDER_PAYMENT_TIME_CONFLICT");
         }
         if (!external && mapper.insertDevelopmentPayment(orderNo, userId, paymentNo, order.amountUsdt()) != 1) {
@@ -402,30 +503,34 @@ public class AppOrderCommandService {
             }
         }
         if ("BUNDLE".equals(orderType)) {
+            int orderUnitIndex = 0;
             for (AppOrderCommandMapper.DevelopmentPaymentItem item : paymentItems) {
                 for (int unitIndex = 0; unitIndex < item.quantity(); unitIndex++) {
                     String instanceNo = "NEX-ORD-" + sha256(orderNo + "|" + item.sortOrder()
                             + "|" + item.productId() + "|" + unitIndex)
                             .substring(0, 24).toUpperCase(Locale.ROOT);
-                    if (mapper.insertWalletDevice(
-                            orderNo, userId, item.productId(), instanceNo, unitIndex, hostingPool.assign(instanceNo)) != 1) {
+                    boolean activate = orderUnitIndex++ < activatedQuantity;
+                    if (mapper.insertWalletDevice(orderNo, userId, item.productId(), instanceNo, unitIndex,
+                            hostingPool.assign(instanceNo), activate) != 1) {
                         throw new BizException(409, "DEVICE_ACTIVATION_CONFLICT");
                     }
-                    publishDevelopmentDeviceActivated(userId, instanceNo, paymentRail);
+                    if (activate) publishDevelopmentDeviceActivated(userId, instanceNo, paymentRail);
                 }
             }
         } else {
             for (int unitIndex = 0; unitIndex < order.quantity(); unitIndex++) {
                 String instanceNo = "NEX-ORD-" + sha256(orderNo + "|" + unitIndex)
                         .substring(0, 24).toUpperCase(Locale.ROOT);
-                if (mapper.insertDevelopmentDevice(orderNo, userId, instanceNo, unitIndex, hostingPool.assign(instanceNo)) != 1) {
+                boolean activate = unitIndex < activatedQuantity;
+                if (mapper.insertDevelopmentDevice(orderNo, userId, instanceNo, unitIndex,
+                        hostingPool.assign(instanceNo), activate) != 1) {
                     throw new BizException(409, "DEVICE_ACTIVATION_CONFLICT");
                 }
-                publishDevelopmentDeviceActivated(userId, instanceNo, paymentRail);
+                if (activate) publishDevelopmentDeviceActivated(userId, instanceNo, paymentRail);
             }
         }
         if (mapper.insertDevelopmentOrderHistory(
-                orderNo, "placed", "activated", paymentRail + "-PAY-" + paymentNo) != 1) {
+                orderNo, "placed", activationStatus.toLowerCase(Locale.ROOT), paymentRail + "-PAY-" + paymentNo) != 1) {
             throw new BizException(409, "ORDER_HISTORY_CONFLICT");
         }
         if (promotions != null) promotions.afterPaid(userId, orderNo);
@@ -433,6 +538,7 @@ public class AppOrderCommandService {
         Map<String, Object> auditDetail = new LinkedHashMap<>();
         auditDetail.put("paymentNo", paymentNo);
         auditDetail.put("quantity", order.quantity());
+        auditDetail.put("activatedQuantity", activatedQuantity);
         auditDetail.put("amountUsdt", order.amountUsdt());
         if (balanceAfter != null) auditDetail.put("walletBalanceAfterUsdt", balanceAfter);
         auditDetail.put("paymentRail", paymentRail);
@@ -444,7 +550,14 @@ public class AppOrderCommandService {
                 .result("SUCCESS").riskLevel("LOW")
                 .detail(auditDetail).build());
         if (!fullyDiscounted && !external) paymentAttribution.record(prepared);
-        return developmentPaymentReceipt(order, paymentNo, balanceAfter, paymentRail, false);
+        return developmentPaymentReceipt(order, paymentNo, activationStatus, balanceAfter, paymentRail, false);
+    }
+
+    /** Called under the buyer lock for new wallet or external payment admission only. */
+    public boolean requiresTrialConversionForPendingOrder(long userId, String orderNo) {
+        if (trialLifecycle == null) return false;
+        String productNo = mapper.findPendingOrdinarySingleProduct(userId, orderNo);
+        return productNo != null && trialLifecycle.requiresOrdinaryOrderConversion(userId, productNo);
     }
 
     public void checkExternalPaymentQuota(Long userId, String orderNo, LocalDateTime occurredAtUtc) {
@@ -589,15 +702,15 @@ public class AppOrderCommandService {
     }
 
     private ApiResult<Map<String, Object>> developmentPaymentReceipt(
-            AppOrderCommandMapper.DevelopmentPayOrder order, String paymentNo,
+            AppOrderCommandMapper.DevelopmentPayOrder order, String paymentNo, String activationStatus,
             BigDecimal walletBalanceAfterUsdt, String paymentMethod, boolean idempotent) {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("orderNo", order.orderNo());
         data.put("paymentNo", paymentNo);
         data.put("paymentStatus", "PAID");
         data.put("orderStatus", "COMPLETED");
-        data.put("activationStatus", "ACTIVATED");
-        data.put("canonicalStatus", "activated");
+        data.put("activationStatus", activationStatus);
+        data.put("canonicalStatus", activationStatus.toLowerCase(Locale.ROOT));
         data.put("amountUsdt", order.amountUsdt());
         data.put("paidTotalUsdt",VerifiedPurchasePayment.active()?null:order.amountUsdt().setScale(2,java.math.RoundingMode.HALF_UP).toPlainString());
         data.put("walletBalanceAfterUsdt", walletBalanceAfterUsdt);
@@ -607,6 +720,7 @@ public class AppOrderCommandService {
         data.put("sourceEnvironment", "PRODUCTION");
         data.put("runId", "");
         data.put("serverCanonical", true);
+        OrderDeviceDelivery.project(data, mapper.purchasedDeviceDeliveries(order.userId(), order.orderNo()));
         if (promotions != null) data.putAll(promotions.orderProjection(order.userId(), order.orderNo()));
         return ApiResult.ok(data);
     }
@@ -640,6 +754,28 @@ public class AppOrderCommandService {
                 "source", "mock", "sourceEnvironment", "SANDBOX", "runId", runId));
     }
 
+    private ApiResult<Map<String, Object>> hideProduction(Long userId, String orderNo) {
+        AppOrderCommandMapper.OrderRow order = mapper.lockOrder(orderNo);
+        if (order == null || !userId.equals(order.userId())) return ApiResult.fail(403, "ORDER_FORBIDDEN");
+        if (!"EXPIRED".equalsIgnoreCase(order.orderStatus())
+                || !"EXPIRED".equalsIgnoreCase(order.paymentStatus())) {
+            return ApiResult.fail(409, "ORDER_NOT_HIDEABLE");
+        }
+        if (mapper.hideExpiredOrder(orderNo, userId) != 1) {
+            return ApiResult.fail(409, "ORDER_NOT_HIDEABLE");
+        }
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("orderNo", orderNo);
+        data.put("hidden", true);
+        data.put("paymentStatus", order.paymentStatus());
+        data.put("orderStatus", order.orderStatus());
+        data.put("serverCanonical", true);
+        data.put("source", "server");
+        data.put("sourceEnvironment", "PRODUCTION");
+        data.put("runId", "");
+        return ApiResult.ok(data);
+    }
+
     private ApiResult<Map<String, Object>> cancelProduction(Long userId, String orderNo) {
         AppOrderCommandMapper.OrderRow order = mapper.lockOrder(orderNo);
         if (order == null || !userId.equals(order.userId())) return ApiResult.fail(403, "ORDER_FORBIDDEN");
@@ -656,7 +792,7 @@ public class AppOrderCommandService {
         if (mapper.countNonCancellableHdPaySessions(orderNo) > 0) {
             return ApiResult.fail(409, "HDPAY_ORDER_NOT_CANCELLABLE");
         }
-        releasePendingReservation(order, userId, orderNo, false);
+        releasePendingReservation(order, userId, orderNo, "CANCELLED");
         audit.recordRequired(AuditLogWriteRequest.builder().action("APP_ORDER_CANCELLED").resourceType("ORDER")
                 .resourceId(orderNo).bizNo(orderNo).userId(userId).actorId(userId).actorType("USER")
                 .method("POST").path("/api/orders/" + orderNo + "/cancel").result("SUCCESS").riskLevel("LOW")
@@ -693,6 +829,24 @@ public class AppOrderCommandService {
         return expirePendingOrder(userId,orderNo,30,true);
     }
 
+    /** The payment caller holds the intent lock and has excluded a live successor under the buyer lock. */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY, rollbackFor = Exception.class)
+    public void closeRefundedDirectPaymentOrder(long userId, String orderNo) {
+        var order = mapper.lockOrder(orderNo);
+        if (order == null || !Long.valueOf(userId).equals(order.userId()))
+            throw new BizException(409, "PURCHASE_PAYMENT_REFUND_ORDER_CONFLICT");
+        if ("REFUNDED".equals(order.orderStatus()) || "PAID".equals(order.paymentStatus())) return;
+        if ("PENDING_PAYMENT".equals(order.orderStatus()) && "PENDING".equals(order.paymentStatus())) {
+            if (mapper.countNonCancellableHdPaySessions(orderNo) > 0)
+                throw new BizException(409, "PURCHASE_PAYMENT_REFUND_OTHER_PAYMENT_IN_PROGRESS");
+            releasePendingReservation(order, userId, orderNo, "PAYMENT_REFUNDED");
+        } else {
+            if (mapper.closeRefundedDirectPaymentOrder(orderNo, userId) != 1)
+                throw new BizException(409, "PURCHASE_PAYMENT_REFUND_ORDER_CONFLICT");
+            restorePendingOrderVoucher(userId,orderNo,mapper.lockUsedVouchersForOrder(userId,orderNo));
+        }
+    }
+
     private boolean expirePendingOrder(Long userId,String orderNo,int ttlMinutes,boolean direct) {
         if (userId == null || userId < 1 || !StringUtils.hasText(orderNo)) return false;
         String normalized = orderNo.trim();
@@ -709,7 +863,7 @@ public class AppOrderCommandService {
                 || mapper.countExpiredPayableOrder(normalized, userId, ttlMinutes) == 0) {
             return false;
         }
-        releasePendingReservation(order, userId, normalized, true);
+        releasePendingReservation(order, userId, normalized, "EXPIRED");
         String orderType = StringUtils.hasText(order.orderType()) ? order.orderType() : "SINGLE";
         audit.recordRequired(AuditLogWriteRequest.builder().action("APP_ORDER_EXPIRED").resourceType("ORDER")
                 .resourceId(normalized).bizNo(normalized).userId(userId).actorId(0L).actorType("SYSTEM")
@@ -719,7 +873,7 @@ public class AppOrderCommandService {
     }
 
     private void releasePendingReservation(
-            AppOrderCommandMapper.OrderRow order, Long userId, String orderNo, boolean expired) {
+            AppOrderCommandMapper.OrderRow order, Long userId, String orderNo, String terminal) {
         List<AppOrderCommandMapper.ItemRow> items = mapper.lockItems(orderNo);
         List<AppOrderCommandMapper.ItemRow> effective = items == null ? List.of() : items;
         String orderType = StringUtils.hasText(order.orderType()) ? order.orderType().trim().toUpperCase(Locale.ROOT) : "SINGLE";
@@ -756,16 +910,21 @@ public class AppOrderCommandService {
         }
         List<AppOrderCommandMapper.VoucherGrantRow> usedVouchers =
                 mapper.lockUsedVouchersForOrder(userId, orderNo);
-        if (usedVouchers != null && usedVouchers.size() > 1) {
-            throw new BizException(409, "ORDER_VOUCHER_SNAPSHOT_CONFLICT");
-        }
-        int terminalRows = expired
-                ? mapper.expireOrder(orderNo, userId)
-                : mapper.cancelOrder(orderNo, userId);
+        int terminalRows = switch (terminal) {
+            case "EXPIRED" -> mapper.expireOrder(orderNo, userId);
+            case "CANCELLED" -> mapper.cancelOrder(orderNo, userId);
+            case "PAYMENT_REFUNDED" -> mapper.closeRefundedDirectPaymentOrder(orderNo, userId);
+            default -> throw new IllegalArgumentException("Invalid pending order terminal state");
+        };
         if (terminalRows != 1) throw new BizException(409, "ORDER_STATE_CONFLICT");
-        if (promotions != null) promotions.releaseUnpaid(orderNo, expired ? "EXPIRED" : "CANCELLED");
-        if (usedVouchers != null && usedVouchers.size() == 1
-                && mapper.restoreVoucher(usedVouchers.get(0).grantId(), userId, orderNo) != 1) {
+        if (promotions != null) promotions.releaseUnpaid(orderNo, terminal);
+        restorePendingOrderVoucher(userId,orderNo,usedVouchers);
+    }
+
+    private void restorePendingOrderVoucher(long userId, String orderNo, List<AppOrderCommandMapper.VoucherGrantRow> vouchers) {
+        if (vouchers == null || vouchers.isEmpty()) return;
+        if (vouchers.size() != 1) throw new BizException(409, "ORDER_VOUCHER_SNAPSHOT_CONFLICT");
+        if (mapper.restoreVoucher(vouchers.get(0).grantId(), userId, orderNo) != 1) {
             throw new BizException(409, "ORDER_VOUCHER_RETURN_CONFLICT");
         }
     }
@@ -831,6 +990,12 @@ public class AppOrderCommandService {
             quantity += item.quantity();
         }
         if (quantity != order.quantity()) throw new BizException(409, "ORDER_ITEM_SNAPSHOT_CONFLICT");
+    }
+
+    private void requireOrderOwner(Long userId, String orderNo) {
+        if (!userId.equals(mapper.findOrderOwner(orderNo))) {
+            throw new BizException(403, "ORDER_FORBIDDEN");
+        }
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

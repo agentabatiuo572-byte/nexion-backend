@@ -8,17 +8,17 @@ import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportWorkbenchMapper;
 import ffdd.opsconsole.shared.config.BusinessCalendar;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.user.application.OpsUserService;
+import ffdd.opsconsole.user.domain.UserInviterView;
 import java.sql.Timestamp;
 import java.time.*;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
-import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @ApplicationService
-@RequiredArgsConstructor
 public class SupportWorkbenchService {
     private static final long MAX_SAFE_INTEGER=9007199254740991L;
     private static final Set<String> FILTERS=Set.of("ALL","WINDOW_ACTIVE","ACTIVE","DORMANT","UNKNOWN",
@@ -29,6 +29,21 @@ public class SupportWorkbenchService {
     private final SupportActivityService activity;
     private final PlatformTransactionManager transactions;
     private final SupportCustomerProfileService profiles;
+    private final OpsUserService users;
+    /** A failed batch read still returns the four keys for every row on the page. */
+    static final UserInviterView INVITER_UNREAD=UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED);
+
+    public SupportWorkbenchService(SupportWorkbenchMapper mapper,SupportBindingMapper bindings,SupportOwnershipService ownership,
+            SupportActivityService activity,PlatformTransactionManager transactions,SupportCustomerProfileService profiles) {
+        this(mapper,bindings,ownership,activity,transactions,profiles,null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SupportWorkbenchService(SupportWorkbenchMapper mapper,SupportBindingMapper bindings,SupportOwnershipService ownership,
+            SupportActivityService activity,PlatformTransactionManager transactions,SupportCustomerProfileService profiles,OpsUserService users) {
+        this.mapper=mapper;this.bindings=bindings;this.ownership=ownership;this.activity=activity;
+        this.transactions=transactions;this.profiles=profiles;this.users=users;
+    }
 
     /**
      * Each response replaces BOTH cards and page. snapshotId is not a reusable snapshot token.
@@ -63,7 +78,10 @@ public class SupportWorkbenchService {
             var pageData=new LinkedHashMap<String,Object>();
             pageData.put("total",count); pageData.put("pageNum",page); pageData.put("pageSize",size);
             pageData.put("filter",selected); pageData.put("available",available(selected,rules));
-            pageData.put("records",mapper.customers(q).stream().map(row->customerView(row,rules)).toList());
+            var pageRows=mapper.customers(q);
+            var pageInviters=inviters(pageRows);
+            pageData.put("records",pageRows.stream().map(row->customerView(row,rules,
+                    pageInviters.getOrDefault(number(row.get("customerId")),INVITER_UNREAD))).toList());
             var result=metadata(scopedAgent,rules,coverage);
             result.put("overview",totals); result.put("customers",pageData);
             result.put("performance",performance(scopedAgent,coverage.observedThroughAt(),from,to));
@@ -156,8 +174,32 @@ public class SupportWorkbenchService {
         return months;
     }
 
+    /** One batch read for the page rows; empty pages and a missing reader issue no query. */
+    private Map<Long,UserInviterView> inviters(List<Map<String,Object>> rows) {
+        if(rows==null || rows.isEmpty() || users==null) return Map.of();
+        List<Long> ids=rows.stream().map(row->number(row.get("customerId"))).filter(id->id>0).distinct().toList();
+        if(ids.isEmpty()) return Map.of();
+        try {
+            var found=users.inviters(ids);
+            return found==null?Map.of():found;
+        } catch(org.springframework.dao.DataAccessException | IllegalStateException ex) {
+            return Map.of();
+        }
+    }
+    private static Map<String,Object> inviter(UserInviterView view) {
+        UserInviterView v=view==null?INVITER_UNREAD:view;
+        Map<String,Object> out=new LinkedHashMap<>();
+        out.put("state",v.state().name());out.put("userNo",v.userNo());out.put("nickname",v.nickname());
+        out.put("reason",v.reason()==null?null:v.reason().name());
+        return out;
+    }
+
     static Map<String,Object> customerView(Map<String,Object> source,SupportRules rules) {
+        return customerView(source,rules,null);
+    }
+    static Map<String,Object> customerView(Map<String,Object> source,SupportRules rules,UserInviterView inviter) {
         var row=new LinkedHashMap<>(source);
+        row.remove("assignmentStartsAt");
         var asset=row.remove("advisorAvatarAssetId");var avatarVersion=row.remove("advisorAvatarVersion");
         if(asset==null || asset.toString().isBlank()) {
             row.put("advisorAvatar",null);row.put("advisorAvatarRef",null);
@@ -173,8 +215,10 @@ public class SupportWorkbenchService {
         for(String name:List.of("enabled","waitingReply","firstContact","due")) row.put(name,number(row.get(name))!=0);
         if(rules.maintenanceDays()==null) row.put("due",null);
         for(String name:List.of("lastEffectiveAt","lastExecutionAt","lastSucceededAt","nextDueAt","openCycleId","stoppedReason",
-                "pendingConversationNo","pendingThroughMessageId")) row.putIfAbsent(name,null);
+                "pendingConversationNo","pendingThroughMessageId","waitingReplySinceAt","firstContactSinceAt",
+                "maintenanceDueAt")) row.putIfAbsent(name,null);
         row.put("version",row.get("preferenceVersion"));
+        if(inviter!=null) row.put("inviter",inviter(inviter));
         return row;
     }
 

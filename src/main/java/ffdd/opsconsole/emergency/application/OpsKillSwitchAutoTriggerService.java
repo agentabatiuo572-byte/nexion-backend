@@ -20,7 +20,7 @@ public class OpsKillSwitchAutoTriggerService {
         BigDecimal gapThreshold = killSwitchService.maturityGapThresholdUsdt();
         boolean withdrawTriggered = false;
         boolean exchangeTriggered = false;
-        if (signals.bankRunRatioPct().compareTo(bankRunRedlinePct) >= 0) {
+        if (signals.bankRunRedlineReached()) {
             withdrawTriggered = killSwitchService.autoDisable(
                     "withdraw", "withdrawSurge", signals.bankRunRatioPct(), bankRunRedlinePct);
         }

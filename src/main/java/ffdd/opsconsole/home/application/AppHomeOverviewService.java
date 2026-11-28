@@ -155,12 +155,12 @@ public class AppHomeOverviewService {
             result.put("earningsLedger", earningsLedger(mapper.earningsLedger(userId, sourceEnvironment)));
             List<MarketProductRow> marketProducts = safe(mapper.marketProducts());
             List<MarketTaskRow> marketTasks = safe(mapper.marketTasks());
-            OwnedDeviceRow base = highestCurrentDevice(userId, accountSandbox);
+            OwnedBase base = highestCurrentDevice(userId, accountSandbox);
             List<String> skuCodes = new ArrayList<>();
             for (MarketProductRow product : marketProducts) {
                 if (product != null) skuCodes.add(product.productNo());
             }
-            if (base != null) skuCodes.add(base.productCode());
+            if (base != null) skuCodes.add(base.row().productCode());
             Map<String, String> images = productImages == null ? Map.of() : productImages.urls(skuCodes);
             // Preserve response key order; this request-local map is published only by completion.
             result.put("marketBoard", null);
@@ -302,26 +302,33 @@ public class AppHomeOverviewService {
             int rank = 1;
             for (MarketProductRow row : products) {
                 if (row == null || "cloud-share".equals(deviceKind(row))) continue;
-                rankings.add(linked("rank", rank++, "name", text(row.name()), "kind", deviceKind(row),
+                rankings.add(linked("rank", rank++, "name", text(row.name()), "kind", deviceKind(row), "productNo", row.productNo(),
                         "imageUrl", images.get(java.util.Objects.toString(row.productNo(), "")),
-                        "bestFor", null, "dailyUsdt", nonNegative(row.dailyUsdt())));
+                        "bestFor", null, "dailyUsdt", nonNegative(row.dailyUsdt()),
+                        "dailyEstimateLowUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyLow(row.monthlyTargetUsdt(), row.monthlyTargetBandPct()),
+                        "dailyEstimateHighUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyHigh(row.monthlyTargetUsdt(), row.monthlyTargetBandPct())));
             }
         }
         return linked("workloads", workloads, "deviceRankings", rankings);
     }
 
-    private OwnedDeviceRow highestCurrentDevice(Long userId,boolean sandbox) {
+    /** The owned device plus its product's published monthly target and band for the daily range. */
+    private record OwnedBase(OwnedDeviceRow row, BigDecimal monthlyTargetUsdt, BigDecimal bandPct) { }
+
+    private OwnedBase highestCurrentDevice(Long userId,boolean sandbox) {
         var candidates=mapper.activeDeviceCandidates(userId,sandbox);
         var current=monthlyTargets.projections(candidates.stream().map(OwnedDeviceRow::id).toList());
         return candidates.stream().map(d->{
             var p=current.get(d.id());
-            return p==null || p.target()==null ? d : new OwnedDeviceRow(d.name(),d.productCode(),d.productTier(),d.deviceType(),p.daily(),d.id(),d.seriesCode());
-        }).filter(d->d.dailyUsdt()!=null && d.dailyUsdt().signum()>0)
-            .max(java.util.Comparator.comparing(OwnedDeviceRow::dailyUsdt).thenComparing(d->-d.id())).orElse(null);
+            return p==null || p.target()==null ? new OwnedBase(d,null,null)
+                    : new OwnedBase(new OwnedDeviceRow(d.name(),d.productCode(),d.productTier(),d.deviceType(),p.daily(),d.id(),d.seriesCode()),p.target(),p.band());
+        }).filter(b->b.row().dailyUsdt()!=null && b.row().dailyUsdt().signum()>0)
+            .max(java.util.Comparator.comparing((OwnedBase b)->b.row().dailyUsdt()).thenComparing(b->-b.row().id())).orElse(null);
     }
 
-    private Map<String, Object> doTheMath(Long userId, OwnedDeviceRow base, List<MarketProductRow> products,
+    private Map<String, Object> doTheMath(Long userId, OwnedBase owned, List<MarketProductRow> products,
                                          Map<String, String> images) {
+        OwnedDeviceRow base = owned == null ? null : owned.row();
         if (base == null || base.dailyUsdt() == null || base.dailyUsdt().signum() <= 0) return null;
         String baseKind = ProductSeries.kind(base.seriesCode(), base.deviceType());
         if (baseKind == null || "cloud-share".equals(baseKind)) return null;
@@ -354,10 +361,14 @@ public class AppHomeOverviewService {
         return linked(
                 "basis", "OWNED_DEVICE_TO_NEXT_CATALOG_PRODUCT",
                 "base", linked("kind", baseKind, "productNo", text(base.productCode()), "name", text(base.name()),
-                        "imageUrl", images.get(java.util.Objects.toString(base.productCode(), "")), "dailyUsdt", nonNegative(base.dailyUsdt())),
+                        "imageUrl", images.get(java.util.Objects.toString(base.productCode(), "")), "dailyUsdt", nonNegative(base.dailyUsdt()),
+                        "dailyEstimateLowUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyLow(owned.monthlyTargetUsdt(), owned.bandPct()),
+                        "dailyEstimateHighUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyHigh(owned.monthlyTargetUsdt(), owned.bandPct())),
                 "target", linked("productNo", text(target.productNo()), "kind", targetKind,
                         "name", text(target.name()), "imageUrl", images.get(target.productNo()),
                         "dailyUsdt", nonNegative(target.dailyUsdt()),
+                        "dailyEstimateLowUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyLow(target.monthlyTargetUsdt(), target.monthlyTargetBandPct()),
+                        "dailyEstimateHighUsdt", ffdd.opsconsole.shared.capacity.MonthlyTargetProjection.dailyHigh(target.monthlyTargetUsdt(), target.monthlyTargetBandPct()),
                         "priceUsdt", nonNegative(target.priceUsdt())),
                 "multiplier", multiplier,
                 "paybackDays", paybackDays);

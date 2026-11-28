@@ -4,13 +4,19 @@ import ffdd.opsconsole.content.domain.SupportAssignment;
 import ffdd.opsconsole.content.domain.SupportMaintenance.*;
 import ffdd.opsconsole.content.mapper.SupportBindingMapper;
 import ffdd.opsconsole.content.mapper.SupportMaintenanceMapper;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
+import ffdd.opsconsole.platform.domain.PlatformConfigItem;
+import ffdd.opsconsole.platform.domain.PlatformConfigRepository;
+import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
+import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import static org.assertj.core.api.Assertions.*;
@@ -23,7 +29,9 @@ class SupportMaintenanceServiceTest {
     final SupportOwnershipService ownership=mock(SupportOwnershipService.class);
     final AdminIdempotencyService commands=mock(AdminIdempotencyService.class);
     final AuditLogService audit=mock(AuditLogService.class);
-    final SupportMaintenanceService maintenance=new SupportMaintenanceService(mapper,bindings,ownership,commands,audit);
+    final PlatformConfigRepository platformConfig=mock(PlatformConfigRepository.class);
+    final SupportMaintenanceService maintenance=new SupportMaintenanceService(
+            mapper,bindings,ownership,commands,audit,new A2RuntimePolicy(platformConfig));
     final SupportActivityService activity=new SupportActivityService(mapper,ownership,maintenance,mock(ProductionSupportPathGuard.class));
     SupportAssignment assignment=new SupportAssignment(10L,1L,2L,1L,"MANUAL",1L,0,null,null);
     LocalDateTime now=LocalDateTime.of(2026,9,29,0,0);
@@ -36,6 +44,7 @@ class SupportMaintenanceServiceTest {
     long cycleSequence;
 
     @BeforeEach void setup() {
+        reasonMinimum("8");
         when(ownership.actorId()).thenReturn(2L);
         when(ownership.requireWriter(eq(1L),anyBoolean())).thenAnswer(i->assignment);
         when(bindings.current(1L)).thenAnswer(i->assignment);
@@ -60,6 +69,13 @@ class SupportMaintenanceServiceTest {
         when(mapper.updateActivity(anyLong(),anyLong(),any())).thenAnswer(i->{state=new ActivityState(1L,i.getArgument(1),i.getArgument(2));return 1;});
         when(mapper.changePreference(anyLong(),anyBoolean(),anyLong(),anyString(),anyLong())).thenAnswer(i->{preference=new Preference(1L,i.getArgument(1),preference.version()+1);return 1;});
         when(commands.executeRetained(anyString(),anyString(),anyString(),any(),any())).thenAnswer(i->((Supplier<?>)i.getArgument(4)).get());
+        when(commands.recoveryResult(anyString(),anyString(),anyString(),eq(ApiResult.class)))
+                .thenReturn(new AdminIdempotencyService.RecoveryResult<>(AdminIdempotencyService.RecoveryStatus.NOT_FOUND,null));
+    }
+    private void reasonMinimum(String value) {
+        var config=mock(PlatformConfigItem.class);
+        when(config.configValue()).thenReturn(value);
+        when(platformConfig.findActiveByKey(A2RuntimePolicy.REASON_MIN_KEY)).thenReturn(Optional.of(config));
     }
     void execute(long message) {maintenance.executed(1L,assignment,message,"command-key-"+message);}
     String login() {String session=UUID.randomUUID().toString();activity.interactiveLogin(1L,session);return session;}
@@ -99,6 +115,50 @@ class SupportMaintenanceServiceTest {
         maintenance.change(1L,true,"Customer requested restart",10L,2L,"resume-key-100");
         assertThat(open).isNull();assertThat(messages).hasSize(1);execute(102);assertThat(open.baselineActivitySeq()).isEqualTo(1);
         verify(audit,times(2)).recordRequired(any());
+    }
+    @Test void maintenanceCountsVisibleCharactersAndBoundsTheStoredExcerpt() {
+        String emoji=Character.toString(0x1F642);
+        String stopReason=emoji.repeat(101);
+        maintenance.change(1L,false,stopReason,10L,1L,"stop-b135");
+        verify(mapper).changePreference(1L,false,2L,stopReason,1L);
+
+        String resumeReason=emoji.repeat(100)+"\u200B".repeat(220)+emoji.repeat(100);
+        maintenance.change(1L,true,resumeReason,10L,2L,"resume-b135");
+        verify(mapper).changePreference(1L,true,2L,A2RuntimePolicy.reasonExcerpt(resumeReason,200),2L);
+        assertThat(preference).isEqualTo(new Preference(1L,true,3L));
+    }
+    @Test void maintenanceRejectsInvisiblePaddingAndUsesTheCurrentMinimumBeforeClaimingTheKey() {
+        reasonMinimum("10");
+        String emoji=Character.toString(0x1F642);
+        assertThatThrownBy(()->maintenance.change(1L,false,"abcdefghi \u3000\u00A0\u200B",10L,1L,"stop-b135"))
+                .hasMessage("REASON_TOO_SHORT_MIN_10");
+        assertThatThrownBy(()->maintenance.change(1L,false,"\u1100\u1161".repeat(9),10L,1L,"stop-b135"))
+                .hasMessage("REASON_TOO_SHORT_MIN_10");
+        assertThatThrownBy(()->maintenance.change(1L,false,emoji.repeat(201),10L,1L,"stop-b135"))
+                .hasMessage("REASON_TOO_LONG_MAX_200");
+        verify(commands,never()).executeRetained(anyString(),anyString(),anyString(),any(),any());
+        maintenance.change(1L,false,"\u1100\u1161".repeat(10),10L,1L,"stop-b135");
+        assertThat(preference).isEqualTo(new Preference(1L,false,2L));
+    }
+    @Test void maintenanceKeepsVisibleReasonWhenOversizedPaddingSurroundsIt() {
+        String reason="\u200B".repeat(400)+"Customer requested pause"+"\u00A0".repeat(400);
+        maintenance.change(1L,false,reason,10L,1L,"padded-b135");
+
+        verify(mapper).changePreference(1L,false,2L,"Customer requested pause",1L);
+        var auditEntry=ArgumentCaptor.forClass(AuditLogWriteRequest.class);
+        verify(audit).recordRequired(auditEntry.capture());
+        assertThat(auditEntry.getValue().getDetail()).asInstanceOf(org.assertj.core.api.InstanceOfAssertFactories.MAP)
+                .containsEntry("reason","Customer requested pause");
+    }
+    @Test void maintenanceReturnsTheRetainedReceiptForAnExactLegacyReason() {
+        var receipt=ApiResult.ok(Map.of("version",2L));
+        when(commands.recoveryResult(eq("M3_MAINTENANCE:2"),eq("old-b135-key"),anyString(),eq(ApiResult.class)))
+                .thenReturn(new AdminIdempotencyService.RecoveryResult<>(AdminIdempotencyService.RecoveryStatus.SUCCEEDED,receipt));
+
+        assertThat(maintenance.change(1L,false,"ab    cd",10L,1L,"old-b135-key")).isSameAs(receipt);
+        verify(ownership).requireWriter(1L,false);
+        verify(commands,never()).executeRetained(anyString(),anyString(),anyString(),any(),any());
+        verifyNoInteractions(audit);
     }
     @Test void transferClosesOldCyclePreservesStoppedPreferenceAndHistoricalOwner() {
         execute(100);SupportAssignment old=assignment;

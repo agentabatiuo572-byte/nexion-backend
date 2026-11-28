@@ -17,6 +17,7 @@ import ffdd.opsconsole.user.infrastructure.UserEntity;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Delete;
@@ -175,6 +176,25 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                AND consumed_at IS NULL AND is_deleted=0
             """)
     int invalidateOpenSecurityOtpChallenges(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT #{cooldownSeconds} - TIMESTAMPDIFF(SECOND, created_at, NOW())
+              FROM nx_user_otp_challenge
+             WHERE user_id=#{userId} AND challenge_no LIKE 'SEC2FA-%' AND is_deleted=0
+               AND created_at>DATE_SUB(NOW(), INTERVAL #{cooldownSeconds} SECOND)
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1
+            """)
+    Integer securityOtpRetryAfterSeconds(@Param("userId") Long userId,
+            @Param("cooldownSeconds") int cooldownSeconds);
+
+    @Update("""
+            UPDATE nx_user_otp_challenge
+               SET created_at=NOW(), updated_at=NOW(), expires_at=DATE_ADD(NOW(), INTERVAL #{ttlMinutes} MINUTE)
+             WHERE user_id=#{userId} AND challenge_no=#{challengeNo}
+            """)
+    void markSecurityOtpChallengeSent(@Param("userId") Long userId, @Param("challengeNo") String challengeNo,
+            @Param("ttlMinutes") int ttlMinutes);
 
     @Update("""
             UPDATE nx_user_otp_challenge
@@ -490,6 +510,26 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                                     @Param("offset") int offset, @Param("pageSize") int pageSize,
                                     @Param("phoneKeyword") String phoneKeyword);
 
+    @Select("""
+            <script>
+            SELECT child.id AS userId,
+                   child.sponsor_user_id AS sponsorUserId,
+                   child.sandbox AS userSandbox,
+                   parent.id AS inviterId,
+                   parent.sandbox AS inviterSandbox,
+                   parent.is_deleted AS inviterDeleted,
+                   parent.nickname AS inviterNickname
+              FROM nx_user child
+              LEFT JOIN nx_user parent ON parent.id = child.sponsor_user_id
+             WHERE child.id IN
+             <foreach collection="userIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<UserInviterRow> pageInviters(@Param("userIds") Collection<Long> userIds);
+
+    record UserInviterRow(Long userId, Long sponsorUserId, Integer userSandbox, Long inviterId,
+                          Integer inviterSandbox, Integer inviterDeleted, String inviterNickname) { }
+
     @Select("<script>SELECT COUNT(*) " + SCOPED_PROFILE_FROM + PROFILE_FILTER
             + ffdd.opsconsole.content.mapper.SupportBindingMapper.CUSTOMER_SCOPE_PREDICATE + "</script>")
     long countScopedUsersByQuery(@Param("query") UserQueryRequest query, @Param("statuses") List<String> statuses,
@@ -792,6 +832,29 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             @Param("pageSize") int pageSize,
             @Param("idleDays") int idleDays);
 
+    // C1 uses the same sponsor relation as the invitation counts, bounded to the reward range.
+    String C1_TEAM_SCOPE = """
+            WITH RECURSIVE c1_team AS (
+                SELECT u.id, u.sandbox, u.is_deleted, 0 AS depth,
+                       CAST(CONCAT('/', u.id, '/') AS CHAR(192)) AS path
+                  FROM nx_user u
+                 WHERE u.id = #{userId} AND u.is_deleted = 0
+                UNION ALL
+                SELECT member.id, member.sandbox, member.is_deleted, team.depth + 1,
+                       CONCAT(team.path, member.id, '/')
+                  FROM c1_team team
+                  JOIN nx_user member ON member.sponsor_user_id = team.id AND member.sandbox = team.sandbox
+                 WHERE team.depth < 7 AND LOCATE(CONCAT('/', member.id, '/'), team.path) = 0
+            )
+            """;
+
+    String C1_VALID_PAID_ORDER = """
+            o.is_deleted = 0 AND o.amount_usdt > 0
+            AND o.payment_status IN ('PAID', 'CONFIRMED', 'SUCCESS')
+            AND o.order_status NOT IN ('PENDING_PAYMENT', 'PAYMENT_FAILED', 'FAILED', 'CANCELLED', 'CANCELED',
+                                       'CLOSED', 'EXPIRED', 'REFUNDED', 'CHARGEBACK', 'DISPUTED', 'REVERSED')
+            """;
+
     /**
      * C1 推荐团队成员。
      *
@@ -799,15 +862,19 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
      * 是入队时写下的反规范化副本,用户改名后它不会跟着变 —— 于是 C1 推荐团队表格
      * 一直显示旧昵称,而同一页的账户摘要显示的是新昵称,同一个人的名字在一屏里对不上。
      * 历史投影的 `member_user_id` 可能与页面展示的 `member_no` 不一致，因此规范 U 编号优先用于
-     * 定位用户；非规范编号仍兼容 `member_user_id`。反规范化昵称只在用户行缺失或被软删时兜底。</p>
+     * 定位用户；非规范编号仍兼容 `member_user_id`。用户行缺失时用反规范化昵称兜底；已删除账户和
+     * 相隔 8 次以上的成员在 LIMIT 前排除。</p>
      */
-    @Select("""
+    @Select(C1_TEAM_SCOPE + """
             SELECT COALESCE(u.id, tm.member_user_id) AS memberUserId,
                    tm.member_no AS memberNo,
                    COALESCE(u.nickname, tm.nickname) AS nickname,
                    tm.v_rank AS vRank,
                    tm.level,
-                   tm.volume,
+                   COALESCE((SELECT SUM(o.amount_usdt) FROM nx_order o
+                              WHERE o.user_id = contribution.id AND
+            """ + C1_VALID_PAID_ORDER + """
+                   ), 0) AS volume,
                    tm.created_at AS createdAt
               FROM nx_team_member tm
               LEFT JOIN nx_user u
@@ -816,9 +883,13 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
                                   THEN CAST(SUBSTRING(tm.member_no, 2) AS UNSIGNED)
                               ELSE tm.member_user_id
                           END
-               AND u.is_deleted = 0
+              LEFT JOIN c1_team contribution
+                ON contribution.id = u.id AND contribution.depth > 0 AND contribution.is_deleted = 0
              WHERE tm.user_id = #{userId}
                AND tm.is_deleted = 0
+               AND tm.level BETWEEN 1 AND 7
+               AND COALESCE(u.id, tm.member_user_id) <> #{userId}
+               AND (u.id IS NULL OR u.is_deleted = 0)
              ORDER BY tm.level ASC, tm.volume DESC, tm.id DESC
              LIMIT #{limit}
             """)
@@ -828,6 +899,7 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             SELECT COUNT(*)
               FROM nx_team_member
              WHERE user_id = #{userId}
+               AND level >= 1
                AND is_deleted = 0
             """)
     long countTeamMembers(@Param("userId") Long userId);
@@ -841,12 +913,13 @@ public interface UserOpsMapper extends BaseMapper<UserEntity> {
             """)
     long countDirectTeamMembers(@Param("userId") Long userId);
 
-    @Select("""
-            SELECT COALESCE(SUM(volume), 0)
-              FROM nx_team_member
-             WHERE user_id = #{userId}
-               AND is_deleted = 0
-            """)
+    @Select(C1_TEAM_SCOPE + """
+            SELECT COALESCE(SUM(o.amount_usdt), 0)
+              FROM c1_team team
+              JOIN nx_order o ON o.user_id = team.id
+             WHERE team.depth > 0 AND team.is_deleted = 0
+               AND
+            """ + C1_VALID_PAID_ORDER)
     BigDecimal sumTeamVolume(@Param("userId") Long userId);
 
     @Select("""

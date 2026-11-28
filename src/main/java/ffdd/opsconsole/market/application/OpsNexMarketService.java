@@ -926,8 +926,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         response.put("domain", "G4");
         response.put("product", "genesis");
         response.put("asset", "GENESIS_NODE");
-        response.put("showcaseEnabled",
-                Boolean.parseBoolean(genesisValue(genesisParamDef("showcaseEnabled"), null).trim()));
+        Map<String, Object> showcase = genesisParamRow(genesisParamDef("showcaseEnabled"), null);
+        response.put("showcaseEnabled", Boolean.parseBoolean(((String) showcase.get("value")).trim()));
+        response.put("showcaseParam", showcase);
         response.put("currentNexPrice", currentPrice());
         response.put("stats", map(
                 "totalSlots", supply.setScale(0, RoundingMode.HALF_UP),
@@ -945,7 +946,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                         "owners", secondaryStats.ownerCount() == null ? 0L : secondaryStats.ownerCount(),
                         "royaltyPct", royaltyPct)));
         response.put("params", policy.map(value -> genesisParamDefs().stream()
-                .map(def -> genesisParamRow(def, value))
+                .map(def -> "showcaseEnabled".equals(def.key()) ? showcase : genesisParamRow(def, value))
                 .toList())
                 .orElse(List.of()));
         response.put("dividend", map(
@@ -1019,12 +1020,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (permissionGuard != null) {
             return permissionGuard;
         }
-        if (!"dividend".equals(def.key()) && !A2ReplayContext.isReplaying()
-                && lockMapper.countActiveByTarget("G", "genesis_param", def.key()) > 0) {
+        boolean ordinaryApproval = G4ParamApproval.AMPLIFY_KEYS.contains(def.key());
+        if (ordinaryApproval && !"supply".equals(def.key())) {
+            // Serialize the value and pending-approval checks with the A2 proposal preview.
+            appGenesisMapper.lockActiveSeries();
+        }
+        if (!"dividend".equals(def.key()) && genesisParamLockedByA2(def.key())) {
             return ApiResult.fail(409, "OBJECT_LOCKED_BY_A2");
         }
         GenesisPolicyView policy = marketRepository.activeGenesisPolicy().orElse(null);
-        if (policy == null) {
+        boolean showcase = "showcaseEnabled".equals(def.key());
+        if (policy == null && !showcase) {
             return validation("G4_GENESIS_SERIES_NOT_FOUND");
         }
         String oldValue;
@@ -1041,7 +1047,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     "tiersVersionBefore", change.versionBefore(),
                     "tiersVersionAfter", change.versionAfter());
         } else {
-            oldValue = genesisValue(def, policy);
+            oldValue = showcase
+                    ? configFacade.activeValueForUpdate(def.configKey()).filter(StringUtils::hasText).orElse(def.defaultValue())
+                    : genesisValue(def, policy, ordinaryApproval);
             newValue = normalizeGenesisParamValue(def, request.value());
             if (!StringUtils.hasText(newValue)) {
                 return validation("G4_GENESIS_PARAM_VALUE_INVALID");
@@ -1084,6 +1092,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return ApiResult.ok(response);
     }
 
+    private boolean genesisParamLockedByA2(String key) {
+        return !A2ReplayContext.isReplaying() && lockMapper.countActiveByTarget("G", "genesis_param", key) > 0;
+    }
+
     private GenesisSupplyChange updateGenesisSupply(String rawValue, String expectedValue) {
         BigDecimal value = parseRepurchaseNumber(rawValue, null);
         if (value == null || value.signum() < 0 || value.compareTo(BigDecimal.valueOf(GENESIS_MAX_SUPPLY)) > 0) {
@@ -1098,6 +1110,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         List<LockedSeriesRow> series = genesisCatalogMapper.lockActiveSeriesForSupply();
         if (series.isEmpty()) throw new BizException(422, "G4_GENESIS_SERIES_NOT_FOUND");
         if (series.size() != 1) throw new BizException(409, "GENESIS_ACTIVE_SERIES_AMBIGUOUS");
+        if (genesisParamLockedByA2("supply")) throw new BizException(409, "OBJECT_LOCKED_BY_A2");
         LockedSeriesRow current = series.get(0);
         if (StringUtils.hasText(expectedValue)
                 && !expectedValue.trim().equals(String.valueOf(current.totalSupply()))) {
@@ -1341,6 +1354,17 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     private record PreparedMarketPolicy(G3MarketApproval.Review review, NexMarketCurveUpdateRequest curve,
                                         NexMarketValueUpdateRequest value) {}
 
+    public static final class ConfirmedMarketPolicyRevisionConflict extends BizException {
+        private ConfirmedMarketPolicyRevisionConflict() {
+            super(409, "G3_POLICY_REVISION_CONFLICT");
+        }
+    }
+
+    private static BizException marketPolicyRevisionConflict(boolean confirmed) {
+        return confirmed ? new ConfirmedMarketPolicyRevisionConflict()
+                : new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+    }
+
     private PreparedMarketPolicy prepareMarketPolicy(G3MarketPolicyChangeRequest request, String reason, String operator) {
         ApiResult<Map<String, Object>> guard = requireCommand("g3-policy-review", reason);
         if (guard != null) throw new BizException(guard.getCode(), guard.getMessage());
@@ -1355,7 +1379,9 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     .filter(StringUtils::hasText).map(this::readCurve).orElse(List.of());
             if (before.size() != 7) throw new BizException(503, "G3_WEEKLY_CURVE_INVALID");
             if (!request.expectedRevision().equals(marketPolicyRevision("curve", writeCurve(before)))) {
-                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                throw marketPolicyRevisionConflict(before.stream().allMatch(frame ->
+                        validMarketPolicyNumber(frame.targetPrice(), false)
+                                && validMarketPolicyNumber(frame.pumpProbability(), true)));
             }
             boolean probability = "pumpProbability".equals(request.field());
             BigDecimal value = marketPolicyNumber(parseDecimal(request.value(), null), probability);
@@ -1388,10 +1414,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
             return new PreparedMarketPolicy(review, new NexMarketCurveUpdateRequest(frames, reason, operator, before), null);
         }
         if ("current-price".equals(request.action())) {
-            configFacade.activeValueForUpdate(CURRENT_PRICE_KEY);
+            var lockedPrice = configFacade.activeValueForUpdate(CURRENT_PRICE_KEY)
+                    .map(raw -> parseDecimal(raw, null)).orElse(null);
             BigDecimal before = requireAuthoritativeCurrentPrice();
-            if (!request.expectedRevision().equals(marketPolicyRevision("price", before.stripTrailingZeros().toPlainString()))) {
-                throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+            BigDecimal canonicalPrice = before.stripTrailingZeros();
+            if (!request.expectedRevision().equals(marketPolicyRevision("price", canonicalPrice.toPlainString()))) {
+                throw marketPolicyRevisionConflict(lockedPrice != null && before.compareTo(lockedPrice) == 0
+                        && validMarketPolicyNumber(canonicalPrice, false));
             }
             BigDecimal value = marketPolicyNumber(parseDecimal(request.value(), null), false).setScale(8, RoundingMode.UNNECESSARY);
             if (value.compareTo(before) <= 0) throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
@@ -1425,7 +1454,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                     throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
                 }
                 if (!request.field().equals(pinned.targetPrice().stripTrailingZeros().toPlainString())) {
-                    throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+                    throw frozenMarketPriceConflict(request.field(), pinned.targetPrice());
                 }
             }
             BigDecimal current = requireAuthoritativeCurrentPrice();
@@ -1498,7 +1527,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
         String before = configFacade.activeValueForUpdate(SCHEDULE_CONTROL_KEY).orElse(null);
         if (!request.expectedRevision().equals(marketPolicyRevision("schedule", before))) {
-            throw new BizException(409, "G3_POLICY_REVISION_CONFLICT");
+            boolean expectedUnconfigured = request.expectedRevision().equals(marketPolicyRevision("schedule", null))
+                    || request.expectedRevision().equals(marketPolicyRevision("schedule", ""));
+            throw marketPolicyRevisionConflict(expectedUnconfigured && StringUtils.hasText(before)
+                    && !NexMarketSchedule.parse(before).fallback());
         }
         if (StringUtils.hasText(before)) throw new BizException(422, "G3_POLICY_APPROVAL_NOT_REQUIRED");
         String value = normalizeControlValue("schedule", request.value());
@@ -1523,6 +1555,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         }
     }
 
+    private BizException frozenMarketPriceConflict(String frozenPrice, BigDecimal currentPrice) {
+        BigDecimal previousPrice = parseDecimal(frozenPrice, null);
+        return marketPolicyRevisionConflict(validMarketPolicyNumber(previousPrice, false)
+                && frozenPrice.equals(previousPrice.stripTrailingZeros().toPlainString())
+                && validMarketPolicyNumber(currentPrice, false) && previousPrice.compareTo(currentPrice) != 0);
+    }
+
     private List<Map<String, Object>> marketCurveReview(List<NexMarketCurveFrame> frames) {
         return frames.stream().map(frame -> Map.<String, Object>of("日期", "D" + (frame.dayIndex() + 1),
                 "目标价（USDT/UVT）", frame.targetPrice(), "上涨概率", frame.pumpProbability(),
@@ -1542,13 +1581,15 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private BigDecimal marketPolicyNumber(BigDecimal value, boolean probability) {
+        if (!validMarketPolicyNumber(value, probability)) throw new BizException(422, "G3_POLICY_VALUE_INVALID");
+        return value.stripTrailingZeros();
+    }
+
+    private static boolean validMarketPolicyNumber(BigDecimal value, boolean probability) {
         int scale = probability ? 6 : 8;
         BigDecimal max = probability ? BigDecimal.ONE : new BigDecimal("1000000");
-        if (value == null || value.scale() > scale || value.compareTo(max) > 0
-                || (probability ? value.signum() < 0 : value.signum() <= 0)) {
-            throw new BizException(422, "G3_POLICY_VALUE_INVALID");
-        }
-        return value.stripTrailingZeros();
+        return value != null && value.scale() <= scale && value.compareTo(max) <= 0
+                && (probability ? value.signum() >= 0 : value.signum() > 0);
     }
 
     private void validateCurvePolicyValues(List<NexMarketCurveFrame> frames) {
@@ -2583,10 +2624,14 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (expectedValue == null) {
             return null;
         }
-        if (!expectedValue.trim().equals(currentValue == null ? "" : currentValue.trim())) {
+        if (!matchesGenesisParamSnapshot(expectedValue, currentValue)) {
             return ApiResult.fail(409, staleCode);
         }
         return null;
+    }
+
+    static boolean matchesGenesisParamSnapshot(String expectedValue, String currentValue) {
+        return expectedValue.trim().equals(currentValue == null ? "" : currentValue.trim());
     }
 
     /**
@@ -2598,8 +2643,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         if (!"fee".equals(paramKey) && !"feeMin".equals(paramKey)) {
             return BigDecimal.ZERO;
         }
-        // 与 G2ExchangeQueueBatchService 完全同一价格口径(同一 UVT/USDT 序列 + 5 分钟新鲜度窗口),
-        // 避免用过期价格把 Δ 算小、把覆盖率算高。
+        // 审批使用与实际兑换和队列结算相同的价格口径，以实际成交价核算新增应付。
         BigDecimal price = appExchangeMapper.currentPrice();
         if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
             throw new BizException(503, "G3_PRICE_UNAVAILABLE");
@@ -2649,6 +2693,12 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     String exchangeParamCurrentValue(String paramKey) {
         ExchangeParamDef def = exchangeParamDef(paramKey);
         return def == null ? null : readText(def.configKey(), def.defaultValue());
+    }
+
+    /** A stored blank is not a confirmed default for approval rechecks. */
+    boolean matchesExchangeApprovalSnapshot(String paramKey, String current) {
+        ExchangeParamDef def = exchangeParamDef(paramKey);
+        return def != null && configFacade.activeValue(def.configKey()).orElse(def.defaultValue()).equals(current);
     }
 
     /** 规范化后的候选 G2 值;无效时返回 null。 */
@@ -3382,7 +3432,7 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     private Map<String, Object> genesisParamRow(GenesisParamDef def, GenesisPolicyView policy) {
-        String value = genesisValue(def, policy);
+        String value = genesisValue(def, policy, false);
         return map(
                 "key", def.key(),
                 "configKey", def.configKey(),
@@ -3477,10 +3527,10 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     /** G4 approval binding: raw current value of one parameter on the active series. */
-    public String genesisParamCurrentValue(String paramKey) {
+    String genesisParamCurrentValue(String paramKey, boolean forUpdate) {
         GenesisParamDef def = genesisParamDef(paramKey);
         if (def == null) return null;
-        return genesisValue(def, marketRepository.activeGenesisPolicy().orElse(null));
+        return genesisValue(def, marketRepository.activeGenesisPolicy().orElse(null), forUpdate);
     }
 
     /** G4 approval binding: normalized candidate, or null when the input is invalid. */
@@ -3514,8 +3564,8 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
     }
 
     /** Identity of the active series at proposal time; approval must not silently retarget another series. */
-    public String genesisParamSeriesKey() {
-        AppGenesisMapper.SeriesRow series = appGenesisMapper.activeSeries();
+    String genesisParamSeriesKey(boolean forUpdate) {
+        AppGenesisMapper.SeriesRow series = forUpdate ? appGenesisMapper.lockActiveSeries() : appGenesisMapper.activeSeries();
         return series == null ? null : series.id() + ":" + series.seriesCode();
     }
 
@@ -3524,10 +3574,11 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
                 .multiply(BigDecimal.valueOf(100)).setScale(0, RoundingMode.HALF_UP);
     }
 
-    private String genesisValue(GenesisParamDef def, GenesisPolicyView policy) {
+    private String genesisValue(GenesisParamDef def, GenesisPolicyView policy, boolean forUpdate) {
         if ("airdropPct".equals(def.key()) || "emissionCurve".equals(def.key())
                 || "airdropLockDays".equals(def.key()) || "showcaseEnabled".equals(def.key())) {
-            return configFacade.activeValue(def.configKey()).filter(StringUtils::hasText).orElse(def.defaultValue());
+            return (forUpdate ? configFacade.activeValueForUpdate(def.configKey()) : configFacade.activeValue(def.configKey()))
+                    .filter(StringUtils::hasText).orElse(def.defaultValue());
         }
         if (policy == null) {
             return "";
@@ -4051,13 +4102,13 @@ public class OpsNexMarketService implements ffdd.opsconsole.platform.domain.Audi
         return null;
     }
 
-    void requireGenesisSupplyPermission() {
+    void requireGenesisWritePermission() {
         ApiResult<Map<String, Object>> permission = requirePermission("finprod_g4_write");
         if (permission != null) throw new BizException(permission.getCode(), permission.getMessage());
     }
 
     void requireGenesisTierSupplyChange(int newSupply) {
-        requireGenesisSupplyPermission();
+        requireGenesisWritePermission();
         if (newSupply > GENESIS_MAX_SUPPLY) throw new BizException(422, "GENESIS_TIER_INVALID");
         if (lockMapper.countActiveByTarget("G", "genesis_param", "supply") > 0) {
             throw new BizException(409, "OBJECT_LOCKED_BY_A2");

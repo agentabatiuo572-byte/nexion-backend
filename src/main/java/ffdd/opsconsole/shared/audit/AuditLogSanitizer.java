@@ -18,6 +18,8 @@ import org.springframework.stereotype.Component;
 public class AuditLogSanitizer {
     private static final String REDACTED = "[REDACTED]";
     private static final int MAX_DETAIL_JSON_LENGTH = 4096;
+    private static final List<String> LOOKUP_FIELDS = List.of(
+            "idempotencyKey", "operationId", "userId", "sourceDomain", "domain");
     private static final List<String> SENSITIVE_KEY_PARTS = List.of(
             "password", "secret", "token", "signature", "authorization", "credential", "privatekey",
             "private_key", "accesskey", "access_key", "secretkey", "secret_key", "documentobject",
@@ -26,12 +28,16 @@ public class AuditLogSanitizer {
     private final ObjectMapper objectMapper;
 
     public String toSafeJson(Object detail) {
+        return toSafeJson(detail, false);
+    }
+
+    String toSafeJson(Object detail, boolean retainProposalRole) {
         if (detail == null) {
             return null;
         }
         try {
             Object sanitized = sanitizeValue(detail);
-            return clip(objectMapper.writeValueAsString(sanitized), sanitized);
+            return clip(objectMapper.writeValueAsString(sanitized), sanitized, retainProposalRole);
         } catch (JsonProcessingException ex) {
             return "{\"serialization\":\"failed\"}";
         }
@@ -97,24 +103,49 @@ public class AuditLogSanitizer {
         return false;
     }
 
-    private String clip(String json, Object sanitized) {
+    private String clip(String json, Object sanitized, boolean retainProposalRole) {
         if (json == null || json.length() <= MAX_DETAIL_JSON_LENGTH) {
             return json;
         }
         Map<String, Object> clipped = new LinkedHashMap<>();
         clipped.put("truncated", true);
         clipped.put("originalLength", json.length());
-        clipped.put("preview", json.substring(0, Math.min(3500, json.length())));
-        if (sanitized instanceof Map<?, ?> map && map.get("schemaVersion") != null) {
-            clipped.put("schemaVersion", String.valueOf(map.get("schemaVersion")));
-        }
-        if (sanitized instanceof Map<?, ?> map && map.get("_adminCommand") != null) {
-            clipped.put("_adminCommand", map.get("_adminCommand"));
+        if (sanitized instanceof Map<?, ?> map) {
+            if (map.get("schemaVersion") != null) {
+                clipped.put("schemaVersion", String.valueOf(map.get("schemaVersion")));
+            }
+            if (map.get("_adminCommand") != null) {
+                clipped.put("_adminCommand", map.get("_adminCommand"));
+            }
+            for (String key : LOOKUP_FIELDS) {
+                Object value = map.get(key);
+                if ((value instanceof CharSequence || value instanceof Number) && value.toString().length() <= 128) {
+                    clipped.put(key, value);
+                }
+            }
+            if (retainProposalRole && map.get("role") instanceof String role && role.length() <= 80) {
+                clipped.put("role", role);
+            }
         }
         try {
-            return objectMapper.writeValueAsString(clipped);
-        } catch (JsonProcessingException ex) {
-            return "{\"truncated\":true,\"serialization\":\"failed\"}";
+            int end = 3500;
+            while (true) {
+                if (end > 0 && Character.isHighSurrogate(json.charAt(end - 1))) {
+                    end--;
+                }
+                clipped.put("preview", json.substring(0, end));
+                String result = objectMapper.writeValueAsString(clipped);
+                int excess = result.length() - MAX_DETAIL_JSON_LENGTH;
+                if (excess <= 0) {
+                    return result;
+                }
+                if (end == 0) break;
+                // The preview is a JSON string, so escaping it also counts toward the limit.
+                end = Math.max(0, end - excess);
+            }
+        } catch (JsonProcessingException ignored) {
+            // Keep the existing valid envelope for serialization failures.
         }
+        return "{\"truncated\":true,\"serialization\":\"failed\"}";
     }
 }

@@ -71,6 +71,10 @@ public interface F5CommissionMapper {
                       LIMIT 1
                    ) AS ledgerBizNo,
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
+                   DATE_FORMAT(salary.salary_month, '%Y-%m') AS salaryMonth,
+                   salary.rank_code AS salaryRank,
+                   salary.claim_no AS claimNo,
+                   salary.claimed_at AS claimedAt,
                    CASE
                      WHEN LOWER(e.commission_type) IN ('network', 'binary', 'direct_purchase', 'direct_device_earning')
                        THEN GREATEST(0, COALESCE(DATEDIFF(e.unlock_at, NOW()), 0))
@@ -91,9 +95,11 @@ public interface F5CommissionMapper {
                    DATE_FORMAT(u.created_at, '%Y-%m') AS cohort
               FROM nx_commission_event e
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
+              LEFT JOIN nx_v_rank_salary_claim salary
+                ON salary.commission_event_id = e.id AND LOWER(e.commission_type) = 'vrank_salary'
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
              <if test="kind != null and kind != ''">
                AND LOWER(e.commission_type) = LOWER(#{kind})
              </if>
@@ -160,6 +166,10 @@ public interface F5CommissionMapper {
                    e.order_no AS orderNo,
                    (SELECT s.settlement_no FROM nx_direct_referral_settlement s WHERE s.usdt_event_id=e.id OR s.nex_event_id=e.id LIMIT 1) AS settlementNo,
                    DATE_FORMAT(COALESCE(e.updated_at, e.created_at), '%Y-%m-%d %H:%i:%s') AS settledAt,
+                   DATE_FORMAT(salary.salary_month, '%Y-%m') AS salaryMonth,
+                   salary.rank_code AS salaryRank,
+                   salary.claim_no AS claimNo,
+                   salary.claimed_at AS claimedAt,
                    CASE
                      WHEN UPPER(e.status) IN ('REVERSED', 'ROLLBACK') THEN 'reversed'
                      WHEN UPPER(e.status) = 'REJECTED' THEN 'rejected'
@@ -174,9 +184,11 @@ public interface F5CommissionMapper {
                    END AS status
               FROM nx_commission_event e
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
+              LEFT JOIN nx_v_rank_salary_claim salary
+                ON salary.commission_event_id = e.id AND LOWER(e.commission_type) = 'vrank_salary'
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
              <if test="kind != null and kind != ''">
                AND LOWER(e.commission_type) = LOWER(#{kind})
              </if>
@@ -230,7 +242,7 @@ public interface F5CommissionMapper {
               LEFT JOIN nx_user u ON u.id = e.user_id AND u.is_deleted = 0
              WHERE e.is_deleted = 0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
              <if test="kind != null and kind != ''">
                AND LOWER(e.commission_type) = LOWER(#{kind})
              </if>
@@ -278,10 +290,10 @@ public interface F5CommissionMapper {
               FROM nx_commission_event e
              WHERE e.is_deleted=0
                AND LOWER(e.commission_type) IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
              GROUP BY LOWER(e.commission_type), UPPER(e.currency)
              ORDER BY FIELD(kind,
-                       'network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning'),
+                       'network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary'),
                       currency
             """)
     List<Map<String, Object>> aggregateCommissionKinds();
@@ -309,7 +321,7 @@ public interface F5CommissionMapper {
                       FROM nx_commission_event e
                      WHERE e.is_deleted=0
                        AND LOWER(e.commission_type) IN
-                           ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning')
+                           ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary')
               ) normalized
              GROUP BY normalized.status, normalized.currency
              ORDER BY FIELD(normalized.status, 'unlocked', 'cooling', 'withdrawn', 'reversed', 'frozen'),
@@ -322,7 +334,7 @@ public interface F5CommissionMapper {
               FROM nx_commission_event
              WHERE is_deleted=0
                AND (commission_type IS NULL OR LOWER(commission_type) NOT IN
-                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning',
+                   ('network', 'binary', 'peer', 'cultivation', 'leadership', 'genesis', 'direct_purchase', 'direct_device_earning', 'vrank_salary',
                     'vrank_reward', 'leaderboard_prize'))
             """)
     // F1 self rewards and F4 leaderboard prizes are legitimate independent rewards outside F5's eight kinds.
@@ -372,6 +384,10 @@ public interface F5CommissionMapper {
                   FROM nx_v_rank_reward_payout p
                  WHERE p.commission_event_id = #{eventId} AND p.is_deleted = 0
                 UNION ALL
+                SELECT s.claim_no
+                  FROM nx_v_rank_salary_claim s
+                 WHERE s.commission_event_id = #{eventId}
+                UNION ALL
                 SELECT t.ticket_no
                   FROM nx_support_ticket t
                  WHERE t.is_deleted = 0
@@ -390,6 +406,15 @@ public interface F5CommissionMapper {
                AND UPPER(status) IN ('PENDING', 'COOLING', 'UNLOCKED', 'AVAILABLE')
             """)
     int reverseEventCas(@Param("eventId") Long eventId);
+
+    @Select("""
+            SELECT COALESCE(MAX(amount), 0)
+              FROM nx_wallet_ledger
+             WHERE biz_no=CONCAT('F5-COMMISSION-', #{eventId}, '-REVERSE')
+               AND user_id=#{userId} AND asset='USDT' AND direction='OUT'
+               AND biz_type='TEAM_COMMISSION' AND status='SUCCESS' AND is_deleted=0
+            """)
+    BigDecimal recoveredSalaryAmount(@Param("eventId") Long eventId, @Param("userId") Long userId);
 
     @Insert("""
             INSERT INTO nx_commission_event
@@ -526,6 +551,28 @@ public interface F5CommissionMapper {
              ORDER BY layer_no
             """)
     List<Map<String, Object>> theoreticalLayerRates();
+
+    @Select("""
+            <script>
+            SELECT e.id AS eventId,
+                   CASE WHEN e.currency='UVT' THEN r.legacy_nex ELSE r.budget_usdt END AS expectedAmount
+              FROM nx_commission_event e
+              JOIN nx_direct_referral_settlement s
+                ON (e.currency='USDT' AND s.usdt_event_id=e.id OR e.currency='UVT' AND s.nex_event_id=e.id)
+               AND s.source_type='network' AND s.source_ref=e.order_no AND s.layer_no=e.layer_no
+               AND s.beneficiary_user_id=e.user_id AND s.source_user_id=e.source_user_id
+              JOIN nx_unilevel_order_settlement o
+                ON o.source_environment=s.source_environment AND o.run_id=s.run_id AND o.order_no=s.source_ref
+               AND o.source_user_id=s.source_user_id AND o.settlement_mode='SEVEN_V2'
+              JOIN JSON_TABLE(o.chain_and_rules, '$.layers[*]' COLUMNS(
+                   layer_no INT PATH '$.layer', beneficiary BIGINT PATH '$.beneficiaryUserId',
+                   budget_usdt DECIMAL(18,6) PATH '$.budgetUsdt', legacy_nex DECIMAL(18,6) PATH '$.legacyNex'
+              )) AS r ON r.layer_no=s.layer_no AND r.beneficiary=s.beneficiary_user_id
+             WHERE NOT (o.split_enabled=1 AND s.layer_no=1)
+               AND e.id IN <foreach collection="eventIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+            </script>
+            """)
+    List<Map<String, Object>> snapshotLayerAmounts(@Param("eventIds") List<Long> eventIds);
 
     @Update("""
             UPDATE nx_commission_event

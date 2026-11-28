@@ -1695,6 +1695,13 @@ class OpsBiServiceTest {
         }
 
         @Override
+        public void postLedgerEntryWithBalanceAfter(String bizNo, Long userId, String bizType, String asset,
+                                                    String direction, BigDecimal amount, BigDecimal balanceAfter,
+                                                    String status, String remark) {
+            postLedgerEntry(bizNo, userId, bizType, asset, direction, amount, status, remark);
+        }
+
+        @Override
         public void postLedgerEntry(String bizNo, Long userId, String bizType, String asset, String direction,
                                     BigDecimal amount, String status, String remark) {
         }

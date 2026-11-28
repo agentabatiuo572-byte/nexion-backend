@@ -31,8 +31,11 @@ public class TreasuryThresholdApproval {
     private final OpsRiskRadarService radar;
 
     public static boolean supports(AuditReplayCommand command) {
-        return command != null && "B".equals(command.domain())
-                && (B1.equals(command.op()) || B5.equals(command.op()));
+        return bankRun(command) || (command != null && "B".equals(command.domain()) && B1.equals(command.op()));
+    }
+
+    public static boolean bankRun(AuditReplayCommand command) {
+        return command != null && "B".equals(command.domain()) && B5.equals(command.op());
     }
 
     public static String source(AuditReplayCommand command) {

@@ -110,7 +110,7 @@ public class AuditReplayDispatcher {
     @Autowired
     private A4RegistryApproval a4RegistryApproval;
 
-    private boolean specialized(AuditReplayCommand cmd) {
+    private static boolean specialized(AuditReplayCommand cmd) {
         return A4RegistryApproval.supports(cmd) || G4CatalogApproval.supports(cmd)
                 || LearningCourseActivationApproval.supports(cmd) || H4GrowthApproval.supports(cmd)
                 || G4DividendApproval.supports(cmd) || G4ParamApproval.supports(cmd) || H3GrowthApproval.supports(cmd) || K1RiskApproval.supports(cmd) || K2OtpInitialApproval.supports(cmd)
@@ -118,6 +118,11 @@ public class AuditReplayDispatcher {
                 || G3MarketApproval.supports(cmd) || H5GrowthApproval.supports(cmd) || H8RewardParamApproval.supports(cmd)
                 || TeamFundApproval.supports(cmd) || HardwareQuotaApproval.supports(cmd) || E2TaskPricingApproval.supports(cmd)
                 || TreasuryThresholdApproval.supports(cmd) || WithdrawalConfigApproval.supports(cmd);
+    }
+
+    static boolean recognizesOperation(AuditReplayCommand cmd) {
+        return cmd != null && cmd.domain() != null && cmd.op() != null
+                && (specialized(cmd) || OPERATIONS.getOrDefault(cmd.domain(), Set.of()).contains(cmd.op()));
     }
 
     ApiResult<Void> validateReplayPermission(AuditReplayCommand cmd) {

@@ -7,6 +7,8 @@ import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import java.math.BigDecimal;
 import java.util.Map;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
@@ -16,6 +18,12 @@ public class TreasuryCoverageFacadeAdapter implements TreasuryCoverageFacade {
     @Override
     public TreasuryCoverageSnapshot snapshot() {
         return readSnapshot(treasuryService.dualLedgerCoverageSnapshot(null));
+    }
+
+    @Override
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
+    public TreasuryCoverageSnapshot snapshotIsolated() {
+        return snapshot();
     }
 
     @Override

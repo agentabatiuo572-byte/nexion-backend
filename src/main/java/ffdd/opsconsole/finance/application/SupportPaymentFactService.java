@@ -207,7 +207,9 @@ public class SupportPaymentFactService {
         }
         var sorted = facts.values().stream().sorted(Comparator.comparing(Fact::succeededAt).thenComparing(Fact::factId)).toList();
         var index=index(captured,sorted);
-        var customerCoverage=customerCoverage(ids,captured,index,issues,excludedCustomers,unmatchedKinds);
+        var issuesByCustomer=new HashMap<Long,List<Issue>>();
+        for(var issue:issues)issuesByCustomer.computeIfAbsent(issue.customerId(),ignored -> new ArrayList<>()).add(issue);
+        var customerCoverage=customerCoverage(ids,captured,index,issuesByCustomer,excludedCustomers,unmatchedKinds);
         var coverage = new ArrayList<Coverage>();
         for (Source source : Source.values()) {
             var reasons = new TreeSet<String>();
@@ -228,7 +230,7 @@ public class SupportPaymentFactService {
                 List.copyOf(reasons),excluded.getOrDefault(source,0L),ADAPTER_VERSION));
         }
         return new Snapshot(sorted,issues,coverage,DateTimeFormatConfig.BUSINESS_ZONE.getId(),Instant.now(),
-            firstHistory(ids,captured,index,issues),customerCoverage,excludedRows.entrySet().stream()
+            firstHistory(ids,captured,index,issuesByCustomer),customerCoverage,excludedRows.entrySet().stream()
                 .flatMap(e->e.getValue().entrySet().stream().map(x->new ExcludedRows(e.getKey(),x.getKey(),x.getValue()))).toList());
     }
 
@@ -249,14 +251,18 @@ public class SupportPaymentFactService {
         return new ReconciledIndex(byId,verified,payments,captures);
     }
     private static List<CustomerCoverage> customerCoverage(List<Long> ids,CapturedFinancialHistory captured,ReconciledIndex index,
-            List<Issue> issues,Set<String> excluded,Map<String,String> unmatchedKinds) {
+            Map<Long,List<Issue>> issuesByCustomer,Set<String> excluded,Map<String,String> unmatchedKinds) {
         var byId=index.byId();var verified=index.verified();var payments=index.payments();var captures=index.captures();
+        var originsByCustomer=new HashMap<Long,List<Map<String,Object>>>();
+        for(var row:captured.refundOrigins())
+            originsByCustomer.computeIfAbsent(number(row,"customerId"),ignored -> new ArrayList<>()).add(row);
         var result=new ArrayList<CustomerCoverage>();
         for(long customer:ids) {
+            var issues=customerIssues(issuesByCustomer,customer);
             var refundReasons=sourceReasons(customer,Source.ORDER_REFUND,captured,issues,excluded,unmatchedKinds);
             var customerRefunds=payments.getOrDefault(customer+":"+Source.ORDER_REFUND,List.of());
             bilateral(customerRefunds,captures.getOrDefault(customer+":"+Source.ORDER_REFUND,List.of()),byId,verified,refundReasons);
-            var origins=captured.refundOrigins().stream().filter(r -> number(r,"customerId")==customer).toList();
+            var origins=originsByCustomer.getOrDefault(customer,List.of());
             for(var refund:customerRefunds) {
                 var original=byId.get(refund.originalFactId());
                 var matches=origins.stream().filter(r -> refund.ledgerId()==number(r,"ledgerId")
@@ -288,13 +294,22 @@ public class SupportPaymentFactService {
         }
         return List.copyOf(result);
     }
+
+    private static List<Issue> customerIssues(Map<Long,List<Issue>> issues,long customer) {
+        var global=issues.getOrDefault(null,List.of());
+        var scoped=issues.getOrDefault(customer,List.of());
+        if(global.isEmpty())return scoped;
+        if(scoped.isEmpty())return global;
+        var combined=new ArrayList<>(global);
+        combined.addAll(scoped);
+        return combined;
+    }
     private static TreeSet<String> sourceReasons(long customer,Source source,CapturedFinancialHistory captured,List<Issue> issues,
             Set<String> excluded,Map<String,String> unmatchedKinds) {
         var reasons=new TreeSet<String>();var birth=captured.registrationProblems().get(customer);
         if(birth==null || !captured.productionBirths().containsKey(customer))reasons.add("NEW_ACCOUNT_BIRTH_NOT_PROVEN");
         if(birth!=null)reasons.addAll(birth);
         for(var issue:issues) {
-            if(issue.customerId()!=null && issue.customerId()!=customer)continue;
             if(issue.source()==Source.UNMATCHED_LEDGER && issue.customerId()!=null && issue.sourceId()!=null) {
                 String kind=unmatchedKinds.get(customer+":"+issue.sourceId());
                 boolean deposit=source==Source.DEPOSIT_ORDER || source==Source.CARD_TOPUP || source==Source.VIETQR || source==Source.HDPAY;
@@ -324,14 +339,14 @@ public class SupportPaymentFactService {
             && refund.amount().signum()>0 && refund.amount().compareTo(original.amount())<=0;
     }
 
-    private static List<FirstHistory> firstHistory(List<Long> ids,CapturedFinancialHistory captured,ReconciledIndex index,List<Issue> issues) {
+    private static List<FirstHistory> firstHistory(List<Long> ids,CapturedFinancialHistory captured,ReconciledIndex index,
+            Map<Long,List<Issue>> issuesByCustomer) {
         var result=new ArrayList<FirstHistory>();
         for(long customer:ids) {
             var reasons=new TreeSet<String>();
             var registration=captured.registrationProblems().get(customer);
             if(registration==null)reasons.add("NEW_ACCOUNT_BIRTH_NOT_PROVEN");else reasons.addAll(registration);
-            for(var issue:issues) {
-                if(issue.customerId()!=null && issue.customerId()!=customer)continue;
+            for(var issue:customerIssues(issuesByCustomer,customer)) {
                 if(firstBarrier(issue))reasons.add(issue.reason());
             }
             for(var source:PAYMENT_SOURCES)bilateral(index.payments().getOrDefault(customer+":"+source,List.of()),

@@ -3,9 +3,11 @@ package ffdd.opsconsole.promotion.web;
 import ffdd.opsconsole.promotion.application.*;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.shared.security.SuperAdminAuthorization;
 import java.util.*;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.bind.annotation.*;
 import static ffdd.opsconsole.promotion.domain.PromotionValues.*;
 
@@ -18,6 +20,7 @@ public class OpsPromotionController {
     private final PromotionRewardService rewards;
     private final PromotionMetricsService metrics;
     private final PromotionAccountSampleService accountSamples;
+    private final SuperAdminAuthorization superAdmins;
 
     @ExceptionHandler(BizException.class)
     public org.springframework.http.ResponseEntity<ApiResult<Map<String,Object>>> rejected(BizException failure){
@@ -83,13 +86,28 @@ public class OpsPromotionController {
     public ApiResult<Map<String,Object>> withdraw(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){return ApiResult.ok(admin.command("withdrawPromotion",activityId,key,request,()->admin.versionAction(activityId,"withdraw",request)));}
 
     @PostMapping("/promotions/{activityId}/approve") @PreAuthorize("hasAuthority('growth_promotion_approve')")
-    public ApiResult<Map<String,Object>> approve(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){return ApiResult.ok(admin.command("approvePromotion",activityId,key,request,()->admin.versionAction(activityId,"approve",request)));}
+    public ApiResult<Map<String,Object>> approve(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){
+        requireSuperAdmin();
+        return ApiResult.ok(admin.command("approvePromotion",activityId,key,request,()->admin.versionAction(activityId,"approve",request)));
+    }
 
     @PostMapping("/promotions/{activityId}/reject") @PreAuthorize("hasAuthority('growth_promotion_approve')")
-    public ApiResult<Map<String,Object>> reject(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){return ApiResult.ok(admin.command("rejectPromotion",activityId,key,request,()->admin.versionAction(activityId,"reject",request)));}
+    public ApiResult<Map<String,Object>> reject(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){
+        requireSuperAdmin();
+        return ApiResult.ok(admin.command("rejectPromotion",activityId,key,request,()->admin.versionAction(activityId,"reject",request)));
+    }
 
     @PostMapping("/promotions/{activityId}/publish") @PreAuthorize("hasAuthority('growth_promotion_publish')")
-    public ApiResult<Map<String,Object>> publish(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){return ApiResult.ok(admin.command("publishPromotion",activityId,key,request,()->admin.versionAction(activityId,"publish",request)));}
+    public ApiResult<Map<String,Object>> publish(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){
+        requireSuperAdmin();
+        return ApiResult.ok(admin.command("publishPromotion",activityId,key,request,()->admin.versionAction(activityId,"publish",request)));
+    }
+
+    private void requireSuperAdmin() {
+        if (!superAdmins.isSuperAdmin(SecurityContextHolder.getContext().getAuthentication())) {
+            throw new BizException(403,"PROMOTION_SUPER_ADMIN_REQUIRED");
+        }
+    }
 
     @PostMapping("/promotions/{activityId}/pause") @PreAuthorize("hasAuthority('growth_promotion_pause')")
     public ApiResult<Map<String,Object>> pause(@PathVariable String activityId,@RequestHeader("Idempotency-Key") String key,@RequestBody Map<String,Object> request){return ApiResult.ok(admin.command("pausePromotion",activityId,key,request,()->admin.state(activityId,"pause",request)));}

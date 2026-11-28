@@ -125,7 +125,7 @@ class WeeklyRegionPolicyReplayTest {
     }
 
     @Test void normalH3GetExposesServerPreviewUnderReadPermissionWithoutMutation() throws Exception {
-        var controller = new ffdd.opsconsole.growth.web.OpsGrowthController(growth,null,null);
+        var controller = new ffdd.opsconsole.growth.web.OpsGrowthController(growth, null, null, null, null, null);
         var response = controller.weeklyRegionPolicy();
         assertThat(response.getCode()).isZero();
         assertThat(response.getData().effectiveFrom()).isNull();

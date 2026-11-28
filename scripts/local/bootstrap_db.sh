@@ -100,11 +100,17 @@ SELECT f.id, f.original_nickname, f.target_nickname
   fi
 }
 nickname_preflight
+numbered_catalog=$(scalar "SELECT COUNT(*) FROM nx_config_item WHERE config_key='E.catalog.b140.numbered' AND config_value='true' AND is_deleted=0;")
 i=0
 for path in "${files[@]}"; do
   f=${path##*/}
   i=$((i+1))
   [[ -f "$BACKEND/$path" ]] || { echo "Missing migration: $path"; exit 1; }
+  if [[ "$numbered_catalog" == "1" ]]; then
+    case "$f" in
+      20261119_b53_product_series.sql|20260901_h3_mission_presentation_config.sql) continue ;;
+    esac
+  fi
   if entry=$(grep "^$f|" "$FRESH/skip.txt"); then
     IFS='|' read -r _ reason run_when <<<"$entry"
     if [[ -z "$run_when" || "$(scalar "$run_when")" == "0" ]]; then

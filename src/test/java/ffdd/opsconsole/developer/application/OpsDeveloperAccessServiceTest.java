@@ -38,15 +38,15 @@ class OpsDeveloperAccessServiceTest {
     void pagesRealRequestsAndPreservesReviewFields() {
         OpsDeveloperAccessMapper mapper = mock(OpsDeveloperAccessMapper.class);
         when(mapper.count(null, null, null)).thenReturn(1L);
-        when(mapper.page(null, null, null, 0, 20)).thenReturn(List.of(row("DEV-AAAAAAAAAAAAAAAA", "PENDING", null, null)));
+        when(mapper.page(null, null, null, false, 0, 20)).thenReturn(List.of(row("DEV-AAAAAAAAAAAAAAAA", "PENDING", null, null)));
 
-        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class))
-                .page(1, 20, null, null, null);
+        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
+                .page(1, 20, null, null, null, null);
 
         assertThat(result.getCode()).isZero();
-        assertThat(result.getData().getRecords()).hasSize(1);
-        assertThat(result.getData().getRecords().get(0)).containsEntry("requestNo", "DEV-AAAAAAAAAAAAAAAA");
-        assertThat(result.getData().getRecords().get(0)).containsEntry("status", "PENDING");
+        assertThat(result.getData().records()).hasSize(1);
+        assertThat(result.getData().records().get(0)).containsEntry("requestNo", "DEV-AAAAAAAAAAAAAAAA");
+        assertThat(result.getData().records().get(0)).containsEntry("status", "PENDING");
     }
 
     @Test
@@ -61,7 +61,7 @@ class OpsDeveloperAccessServiceTest {
         when(mapper.completeIdempotency(eq("DEV-AAAAAAAAAAAAAAAA"), eq("APPROVED"), eq("idem-1"), anyString(),
                 anyString(), anyString(), anyString(), any(LocalDateTime.class))).thenReturn(1);
 
-        var result = new OpsDeveloperAccessService(mapper, audit)
+        var result = new OpsDeveloperAccessService(mapper, audit, mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .approve("DEV-AAAAAAAAAAAAAAAA", "PENDING", "approved for integration", "admin-1", "idem-1");
 
         assertThat(result.getCode()).isZero();
@@ -74,7 +74,7 @@ class OpsDeveloperAccessServiceTest {
         OpsDeveloperAccessMapper mapper = mock(OpsDeveloperAccessMapper.class);
         when(mapper.findForUpdate("DEV-AAAAAAAAAAAAAAAA")).thenReturn(row("DEV-AAAAAAAAAAAAAAAA", "EXPIRED", "system", "request expired"));
 
-        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class))
+        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .approve("DEV-AAAAAAAAAAAAAAAA", "PENDING", "late approval", "admin-2", "idem-2");
 
         assertThat(result.getCode()).isEqualTo(409);
@@ -86,7 +86,7 @@ class OpsDeveloperAccessServiceTest {
         OpsDeveloperAccessMapper mapper = mock(OpsDeveloperAccessMapper.class);
         when(mapper.findForUpdate("DEV-AAAAAAAAAAAAAAAA")).thenReturn(row("DEV-AAAAAAAAAAAAAAAA", "APPROVED", "admin-1", "already approved"));
 
-        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class))
+        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .approve("DEV-AAAAAAAAAAAAAAAA", "PENDING", "duplicate approval", "admin-2", "idem-duplicate");
 
         assertThat(result.getCode()).isEqualTo(409);
@@ -105,7 +105,7 @@ class OpsDeveloperAccessServiceTest {
         when(mapper.completeIdempotency(eq("DEV-AAAAAAAAAAAAAAAA"), eq("REVOKED"), eq("idem-3"), anyString(),
                 anyString(), anyString(), anyString(), any(LocalDateTime.class))).thenReturn(1);
 
-        var result = new OpsDeveloperAccessService(mapper, audit)
+        var result = new OpsDeveloperAccessService(mapper, audit, mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .revoke("DEV-AAAAAAAAAAAAAAAA", "APPROVED", "policy breach", "admin-2", "idem-3");
 
         assertThat(result.getCode()).isZero();
@@ -129,7 +129,7 @@ class OpsDeveloperAccessServiceTest {
     void missingOrShortRemarkIsRejectedBeforeMutation() {
         OpsDeveloperAccessMapper mapper = mock(OpsDeveloperAccessMapper.class);
 
-        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class))
+        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .reject("DEV-AAAAAAAAAAAAAAAA", "PENDING", "short", "admin-1", "idem-4");
 
         assertThat(result.getCode()).isEqualTo(422);
@@ -147,7 +147,7 @@ class OpsDeveloperAccessServiceTest {
         when(mapper.find("DEV-AAAAAAAAAAAAAAAA"))
                 .thenReturn(row("DEV-AAAAAAAAAAAAAAAA", "APPROVED", "admin-1", "approved for integration"));
 
-        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class))
+        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .approve("DEV-AAAAAAAAAAAAAAAA", "PENDING", "approved for integration", "admin-1", "idem-replay");
 
         assertThat(result.getCode()).isZero();
@@ -166,7 +166,7 @@ class OpsDeveloperAccessServiceTest {
                         "DEV-AAAAAAAAAAAAAAAA", "APPROVED", "idem-conflict", "different-hash", "COMPLETED",
                         "APPROVED", "admin-1", "old payload", now));
 
-        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class))
+        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .approve("DEV-AAAAAAAAAAAAAAAA", "PENDING", "approved for integration", "admin-1", "idem-conflict");
 
         assertThat(result.getCode()).isEqualTo(409);
@@ -181,7 +181,7 @@ class OpsDeveloperAccessServiceTest {
                         "DEV-AAAAAAAAAAAAAAAA", "APPROVED", "idem-action-conflict", "stored-hash", "COMPLETED",
                         "APPROVED", "admin-1", "approved", now));
 
-        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class))
+        var result = new OpsDeveloperAccessService(mapper, mock(AuditLogService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .reject("DEV-AAAAAAAAAAAAAAAA", "PENDING", "rejecting duplicate action", "admin-1", "idem-action-conflict");
 
         assertThat(result.getCode()).isEqualTo(409);
@@ -199,7 +199,7 @@ class OpsDeveloperAccessServiceTest {
         when(mapper.find("DEV-AAAAAAAAAAAAAAAA")).thenReturn(row("DEV-AAAAAAAAAAAAAAAA", "APPROVED", "admin-1", "approved for integration"));
         doThrow(new IllegalStateException("audit store unavailable")).when(audit).recordRequired(any());
 
-        assertThatThrownBy(() -> new OpsDeveloperAccessService(mapper, audit)
+        assertThatThrownBy(() -> new OpsDeveloperAccessService(mapper, audit, mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .approve("DEV-AAAAAAAAAAAAAAAA", "PENDING", "approved for integration", "admin-1", "idem-audit"))
                 .isInstanceOf(IllegalStateException.class);
         verify(audit).recordRequired(any());
@@ -210,7 +210,7 @@ class OpsDeveloperAccessServiceTest {
 
     @Test
     void requestNoMustUseGovernedFormat() {
-        var result = new OpsDeveloperAccessService(mock(OpsDeveloperAccessMapper.class), mock(AuditLogService.class))
+        var result = new OpsDeveloperAccessService(mock(OpsDeveloperAccessMapper.class), mock(AuditLogService.class), mock(ffdd.opsconsole.content.application.SupportOwnershipService.class))
                 .approve("DEV-1", "PENDING", "approved for integration", "admin-1", "idem-invalid");
 
         assertThat(result.getCode()).isEqualTo(422);

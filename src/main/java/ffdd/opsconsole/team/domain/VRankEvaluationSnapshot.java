@@ -15,8 +15,8 @@ import java.util.Map;
  *       AND order_status NOT IN ('REFUNDED','CHARGEBACK')。</li>
  *   <li>{@link #teamComputePoints} — unilevel L1-L7 子树所有成员自购算力点之和(递归 CTE,限深 7),
  *       不含用户自己。</li>
- *   <li>{@link #directRefs} — L1 直接成员中自购算力点 ≥ V1 门槛的 COUNT DISTINCT。</li>
- *   <li>{@link #legCounts} — L1 直接成员按 v_rank 分组计数,key=V 阶数字(V0=0,V1=1,...,V8=8),
+ *   <li>{@link #directRefs} — L1-L2 中至少有一笔有效付款订单的去重人数。</li>
+ *   <li>{@link #legCounts} — L1-L2 成员按自己的当前 v_rank 分组计数,key=V 阶数字(V0=0,V1=1,...,V8=8),
  *       value=该阶及以上视为符合 required_downline_rank 的成员数;
  *       引擎消费时按 targetV 累加 ≥ targetV 的成员数。</li>
  * </ul>

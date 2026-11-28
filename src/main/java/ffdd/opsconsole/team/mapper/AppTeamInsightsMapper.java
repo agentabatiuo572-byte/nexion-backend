@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import org.apache.ibatis.annotations.AutomapConstructor;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -195,10 +196,14 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
             SELECT ce.id,ce.commission_type commissionType,ce.source_user_id sourceUserId,
                    COALESCE(CASE WHEN ce.source_user_name REGEXP '[^[:space:]]' THEN ce.source_user_name END, source.nickname) sourceUserName,ce.layer_no layerNo,ce.order_no orderNo,
                    ce.order_amount_usd orderAmountUsd,ce.amount_usdt amountUsdt,ce.amount_nex amountNex,
-                   ce.status,ce.created_at createdAt,ce.unlock_at unlockAt
+                   ce.status,ce.created_at createdAt,ce.unlock_at unlockAt,
+                   DATE_FORMAT(salary.salary_month, '%Y-%m') salaryMonth,salary.rank_code salaryRank
               FROM nx_commission_event ce
               LEFT JOIN nx_user u ON u.id=ce.user_id
               LEFT JOIN nx_user source ON source.id=ce.source_user_id AND source.sandbox=u.sandbox AND source.is_deleted=0
+              LEFT JOIN nx_v_rank_salary_claim salary
+                ON salary.commission_event_id=ce.id AND salary.user_id=ce.user_id
+               AND LOWER(ce.commission_type)='vrank_salary'
              WHERE ce.user_id=#{userId} AND ce.is_deleted=0 AND ce.created_at <= #{snapshotAt}
              ORDER BY ce.created_at DESC,ce.id DESC LIMIT #{offset},#{limit}
             """)
@@ -360,7 +365,17 @@ public interface AppTeamInsightsMapper extends BaseMapper<Object> {
                           Integer directs, Integer teamSize, Integer hasDevice) { }
     record CommissionRow(Long id, String commissionType, Long sourceUserId, String sourceUserName,
                          Integer layerNo, String orderNo, BigDecimal orderAmountUsd, BigDecimal amountUsdt,
-                         BigDecimal amountNex, String status, LocalDateTime createdAt, LocalDateTime unlockAt) { }
+                         BigDecimal amountNex, String status, LocalDateTime createdAt, LocalDateTime unlockAt,
+                         String salaryMonth, String salaryRank) {
+        @AutomapConstructor public CommissionRow { }
+
+        public CommissionRow(Long id, String commissionType, Long sourceUserId, String sourceUserName,
+                             Integer layerNo, String orderNo, BigDecimal orderAmountUsd, BigDecimal amountUsdt,
+                             BigDecimal amountNex, String status, LocalDateTime createdAt, LocalDateTime unlockAt) {
+            this(id, commissionType, sourceUserId, sourceUserName, layerNo, orderNo, orderAmountUsd, amountUsdt,
+                    amountNex, status, createdAt, unlockAt, null, null);
+        }
+    }
     record CommissionSummaryRow(BigDecimal totalUsdt, BigDecimal totalNex, BigDecimal directUsdt,
                                 BigDecimal extendedUsdt, Integer contributorCount) { }
     record UnilevelRow(Long id, Long sourceUserId, String sourceUserName, Integer layerNo, String orderNo,

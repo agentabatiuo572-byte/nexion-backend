@@ -120,7 +120,10 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """ + SERIES_LOCKED + """
              AS seriesLocked,
             """ + HELD + """
-             AS purchaseQuotaHeld
+             AS purchaseQuotaHeld,
+            p.display_sold_base AS displaySoldBase,
+            p.live_activity_visible AS liveActivityVisible,
+            COALESCE(p.storefront_sort_order,p.sort_order) AS storeSortOrder
             """;
 
     String TASK_COLUMNS = """
@@ -245,6 +248,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               name VARCHAR(128) NOT NULL,
               tier VARCHAR(32) DEFAULT NULL,
               tagline VARCHAR(255) DEFAULT NULL,
+              tagline_translations_json JSON NULL,
               badge VARCHAR(64) DEFAULT NULL,
               gpu VARCHAR(128) DEFAULT NULL,
               vram VARCHAR(64) DEFAULT NULL,
@@ -1014,22 +1018,47 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     @Insert("""
             INSERT INTO nx_product (
               product_no,name,product_type,tier,series_code,status,price_usdt,compute_points,hashrate,estimated_daily_usdt,daily_nex,monthly_target_usdt,monthly_target_band_pct,stock,inventory_mode,trial_eligible,
-              badge,tagline,store_status,store_visible,sort_order,generation,gpu_model,vram_total_gb,
-              share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,
+              badge,tagline,store_status,store_visible,storefront_sort_order,generation,gpu_model,vram_total_gb,
+              share_yield_min,share_yield_max,superseded_by_product_no,unlock_phase,sold_count,display_sold_base,live_activity_visible,
               created_at,updated_at,is_deleted
             ) VALUES (
               #{sku.skuId},#{sku.name},CASE WHEN #{sku.tier}='Share' THEN 'SHARE' ELSE 'DEVICE' END,#{sku.tier},#{sku.seriesCode},
               CASE WHEN #{sku.status}='on' THEN 'ON_SALE' WHEN #{sku.status}='pending' THEN 'PENDING' ELSE 'OFF_SALE' END,
               #{sku.price},COALESCE(#{sku.computePoints},ROUND(#{sku.price}*10)),#{sku.canonicalHashrate},#{sku.dailyEarn},#{sku.dailyEarnNex},#{sku.monthlyTargetUsdt},#{sku.monthlyTargetBandPct},#{sku.canonicalStock},#{sku.inventoryMode},#{sku.trialEligible},
-              #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,0,
+              #{sku.badge},#{sku.tagline},#{sku.status},CASE WHEN #{sku.status}='on' THEN 1 ELSE 0 END,NULLIF(#{sku.storeSortOrder},0),
               COALESCE(#{sku.generation},1),#{sku.gpu},#{sku.canonicalVramGb},#{sku.shareYieldMin},#{sku.shareYieldMax},
               #{sku.supersededBy},CAST(#{sku.unlockPhaseId} AS CHAR),0,
+              COALESCE(#{sku.displaySoldBase},0),COALESCE(#{sku.liveActivityVisible},1),
               #{sku.createdAt},#{sku.updatedAt},0
             )
             """)
     int insertSku(@Param("sku") SkuWrite sku);
 
-    @Insert("""
+    String PURCHASE_GATE_PROPERTIES = """
+            '["rankMin","activeDirectMin","teamComputePointsMin","mode","quotaCap","quotaSold","quotaPeriod","enforce"]'
+            """;
+    String PURCHASE_GATE_DEFAULTS = """
+            '{"rankMin":0,"activeDirectMin":0,"teamComputePointsMin":0}'
+            """;
+    // E1 reads the three absent thresholds as zero and serializes absent optional fields as null.
+    String SAME_PURCHASE_GATE = """
+            CASE WHEN JSON_VALID(purchase_gate_json)=1 AND JSON_VALID(VALUES(purchase_gate_json))=1
+                   THEN CAST(purchase_gate_json AS JSON) <=> CAST(VALUES(purchase_gate_json) AS JSON)
+                     OR (JSON_CONTAINS(
+            """ + PURCHASE_GATE_PROPERTIES + """
+                           , JSON_KEYS(purchase_gate_json))
+                         AND JSON_CONTAINS(
+            """ + PURCHASE_GATE_PROPERTIES + """
+                           , JSON_KEYS(VALUES(purchase_gate_json)))
+                         AND JSON_MERGE_PATCH(
+            """ + PURCHASE_GATE_DEFAULTS + """
+                           , JSON_MERGE_PATCH('{}', purchase_gate_json)) <=> JSON_MERGE_PATCH(
+            """ + PURCHASE_GATE_DEFAULTS + """
+                           , JSON_MERGE_PATCH('{}', VALUES(purchase_gate_json))))
+                 ELSE purchase_gate_json <=> VALUES(purchase_gate_json) END
+            """;
+
+    String INSERT_SKU_METADATA = """
             INSERT INTO nx_admin_device_sku (
               sku_id,name,tier,tagline,badge,gpu,vram,hash_rate,power_text,datacenter,uptime,warranty,phone_daily_earn,phone_daily_earn_nex,price,
               daily_earn,daily_earn_nex,share_yield_min,share_yield_max,monthly_target_usdt,monthly_target_band_pct,base_rate,sold,stock_text,
@@ -1046,6 +1075,12 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               #{sku.tradeinDiscount},'',#{sku.unlockPhaseId},#{sku.purchaseGateJson},#{sku.imageAssetId},#{sku.imageObjectKey},
               #{sku.imagePreviewUrl},#{sku.tag},#{sku.status},COALESCE(#{sku.createdAt},#{sku.updatedAt}),#{sku.updatedAt},0
             )
+            """;
+
+    @Insert(INSERT_SKU_METADATA)
+    int insertSkuMetadata(@Param("sku") SkuWrite sku);
+
+    @Insert(INSERT_SKU_METADATA + """
             ON DUPLICATE KEY UPDATE
               name=VALUES(name),tier=VALUES(tier),tagline=VALUES(tagline),badge=VALUES(badge),gpu=VALUES(gpu),vram=VALUES(vram),
               hash_rate=VALUES(hash_rate),power_text=VALUES(power_text),datacenter=VALUES(datacenter),uptime=VALUES(uptime),warranty=VALUES(warranty),phone_daily_earn=VALUES(phone_daily_earn),phone_daily_earn_nex=VALUES(phone_daily_earn_nex),price=VALUES(price),
@@ -1053,16 +1088,28 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
               share_yield_max=VALUES(share_yield_max),monthly_target_usdt=VALUES(monthly_target_usdt),monthly_target_band_pct=VALUES(monthly_target_band_pct),base_rate=VALUES(base_rate),stock_text=VALUES(stock_text),
               ai_image_gen_per_min=VALUES(ai_image_gen_per_min),
               ai_llm_tokens_per_sec=VALUES(ai_llm_tokens_per_sec),ai_video_min_per_hour=VALUES(ai_video_min_per_hour),
-              ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),spec_document_title=VALUES(spec_document_title),spec_document_url=VALUES(spec_document_url),features_json=VALUES(features_json),
+              ai_fine_tune_mins=VALUES(ai_fine_tune_mins),ai_unlocks=VALUES(ai_unlocks),spec_document_title=VALUES(spec_document_title),spec_document_url=VALUES(spec_document_url),
+              features_json=CASE
+                WHEN features_json IS NULL AND VALUES(features_json)='[]' THEN features_json
+                WHEN CASE WHEN JSON_VALID(features_json)=1 AND JSON_VALID(VALUES(features_json))=1
+                       THEN CAST(features_json AS JSON) = CAST(VALUES(features_json) AS JSON)
+                       ELSE FALSE END THEN features_json
+                ELSE VALUES(features_json) END,
               generation=VALUES(generation),lifecycle=VALUES(lifecycle),superseded_by=VALUES(superseded_by),
               tradein_discount=VALUES(tradein_discount),unlock_phase='',unlock_phase_id=VALUES(unlock_phase_id),
-              purchase_gate_generation=CASE WHEN CASE
-                    WHEN JSON_VALID(purchase_gate_json)=1 AND JSON_VALID(VALUES(purchase_gate_json))=1
-                      THEN CAST(purchase_gate_json AS JSON) <=> CAST(VALUES(purchase_gate_json) AS JSON)
-                    ELSE purchase_gate_json <=> VALUES(purchase_gate_json)
-                  END THEN purchase_gate_generation ELSE purchase_gate_generation+1 END,
-              purchase_gate_json=VALUES(purchase_gate_json),image_asset_id=VALUES(image_asset_id),image_object_key=VALUES(image_object_key),
-              image_preview_url=VALUES(image_preview_url),tag=VALUES(tag),status=VALUES(status),updated_at=VALUES(updated_at),is_deleted=0
+              purchase_gate_generation=CASE WHEN
+            """ + SAME_PURCHASE_GATE + """
+                THEN purchase_gate_generation ELSE purchase_gate_generation+1 END,
+              purchase_gate_json=CASE WHEN
+            """ + SAME_PURCHASE_GATE + """
+                THEN purchase_gate_json ELSE VALUES(purchase_gate_json) END,
+              image_preview_url=CASE
+                WHEN (BINARY image_asset_id <=> BINARY VALUES(image_asset_id))
+                     AND (BINARY image_object_key <=> BINARY VALUES(image_object_key))
+                  THEN image_preview_url
+                ELSE VALUES(image_preview_url) END,
+              image_asset_id=VALUES(image_asset_id),image_object_key=VALUES(image_object_key),
+              tag=VALUES(tag),status=VALUES(status),updated_at=VALUES(updated_at),is_deleted=0
             """)
     int upsertSkuMetadata(@Param("sku") SkuWrite sku);
 
@@ -1077,6 +1124,11 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                    gpu_model=#{sku.gpu},vram_total_gb=#{sku.canonicalVramGb},share_yield_min=#{sku.shareYieldMin},
                    share_yield_max=#{sku.shareYieldMax},superseded_by_product_no=#{sku.supersededBy},
                    unlock_phase=CAST(#{sku.unlockPhaseId} AS CHAR),
+                   display_sold_base=COALESCE(#{sku.displaySoldBase},p.display_sold_base),
+                   live_activity_visible=COALESCE(#{sku.liveActivityVisible},p.live_activity_visible),
+                   storefront_sort_order=CASE
+                       WHEN #{sku.storeSortOrder}<>COALESCE(p.storefront_sort_order,p.sort_order) THEN #{sku.storeSortOrder}
+                       ELSE p.storefront_sort_order END,
                    updated_at=GREATEST(CURRENT_TIMESTAMP(6),updated_at + INTERVAL 1 MICROSECOND)
              WHERE product_no=#{sku.skuId} AND is_deleted=0 AND updated_at=#{expectedUpdatedAt}
                AND (p.series_code <=> #{sku.seriesCode} OR NOT """ + SERIES_LOCKED + """
@@ -1694,6 +1746,16 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
                            @Param("idempotencyKey") String idempotencyKey,
                            @Param("now") LocalDateTime now);
 
+    @Select("""
+            SELECT d.id FROM nx_user_device d FORCE INDEX (idx_user_device_order)
+              LEFT JOIN nx_device_slot_replacement outgoing ON outgoing.old_device_id=d.id AND outgoing.user_id=d.user_id
+              LEFT JOIN nx_device_slot_replacement incoming ON incoming.new_device_id=d.id AND incoming.user_id=d.user_id
+             WHERE d.source_order_no=#{orderNo} AND d.is_deleted=0 AND d.ownership_status='OWNED'
+               AND (outgoing.old_device_id IS NOT NULL OR incoming.new_device_id IS NOT NULL)
+             ORDER BY d.user_id,d.id FOR UPDATE
+            """)
+    List<Long> lockRefundReplacementDeviceIds(@Param("orderNo") String orderNo);
+
     @Update("""
             UPDATE nx_user_device d
               JOIN nx_order o ON o.order_no=d.source_order_no AND o.user_id=d.user_id
@@ -1893,6 +1955,14 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             """)
     int archiveGenerationGate(@Param("skuId") String skuId, @Param("now") LocalDateTime now);
 
+    @Select("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_admin_device_sku' AND column_name='tagline_translations_json'")
+    int countSkuTaglineTranslationsColumn();
+    @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN tagline_translations_json JSON NULL AFTER tagline")
+    void addSkuTaglineTranslationsColumn();
+    @Select("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_product' AND column_name='tagline_translations_json'")
+    int countProductTaglineTranslationsColumn();
+    @Update("ALTER TABLE nx_product ADD COLUMN tagline_translations_json JSON NULL AFTER tagline")
+    void addProductTaglineTranslationsColumn();
     @Select("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='nx_admin_device_sku' AND column_name='spec_document_title'")
     int countSkuDocumentTitleColumn();
     @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN spec_document_title VARCHAR(200) DEFAULT NULL")
@@ -1901,6 +1971,27 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
     int countSkuDocumentUrlColumn();
     @Update("ALTER TABLE nx_admin_device_sku ADD COLUMN spec_document_url VARCHAR(2048) DEFAULT NULL")
     void addSkuDocumentUrlColumn();
+
+    @Select("SELECT tagline_translations_json FROM nx_product WHERE product_no=#{skuId} AND is_deleted=0 LIMIT 1")
+    String findTaglineTranslations(@Param("skuId") String skuId);
+
+    @Select("""
+            <script>
+            SELECT p.product_no AS skuId, p.tagline_translations_json AS taglineTranslationsJson
+              FROM nx_product p
+             WHERE p.is_deleted=0 AND p.product_no IN
+             <foreach collection="skuIds" item="skuId" open="(" separator="," close=")">#{skuId}</foreach>
+            </script>
+            """)
+    List<SkuTaglineTranslations> findTaglineTranslationsBySkus(@Param("skuIds") List<String> skuIds);
+
+    @Update("UPDATE nx_product SET tagline_translations_json=CAST(#{json} AS JSON) WHERE product_no=#{skuId} AND is_deleted=0")
+    int updateProductTaglineTranslations(@Param("skuId") String skuId, @Param("json") String json);
+
+    @Update("UPDATE nx_admin_device_sku SET tagline_translations_json=CAST(#{json} AS JSON) WHERE sku_id=#{skuId} AND is_deleted=0")
+    int updateSkuTaglineTranslations(@Param("skuId") String skuId, @Param("json") String json);
+
+    record SkuTaglineTranslations(String skuId, String taglineTranslationsJson) { }
 
     record SkuRow(
             String skuId,
@@ -1950,7 +2041,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean publishBlocked,
             String publishBlockReason,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode, boolean seriesLocked, long purchaseQuotaHeld) {
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode, boolean seriesLocked, long purchaseQuotaHeld,
+            int displaySoldBase, boolean liveActivityVisible, int storeSortOrder) {
     public SkuRow(
             String skuId,
             String name,
@@ -2000,7 +2092,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String publishBlockReason,
             LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
-        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,false,0L);
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,productType,inventoryMode,trialEligible,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhase,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,publishBlocked,publishBlockReason,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,false,0L,0,true,0);
     }
 
     /** Callers that do not set computePoints leave it unset. */
@@ -2111,7 +2203,8 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             String inventoryMode,
             Boolean trialEligible,
             LocalDateTime createdAt,
-            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode) {
+            LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints, BigDecimal monthlyTargetUsdt, BigDecimal monthlyTargetBandPct, String seriesCode,
+            Integer displaySoldBase, Boolean liveActivityVisible, Integer storeSortOrder) {
     public SkuWrite(
             String skuId,
             String name,
@@ -2161,7 +2254,7 @@ public interface DeviceCatalogMapper extends BaseMapper<DeviceSkuEntity> {
             Boolean trialEligible,
             LocalDateTime createdAt,
             LocalDateTime updatedAt, String specDocumentTitle, String specDocumentUrl, Long computePoints) {
-        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhaseId,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,canonicalHashrate,canonicalVramGb,canonicalStock,inventoryMode,trialEligible,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null);
+        this(skuId,name,tier,tagline,badge,gpu,vram,hashRate,power,datacenter,uptime,warranty,phoneDailyEarn,phoneDailyEarnNex,price,dailyEarn,dailyEarnNex,shareYieldMin,shareYieldMax,baseRate,sold,stock,rating,reviews,aiImageGenPerMin,aiLlmTokensPerSec,aiVideoMinPerHour,aiFineTuneMins,aiUnlocks,featuresJson,generation,lifecycle,supersededBy,tradeinDiscount,unlockPhaseId,purchaseGateJson,imageAssetId,imageObjectKey,imagePreviewUrl,tag,status,canonicalHashrate,canonicalVramGb,canonicalStock,inventoryMode,trialEligible,createdAt,updatedAt,specDocumentTitle,specDocumentUrl,computePoints,null,null,null,null,null,null);
     }
 
     /** Callers that do not set computePoints leave it unset. */

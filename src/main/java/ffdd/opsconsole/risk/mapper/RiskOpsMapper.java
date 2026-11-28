@@ -11,6 +11,7 @@ import ffdd.opsconsole.risk.domain.RiskScoreDimensionView;
 import ffdd.opsconsole.risk.domain.RiskScoreOverrideView;
 import ffdd.opsconsole.risk.domain.RiskWithdrawCandidateView;
 import ffdd.opsconsole.risk.infrastructure.RiskDecisionEntity;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -341,6 +342,18 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     void createScoreHistoryTable();
 
+    @Select("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.COLUMNS
+                 WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='nx_admin_risk_score_override'
+                   AND COLUMN_NAME='model_scored_before'
+            )
+            """)
+    boolean hasScoreOverrideModelScoredBeforeColumn();
+
+    @Update("ALTER TABLE nx_admin_risk_score_override ADD COLUMN model_scored_before TINYINT NULL")
+    void addScoreOverrideModelScoredBeforeColumn();
+
     @Update("ALTER TABLE nx_admin_risk_score_override ADD COLUMN active_user_key VARCHAR(64) GENERATED ALWAYS AS (CASE WHEN active = 1 AND is_deleted = 0 THEN user_no ELSE NULL END) STORED")
     void addScoreOverrideActiveKeyColumn();
 
@@ -430,6 +443,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               id BIGINT PRIMARY KEY AUTO_INCREMENT,
               user_no VARCHAR(64) NOT NULL,
               model_score INT NOT NULL,
+              model_scored_before TINYINT NULL,
               override_score INT NOT NULL,
               reason VARCHAR(500) NOT NULL,
               operator VARCHAR(64) NOT NULL,
@@ -715,7 +729,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             VALUES (#{userNo},0,'tamper-v1','刚刚',0)
             ON DUPLICATE KEY UPDATE
               model_score = IF(is_deleted = 1, 0, model_score),
-              model_version = 'tamper-v1', updated_text = '刚刚',
+              updated_text = '刚刚',
               updated_at = NOW(), is_deleted = 0
             """)
     int ensureTamperScoreUser(@Param("userNo") String userNo);
@@ -762,6 +776,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
               FROM nx_risk_signal
              WHERE signal_type = 'TAMPER_DETECTED'
                AND created_at >= #{since}
+               AND created_at < DATE_ADD(#{since}, INTERVAL 7 DAY)
                AND is_deleted = 0
             """)
     TamperRadarRecord tamperRadarSnapshot(@Param("since") java.time.LocalDateTime since);
@@ -2061,10 +2076,19 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
             """)
     long countScoreUsers();
 
+    @Select(K4ScoreAccountSql.SNAPSHOT)
+    Map<String, Object> scoreAccountSnapshot();
+
+    @Select(K4ScoreAccountSql.PAGE)
+    List<ScoreAccountRecord> pageScoreAccounts(@Param("band") String band, @Param("modelVersion") String modelVersion,
+            @Param("bandLowMax") int bandLowMax, @Param("bandHighMin") int bandHighMin,
+            @Param("autoEscalateScore") int autoEscalateScore, @Param("evaluatedAt") String evaluatedAt,
+            @Param("offset") long offset, @Param("limit") int limit);
+
     @Select("""
             SELECT s.user_no AS userNo,s.model_score AS modelScore,s.model_version AS modelVersion,
                    s.row_version AS rowVersion,
-                   COALESCE(DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s'),DATE_FORMAT(s.updated_at,'%Y-%m-%d %H:%i:%s')) AS asOf,
+                   DATE_FORMAT(s.as_of,'%Y-%m-%d %H:%i:%s') AS asOf,
                    s.updated_text AS updatedText,
                    (SELECT h.contributions_json FROM nx_admin_risk_score_history h
                      WHERE h.user_no=s.user_no AND h.is_deleted=0
@@ -2167,7 +2191,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                     OR EXISTS (SELECT 1 FROM nx_admin_risk_arbitrage_row k2
                                 WHERE k2.updated_at > COALESCE(s.as_of,'1970-01-01')
                                   AND CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
-                                      LIKE CONCAT('%',s.user_no,'%'))
+                                      REGEXP CONCAT(s.user_no,'([^0-9]|$)'))
                     OR EXISTS (SELECT 1 FROM nx_withdrawal_order withdraw_fact
                                 WHERE withdraw_fact.user_id=u.id
                                   AND withdraw_fact.updated_at > COALESCE(s.as_of,'1970-01-01'))
@@ -2211,7 +2235,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                     OR EXISTS (SELECT 1 FROM nx_admin_risk_arbitrage_row k2
                                 WHERE k2.updated_at > COALESCE(s.as_of,'1970-01-01')
                                   AND CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
-                                      LIKE CONCAT('%',s.user_no,'%'))
+                                      REGEXP CONCAT(s.user_no,'([^0-9]|$)'))
                     OR EXISTS (SELECT 1 FROM nx_withdrawal_order withdraw_fact
                                 WHERE withdraw_fact.user_id=u.id
                                   AND withdraw_fact.updated_at > COALESCE(s.as_of,'1970-01-01'))
@@ -2262,11 +2286,11 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                      AS multiAccountFraud,
                    (SELECT COUNT(*) FROM nx_admin_risk_arbitrage_row a
                      WHERE a.is_deleted=0 AND CONCAT_WS('|',a.cell1,a.cell2,a.cell3,a.cell4,a.cell5,a.cell6)
-                       LIKE CONCAT('%',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),'%')) AS arbitrageSignals,
+                       REGEXP CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'),'([^0-9]|$)')) AS arbitrageSignals,
                    EXISTS(SELECT 1 FROM nx_admin_risk_arbitrage_row a
                            WHERE a.is_deleted=0 AND a.disposition IN ('cluster_frozen','gift_blocked','account_flagged')
                              AND CONCAT_WS('|',a.cell1,a.cell2,a.cell3,a.cell4,a.cell5,a.cell6)
-                               LIKE CONCAT('%',CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0')),'%')) AS severeArbitrage,
+                               REGEXP CONCAT('U',LPAD(u.id,GREATEST(8,CHAR_LENGTH(CAST(u.id AS CHAR))),'0'),'([^0-9]|$)')) AS severeArbitrage,
                    (SELECT COUNT(*) FROM nx_withdrawal_order w
                      WHERE w.user_id=u.id AND w.is_deleted=0 AND w.created_at>=NOW()-INTERVAL 24 HOUR)
                      AS withdrawalCount24h,
@@ -2441,7 +2465,7 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
                    COALESCE((SELECT MAX(k2.updated_at)
                                FROM nx_admin_risk_arbitrage_row k2
                               WHERE CONCAT_WS('|',k2.cell1,k2.cell2,k2.cell3,k2.cell4,k2.cell5,k2.cell6)
-                                    LIKE CONCAT('%',s.user_no,'%')),'1970-01-01'),
+                                    REGEXP CONCAT(s.user_no,'([^0-9]|$)')),'1970-01-01'),
                    COALESCE((SELECT MAX(withdraw_fact.updated_at) FROM nx_withdrawal_order withdraw_fact
                               WHERE withdraw_fact.user_id=u.id),'1970-01-01'),
                    COALESCE((SELECT MAX(j3.updated_at) FROM nx_risk_signal j3
@@ -2471,32 +2495,58 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     @Select("SELECT COUNT(*) FROM nx_admin_risk_score_override WHERE is_deleted = 0 AND active = 1")
     long countActiveScoreOverrides();
 
-    @Select("""
-            SELECT user_no AS userNo,model_score AS modelScore,override_score AS overrideScore,reason,operator,time_text AS timeText,active
-              FROM nx_admin_risk_score_override
-             WHERE is_deleted = 0
-             ORDER BY active DESC, created_at DESC, id DESC
+    // A pending row always starts at zero and never returns to pending after its first score.
+    // A strict timestamp comparison excludes overrides older than a later backfilled pending row.
+    String OVERRIDE_PENDING_SCORE_PROOF = """
+            s.user_no=o.user_no AND s.is_deleted=0 AND s.model_version='pending'
+            AND s.model_score=0 AND s.created_at<o.created_at
+            """;
+
+    String SCORE_OVERRIDE_PROJECTION = """
+            SELECT o.user_no AS userNo,o.model_score AS modelScore,o.override_score AS overrideScore,
+                   o.reason,o.operator,o.time_text AS timeText,o.active,
+                   CASE WHEN o.model_scored_before=1 THEN 'SCORED'
+                        WHEN o.model_scored_before=0 THEN 'UNSCORED'
+                        WHEN o.model_score<>0 THEN 'SCORED'
+                        WHEN s.id IS NOT NULL THEN 'UNSCORED'
+                        ELSE 'UNKNOWN' END AS systemScoreState
+              FROM nx_admin_risk_score_override o
+              LEFT JOIN nx_admin_risk_score_user s ON
+            """ + OVERRIDE_PENDING_SCORE_PROOF;
+
+    @Select(SCORE_OVERRIDE_PROJECTION + """
+             WHERE o.is_deleted = 0
+             ORDER BY o.active DESC, o.created_at DESC, o.id DESC
              LIMIT 20
             """)
     List<RiskScoreOverrideView> scoreOverrides();
 
-    @Select("""
-            SELECT user_no AS userNo,model_score AS modelScore,override_score AS overrideScore,reason,operator,time_text AS timeText,active
-              FROM nx_admin_risk_score_override
-             WHERE is_deleted = 0
-             ORDER BY active DESC, created_at DESC, id DESC
+    @Select(SCORE_OVERRIDE_PROJECTION + """
+             WHERE o.is_deleted = 0
+             ORDER BY o.active DESC, o.created_at DESC, o.id DESC
              LIMIT #{limit} OFFSET #{offset}
             """)
     List<RiskScoreOverrideView> scoreOverridesPage(@Param("offset") int offset, @Param("limit") int limit);
 
-    @Select("""
-            SELECT user_no AS userNo,model_score AS modelScore,override_score AS overrideScore,reason,operator,time_text AS timeText,active
-              FROM nx_admin_risk_score_override
-             WHERE user_no = #{userNo} AND active = 1 AND is_deleted = 0
-             ORDER BY created_at DESC, id DESC
+    @Select(SCORE_OVERRIDE_PROJECTION + """
+             WHERE o.user_no = #{userNo} AND o.active = 1 AND o.is_deleted = 0
+             ORDER BY o.created_at DESC, o.id DESC
              LIMIT 1
             """)
     RiskScoreOverrideView activeScoreOverride(@Param("userNo") String userNo);
+
+    @Update("""
+            UPDATE nx_admin_risk_score_override o
+              JOIN nx_admin_risk_score_user s ON
+            """ + OVERRIDE_PENDING_SCORE_PROOF + """
+              JOIN nx_user u ON u.id=#{userId,jdbcType=BIGINT} AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+               SET o.model_scored_before=0,o.updated_at=o.updated_at
+             WHERE o.user_no=#{userNo} AND o.is_deleted=0 AND o.model_scored_before IS NULL
+               AND o.model_score=0
+               AND (#{expectedVersion,jdbcType=BIGINT} IS NULL OR s.row_version=#{expectedVersion,jdbcType=BIGINT})
+            """)
+    int preserveUnscoredOverrideHistory(@Param("userNo") String userNo, @Param("expectedVersion") Long expectedVersion,
+                                        @Param("userId") Long userId);
 
     @Update("""
             UPDATE nx_admin_risk_score_override
@@ -2506,8 +2556,9 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     int deactivateScoreOverrides(@Param("userNo") String userNo);
 
     @Insert("""
-            INSERT INTO nx_admin_risk_score_override (user_no,model_score,override_score,reason,operator,time_text,active,is_deleted)
-            VALUES (#{userNo},#{modelScore},#{overrideScore},#{reason},#{operator},#{timeText},#{active},0)
+            INSERT INTO nx_admin_risk_score_override
+                (user_no,model_score,model_scored_before,override_score,reason,operator,time_text,active,is_deleted)
+            VALUES (#{userNo},#{modelScore},1,#{overrideScore},#{reason},#{operator},#{timeText},#{active},0)
             """)
     int insertScoreOverride(@Param("userNo") String userNo, @Param("modelScore") int modelScore,
                             @Param("overrideScore") int overrideScore, @Param("reason") String reason,
@@ -2873,6 +2924,10 @@ public interface RiskOpsMapper extends BaseMapper<RiskDecisionEntity> {
     record ScoreUserRecord(
             String userNo, Integer modelScore, String modelVersion, Long rowVersion, String asOf, String updatedText,
             String capturedContributionsJson) {
+    }
+
+    record ScoreAccountRecord(String userNo, Integer modelScore, Integer effectiveScore, boolean overridden,
+                              String modelVersion, LocalDateTime asOf) {
     }
 
     record ScoreUserSearchRecord(String userNo, Integer modelScore, String modelVersion, String updatedText,

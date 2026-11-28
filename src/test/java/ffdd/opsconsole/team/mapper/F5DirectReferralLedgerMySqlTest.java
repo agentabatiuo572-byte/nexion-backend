@@ -88,7 +88,7 @@ class F5DirectReferralLedgerMySqlTest {
         ledger(2, "DR-PAIR-RELEASE", 3778, "UVT", "IN");
         assertThat(rows()).hasSize(2).allSatisfy(row -> assertThat(row.get("ledgerBizNo")).isEqualTo("DR-PAIR-RELEASE"));
         assertThat(mapper.countEvents(null, null, 3778L, null, null)).isEqualTo(2);
-        assertThat(mapper.queryEvents(null, null, 3778L, null, null, 396L, 1)).singleElement()
+        assertThat(mapper.queryEvents(null, null, 3778L, null, null, 396L, 1, null)).singleElement()
                 .satisfies(row -> assertThat(((Number) row.get("eventId")).longValue()).isEqualTo(395));
         jdbc.update("DELETE FROM nx_wallet_ledger WHERE asset='UVT'");
         assertThat(biz(395)).isEqualTo("DR-PAIR-RELEASE");
@@ -181,9 +181,9 @@ class F5DirectReferralLedgerMySqlTest {
         jdbc.update("UPDATE nx_commission_event SET amount_usdt=20 WHERE id=90");
         jdbc.update("UPDATE nx_commission_event SET amount_nex=50 WHERE id=80");
         assertThat(mapper.unknownCommissionKindCount()).isZero();
-        assertThat(mapper.queryEvents(null,null,null,null,null,null,2))
+        assertThat(mapper.queryEvents(null,null,null,null,null,null,2, null))
                 .extracting(row -> ((Number)row.get("eventId")).longValue()).containsExactly(100L,90L);
-        assertThat(mapper.queryEvents(null,null,null,null,null,90L,2))
+        assertThat(mapper.queryEvents(null,null,null,null,null,90L,2, null))
                 .extracting(row -> ((Number)row.get("eventId")).longValue()).containsExactly(80L);
         assertThat(mapper.countEvents(null,null,null,null,null)).isEqualTo(3);
         assertThat(mapper.queryExportEvents(null,null,null,null,null,null,100))
@@ -204,7 +204,7 @@ class F5DirectReferralLedgerMySqlTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_commission_event WHERE commission_type='leaderboard_prize' AND amount_usdt=999", Long.class)).isEqualTo(2);
     }
 
-    private List<Map<String,Object>> rows() { return mapper.queryEvents(null,null,3778L,null,null,null,100); }
+    private List<Map<String,Object>> rows() { return mapper.queryEvents(null,null,3778L,null,null,null,100, null); }
     private Object biz(long id) { return rows().stream().filter(row -> ((Number) row.get("eventId")).longValue()==id).findFirst().orElseThrow().get("ledgerBizNo"); }
     private void event(long id,String kind,String asset) { jdbc.update("INSERT INTO nx_commission_event(id,user_id,commission_type,currency) VALUES(?,3778,?,?)",id,kind,asset); }
     private void group(String no,long user,Long usdt,Long nex) { jdbc.update("INSERT INTO nx_direct_referral_settlement(settlement_no,beneficiary_user_id,usdt_event_id,nex_event_id,source_type) VALUES(?,?,?,?,COALESCE((SELECT commission_type FROM nx_commission_event WHERE id IN (?,?) LIMIT 1),'direct_purchase'))",no,user,usdt,nex,usdt,nex); }

@@ -22,6 +22,7 @@ public enum H3DayOneBusinessFactContract {
     }
 
     public boolean matches(String producer, String questCode, String userIdField) {
-        return "SYSTEM".equals(producer) && this.questCode.equals(questCode) && "user_id".equals(userIdField);
+        return H3DayOnePageObservationContract.PRODUCER.equals(producer) && this.questCode.equalsIgnoreCase(questCode)
+                && H3DayOnePageObservationContract.USER_ID_FIELD.equals(userIdField);
     }
 }

@@ -117,35 +117,23 @@ class OpsAdminAuthServiceTest {
     }
 
     @Test
-    void temporarySuperadminMfaBypassIssuesSessionWithoutChangingMfaBinding() {
+    void primarySuperadminRequiresMfaBeforeIssuingSessionWithoutChangingBinding() {
         AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("ValidPass@123"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
-        when(mfaProperties.isTemporarySuperadminBypassEnabled()).thenReturn(true);
-        when(permissionCache.getPermissionCodes(1L))
-                .thenReturn(new LinkedHashSet<>(List.of("PERM_SYSTEM_READ", "PERM_USER_READ")));
-        when(adminSessionRegistry.createSession(1L, "superadmin", "10.0.0.8", "A1-Test-UA"))
-                .thenReturn("admin-session-bypass");
 
-        ApiResult<AdminLoginResponse> result = service.login(
-                new AdminLoginRequest("superadmin", "ValidPass@123"),
-                "10.0.0.8",
-                "A1-Test-UA");
+        ApiResult<AdminLoginResponse> result = loginWithMfa(admin, "superadmin", "ValidPass@123", null);
 
         assertThat(result.getCode()).isZero();
         assertThat(result.getData().accessToken()).isNotBlank();
         assertThat(result.getData().session().username()).isEqualTo("superadmin");
-        assertThat(result.getData().mfa()).isNull();
-        verify(mfaChallenges, never()).create(any(), anyString(), anyString(), any(Boolean.class));
         verify(accountStateMapper, never()).upsertMfaBinding(any(), anyString(), any());
-        verify(adminSessionRegistry).createSession(1L, "superadmin", "10.0.0.8", "A1-Test-UA");
         verify(loginGuard).recordSuccess("superadmin");
     }
 
     @Test
-    void temporarySuperadminMfaBypassNeverAppliesToRegularAdmins() {
+    void regularAdminWithSuperadminNameRequiresMfa() {
         AdminEntity admin = activeAdmin(4L, "superadmin", "Lookalike", passwordEncoder.encode("ValidPass@123"));
         when(adminMapper.selectOne(any())).thenReturn(admin);
-        when(mfaProperties.isTemporarySuperadminBypassEnabled()).thenReturn(true);
         when(accountStateMapper.selectActiveByAdminId(4L)).thenReturn(boundState(4L));
         when(mfaCipher.decrypt("encrypted-secret")).thenReturn("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
         when(mfaCipher.encrypt(anyString())).thenReturn("encrypted-secret");
@@ -166,12 +154,11 @@ class OpsAdminAuthServiceTest {
     }
 
     @Test
-    void temporarySuperadminMfaBypassDoesNotApplyToOtherSuperAdminAccounts() {
+    void secondarySuperadminRequiresMfa() {
         AdminEntity admin = activeSuperAdmin(passwordEncoder.encode("ValidPass@123"));
         admin.setId(2L);
         admin.setUsername("backup.superadmin");
         when(adminMapper.selectOne(any())).thenReturn(admin);
-        when(mfaProperties.isTemporarySuperadminBypassEnabled()).thenReturn(true);
         when(accountStateMapper.selectActiveByAdminId(2L)).thenReturn(boundState(2L));
         when(mfaCipher.decrypt("encrypted-secret")).thenReturn("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
         when(mfaCipher.encrypt(anyString())).thenReturn("encrypted-secret");
@@ -668,7 +655,7 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void completedBypassAuthenticationRecordsLoginEvenWhenSameSecondWriteIsNoop() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         when(accountStateMapper.recordAuthenticatedLogin(1L)).thenReturn(0);
 
         var result = service.login(new AdminLoginRequest("superadmin", "ValidPass@123"));
@@ -694,11 +681,11 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void failedSessionCreationDoesNotRecordLogin() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         when(adminSessionRegistry.createSession(1L, "superadmin", "unknown", "unknown"))
                 .thenThrow(new IllegalStateException("synthetic store failure"));
 
-        var result = service.login(new AdminLoginRequest("superadmin", "ValidPass@123"));
+        var result = service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456"));
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getData()).isNull();
@@ -707,11 +694,11 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void signingFailureDoesNotRecordLoginAndRevokesOnlyFreshSession() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         doThrow(new IllegalStateException("synthetic signer failure")).when(tokenProvider)
                 .createToken(any(), anyString(), anyString(), any(), anyString());
 
-        var result = service.login(new AdminLoginRequest("superadmin", "ValidPass@123"));
+        var result = service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456"));
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getData()).isNull();
@@ -722,10 +709,10 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void responseMenuFailureDoesNotRecordLoginAndRevokesFreshSession() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         when(roleRelationMapper.selectAllActiveMenuNodes()).thenThrow(new IllegalStateException("synthetic menu failure"));
 
-        var result = service.login(new AdminLoginRequest("superadmin", "ValidPass@123"));
+        var result = service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456"));
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getData()).isNull();
@@ -734,15 +721,15 @@ class OpsAdminAuthServiceTest {
     }
 
     @Test
-    void supportModeFailureDuringBypassLoginDeliversNoSessionAndRevokesOnlyFreshSession() {
-        prepareBypassLogin();
+    void supportModeFailureDuringSuperadminMfaRevokesOnlyFreshSession() {
+        prepareMfaVerification();
         when(supportOwnership.availableReadModes(1L))
                 .thenThrow(new IllegalStateException("synthetic qualification failure"));
 
-        var result = service.login(new AdminLoginRequest("superadmin", "ValidPass@123"));
+        var result = service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456"));
 
         assertThat(result.getCode()).isEqualTo(503);
-        assertThat(result.getMessage()).isEqualTo("ADMIN_AUTH_UNAVAILABLE");
+        assertThat(result.getMessage()).isEqualTo("ADMIN_MFA_UNAVAILABLE");
         assertThat(result.getData()).isNull();
         verify(supportOwnership).availableReadModes(1L);
         verify(tokenProvider).createToken(1L, "ADMIN", "superadmin", List.of(), "fresh-login-session");
@@ -793,10 +780,10 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void successGuardFailureDoesNotRecordLoginAndRevokesFreshSession() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         doThrow(new IllegalStateException("synthetic guard failure")).when(loginGuard).recordSuccess("superadmin");
 
-        var result = service.login(new AdminLoginRequest("superadmin", "ValidPass@123"));
+        var result = service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456"));
 
         assertThat(result.getCode()).isEqualTo(503);
         assertThat(result.getData()).isNull();
@@ -806,11 +793,11 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void loginTimestampStoreFailureHasNoSuccessfulResponseAndRevokesOnlyFreshSession() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         when(accountStateMapper.recordAuthenticatedLogin(1L))
                 .thenThrow(new DataAccessResourceFailureException("synthetic database failure"));
 
-        assertThatThrownBy(() -> service.login(new AdminLoginRequest("superadmin", "ValidPass@123")))
+        assertThatThrownBy(() -> service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456")))
                 .isInstanceOfSatisfying(BizException.class, failure -> assertThat(failure.getCode()).isEqualTo(503));
         verify(adminSessionRegistry).revokeSession(1L, "fresh-login-session");
         verify(adminSessionRegistry, never()).revokeSessions(any());
@@ -819,22 +806,22 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void timestampFailureStillReturnsUnavailableWhenFreshSessionCleanupStoreAlsoFails() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         when(accountStateMapper.recordAuthenticatedLogin(1L))
                 .thenThrow(new DataAccessResourceFailureException("synthetic database failure"));
         doThrow(new IllegalStateException("synthetic cleanup failure"))
                 .when(adminSessionRegistry).revokeSession(1L, "fresh-login-session");
 
-        assertThatThrownBy(() -> service.login(new AdminLoginRequest("superadmin", "ValidPass@123")))
+        assertThatThrownBy(() -> service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456")))
                 .isInstanceOfSatisfying(BizException.class, failure -> assertThat(failure.getCode()).isEqualTo(503));
         verify(adminSessionRegistry, never()).revokeSessions(any());
     }
 
     @Test
     void authenticatedTransactionCommitKeepsFreshSession() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         var result = new TransactionTemplate(new AuthTestTransactionManager(false))
-                .execute(status -> service.login(new AdminLoginRequest("superadmin", "ValidPass@123")));
+                .execute(status -> service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456")));
 
         assertThat(result.getCode()).isZero();
         verify(accountStateMapper).recordAuthenticatedLogin(1L);
@@ -843,11 +830,11 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void authenticatedTransactionRollbackRevokesOnlyFreshSession() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         var transaction = new TransactionTemplate(new AuthTestTransactionManager(false));
 
         assertThatThrownBy(() -> transaction.execute(status -> {
-            assertThat(service.login(new AdminLoginRequest("superadmin", "ValidPass@123")).getCode()).isZero();
+            assertThat(service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456")).getCode()).isZero();
             throw new IllegalStateException("synthetic outer rollback");
         })).isInstanceOf(IllegalStateException.class).hasMessage("synthetic outer rollback");
         verify(adminSessionRegistry).revokeSession(1L, "fresh-login-session");
@@ -856,11 +843,11 @@ class OpsAdminAuthServiceTest {
 
     @Test
     void authenticatedTransactionCommitExceptionCannotReturnSuccessAndRevokesFreshSession() {
-        prepareBypassLogin();
+        prepareMfaVerification();
         var transaction = new TransactionTemplate(new AuthTestTransactionManager(true));
 
         assertThatThrownBy(() -> transaction.execute(status ->
-                service.login(new AdminLoginRequest("superadmin", "ValidPass@123"))))
+                service.verifyMfa(new AdminMfaVerifyRequest("fresh-login-challenge", "123456"))))
                 .isInstanceOf(TransactionSystemException.class);
         verify(adminSessionRegistry).revokeSession(1L, "fresh-login-session");
         verify(adminSessionRegistry, never()).revokeSessions(any());
@@ -892,9 +879,14 @@ class OpsAdminAuthServiceTest {
         @Override protected void doRollback(DefaultTransactionStatus status) { }
     }
 
-    private void prepareBypassLogin() {
-        when(adminMapper.selectOne(any())).thenReturn(activeSuperAdmin(passwordEncoder.encode("ValidPass@123")));
-        when(mfaProperties.isTemporarySuperadminBypassEnabled()).thenReturn(true);
+    private void prepareMfaVerification() {
+        when(adminMapper.selectById(1L)).thenReturn(activeSuperAdmin(passwordEncoder.encode("ValidPass@123")));
+        var challenge = new AdminMfaChallengeRegistry.Challenge(1L, "superadmin", "encrypted-secret", false, 0);
+        when(mfaChallenges.read("fresh-login-challenge")).thenReturn(challenge);
+        when(mfaChallenges.consume("fresh-login-challenge")).thenReturn(challenge);
+        when(mfaCipher.decrypt("encrypted-secret")).thenReturn("synthetic-secret");
+        when(totpService.matchingCounter("synthetic-secret", "123456")).thenReturn(42L);
+        when(mfaChallenges.claimTotpCounter(1L, 42L)).thenReturn(true);
         when(adminSessionRegistry.createSession(1L, "superadmin", "unknown", "unknown"))
                 .thenReturn("fresh-login-session");
     }

@@ -4,6 +4,7 @@ import ffdd.opsconsole.auth.application.UserOtpDeliveryService;
 import ffdd.opsconsole.finance.mapper.AppPayoutAddressMapper;
 import ffdd.opsconsole.finance.mapper.AppPayoutAddressMapper.PayoutAddressRow;
 import ffdd.opsconsole.finance.mapper.AppPayoutAddressMapper.UserContact;
+import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
@@ -32,8 +33,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AppPayoutAddressService {
     private static final Set<String> NETWORKS = Set.of("USDT-TRC20", "USDT-BEP20", "USDT-ERC20");
-    private static final int CHANGE_COOLDOWN_DAYS = 7;
-    private static final int EFFECTIVE_DELAY_HOURS = 24;
     private final AppPayoutAddressMapper mapper;
     private final WithdrawalNetworkPolicy networkPolicy;
     private final UserOtpDeliveryService otpDelivery;
@@ -44,11 +43,13 @@ public class AppPayoutAddressService {
     private final FundsSandboxProfileGuard sandboxProfile;
     /** Null is accepted only for legacy production-only unit fixtures. */
     private final FundsSandboxRunScope sandboxRun;
+    private final PlatformConfigFacade config;
 
     @Transactional(readOnly = true)
     public ApiResult<Map<String, Object>> list(Long userId) {
         Scope scope = scope();
         requireUser(userId, scope);
+        PayoutAddressProtection protection = requireProtection();
         LocalDateTime responseNow = LocalDateTime.now(DateTimeFormatConfig.BUSINESS_ZONE);
         long serverNowEpochMs = responseNow.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().toEpochMilli();
         List<Map<String, Object>> rows = (scope.sandbox()
@@ -56,8 +57,8 @@ public class AppPayoutAddressService {
                 : mapper.list(userId)).stream().map(row -> view(row, scope, responseNow)).toList();
         return ApiResult.ok(linked("addresses", rows, "serverCanonical", true,
                 "serverNowEpochMs", serverNowEpochMs,
-                "changeCooldownDays", CHANGE_COOLDOWN_DAYS,
-                "effectiveDelayHours", EFFECTIVE_DELAY_HOURS,
+                "changeCooldownDays", protection.changeCooldownDays(),
+                "effectiveDelayHours", protection.effectiveDelayHours(),
                 "inFlightWithdrawalBlocked", true,
                 "source", scope.source(), "sourceEnvironment", scope.sourceEnvironment(), "runId", scope.runId()));
     }
@@ -122,6 +123,7 @@ public class AppPayoutAddressService {
         // READ_COMMITTED observes withdrawals committed while the user lock waited.
         if(!scope.sandbox())networkPolicy.requireEnabledForWrite(network);
         requireActiveUserLock(userId, scope);
+        PayoutAddressProtection protection = requireProtection();
         boolean otpValid = scope.sandbox()
                 ? otpAttempts.verifyAndConsumeSandbox(scope.runId(), userId, challenge, code)
                 : otpAttempts.verifyAndConsume(userId, challenge, code);
@@ -143,10 +145,13 @@ public class AppPayoutAddressService {
             throw new BizException(409, "PAYOUT_ADDRESS_CHANGE_COOLDOWN");
         }
         if (current != null && addressEquals(network, address, current.address())) return ApiResult.ok(view(current, scope));
+        int hours = protection.effectiveDelayHours();
+        int days = protection.changeCooldownDays();
         int changed = current == null
-                ? (scope.sandbox() ? mapper.sandboxInsert(scope.runId(), userId, network, address) : mapper.insert(userId, network, address))
-                : (scope.sandbox() ? mapper.sandboxUpdate(scope.runId(), userId, network, address, current.version())
-                        : mapper.update(userId, network, address, current.version()));
+                ? (scope.sandbox() ? mapper.sandboxInsert(scope.runId(), userId, network, address, hours, days)
+                        : mapper.insert(userId, network, address, hours, days))
+                : (scope.sandbox() ? mapper.sandboxUpdate(scope.runId(), userId, network, address, current.version(), hours, days)
+                        : mapper.update(userId, network, address, current.version(), hours, days));
         if (changed != 1) throw new BizException(409, "PAYOUT_ADDRESS_STATE_CONFLICT");
         if (scope.sandbox()) {
             mapper.sandboxInsertHistory(scope.runId(), userId, network, current == null ? null : current.address(), address,
@@ -168,6 +173,12 @@ public class AppPayoutAddressService {
                         "effectiveAt", saved.effectiveAt(), "nextChangeAllowedAt", saved.nextChangeAllowedAt()))
                 .build());
         return ApiResult.ok(view(saved, scope));
+    }
+
+    private PayoutAddressProtection requireProtection() {
+        PayoutAddressProtection protection = PayoutAddressProtection.read(config);
+        if (protection == null) throw new BizException(503, PayoutAddressProtection.UNAVAILABLE);
+        return protection;
     }
 
     private void requireUser(Long userId, Scope scope) {

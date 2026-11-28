@@ -115,7 +115,7 @@ class AppSingleSessionMySqlIntegrationTest {
         audit=spy(new AuditLogService(sql.getMapper(ffdd.opsconsole.shared.audit.mapper.AuditLogMapper.class),
                 new ffdd.opsconsole.shared.audit.AuditLogSanitizer(json),
                 new ffdd.opsconsole.shared.audit.ApplicationNameProperties(),new ffdd.opsconsole.shared.audit.AuditProperties(),
-                mock(ffdd.opsconsole.auth.mapper.AdminMapper.class),a2));
+                mock(ffdd.opsconsole.auth.mapper.AdminMapper.class),a2, new com.fasterxml.jackson.databind.ObjectMapper()));
         outbox=spy(new EventOutboxService(sql.getMapper(ffdd.opsconsole.shared.outbox.mapper.EventOutboxMapper.class),json,
                 new ffdd.opsconsole.shared.outbox.OutboxProperties(),mock(ffdd.opsconsole.platform.application.A4RuntimePolicyService.class)));
         doAnswer(call->{call.callRealMethod();

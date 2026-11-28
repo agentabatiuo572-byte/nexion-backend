@@ -4,12 +4,14 @@ import ffdd.opsconsole.shared.exception.BizException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.text.Normalizer;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.random.RandomGenerator;
+import java.util.regex.Pattern;
 import java.util.stream.IntStream;
 
 /**
@@ -50,6 +52,7 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
      * published as aliases; a report carrying only such an identifier waits for verification.
      */
     public static final Set<String> AMBIGUOUS_SOC_IDS = Set.of("mt6833");
+    private static final Pattern ANDROID_SOC_BASE = Pattern.compile("^(mtk?|sm|s5e)([0-9]{4})(?![0-9])");
     private static final int MAX_SOC_IDS = 4;
     private static final int MAX_TIER_ALIASES = 100;
     private static final BigDecimal MAX_VALUE = new BigDecimal("1000000");
@@ -131,6 +134,24 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
     }
 
     public void validate() {
+        validateStructure();
+        Map<String, String> baseOwners = new HashMap<>();
+        for (AndroidSocRule rule : androidSocRules) for (AndroidSocChip chip : rule.chips()) {
+            for (String alias : chip.aliases()) {
+                String id = normalize(alias);
+                if ("mtk6833".equals(id)) invalid();
+                String base = socBase(id);
+                if (base == null) continue;
+                String owner = baseOwners.putIfAbsent(base, chip.socKey());
+                if (owner != null && !owner.equals(chip.socKey())) {
+                    throw new BizException(422, "PHONE_CALIBRATION_SOC_BASE_DUPLICATE");
+                }
+            }
+        }
+    }
+
+    /** Already-published policies can contain shared bases. Matching reports those conflicts only when relevant. */
+    void validateStructure() {
         if (version < 1 || effectiveAt < 0 || thresholds.size() != 4 || androidSocRules.size() > 50
                 || iosModelRules.size() > 500) invalid();
         BigDecimal previous = BigDecimal.ZERO;
@@ -187,7 +208,7 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
     }
 
     public Match match(Hardware hardware) {
-        validate();
+        validateStructure();
         String platform = hardware == null ? "" : normalize(hardware.platform());
         if ("ios".equals(platform)) return matchIos(hardware.model());
         if ("android".equals(platform)) return matchAndroid(hardware.socIds());
@@ -195,9 +216,8 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
     }
 
     /**
-     * Every reported identifier is resolved, so the answer never depends on their order: one chip
-     * matches its tier, two different chips conflict even within one tier. Generic and known-shared
-     * identifiers never decide; an unknown one does not block a verified identifier beside it.
+     * Exact aliases across the entire report take precedence over base identifiers. Within either
+     * stage one chip matches its tier, while two different chips conflict even within one tier.
      */
     private Match matchAndroid(List<String> socIds) {
         Set<String> reported = new java.util.LinkedHashSet<>();
@@ -207,24 +227,44 @@ public record PhoneCalibrationPolicy(long version, long effectiveAt, List<BigDec
             if (reported.size() >= MAX_SOC_IDS) break;
         }
         if (reported.isEmpty()) return pending("SOC_MISSING");
-        Map<String, AndroidSocRule> tiers = new java.util.LinkedHashMap<>();
-        Map<String, AndroidSocChip> chips = new java.util.LinkedHashMap<>();
-        for (String id : reported) {
-            if (AMBIGUOUS_SOC_IDS.contains(id)) continue;
-            for (AndroidSocRule rule : androidSocRules) for (AndroidSocChip chip : rule.chips()) {
-                if (chip.aliases().stream().map(PhoneCalibrationPolicy::normalize).anyMatch(id::equals)) {
-                    chips.put(chip.socKey(), chip);
-                    tiers.put(chip.socKey(), rule);
-                }
+        reported.remove("mtk6833");
+        Map<AndroidSocChip, AndroidSocRule> matches = androidMatches(reported, false);
+        if (matches.isEmpty()) {
+            Set<String> bases = new HashSet<>();
+            for (String id : reported) {
+                String base = socBase(id);
+                if (base != null) bases.add(base);
             }
+            matches = androidMatches(bases, true);
         }
-        if (chips.size() > 1) return pending("SOC_CONFLICT");
-        if (chips.isEmpty()) return pending("SOC_UNKNOWN");
-        AndroidSocChip chip = chips.values().iterator().next();
-        AndroidSocRule rule = tiers.get(chip.socKey());
+        if (matches.size() > 1) return pending("SOC_CONFLICT");
+        if (matches.isEmpty()) return pending("SOC_UNKNOWN");
+        var match = matches.entrySet().iterator().next();
+        AndroidSocChip chip = match.getKey();
+        AndroidSocRule rule = match.getValue();
         if (!rule.enabled()) return pending("SOC_DISABLED");
         return new Match("MATCHED", rule.id(), null, null, version, ANDROID_SOC_RANGE, chip.name(),
                 rule.minComputeValue(), rule.maxComputeValue(), chip.socKey());
+    }
+
+    private Map<AndroidSocChip, AndroidSocRule> androidMatches(Set<String> ids, boolean byBase) {
+        Map<AndroidSocChip, AndroidSocRule> matches = new HashMap<>();
+        if (ids.isEmpty()) return matches;
+        for (AndroidSocRule rule : androidSocRules) for (AndroidSocChip chip : rule.chips()) {
+            if (chip.aliases().stream().map(PhoneCalibrationPolicy::normalize)
+                    .map(id -> byBase ? socBase(id) : id).anyMatch(ids::contains)) {
+                matches.put(chip, rule);
+            }
+        }
+        return matches;
+    }
+
+    private static String socBase(String id) {
+        var match = ANDROID_SOC_BASE.matcher(id);
+        if (!match.find()) return null;
+        String prefix = match.group(1);
+        String base = ("mtk".equals(prefix) ? "mt" : prefix) + match.group(2);
+        return AMBIGUOUS_SOC_IDS.contains(base) ? null : base;
     }
 
     /** The Android chip with this stable key, for display; null when no tier holds it. */

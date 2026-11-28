@@ -27,8 +27,13 @@ public class NotificationPreferenceService {
         }
         // Nullable fields are intentional: the mapper performs one SQL statement
         // and leaves omitted columns untouched in the duplicate-key branch.
-        mapper.upsert(userId, request.commission(), request.team(), request.staking(),
-                request.market(), request.genesis(), request.system());
+        if (request.earningPush() == null) {
+            mapper.upsert(userId, request.commission(), request.team(), request.staking(),
+                    request.market(), request.genesis(), request.system());
+        } else {
+            mapper.upsert(userId, request.commission(), request.team(), request.staking(),
+                    request.market(), request.genesis(), request.system(), request.earningPush().name());
+        }
         NotificationPreferenceView canonical = mapper.findByUserId(userId);
         return ApiResult.ok(canonical == null
                 ? NotificationPreferenceView.allEnabled(userId)
@@ -45,10 +50,16 @@ public class NotificationPreferenceService {
             Boolean staking,
             Boolean market,
             Boolean genesis,
-            Boolean system) {
+            Boolean system,
+            NotificationPreferenceView.EarningPush earningPush) {
+        public PatchRequest(Boolean commission, Boolean team, Boolean staking, Boolean market,
+                Boolean genesis, Boolean system) {
+            this(commission, team, staking, market, genesis, system, null);
+        }
         public boolean isEmpty() {
             return commission == null && team == null && staking == null
-                    && market == null && genesis == null && system == null;
+                    && market == null && genesis == null && system == null
+                    && earningPush == null;
         }
     }
 }

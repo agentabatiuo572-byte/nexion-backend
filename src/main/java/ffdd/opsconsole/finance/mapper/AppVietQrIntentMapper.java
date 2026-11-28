@@ -122,16 +122,6 @@ public interface AppVietQrIntentMapper extends BaseMapper<Object> {
     BigDecimal sumActiveReservedVnd(@Param("bankAccountId") Long bankAccountId);
 
     @Select("""
-            SELECT COUNT(1)
-              FROM nx_vietqr_intent
-             WHERE user_id = #{userId}
-               AND status = 'AWAITING_PAYMENT'
-               AND expires_at > NOW()
-               AND is_deleted = 0
-            """)
-    long countActiveIntentsForUser(@Param("userId") Long userId);
-
-    @Select("""
             SELECT id
               FROM nx_user
              WHERE id = #{userId} AND status = 'ACTIVE' AND is_deleted = 0

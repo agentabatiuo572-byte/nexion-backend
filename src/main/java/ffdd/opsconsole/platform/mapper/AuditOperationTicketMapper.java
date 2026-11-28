@@ -2,6 +2,7 @@ package ffdd.opsconsole.platform.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.platform.infrastructure.AuditOperationTicketEntity;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
 import org.apache.ibatis.annotations.Options;
@@ -19,7 +20,7 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
               before_value VARCHAR(128) NOT NULL,
               after_value VARCHAR(128) NOT NULL,
               operator_name VARCHAR(128) NOT NULL,
-              operator_role VARCHAR(32) NOT NULL,
+              operator_role VARCHAR(80) NOT NULL,
               operation_type VARCHAR(32) NOT NULL,
               amplifies TINYINT NOT NULL DEFAULT 0,
               sos TINYINT NOT NULL DEFAULT 0,
@@ -56,12 +57,18 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
     @Select("""
             SELECT EXISTS (
                 SELECT 1 FROM nx_audit_operation_ticket
-                 WHERE object_text = #{skuId} AND status = 'approved'
+                 WHERE status = 'approved'
                    AND decided_at IS NOT NULL AND is_deleted = 0
                    AND CASE WHEN JSON_VALID(command_json) THEN
                        JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.domain')) = 'E'
-                       AND JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.op')) IN ('e1_sku_create', 'e1_sku_update', 'e1_sku_status')
-                       AND LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.params.status')))) = 'on'
+                       AND CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.op')) = 'e1_sku_create'
+                           AND JSON_CONTAINS_PATH(command_json, 'one', '$.skuReview.createRequestId') THEN
+                             JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.resultSkuId')) = #{skuId}
+                             AND JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.resultSkuStatus')) = 'on'
+                           ELSE object_text = #{skuId}
+                             AND JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.op')) IN ('e1_sku_create', 'e1_sku_update', 'e1_sku_status')
+                             AND LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(command_json, '$.params.status')))) = 'on'
+                       END
                    END
             )
             """)
@@ -87,6 +94,30 @@ public interface AuditOperationTicketMapper extends BaseMapper<AuditOperationTic
                )
             """)
     int countPendingA1Commands();
+
+    @Select("""
+            <script>
+            WITH pending_commands AS (
+                SELECT created_at, CASE WHEN JSON_VALID(command_json) THEN command_json END AS payload
+                  FROM nx_audit_operation_ticket
+                 WHERE status = 'pending' AND is_deleted = 0
+            ), v8_promotions AS (
+                SELECT TRIM(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.params.userId'))) AS userId, created_at
+                  FROM pending_commands
+                 WHERE BINARY JSON_UNQUOTE(JSON_EXTRACT(payload, '$.domain')) = 'F'
+                   AND BINARY JSON_UNQUOTE(JSON_EXTRACT(payload, '$.op')) = 'f_vrank_override'
+                   AND UPPER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.params.targetV')))) = 'V8'
+                   AND LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.params.direction')))) = 'promote'
+            )
+            SELECT userId, MIN(created_at) AS createdAt FROM v8_promotions
+             WHERE userId IN
+             <foreach collection="userIds" item="userId" open="(" separator="," close=")">#{userId}</foreach>
+             GROUP BY userId
+            </script>
+            """)
+    List<PendingV8Promotion> findPendingV8Promotions(@Param("userIds") Collection<String> userIds);
+
+    record PendingV8Promotion(String userId, LocalDateTime createdAt) {}
 
     /** Serializes terminal decisions and clears pre-lock reads before rechecking authorization. */
     @Options(flushCache = Options.FlushCachePolicy.TRUE, useCache = false)

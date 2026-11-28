@@ -118,7 +118,7 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
             String position,
             List<String> serviceTypes,
             List<String> tags,
-            int maxConcurrent,
+            Integer maxConcurrent,
             LocalDateTime now) {
         mapper.ensureDefaultProfile(adminId, seatType, position, join(serviceTypes), join(tags), maxConcurrent, now);
     }
@@ -130,7 +130,7 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
             String position,
             List<String> serviceTypes,
             List<String> tags,
-            int maxConcurrent,
+            Integer maxConcurrent,
             boolean enabled,
             boolean transferable,
             boolean busy,
@@ -151,7 +151,7 @@ public class MybatisSupportAgentRepository implements SupportAgentRepository {
     @Override
     public boolean updateProfileCas(
             Long adminId, String seatType, String position, List<String> serviceTypes, List<String> tags,
-            int maxConcurrent, boolean enabled, boolean transferable, boolean busy,
+            Integer maxConcurrent, boolean enabled, boolean transferable, boolean busy,
             long expectedVersion, LocalDateTime now) {
         return mapper.updateProfileCas(
                 adminId, seatType, position, join(serviceTypes), join(tags), maxConcurrent,

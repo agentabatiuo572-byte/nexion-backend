@@ -12,6 +12,8 @@ import ffdd.opsconsole.device.facade.SupportDeviceReadFacade.DeviceEvidence;
 import ffdd.opsconsole.finance.facade.SupportPaymentFacts;
 import ffdd.opsconsole.finance.facade.SupportFundsReadFacade;
 import ffdd.opsconsole.shared.exception.BizException;
+import ffdd.opsconsole.user.domain.UserInviterView;
+import ffdd.opsconsole.user.domain.UserOpsRepository;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -28,25 +30,40 @@ public class SupportAnalyticsPrivateQueryService {
     private final SupportAnalyticsService stats;
     private final SupportAnalyticsMapper mapper;
     private final SupportFundsReadFacade funds;
+    private final UserOpsRepository users;
     // Existing AppWalletBillsService.allowed and EarningsReleaseService.ASSETS, not a new currency catalog.
     static final Set<String> CURRENCIES=Set.of("USDT","UVT");
     static final Set<Sort> SORTS=Collections.unmodifiableSet(EnumSet.allOf(Sort.class));
     private static final Set<View> FINANCIAL_DETAILS=EnumSet.of(View.NET_CONTRIBUTIONS,View.FIRST_DEPOSITS,View.FIRST_PURCHASES);
+    /** Inviter read failure is per-row evidence, never a reason to fail the whole customer page. */
+    private static final UserInviterView INVITER_UNREAD=UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED);
     public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper) {
-        this.ownership=Objects.requireNonNull(ownership);this.stats=Objects.requireNonNull(stats);this.mapper=Objects.requireNonNull(mapper);
-        this.funds=null;
+        this(ownership,stats,mapper,null,null);
+    }
+    public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper,SupportFundsReadFacade funds) {
+        this(ownership,stats,mapper,funds,null);
     }
     @Autowired
-    public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper,SupportFundsReadFacade funds) {
-        this.ownership=Objects.requireNonNull(ownership);this.stats=Objects.requireNonNull(stats);this.mapper=Objects.requireNonNull(mapper);this.funds=Objects.requireNonNull(funds);
+    public SupportAnalyticsPrivateQueryService(SupportOwnershipService ownership,SupportAnalyticsService stats,SupportAnalyticsMapper mapper,SupportFundsReadFacade funds,UserOpsRepository users) {
+        this.ownership=Objects.requireNonNull(ownership);this.stats=Objects.requireNonNull(stats);this.mapper=Objects.requireNonNull(mapper);this.funds=funds;this.users=users;
     }
 
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> query(Map<String,List<String>> raw) {
-        try {return execute(raw);}
+        try {return execute(raw, true, null, null).body();}
         catch(DataAccessException ex){throw unavailable();}
     }
-    private Map<String,Object> execute(Map<String,List<String>> raw) {
+    record PerformancePage(Map<String,Object> body, Set<Long> eligibleCustomers, Set<Long> selectedCustomers) { }
+
+    PerformancePage performanceBaseline(Map<String,List<String>> raw,
+            java.util.function.LongFunction<FirstSelection> first,
+            java.util.function.LongFunction<BigDecimal> amount) {
+        try {return execute(raw, false, first, amount);}
+        catch(DataAccessException ex){throw unavailable();}
+    }
+    private PerformancePage execute(Map<String,List<String>> raw, boolean verifyVersion,
+            java.util.function.LongFunction<FirstSelection> first,
+            java.util.function.LongFunction<BigDecimal> amount) {
         var q=SupportAnalyticsQueryRequest.fromParameters(raw).normalize(CURRENCIES,SORTS);
         validateView(q);
         ReadScope scope=ownership.defaultQueryScope(q.groupId(),q.agentId());
@@ -69,18 +86,26 @@ public class SupportAnalyticsPrivateQueryService {
         // Reauthorization always precedes version comparison, including unverifiable/failed sources.
         reauthorize(q,scope,grants,groups);
         if(version.status()==SupportAnalyticsQueryVersion.Status.FAILED){throw unavailable();}
-        try {SupportAnalyticsQueryVersion.requireExpected(q,version);}
+        try {if(verifyVersion) SupportAnalyticsQueryVersion.requireExpected(q,version);}
         catch(SupportAnalyticsQueryVersion.VersionConflict ex){throw new BizException(409,ex.getMessage());}
         if(q.filter()!=ServiceFilter.ALL && q.filter()!=ServiceFilter.WINDOW_ACTIVE && sources.taskRead()!=SupportAnalyticsQueryVersion.ReadState.COMPLETE)throw unavailable();
         if((q.filter()==ServiceFilter.ACTIVE || q.filter()==ServiceFilter.DORMANT) && sources.rules().dormantDays()==null)throw unavailable();
-        var selected=evaluation.result().currentCustomers().stream().filter(row->matches(q,row,sources)).toList();
-        var rows=FINANCIAL_DETAILS.contains(q.view())?new ArrayList<Row>():rows(q,evaluation,sources,selected);
+        var customers=evaluation.result().currentCustomers();
+        if(first!=null) customers=customers.stream().map(c->new Customer(c.customerId(),c.category(),c.placement(),
+                c.handoverRequired(),first.apply(c.customerId()),c.owner(),c.metrics())).toList();
+        var eligible=customers.stream().filter(row->matches(q,row,sources)).toList();
+        var selected=q.firstState()==First.ALL?eligible:eligible.stream()
+                .filter(row->q.firstState().name().equals(row.first().state().name())).toList();
+        var rows=FINANCIAL_DETAILS.contains(q.view())?new ArrayList<Row>():rows(q,evaluation,sources,selected,amount);
         var detailSummary=FINANCIAL_DETAILS.contains(q.view())?financialDetails(q,evaluation,sources,rows):null;
         rows.sort(rowOrder(q.direction()));
         long offset=(q.pageNum()-1)*q.pageSize();
         int start=(int)Math.min(offset,rows.size()),end=(int)Math.min(offset+q.pageSize(),rows.size());
+        // The inviter batch read only covers the rows that are actually returned; filtering,
+        // ordering and paging stay ahead of it and an empty page issues no query.
+        var pageRows=pageInviters(rows.subList(start,end),q.view(),customers,sources);
         var payload=map("view",q.view().name(),"basis",q.basis().name(),"businessZone",SupportAnalyticsQueryRequest.BUSINESS_ZONE.getId(),
-            "pageNum",q.pageNum(),"pageSize",q.pageSize(),"total",version.status()==SupportAnalyticsQueryVersion.Status.READY?(long)rows.size():null,"observedTotal",(long)rows.size(),"records",rows.subList(start,end).stream().map(Row::body).toList(),
+            "pageNum",q.pageNum(),"pageSize",q.pageSize(),"total",version.status()==SupportAnalyticsQueryVersion.Status.READY?(long)rows.size():null,"observedTotal",(long)rows.size(),"records",pageRows.stream().map(Row::body).toList(),
             "versionState",version.status().name(),"queryVersion",version.value(),"canContinue",version.status()==SupportAnalyticsQueryVersion.Status.READY && end<rows.size(),
             "recordsStatus",q.view()==View.AGENTS?evaluation.result().personnel().status().name():version.status().name(),
             "selectedCustomerCount",(long)selected.size(),"selectedCurrent",current(stats.selectedCurrent(evaluation,selected)),
@@ -90,7 +115,12 @@ public class SupportAnalyticsPrivateQueryService {
         if(detailSummary!=null)payload.put("detailSummary",detailSummary);
         if(q.view()==View.AGENTS && evaluation.result().personnel().status()!=SupportAnalyticsStats.Status.AVAILABLE)payload.put("total",null);
         stats.requireFresh(evaluation);
-        return payload;
+        return new PerformancePage(payload, verifyVersion?Set.of():customerIds(eligible),
+                verifyVersion?Set.of():customerIds(selected));
+    }
+
+    private static Set<Long> customerIds(List<Customer> customers) {
+        return customers.stream().map(Customer::customerId).collect(java.util.stream.Collectors.toSet());
     }
     private void reauthorize(Normalized q,ReadScope scope,List<PermissionStamp> grants,List<Long> groups) {
         ReadScope finalScope=ownership.defaultQueryScope(q.groupId(),q.agentId());
@@ -118,7 +148,7 @@ public class SupportAnalyticsPrivateQueryService {
     private static BizException detailMismatch(){return unavailable("SUPPORT_ANALYTICS_DETAIL_MISMATCH");}
     private static boolean bool(Integer v){return Integer.valueOf(1).equals(v);}
     private static Boolean nullableBool(Integer v){if(v!=null && v!=0 && v!=1)throw unavailable();return v==null?null:v==1;}
-    private static void validateView(Normalized q) {
+    static void validateView(Normalized q) {
         Set<Sort> allowed=switch(q.view()) {
             case OVERVIEW,CUSTOMERS,ACTIVITY -> EnumSet.complementOf(EnumSet.of(Sort.BOUND_CUSTOMER_COUNT,Sort.ACTIVE_CUSTOMER_COUNT,Sort.FIRST_CONFIRMED_CUSTOMER_COUNT,Sort.HASHRATE,Sort.SUCCEEDED_AT,Sort.AMOUNT));
             case AGENTS -> EnumSet.of(Sort.BOUND_CUSTOMER_COUNT,Sort.ACTIVE_CUSTOMER_COUNT,Sort.FIRST_CONFIRMED_CUSTOMER_COUNT,Sort.DEVICE_COUNT,Sort.PERSONAL_DEPOSIT);
@@ -361,7 +391,6 @@ public class SupportAnalyticsPrivateQueryService {
 
     private static boolean matches(Normalized q,SupportAnalyticsStats.Customer c,Sources s) {
         if(q.category()!=SupportAnalyticsQueryRequest.Category.ALL && !q.category().name().equals(c.category().name()))return false;
-        if(q.firstState()!=First.ALL && !q.firstState().name().equals(c.first().state().name()))return false;
         var d=s.display().get(c.customerId());
         if(q.keyword()!=null && !(d.nickname()!=null && d.nickname().toLowerCase(Locale.ROOT).contains(q.keyword().toLowerCase(Locale.ROOT)))
                 && !q.keyword().equalsIgnoreCase(d.customerNo()) && !Long.toString(c.customerId()).equals(q.keyword()))return false;
@@ -387,10 +416,11 @@ public class SupportAnalyticsPrivateQueryService {
     }
     @SuppressWarnings({"rawtypes","unchecked"})
     static int compare(Object a,Object b,Direction d) {if(a==null)return b==null?0:1;if(b==null)return -1;int n=((Comparable)a).compareTo(b);return d==Direction.ASC?n:-Integer.signum(n);}
-    private List<Row> rows(Normalized q,SupportAnalyticsService.QueryEvaluation e,Sources s,List<SupportAnalyticsStats.Customer> selected) {
+    private List<Row> rows(Normalized q,SupportAnalyticsService.QueryEvaluation e,Sources s,List<SupportAnalyticsStats.Customer> selected,
+            java.util.function.LongFunction<BigDecimal> amount) {
         List<Row> out=new ArrayList<>();Map<Long,SupportAnalyticsStats.Customer> roots=new HashMap<>();for(var c:selected)roots.put(c.customerId(),c);
         switch(q.view()) {
-            case OVERVIEW,CUSTOMERS,ACTIVITY -> {for(var c:selected)out.add(new Row(c.customerId(),"",customerSort(q,c,s),()->customer(c,s)));}
+            case OVERVIEW,CUSTOMERS,ACTIVITY -> {for(var c:selected)out.add(new Row(c.customerId(),"",amount==null?customerSort(q,c,s):amount.apply(c.customerId()),()->customer(c,s,null)));}
             case FINANCE -> {for(var f:e.evidence().selected)if(roots.containsKey(f.customerId())){var c=roots.get(f.customerId());Object sort=q.sortKey()==Sort.AMOUNT?f.amount():f.succeededAt();
                 out.add(new Row(f.customerId(),f.factId(),sort,map("customerId",Long.toString(f.customerId()),"customerNo",s.display().get(f.customerId()).customerNo(),"nickname",s.display().get(f.customerId()).nickname(),"kind",f.kind().name(),"currency",f.currency(),"amount",decimal(f.amount()),"succeededAt",time(f.succeededAt()),"orderNo",f.orderNo(),"historyStatus",e.evidence().firstHistory.get(f.customerId())==null?"UNKNOWN":e.evidence().firstHistory.get(f.customerId()).status().name())));}}
             case DEVICES -> {if(e.evidence().stock!=null){for(var d:e.evidence().stock.devices())if(roots.containsKey(d.customerId()) && SupportAnalyticsService.productionDevice(d)>=0)out.add(deviceRow(q,d,roots.get(d.customerId()),s,e.evidence(),SupportAnalyticsService.productionDevice(d)==0));for(var d:e.evidence().stock.unknownHoldingDevices())if(roots.containsKey(d.customerId()) && SupportAnalyticsService.productionDevice(d)>=0)out.add(deviceRow(q,d,roots.get(d.customerId()),s,e.evidence(),true));}}
@@ -423,10 +453,10 @@ public class SupportAnalyticsPrivateQueryService {
     static BigDecimal net(List<CustomerCurrencyTotals> totals,String currency){return totals.stream().filter(t->t.currency().equals(currency))
         .map(CustomerCurrencyTotals::net).filter(m->m.status()==Status.AVAILABLE && m.reasons().isEmpty())
         .map(Money::confirmedAmount).filter(Objects::nonNull).findFirst().orElse(null);}
-    private static Map<String,Object> customer(SupportAnalyticsStats.Customer c,Sources s) {
+    private static Map<String,Object> customer(SupportAnalyticsStats.Customer c,Sources s,UserInviterView inviter) {
         var d=s.display().get(c.customerId());var t=s.tasks().get(c.customerId());var m=c.metrics();var statistics=customerStatistics(c);
         var advisor=s.people().stream().filter(p->Objects.equals(p.id(),c.owner().agentId())).findFirst().orElse(null);
-        return map("customerId",Long.toString(c.customerId()),"customerNo",d.customerNo(),"nickname",d.nickname(),"avatar",customerAvatarRef(d),"level",level(d),
+        return map("customerId",Long.toString(c.customerId()),"customerNo",d.customerNo(),"nickname",d.nickname(),"avatar",customerAvatarRef(d),"level",level(d),"inviter",inviter(inviter),
             "customTags",s.tags().stream().filter(tg->tg.customerId().equals(c.customerId())).sorted(Comparator.comparing(CustomerTagRow::id)).map(CustomerTagRow::tag).toList(),
             "systemTags",systemTags(d),"systemTagsStatus","PARTIAL","profileRef","/api/admin/content/support-workbench/customers/"+c.customerId(),
             "registeredAt",time(d.registeredAt()),"assignedAt",utc(d.assignedAt()),"category",c.category().name(),"placement",c.placement().name(),"handoverRequired",c.handoverRequired(),"owner",map("agentId",id(c.owner().agentId()),"groupId",id(c.owner().groupId()),"agentName",advisor==null?null:advisor.nickname()==null?advisor.username():advisor.nickname(),"advisorAvatar",personAvatar(advisor),"advisorAvatarRef",personAvatarRef(advisor,c.customerId())),
@@ -435,11 +465,40 @@ public class SupportAnalyticsPrivateQueryService {
             "task",t==null?map("status","UNAVAILABLE"):map("status",s.taskRead().name(),"enabled",nullableBool(t.enabled()),"due",nullableBool(t.due()),"waitingReply",nullableBool(t.waitingReply()),"firstContact",nullableBool(t.firstContact()),"nextDueAt",utc(t.nextDueAt()),"waitingSinceAt",businessTime(t.waitingSinceAt())),"funds",funds(s,Set.of(c.customerId())));
     }
 
+    /** Current-page customer rows only: ids come from the sliced page, never from the whole match set. */
+    private List<Row> pageInviters(List<Row> page,View view,Collection<SupportAnalyticsStats.Customer> customers,Sources s) {
+        boolean customerRows=view==View.OVERVIEW || view==View.CUSTOMERS || view==View.ACTIVITY;
+        if(!customerRows || page.isEmpty())return page;
+        Map<Long,SupportAnalyticsStats.Customer> byId=new HashMap<>();
+        for(var c:customers)if(c!=null)byId.put(c.customerId(),c);
+        Map<Long,UserInviterView> inviters=inviters(page.stream().map(Row::id).toList());
+        List<Row> out=new ArrayList<>(page.size());
+        for(var row:page) {
+            var c=byId.get(row.id());
+            out.add(c==null?row:new Row(row.id(),row.secondary(),row.sort(),()->customer(c,s,inviters.get(c.customerId()))));
+        }
+        return out;
+    }
+
+    /** Direct sponsors for one page in a single read; scheme A keeps only userNo/nickname off-scope. */
+    private Map<Long,UserInviterView> inviters(Collection<Long> customerIds) {
+        if(customerIds==null || customerIds.isEmpty())return Map.of();
+        Map<Long,UserInviterView> out=new LinkedHashMap<>();
+        Map<Long,UserInviterView> found=Map.of();
+        if(users!=null)try {found=users.findInviters(customerIds);found=found==null?Map.of():found;}
+        catch(org.springframework.dao.DataAccessException | IllegalStateException ex) {LOG.warn("Support analytics inviter read unavailable: {}",ex.getClass().getSimpleName());}
+        for(Long id:customerIds)out.put(id,found.getOrDefault(id,INVITER_UNREAD));
+        return out;
+    }
+    private static Map<String,Object> inviter(UserInviterView view) {
+        UserInviterView v=view==null?INVITER_UNREAD:view;
+        return map("state",v.state().name(),"userNo",v.userNo(),"nickname",v.nickname(),"reason",v.reason()==null?null:v.reason().name());
+    }
     static Map<String,Object> customerStatistics(SupportAnalyticsStats.Customer c) {
         var m=c.metrics();var first=c.first().observedCandidate();
         return map("first",map("state",c.first().state().name(),"status",c.first().status().name(),"kind",first==null?null:first.kind(),"currency",first==null?null:first.currency(),"amount",first==null?null:decimal(first.amount()),"succeededAt",first==null?null:time(first.succeededAt())),
             "lifetime",m.lifetime().stream().map(SupportAnalyticsPrivateQueryService::customerMoney).toList(),"lifetimeStatus",m.lifetimeStatus().name(),
-            "invitations",map("direct",count(m.invitations().directCustomers()),"descendants",count(m.invitations().descendantCustomers()),"status",m.invitations().status().name(),"deposits",m.invitations().descendantDeposits().stream().map(x->map("currency",x.currency(),"deposits",money(x.deposits()))).toList()),
+            "invitations",map("direct",count(m.invitations().directCustomers()),"withinRewardRange",count(m.invitations().withinRewardRange()),"beyondRewardRange",count(m.invitations().beyondRewardRange()),"descendants",count(m.invitations().descendantCustomers()),"status",m.invitations().status().name(),"reasons",m.invitations().reasons(),"deposits",m.invitations().descendantDeposits().stream().map(x->map("currency",x.currency(),"deposits",money(x.deposits()))).toList()),
             "activity",map("state",m.activity().state().name(),"status",m.activity().status().name(),"lastEffectiveAt",utc(m.activity().lastEffectiveAt())));
     }
 

@@ -5,5 +5,6 @@ import java.util.List;
 public record AppNotificationPage(
         List<AppNotificationView> items,
         String nextCursor,
-        long unread) {
+        long unread,
+        long actionableUnread) {
 }

@@ -93,7 +93,7 @@ class H4ReminderDeliveryMySqlTest {
             assertThat(n.body()).isEqualTo("body-"+locale);assertThat(n.ctaLabel()).isEqualTo(cta);
             assertThat(n.ctaHref()).isEqualTo("/pages/events/detail?id="+CODE);
         });
-        assertThat(notifications.countUnreadForUser(7L)).isEqualTo(1);
+        assertThat(notifications.countUnreadForUser(7L).unread()).isEqualTo(1);
         assertThat(notifications.selectUserNotifications(8L,null,null,100)).isEmpty();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_notification",Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM nx_growth_event_reminder WHERE notified_at IS NOT NULL",Integer.class)).isEqualTo(1);
@@ -116,7 +116,7 @@ class H4ReminderDeliveryMySqlTest {
         engine.remind(7L,CODE);startEvent();
         jdbc.update("INSERT INTO nx_user_preference VALUES(7,0,0,1,1,1,1,1)");scheduler.tick();
         assertThat(notifications.selectUserNotifications(7L,null,null,100)).isEmpty();
-        assertThat(notifications.countUnreadForUser(7L)).isZero();
+        assertThat(notifications.countUnreadForUser(7L).unread()).isZero();
         assertThat(jdbc.queryForObject("SELECT push_status FROM nx_notification",String.class)).isEqualTo("DELIVERED");
     }
 

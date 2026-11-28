@@ -43,6 +43,7 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     private final SimulatedTaskPolicyService policies;
     private final SimulatedTaskSettlementService settlement;
     private final HardwareDailyUvtService hardwareDailyUvt;
+    private final PhoneTaskRewards phoneRewards;
     private final SimulatedTaskLifecycleService lifecycle;
     private final TransactionTemplate transaction;
     private final Environment environment;
@@ -62,10 +63,11 @@ public class SimulatedTaskService implements SchedulingConfigurer {
     public SimulatedTaskService(SimulatedTaskMapper mapper,AppTaskAssignmentMapper assignments,
             SimulatedTaskPolicyService policies,SimulatedTaskSettlementService settlement,SimulatedTaskLifecycleService lifecycle,
             PlatformTransactionManager transactions,Environment environment,Clock clock,DeviceMonthlyTargetService monthlyTargets,
-            HardwareDailyUvtService hardwareDailyUvt) {
+            HardwareDailyUvtService hardwareDailyUvt, PhoneTaskRewards phoneRewards) {
         this.monthlyTargets=monthlyTargets;
         this.mapper=mapper;this.assignments=assignments;this.policies=policies;this.settlement=settlement;this.lifecycle=lifecycle;
         this.hardwareDailyUvt=hardwareDailyUvt;
+        this.phoneRewards=phoneRewards;
         this.transaction=new TransactionTemplate(transactions);this.environment=environment;this.clock=clock;
         this.liveDueFrom=now();
         String boundary=environment.getProperty("nexion.simulated-tasks.abandon-before","");
@@ -140,7 +142,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
             var runtime=mapper.lockRuntime(deviceId);
             if(runtime!=null) {
                 requireIdentity(device,runtime);
-                if(runtime.phoneValidUntil()!=null && !received.isBefore(runtime.phoneValidUntil())) {
+                var previousCutoff=earlier(runtime.stopAt(),runtime.phoneValidUntil());
+                if(previousCutoff!=null && !received.isBefore(previousCutoff)) {
                     runtime=advance(device,runtime,received,false);
                     if(runtime.currentTaskNo()!=null || runtime.nextActionAt()!=null)
                         return new PhoneOnlineResult(false,30,runtime);
@@ -156,6 +159,31 @@ public class SimulatedTaskService implements SchedulingConfigurer {
             }
             return new PhoneOnlineResult(true,0,advance(device,runtime,received,false));
         });
+    }
+
+    /** Null means this device still follows its non-simulated deactivation path. */
+    public Boolean slotReplacementWaits(long userId, long deviceId, String instanceNo) {
+        if (!manages(deviceId)) return null;
+        var runtime = mapper.runtime(deviceId);
+        boolean legacyPending = hasLegacyPending(userId, deviceId);
+        if (runtime == null) return legacyPending ? null : false;
+        if (legacyPending || runtime.userId() != userId || !instanceNo.equals(runtime.instanceNo())) {
+            throw error(409, "SIMULATED_REPLACEMENT_TIMING_UNAVAILABLE");
+        }
+        if (runtime.currentTaskNo() == null) return false;
+
+        var device = mapper.readOwnedDevice(userId, deviceId);
+        var task = mapper.task(runtime.currentTaskNo());
+        if (device == null || !instanceNo.equals(device.instanceNo()) || task == null
+                || task.userId() != userId || task.deviceId() != deviceId || task.generation() != runtime.generation()
+                || !"RUNNING".equals(task.status())) {
+            throw error(409, "SIMULATED_REPLACEMENT_TIMING_UNAVAILABLE");
+        }
+        LocalDateTime observed = now();
+        LocalDateTime cutoff = earlier(runtime.stopAt(), runtime.phone() ? runtime.phoneValidUntil() : null);
+        cutoff = earlier(cutoff, earlier(device.deactivatedAt(), inactiveCutoff(device, observed)));
+        return (abandonBefore == null || !task.startedAt().isBefore(abandonBefore))
+                && task.dueAt().isAfter(observed) && (cutoff == null || cutoff.isAfter(observed));
     }
 
     /** A successful immediate stop records its cutoff now, even when older earned tasks need more batches. */
@@ -175,6 +203,10 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                     finishAfter,runtime.nextStartAt(),runtime.currentTaskNo(),stopped,"CLOSING",null);
             mapper.updateRuntime(runtime);return advance(device,runtime,stopped,false);
         });
+    }
+
+    void cancelPendingSlotStop(long userId, long deviceId) {
+        mapper.cancelPendingSlotStop(userId, deviceId);
     }
 
     /** The caller holds the user and OWNED device locks until the replacement transaction ends. */
@@ -208,6 +240,14 @@ public class SimulatedTaskService implements SchedulingConfigurer {
 
     /** Even a due task is cancelled before settlement. The runtime lock is still held. */
     void cancelForReplacement(RuntimeRow runtime) {
+        stopWithoutSuccessor(runtime, null);
+    }
+
+    void stopForH5Login(RuntimeRow runtime) {
+        stopWithoutSuccessor(runtime, ownedDevice(runtime.userId(), runtime.deviceId()));
+    }
+
+    private void stopWithoutSuccessor(RuntimeRow runtime, DeviceRow h5Phone) {
         LocalDateTime cutoff = now();
         if (runtime.currentTaskNo() != null) {
             var task = mapper.lockTask(runtime.currentTaskNo());
@@ -220,10 +260,16 @@ public class SimulatedTaskService implements SchedulingConfigurer {
             if (!"RUNNING".equals(task.status()) || !Set.of("RUNNING", "CLOSING", "ERROR").contains(runtime.state())) {
                 throw error(409, "SIMULATED_TASK_IDENTITY_CONFLICT");
             }
-            if (mapper.cancelTask(task.taskNo(), SimulatedTaskMapper.REPLACEMENT_STOP_REASON) != 1) {
-                throw error(409, "SIMULATED_TASK_CANCELLATION_CONFLICT");
+            if (h5Phone != null
+                    && !task.dueAt().isAfter(earlier(earlier(cutoff, runtime.stopAt()),
+                            earlier(runtime.phoneValidUntil(), inactiveCutoff(h5Phone, cutoff))))
+                    && (abandonBefore == null || !task.startedAt().isBefore(abandonBefore))) {
+                settleDueTask(h5Phone, task, true);
+            } else {
+                if (mapper.cancelTask(task.taskNo(), SimulatedTaskMapper.REPLACEMENT_STOP_REASON) != 1)
+                    throw error(409, "SIMULATED_TASK_CANCELLATION_CONFLICT");
+                monthlyTargets.cancel(task);
             }
-            monthlyTargets.cancel(task);
         }
         var stopped = new RuntimeRow(runtime.deviceId(), runtime.userId(), runtime.instanceNo(), runtime.productCode(),
                 runtime.phone(), runtime.generation(), runtime.intervalStartedAt(), runtime.phoneValidUntil(), cutoff,
@@ -422,23 +468,16 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 ?"PHONE_VALIDITY_EXPIRED":"DEVICE_STOPPED";
         if("DEVICE_PAUSED".equals(runtime.lastError()) && Objects.equals(runtime.stopAt(),cutoff))stopReason="DEVICE_PAUSED";
         if(device.deactivatedAt()!=null && mapper.refundedOrderDevice(device.userId(),device.deviceId()))stopReason="ORDER_REFUND";
-        if(!active(device) && device.deactivatedAt()==null) {
-            LocalDateTime pausedAt=observed;
-
-            if(device.pausedReason()!=null && !device.pausedReason().isBlank()
-                    && !(phone(device) && Set.of("PHONE_OFFLINE","PHONE_LOW_BATTERY").contains(device.pausedReason())))
-                pausedAt=earlier(pausedAt,device.runtimeUpdatedAt());
-            if(device.activatedAt()==null || !Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(device.status().toUpperCase(Locale.ROOT)))
-                pausedAt=earlier(pausedAt,device.updatedAt());
-            if(cutoff==null || pausedAt.isBefore(cutoff)) {
-                cutoff=pausedAt;stopReason="DEVICE_PAUSED";
-                runtime=new RuntimeRow(runtime.deviceId(),runtime.userId(),runtime.instanceNo(),runtime.productCode(),runtime.phone(),
-                        runtime.generation(),runtime.intervalStartedAt(),runtime.phoneValidUntil(),cutoff,runtime.stopAfterCurrent(),
-                        runtime.finishAfterAt(),runtime.nextStartAt(),runtime.currentTaskNo(),runtime.nextActionAt(),runtime.state(),"DEVICE_PAUSED");
-            }
+        LocalDateTime pausedAt=inactiveCutoff(device,observed);
+        if(pausedAt!=null && (cutoff==null || pausedAt.isBefore(cutoff))) {
+            cutoff=pausedAt;stopReason="DEVICE_PAUSED";
+            runtime=new RuntimeRow(runtime.deviceId(),runtime.userId(),runtime.instanceNo(),runtime.productCode(),runtime.phone(),
+                    runtime.generation(),runtime.intervalStartedAt(),runtime.phoneValidUntil(),cutoff,runtime.stopAfterCurrent(),
+                    runtime.finishAfterAt(),runtime.nextStartAt(),runtime.currentTaskNo(),runtime.nextActionAt(),runtime.state(),"DEVICE_PAUSED");
         }
         LocalDateTime knownTargetCycleStart=null;
         LocalDateTime directSuccessorStart=null;
+        boolean settledPredecessor=false;
         for(int n=0;n<CATCH_UP_LIMIT;n++) {
             TaskRow insertedTask=null;
             if(runtime.currentTaskNo()==null) {
@@ -506,7 +545,14 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 if(runtime.nextStartAt().isAfter(observed))
                     return save(runtime,runtime.nextStartAt(),null,earlier(earlier(runtime.nextStartAt(),cutoff),runtime.finishAfterAt()),"RUNNING",null);
                 pool=pool.stream().sorted(Comparator.comparing(SimulatedTaskPolicyService.TaskTypeSnapshot::taskTypeId)).toList();
-                var type=pool.get(DeviceMonthlyTargetPacing.select(device.deviceId(),runtime.generation(),runtime.nextStartAt(),pool.size()));
+                var choices=pool;
+                if(runtime.phone() && pool.size()>1) {
+                    var recent=new HashSet<>(mapper.recentTaskDurations(device.deviceId(),runtime.generation(),
+                            runtime.nextStartAt().minusHours(1),runtime.nextStartAt()));
+                    var fresh=pool.stream().filter(taskType->!recent.contains(taskType.durationSeconds())).toList();
+                    if(!fresh.isEmpty())choices=fresh;
+                }
+                var type=choices.get(DeviceMonthlyTargetPacing.select(device.deviceId(),runtime.generation(),runtime.nextStartAt(),choices.size()));
                 if(type.poolCode()!=null && !"PHONE".equals(type.poolCode()) && (runtime.phone() || policy.monthlyTargetUsdt()==null))
                     throw error(422,"SKU_POOL_TARGET_REQUIRED");
                 if(runtime.nextStartAt().equals(directSuccessorStart)
@@ -517,9 +563,19 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                     directSuccessorStart=null;
                     continue;
                 }
-                var projection=E3DeviceCapacityPolicy.project(device.seriesCode(),device.deviceType(),device.purchasedAt(),device.activatedAt(),
-                        runtime.nextStartAt(),policy.e3Config());
-                BigDecimal reward=E3DeviceCapacityPolicy.applyCapacity(type.baseReward(),projection);
+                var rates=runtime.phone()?phoneRewards.currentRates(device.productTier()):null;
+                if(runtime.phone() && rates==null) {
+                    // Retain the completed predecessor even if configuration blocks its successor.
+                    if(settledPredecessor)
+                        return save(runtime,runtime.nextStartAt(),null,earlier(earlier(observed.plusSeconds(30),cutoff),
+                                runtime.finishAfterAt()),"ERROR",PhoneTaskRewards.UNAVAILABLE);
+                    throw error(409,PhoneTaskRewards.UNAVAILABLE);
+                }
+                var projection=runtime.phone()?null:E3DeviceCapacityPolicy.project(device.seriesCode(),device.deviceType(),
+                        device.purchasedAt(),device.activatedAt(),runtime.nextStartAt(),policy.e3Config());
+                BigDecimal reward=rates==null?E3DeviceCapacityPolicy.applyCapacity(type.baseReward(),projection)
+                        :PhoneTaskRewards.perTask(rates.baseRateUsdt(),type.durationSeconds());
+                BigDecimal phoneNex=rates==null?null:PhoneTaskRewards.perTask(rates.baseRateNex(),type.durationSeconds());
                 var wallets=mapper.wallets(device.userId());
                 if(wallets.size()!=1)throw error(409,"SIMULATED_WALLET_UNAVAILABLE");
                 DeviceMonthlyTargetService.Quote target=null;
@@ -530,12 +586,16 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 }
                 var wallet=wallets.get(0);String suffix=UUID.randomUUID().toString().replace("-","").toUpperCase(Locale.ROOT);
                 LocalDateTime dueAt=runtime.nextStartAt().plusSeconds(type.durationSeconds());
-                BigDecimal daily=assignments.lockPaidCloudShareDailyNex(device.userId(),device.deviceId());
+                BigDecimal daily=runtime.phone()?BigDecimal.ZERO:assignments.lockPaidCloudShareDailyNex(device.userId(),device.deviceId());
                 if(daily==null) daily=hardwareDailyUvt.amount(device.userId(),device.deviceId(),device.productCode(),device.seriesCode(),dueAt);
+                String asset=runtime.phone()?"USDT":("NEX".equals(type.asset())?"UVT":type.asset());
+                BigDecimal multiplier=target!=null?target.capacityPct().movePointLeft(2)
+                        :projection!=null?projection.capacityPct().movePointLeft(2):BigDecimal.ONE;
                 var task=new TaskRow("SIM-"+suffix,"CTR-"+suffix,device.userId(),device.deviceId(),device.instanceNo(),runtime.generation(),
                         device.productId(),device.productCode(),device.productTier(),device.deviceName(),device.deviceType(),device.gpuModel(),device.vramTotalGb(),
-                        type.taskTypeId(),type.typeVersion(),policy.version(),policy.e3Version(),type.name(),type.taskClass(),type.durationSeconds(),"NEX".equals(type.asset())?"UVT":type.asset(),
-                        type.baseReward(),reward,(target==null?projection.capacityPct():target.capacityPct()).movePointLeft(2),daily,
+                        type.taskTypeId(),type.typeVersion(),policy.version(),policy.e3Version(),type.name(),type.taskClass(),type.durationSeconds(),asset,
+                        runtime.phone()?reward:type.baseReward(),reward,multiplier,daily,
+                        phoneNex,rates==null?null:rates.baseRateUsdt(),rates==null?null:rates.baseRateNex(),
                         wallet.walletId(),wallet.incarnation(),runtime.nextStartAt(),dueAt,"RUNNING",null,null,null,target==null?null:target.cycleStart(),target==null?null:target.snapshotJson());
                 if(mapper.insertTask(task)!=1)throw error(409,"SIMULATED_TASK_CREATION_CONFLICT");
                 insertedTask=task;
@@ -557,13 +617,8 @@ public class SimulatedTaskService implements SchedulingConfigurer {
                 continue;
             }
             if(!task.dueAt().isAfter(observed) && (cutoff==null || !task.dueAt().isAfter(cutoff))) {
-                LocalDateTime posted=now();
-                // Resolve against the completion date, including tasks dispatched before B52.
-                BigDecimal daily=hardwareDailyUvt.appliesTo(device.seriesCode())
-                        ? hardwareDailyUvt.amount(task.userId(),task.deviceId(),task.productCode(),device.seriesCode(),task.dueAt())
-                        : task.cloudDailyNex();
-                if(mapper.completeTask(task.taskNo(),posted,daily)!=1)throw error(409,"SIMULATED_TASK_SETTLEMENT_CONFLICT");
-                settlement.settle(task,posted,daily,accountLockedBeforeSnapshot);
+                settleDueTask(device,task,accountLockedBeforeSnapshot);
+                settledPredecessor=true;
                 knownTargetCycleStart=task.targetCycleStart();
                 directSuccessorStart=task.dueAt();
                 // The next durable save remains in this same transaction; terminal paths still save below.
@@ -588,6 +643,28 @@ public class SimulatedTaskService implements SchedulingConfigurer {
         if(runtime.stopAt()!=null || runtime.stopAfterCurrent())
             return save(runtime,runtime.nextStartAt(),runtime.currentTaskNo(),runtime.nextActionAt(),"CLOSING",runtime.lastError());
         return save(runtime,runtime.nextStartAt(),runtime.currentTaskNo(),runtime.nextActionAt(),runtime.state(),runtime.lastError());
+    }
+
+    private void settleDueTask(DeviceRow device, TaskRow task, boolean accountLockedBeforeSnapshot) {
+        LocalDateTime posted = now();
+        // Resolve against the completion date, including tasks dispatched before B52.
+        BigDecimal daily = task.phoneRewardNex()==null && hardwareDailyUvt.appliesTo(device.seriesCode())
+                ? hardwareDailyUvt.amount(task.userId(), task.deviceId(), task.productCode(), device.seriesCode(), task.dueAt())
+                : task.cloudDailyNex();
+        if (mapper.completeTask(task.taskNo(), posted, daily) != 1)
+            throw error(409, "SIMULATED_TASK_SETTLEMENT_CONFLICT");
+        settlement.settle(task, posted, daily, accountLockedBeforeSnapshot);
+    }
+
+    private LocalDateTime inactiveCutoff(DeviceRow device, LocalDateTime observed) {
+        if (active(device) || device.deactivatedAt() != null) return null;
+        LocalDateTime pausedAt = observed;
+        if (device.pausedReason()!=null && !device.pausedReason().isBlank()
+                && !(phone(device) && Set.of("PHONE_OFFLINE","PHONE_LOW_BATTERY").contains(device.pausedReason())))
+            pausedAt = earlier(pausedAt,device.runtimeUpdatedAt());
+        if (device.activatedAt()==null || !Set.of("ACTIVE","ONLINE","BUSY","RUNNING").contains(device.status().toUpperCase(Locale.ROOT)))
+            pausedAt = earlier(pausedAt,device.updatedAt());
+        return pausedAt;
     }
 
     /** UTF-8, business-zone ISO local timestamp with exactly six fractional digits. */

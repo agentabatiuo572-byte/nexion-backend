@@ -40,11 +40,14 @@ class AppPayoutAddressServiceTest {
     @Mock private PayoutAddressOtpAttemptService otpAttempts;
     @Mock private FundsSandboxProfileGuard sandboxProfile;
     @Mock private FundsSandboxRunScope sandboxRun;
+    @Mock private ffdd.opsconsole.platform.facade.PlatformConfigFacade config;
     @InjectMocks private AppPayoutAddressService service;
 
     @BeforeEach
     @SuppressWarnings({"unchecked", "rawtypes"})
     void executeClaimedAction() {
+        lenient().when(config.activeValuesByKeys(any())).thenReturn(java.util.Map.of(
+                PayoutAddressProtection.EFFECTIVE_DELAY_KEY, "24", PayoutAddressProtection.CHANGE_COOLDOWN_KEY, "7"));
         lenient().when(sandboxProfile.isStrictProductionRuntime()).thenReturn(true);
         lenient().when(idempotency.execute(anyString(), anyString(), anyString(), eq(ApiResult.class), any()))
                 .thenAnswer(invocation -> ((Supplier) invocation.getArgument(4)).get());
@@ -61,13 +64,13 @@ class AppPayoutAddressServiceTest {
         when(mapper.lock(userId, "USDT-BEP20")).thenReturn(null, new PayoutAddressRow(
                 "USDT-BEP20", address, "ACTIVE", LocalDateTime.now().plusHours(24),
                 LocalDateTime.now(), LocalDateTime.now().plusDays(7), 0L));
-        when(mapper.insert(userId, "USDT-BEP20", address)).thenReturn(1);
+        when(mapper.insert(userId, "USDT-BEP20", address, 24, 7)).thenReturn(1);
 
         service.save(userId, new SaveRequest("USDT-BEP20", address, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456"), "cmd-1");
 
         verify(idempotency).execute(eq("USER_PAYOUT_ADDRESS:7"), eq("cmd-1"), anyString(),
                 eq(ApiResult.class), any());
-        verify(mapper).insert(userId, "USDT-BEP20", address);
+        verify(mapper).insert(userId, "USDT-BEP20", address, 24, 7);
     }
 
     @Test
@@ -130,14 +133,14 @@ class AppPayoutAddressServiceTest {
                             businessNow.minusDays(6), businessNow.minusDays(8), businessNow.minusHours(1), 1L),
                     new PayoutAddressRow("USDT-BEP20", address, "ACTIVE",
                             businessNow.plusDays(1), businessNow.minusDays(8), businessNow.plusDays(7), 2L));
-            when(mapper.update(userId, "USDT-BEP20", address, 1L)).thenReturn(1);
+            when(mapper.update(userId, "USDT-BEP20", address, 1L, 24, 7)).thenReturn(1);
 
             var result = service.save(userId,
                     new SaveRequest("USDT-BEP20", address, "PAYOUT-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "123456"), "cmd-utc");
 
             org.assertj.core.api.Assertions.assertThat(result.getData()).containsEntry("address", address)
                     .containsEntry("changePending", true);
-            verify(mapper).update(userId, "USDT-BEP20", address, 1L);
+            verify(mapper).update(userId, "USDT-BEP20", address, 1L, 24, 7);
         } finally {
             TimeZone.setDefault(original);
         }

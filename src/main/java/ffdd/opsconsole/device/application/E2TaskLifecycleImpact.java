@@ -95,8 +95,8 @@ final class E2TaskLifecycleImpact {
             if (request.simulation() != null) {
                 var settings = request.simulation();
                 next = next.withSimulation(new SimulatedTaskPolicyService.TypeView(
-                        settings.durationMinutes(), settings.baseReward(), settings.asset(), settings.enabled(),
-                        settings.expectedVersion() + 1, effectiveAt));
+                        settings.durationSeconds() / 60, BigDecimal.ZERO, "USDT", settings.enabled(),
+                        settings.expectedVersion() + 1, effectiveAt, settings.durationSeconds()));
             }
             if (before == null) {
                 proposed.add(next);

@@ -339,6 +339,8 @@ public class EventOutboxService {
     static final Set<String> RECORD_ONLY_EVENT_TYPES = Set.of(
             "E2_TASK_POOL_RANDOM_ADDED",
             "E2_TASK_POOL_STATUS_CHANGED",
+            "E2_TASK_POOL_TASK_CREATED",
+            "E2_TASK_POOL_TASK_UPDATED",
             "account.app_session_replaced",
             "app.dau",
             "phone.replacement_succeeded",
@@ -477,6 +479,7 @@ public class EventOutboxService {
             "staking.opened",
             "store.viewed",
             "tradein.completed",
+            "trial.redeemed",
             "trial.started",
             "voucher.claimed",
             "wallet.reinvest");

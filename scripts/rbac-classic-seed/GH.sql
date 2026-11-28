@@ -58,7 +58,7 @@ INSERT INTO nx_admin_permission (permission_code, permission_name, resource_type
 
   -- H2 免费试用引擎 /growth/trial（4 点）
   ('growth_h2_read',                 'H2 免费试用页面读',            'API', '/growth/trial',                'READ',  0, 1, 0),
-  ('growth_h2_write',               'H2 试用常规写(6参数/auto-push急停)', 'API', '/growth/trial',                'WRITE', 0, 1, 0),
+  ('growth_h2_write',               '免费试用设置修改', 'API', '/growth/trial',                'WRITE', 0, 1, 0),
   ('growth_h2_session_cancel',       'H2 强制取消试用会话(不可逆·cancelled终态)', 'API', '/growth/trial',                'HIGH',  1, 1, 0),
   ('growth_h2_session_charge',       'H2 强制触发扣款(不可逆·重算·资金动作)', 'API', '/growth/trial',                'HIGH',  1, 1, 0),
 

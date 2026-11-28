@@ -231,7 +231,7 @@ def credentials():
         if '=' not in line or line.lstrip().startswith('#'):
             continue
         key, value = line.split('=', 1)
-        if key in ('NEXION_DB_URL', 'NEXION_DB_USERNAME', 'NEXION_DB_PASSWORD'):
+        if key in ('NEXION_DB_URL', 'NEXION_DB_USERNAME', 'NEXION_DB_PASSWORD', 'NEXION_TIME_STORAGE_ZONE'):
             kv[key] = shlex.split(value)[0] if value and value[0] in '\"\'' else value
     require(re.fullmatch(r'jdbc:mysql://(?:127\.0\.0\.1|localhost):3306/nexion(?:\?[^\r\n]*)?',
                          kv.get('NEXION_DB_URL', '')), 'MIGRATION_DATABASE_ROUTE_REJECTED')
@@ -241,7 +241,7 @@ def credentials():
     container = json.loads(command('docker', 'inspect', CONTAINER))[0]
     root = dict(x.split('=', 1) for x in container['Config']['Env'] if '=' in x).get('MYSQL_ROOT_PASSWORD')
     require(root, 'MIGRATION_BACKUP_CREDENTIAL_MISSING')
-    return kv['NEXION_DB_USERNAME'], kv['NEXION_DB_PASSWORD'], root
+    return kv['NEXION_DB_USERNAME'], kv['NEXION_DB_PASSWORD'], root, kv.get('NEXION_TIME_STORAGE_ZONE', '')
 
 
 def mysql_args(user):
@@ -1115,7 +1115,24 @@ def apply(sha, *, rollback_check=False):
         validate_sql(data)
     support_order = support_prepare(pending)
     cregis_parts = cregis_prepare(pending)
-    user, password, root_password = credentials()
+    user, password, root_password, storage_zone = credentials()
+    b84_files = {'20261124_b84_a_exposure_alert.sql', '20261124_b84_b_deposit_decimal_cutover.sql'}
+    b85_files = {'20261124_b85_device_task_catalog.sql', '20261124_b85_phone_task_duration.sql'}
+    b86_file = '20261125_b86_phone_task_duration_tiers.sql'
+    b87_file = '20261125_b87_vrank_salary.sql'
+    b152_file = '20261128_b152_phone_task_rewards.sql'
+    storage_offset = {'Asia/Shanghai': '+08:00', 'Asia/Ho_Chi_Minh': '+07:00'}.get(
+        storage_zone.strip() or 'Asia/Shanghai')
+    if any(name in b84_files for name, _ in pending):
+        require(storage_offset is not None, 'B84_STORAGE_TIMEZONE_UNSUPPORTED')
+    if any(name in b85_files for name, _ in pending):
+        require(storage_offset is not None, 'B85_STORAGE_TIMEZONE_UNSUPPORTED')
+    if any(name == b86_file for name, _ in pending):
+        require(storage_offset is not None, 'B86_STORAGE_TIMEZONE_UNSUPPORTED')
+    if any(name == b87_file for name, _ in pending):
+        require(storage_offset is not None, 'B87_STORAGE_TIMEZONE_UNSUPPORTED')
+    if any(name == b152_file for name, _ in pending):
+        require(storage_offset is not None, 'B152_STORAGE_TIMEZONE_UNSUPPORTED')
     scoped_account(user, password)
     trigger_context = migration_preflight(
         [(name, data) for name, data in pending
@@ -1166,6 +1183,9 @@ def apply(sha, *, rollback_check=False):
                 execute_sql(name + '.retired-prefix', prefix, folder, user, password)
             elif name == EARNINGS_FILE and trigger_context['root_install']:
                 execute_earnings_recovery(data, folder, user, password, root_password, trigger_context, journal)
+            elif name in b84_files or name in b85_files or name in (b86_file, b87_file, b152_file):
+                session_sql = f"SET SESSION time_zone = '{storage_offset}';\n".encode()
+                execute_sql(name, session_sql + data, folder, user, password)
             else:
                 execute_sql(name, data, folder, user, password)
             state['scripts'][name] = {'sha256': digest(data), 'status': 'APPLIED',

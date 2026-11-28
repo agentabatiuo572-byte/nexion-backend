@@ -54,7 +54,7 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
            AND d.deactivated_at IS NULL AND d.activated_at IS NOT NULL AND d.purchased_at IS NOT NULL
            AND o.is_deleted=0 AND o.payment_status='PAID' AND o.order_status='COMPLETED'
            AND o.subtotal_usdt>0 AND o.amount_usdt>=0
-           AND ((d.source_channel='ORDER' AND o.activation_status='ACTIVATED'
+           AND ((d.source_channel='ORDER' AND o.activation_status IN ('ACTIVATED','INVENTORY')
            AND ((d.purchased_at>=#{cutoff} AND d.activated_at>=#{cutoff}) OR """ + LEGACY_ADMISSION + """
            )
            AND (o.product_id=d.product_id OR EXISTS(SELECT 1 FROM nx_order_item oi
@@ -281,7 +281,8 @@ public interface TestCloudExecutorMapper extends BaseMapper<Object> {
     @Select("""
         SELECT COUNT(*) FROM nx_user_device WHERE id=#{deviceId} AND user_id=#{ownerId} AND instance_no=#{instanceNo}
           AND pending_deactivate=0 AND is_deleted=0 AND source_environment='PRODUCTION' AND run_id=''
-          AND source_channel='ORDER' AND ownership_status='OWNED' AND activated_at IS NOT NULL AND deactivated_at IS NULL
+          AND source_channel IN ('ORDER','TRIAL') AND ownership_status='OWNED'
+          AND activated_at IS NOT NULL AND deactivated_at IS NULL
         """)
     int eligibleBinding(@Param("ownerId") long ownerId,@Param("deviceId") long deviceId,@Param("instanceNo") String instanceNo);
 

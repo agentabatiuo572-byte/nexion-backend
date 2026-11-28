@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.web;
 
 import ffdd.opsconsole.finance.application.AppWithdrawalService;
+import ffdd.opsconsole.finance.application.AppWithdrawalService.ConfirmedQuote;
 import ffdd.opsconsole.shared.api.ApiResult;
 import java.math.BigDecimal;
 import java.util.Map;
@@ -42,7 +43,8 @@ public class AppWithdrawalController {
             @RequestBody EligibilityRequest request, Authentication authentication) {
         Long userId = userId(authentication);
         return userId == null ? unauthorized()
-                : service.eligibility(userId, request.amount(), request.chain(), request.address(), request.policyVersion());
+                : service.eligibility(userId, request.amount(), request.chain(), request.address(), request.policyVersion(),
+                        request.useNexFeeOffset());
     }
 
     @GetMapping("/test-preview")
@@ -67,7 +69,7 @@ public class AppWithdrawalController {
         Long userId = userId(authentication);
         return userId == null ? unauthorized()
                 : service.submit(userId, request.amount(), request.chain(), request.address(), request.policyVersion(),
-                        Boolean.TRUE.equals(request.useNexFeeOffset()), idempotencyKey);
+                        Boolean.TRUE.equals(request.useNexFeeOffset()), idempotencyKey, request.confirmedQuote());
     }
 
     @GetMapping("/attempts/{idempotencyKey}")
@@ -85,7 +87,7 @@ public class AppWithdrawalController {
         Long userId = userId(authentication);
         return userId == null ? unauthorized()
                 : service.abandonAttempt(userId, idempotencyKey, request.amount(), request.chain(), request.address(),
-                        request.policyVersion(), Boolean.TRUE.equals(request.useNexFeeOffset()));
+                        request.policyVersion(), Boolean.TRUE.equals(request.useNexFeeOffset()), request.confirmedQuote());
     }
 
     private Long userId(Authentication authentication) {
@@ -109,7 +111,9 @@ public class AppWithdrawalController {
             String chain,
             String address,
             String policyVersion,
-            Boolean useNexFeeOffset) { }
+            Boolean useNexFeeOffset,
+            ConfirmedQuote confirmedQuote) { }
 
-    public record EligibilityRequest(BigDecimal amount, String chain, String address, String policyVersion) { }
+    public record EligibilityRequest(
+            BigDecimal amount, String chain, String address, String policyVersion, Boolean useNexFeeOffset) { }
 }

@@ -2,6 +2,7 @@ package ffdd.opsconsole.user.domain;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Collection;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +29,9 @@ public interface UserOpsRepository {
     PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request);
 
     PageResult<UserAccountView> pageSupportProfiles(UserQueryRequest request, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
+
+    /** Direct inviters for the current page only; callers add the four-key list projection. */
+    default Map<Long, UserInviterView> findInviters(Collection<Long> userIds) { return Map.of(); }
 
     Optional<UserAccountView> findById(Long userId, ffdd.opsconsole.content.domain.SupportGroupFacts.ReadScope scope);
 

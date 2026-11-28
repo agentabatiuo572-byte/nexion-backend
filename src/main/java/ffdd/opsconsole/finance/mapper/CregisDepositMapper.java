@@ -363,13 +363,6 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             UPDATE nx_cregis_provision_gate
                SET assign_enabled=0,credit_enabled=0,payout_enabled=0,
                    state='BLOCKED',switch_reason=#{reason},version=version+1
-             WHERE id=1 AND (assign_enabled<>0 OR credit_enabled<>0 OR payout_enabled<>0 OR state<>'BLOCKED')
-            """)
-    int tripAll(@Param("reason") String reason);
-    @Update("""
-            UPDATE nx_cregis_provision_gate
-               SET assign_enabled=0,credit_enabled=0,payout_enabled=0,
-                   state='BLOCKED',switch_reason=#{reason},version=version+1
              WHERE id=1 AND version=#{expectedVersion}
             """)
     int forceEmergencyOff(@Param("reason") String reason,
@@ -433,18 +426,6 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
                AND kind<>'MANUAL_EMERGENCY_OFF' AND resolved_at IS NULL
             """)
     int openCriticalAlertCountExceptManual(@Param("projectId") long projectId);
-    @Update("""
-            UPDATE nx_cregis_risk_alert SET resolved_at=NOW()
-             WHERE project_id=#{projectId} AND kind='UNRESOLVED_EXPOSURE'
-               AND resolved_at IS NULL
-            """)
-    int resolveExposureAlert(@Param("projectId") long projectId);
-    @Update("""
-            UPDATE nx_cregis_risk_alert SET resolved_at=NULL
-             WHERE project_id=#{projectId} AND kind='UNRESOLVED_EXPOSURE'
-               AND resolved_at IS NOT NULL
-            """)
-    int reopenExposureAlert(@Param("projectId") long projectId);
     @Update("""
             UPDATE nx_cregis_risk_alert SET resolved_at=NOW()
              WHERE project_id=#{projectId} AND kind='MANUAL_EMERGENCY_OFF'
@@ -758,6 +739,13 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
     @Select("SELECT id FROM nx_cregis_deposit_event WHERE project_id=#{projectId} AND chain_id=#{network.chainId,javaType=java.lang.String} AND cid=#{cid}")
     Long eventId(@Param("network") CregisNetwork network,@Param("projectId") long projectId, @Param("cid") long cid);
 
+    // A project's CID is unique across networks. The CID-only review entry supports BEP20 and ERC20.
+    @Select("""
+            SELECT id FROM nx_cregis_deposit_event
+             WHERE project_id=#{projectId} AND cid=#{cid} AND chain_id IN ('2510','60')
+            """)
+    Long reviewEventIdByCid(@Param("projectId") long projectId,@Param("cid") long cid);
+
     @Select("""
             SELECT usdt_available AS usdtAvailable,cregis_risk_held AS cregisRiskHeld,version FROM nx_user_wallet
              WHERE user_id=#{userId} AND is_deleted=0 FOR UPDATE
@@ -1020,7 +1008,7 @@ public interface CregisDepositMapper extends BaseMapper<CregisDepositEventEntity
             """)
     Map<String, Object> reviewEventSnapshot(@Param("id") long id);
     @Select("""
-            SELECT c.id,c.event_id AS eventId,CAST(e.cid AS CHAR) AS cid,e.user_id AS userId,
+            SELECT c.id,c.event_id AS eventId,CAST(e.cid AS CHAR) AS cid,e.chain_id AS chainId,e.user_id AS userId,
               e.gross_amount AS grossAmount,p.fee_usdt AS feeAmount,e.gross_amount - p.fee_usdt AS proposedNetAmount,
               e.address,e.txid,
               e.block_number AS blockNumber,e.block_hash AS blockHash,

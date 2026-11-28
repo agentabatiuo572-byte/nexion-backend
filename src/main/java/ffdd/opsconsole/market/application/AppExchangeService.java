@@ -33,6 +33,8 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.annotation.Isolation;
@@ -41,10 +43,11 @@ import org.springframework.core.env.Environment;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AppExchangeService {
     private static final long MARKET_MAX_AGE_MINUTES = 5;
     private static final long MARKET_MAX_FUTURE_SKEW_MINUTES = 1;
-    private static final long MARKET_HISTORY_CACHE_MS = 60_000;
+    private static final long MARKET_ACTIVITY_CACHE_MS = 60_000;
     private static final String USER_CAP = "wallet.exchange.user_daily_cap_usdt";
     private static final String PLATFORM_CAP = "wallet.exchange.platform_daily_cap_usdt";
     private static final String FEE_PCT = "wallet.exchange.fee_pct";
@@ -80,8 +83,8 @@ public class AppExchangeService {
     /** The sandbox ledger is absent from production-only deployments. */
     private final Optional<AppMarketSandboxService> sandbox;
     private final SupportExchangeFundAdapter exchangeFunds;
-    private final Object marketHistoryCacheLock = new Object();
-    private final AtomicReference<CachedMarketHistory> marketHistoryCache = new AtomicReference<>();
+    private final Object marketActivityCacheLock = new Object();
+    private final AtomicReference<CachedMarketActivity> marketActivityCache = new AtomicReference<>();
 
     public ApiResult<Map<String, Object>> caps() {
         if (isStrictIsolatedRuntime() && !isDevelopmentRuntime()) return ApiResult.ok(sandboxCaps());
@@ -103,10 +106,9 @@ public class AppExchangeService {
         requireCanonicalReadRuntime();
         List<NexMarketCurveFrame> frames = curveFrames();
         BigDecimal price = requirePublicPrice();
-        List<AppExchangeMapper.MarketPoint> historyPoints = marketHistoryPoints();
+        CachedMarketActivity activity = marketActivity();
         LocalDateTime now = LocalDateTime.now(clock);
-        List<AppExchangeMapper.MarketPoint> verifiedHistory = (historyPoints == null
-                ? List.<AppExchangeMapper.MarketPoint>of() : historyPoints).stream()
+        List<AppExchangeMapper.MarketPoint> verifiedHistory = activity.points().stream()
                 .filter(point -> point != null && point.priceUsdt() != null
                         && point.priceUsdt().compareTo(BigDecimal.ZERO) > 0 && point.sampledAt() != null
                         && !point.sampledAt().isAfter(now.plusMinutes(MARKET_MAX_FUTURE_SKEW_MINUTES)))
@@ -120,7 +122,7 @@ public class AppExchangeService {
                 .toList();
         return ApiResult.ok(linked(
                 "asset", "UVT", "currency", "USDT", "currentPrice", price,
-                "costBasis", number(COST_BASIS, "0.085"),
+                "costBasis", number(COST_BASIS, "0.085"), "volume24hUsdt", activity.volume24hUsdt(),
                 "frames", frames, "sparkline", frames.stream().map(NexMarketCurveFrame::targetPrice).toList(),
                 "history", history, "history24h", history24h, "historyMaxDays", 365,
                 "sampledAt", LocalDateTime.now(clock), "serverCanonical", true,
@@ -134,17 +136,24 @@ public class AppExchangeService {
                         .toInstant().toEpochMilli());
     }
 
-    private List<AppExchangeMapper.MarketPoint> marketHistoryPoints() {
+    private CachedMarketActivity marketActivity() {
         long now = clock.millis();
-        CachedMarketHistory cached = marketHistoryCache.get();
-        if (cached != null && now - cached.loadedAtMillis() < MARKET_HISTORY_CACHE_MS) return cached.points();
-        synchronized (marketHistoryCacheLock) {
-            cached = marketHistoryCache.get();
-            if (cached != null && now - cached.loadedAtMillis() < MARKET_HISTORY_CACHE_MS) return cached.points();
+        CachedMarketActivity cached = marketActivityCache.get();
+        if (cached != null && now - cached.loadedAtMillis() < MARKET_ACTIVITY_CACHE_MS) return cached;
+        synchronized (marketActivityCacheLock) {
+            cached = marketActivityCache.get();
+            if (cached != null && now - cached.loadedAtMillis() < MARKET_ACTIVITY_CACHE_MS) return cached;
             List<AppExchangeMapper.MarketPoint> loaded = mapper.marketHistoryPoints();
             List<AppExchangeMapper.MarketPoint> points = loaded == null ? List.of() : List.copyOf(loaded);
-            marketHistoryCache.set(new CachedMarketHistory(now, points));
-            return points;
+            BigDecimal volume24hUsdt = null;
+            try {
+                volume24hUsdt = mapper.marketVolume24hUsdt();
+            } catch (DataAccessException ex) {
+                log.warn("UVT market volume temporarily unavailable", ex);
+            }
+            CachedMarketActivity activity = new CachedMarketActivity(now, points, volume24hUsdt);
+            marketActivityCache.set(activity);
+            return activity;
         }
     }
 
@@ -775,5 +784,6 @@ public class AppExchangeService {
         }
     }
     private record ExternalAsset(String symbol,String name,String category) {}
-    private record CachedMarketHistory(long loadedAtMillis,List<AppExchangeMapper.MarketPoint> points) {}
+    private record CachedMarketActivity(long loadedAtMillis, List<AppExchangeMapper.MarketPoint> points,
+            BigDecimal volume24hUsdt) {}
 }

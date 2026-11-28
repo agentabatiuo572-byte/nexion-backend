@@ -12,7 +12,15 @@ public record SupportAgentProfileUpdateRequest(
         Boolean busy,
         Long expectedVersion,
         String operator,
-        String reason) {
+        String reason,
+        Boolean maxConcurrentUnlimited) {
+    public SupportAgentProfileUpdateRequest(
+            String position, List<String> serviceTypes, List<String> tags, Integer maxConcurrent,
+            Boolean enabled, Boolean transferable, Boolean busy, Long expectedVersion, String operator, String reason) {
+        this(position, serviceTypes, tags, maxConcurrent, enabled, transferable, busy,
+                expectedVersion, operator, reason, null);
+    }
+
     public SupportAgentProfileUpdateRequest(
             String position, List<String> serviceTypes, List<String> tags, Integer maxConcurrent,
             Boolean enabled, Boolean transferable, Boolean busy, String operator, String reason) {

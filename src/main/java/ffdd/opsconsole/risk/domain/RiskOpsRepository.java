@@ -155,6 +155,11 @@ public interface RiskOpsRepository {
 
     Optional<RiskScoreUserView> findScoreUser(String userNo);
 
+    default Optional<RiskScoringAccountsView> pageScoreAccounts(
+            RiskScoringAccountsView.Band band, int pageNum, int pageSize) {
+        return Optional.empty();
+    }
+
     Optional<RiskScoreUserView> findCurrentScoreUser(String userNo);
 
     default List<RiskScoreHistoryView> scoreHistory(String userNo, int limit) {

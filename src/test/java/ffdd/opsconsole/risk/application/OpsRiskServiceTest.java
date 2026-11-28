@@ -2,6 +2,7 @@ package ffdd.opsconsole.risk.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -13,6 +14,7 @@ import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
 import ffdd.opsconsole.common.api.OpsErrorCode;
+import ffdd.opsconsole.platform.application.A2RuntimePolicy;
 import ffdd.opsconsole.platform.domain.AuditReplayCommand;
 import ffdd.opsconsole.platform.domain.AuditReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
@@ -67,6 +69,8 @@ import ffdd.opsconsole.shared.api.PageResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.transaction.annotation.Transactional;
 import static org.mockito.ArgumentMatchers.any;
@@ -95,7 +99,7 @@ class OpsRiskServiceTest {
             idempotencyService,
             superAdminAuthorization,
             userAccountControlFacade,
-            eventOutboxService,
+            eventOutboxService, mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class),
             chainAddressReputationGateway,
             mock(RiskReleaseParamsService.class));
 
@@ -103,6 +107,7 @@ class OpsRiskServiceTest {
     void stubLockMapperNoActiveLock() {
         when(lockMapper.countActiveByTarget(anyString(), anyString(), anyString())).thenReturn(0);
         when(configFacade.activeValue(anyString())).thenReturn(Optional.empty());
+        when(configFacade.activeValue(A2RuntimePolicy.REASON_MIN_KEY)).thenReturn(Optional.of("8 字"));
         doAnswer(invocation -> ((java.util.function.Supplier<?>) invocation.getArgument(4)).get())
                 .when(idempotencyService)
                 .execute(anyString(), anyString(), anyString(), any(), any());
@@ -606,6 +611,61 @@ class OpsRiskServiceTest {
                 org.mockito.ArgumentMatchers.eq(ApiResult.class), any());
     }
 
+    @ParameterizedTest
+    @ValueSource(ints = {101, 200})
+    void arbitrageActionAcceptsSupplementaryCharactersAndKeepsTheAuditReason(int count) {
+        authenticateK2Admin();
+        String reason = "🙂".repeat(count);
+
+        var result = service.executeArbitrageAction("T-318", "mark", "idem-k2-emoji",
+                new RiskArbitrageActionRequest(reason, "spoofed", 0L, null));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(result.getData().disposition()).isEqualTo("account_flagged");
+        verify(auditLogService).recordRequired(org.mockito.ArgumentMatchers.argThat(audit ->
+                audit.getDetail() instanceof Map<?, ?> detail && reason.equals(detail.get("reason"))));
+    }
+
+    @Test
+    void arbitrageActionUsesTheLiveMinimumAndIgnoresInvisiblePaddingWithoutReservingTheKey() {
+        authenticateK2Admin();
+        when(configFacade.activeValue(A2RuntimePolicy.REASON_MIN_KEY)).thenReturn(Optional.of("10 字"));
+        for (String reason : List.of("123456789", "e\u0301".repeat(9), "a \u3000\u00a0\u200b\u0001".repeat(8))) {
+            var result = service.executeArbitrageAction("T-318", "mark", "idem-k2-retry",
+                    new RiskArbitrageActionRequest(reason, "spoofed", 0L, null));
+            assertThat(result.getCode()).isEqualTo(422);
+            assertThat(result.getMessage()).isEqualTo("REASON_TOO_SHORT_MIN_10");
+        }
+        var overLimit = service.executeArbitrageAction("T-318", "mark", "idem-k2-retry",
+                new RiskArbitrageActionRequest("🙂".repeat(201), "spoofed", 0L, null));
+        assertThat(overLimit.getCode()).isEqualTo(422);
+        assertThat(overLimit.getMessage()).isEqualTo("REASON_TOO_LONG_MAX_200");
+        verify(idempotencyService, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(auditLogService, never()).recordRequired(any());
+        assertThat(riskRepository.findArbitrageRow("T-318").orElseThrow().version()).isZero();
+
+        var corrected = service.executeArbitrageAction("T-318", "mark", "idem-k2-retry",
+                new RiskArbitrageActionRequest("e\u0301".repeat(10), "spoofed", 0L, null));
+
+        assertThat(corrected.getCode()).isZero();
+        assertThat(corrected.getData().version()).isEqualTo(1L);
+    }
+
+    @Test
+    void arbitrageActionReturnsTheActiveReceiptForAnExactLegacyReason() {
+        authenticateK2Admin();
+        var receipt = ffdd.opsconsole.shared.api.ApiResult.ok(riskRepository.findArbitrageRow("T-318").orElseThrow());
+        when(idempotencyService.replayActiveSuccess(eq("K2_ACTION:T-318"), eq("idem-k2-old"), anyString(),
+                eq(ffdd.opsconsole.shared.api.ApiResult.class))).thenReturn(receipt);
+
+        var result = service.executeArbitrageAction("T-318", "mark", "idem-k2-old",
+                new RiskArbitrageActionRequest("ab    cd", "spoofed", 0L, null));
+
+        assertThat(result).isSameAs(receipt);
+        verify(idempotencyService, never()).execute(anyString(), anyString(), anyString(), any(), any());
+        verify(auditLogService, never()).recordRequired(any());
+    }
+
     @Test
     void arbitrageActionRequiresTheExactAuthorityAndUsesAuthenticatedActor() {
         var authentication = org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
@@ -651,6 +711,30 @@ class OpsRiskServiceTest {
         } finally {
             org.springframework.security.core.context.SecurityContextHolder.clearContext();
         }
+    }
+
+    @Test
+    void arbitrageFreezeBoundsUnicodeReasonsForLinkedWritesAndAudit() {
+        authenticateK2Admin();
+        riskRepository.multiAccountClusters.put("CL-318", "flagged");
+        String reason = "confirmed linked freeze 🙂" + "\u00a0\u200b".repeat(500) + "reviewed both accounts 🙂";
+
+        var result = service.executeArbitrageAction("T-318", "freeze-cluster", "idem-k2-long-freeze",
+                new RiskArbitrageActionRequest(reason, "spoofed", 0L, 0L));
+
+        assertThat(result.getCode()).isZero();
+        assertThat(riskRepository.multiAccountClusters.get("CL-318")).isEqualTo("frozen");
+        ArgumentCaptor<String> capture = ArgumentCaptor.forClass(String.class);
+        verify(userAccountControlFacade).freezeActiveUsersByUserNos(
+                org.mockito.ArgumentMatchers.eq(List.of("U00000001", "U00000002")), capture.capture(),
+                org.mockito.ArgumentMatchers.eq("superadmin"), org.mockito.ArgumentMatchers.eq("CL-318"));
+        String storedReason = capture.getValue();
+        assertThat(storedReason.codePointCount(0, storedReason.length())).isEqualTo(255);
+        assertThat(storedReason).startsWith("confirmed linked freeze 🙂").contains("…").endsWith("reviewed both accounts 🙂");
+        verify(auditLogService, times(2)).recordRequired(org.mockito.ArgumentMatchers.argThat(audit ->
+                audit.getDetail() instanceof Map<?, ?> detail && detail.get("reason") instanceof String text
+                        && text.startsWith("confirmed linked freeze 🙂") && text.endsWith("reviewed both accounts 🙂")
+                        && text.codePointCount(0, text.length()) == 256));
     }
 
     @Test
@@ -1336,7 +1420,7 @@ class OpsRiskServiceTest {
                 });
         OpsRiskService publishService = new OpsRiskService(repository, mock(ffdd.opsconsole.risk.mapper.RiskOpsMapper.class), configFacade, auditLogService, lockMapper,
                 idempotencyService, superAdminAuthorization, userAccountControlFacade,
-                eventOutboxService,
+                eventOutboxService, mock(ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade.class),
             chainAddressReputationGateway,
             mock(RiskReleaseParamsService.class));
         var method = OpsRiskService.class.getDeclaredMethod(
@@ -1811,13 +1895,16 @@ class OpsRiskServiceTest {
 
             ffdd.opsconsole.platform.application.A2ReplayContext.enterReplay();
             try {
+                String approvalReason = "🙂".repeat(101);
                 var replayed = service.replay(
                         new AuditReplayCommand("K", "k2_row_freeze", Map.of(
                                 "rowId", "T-318", "expectedVersion", 0, "clusterExpectedVersion", 0)),
-                        new AuditReplayContext("approver", "approved K2 linked freeze", "idem-approved-k2-replay"));
+                        new AuditReplayContext("approver", approvalReason, "idem-approved-k2-replay"));
                 assertThat(replayed.getCode()).isZero();
                 assertThat(riskRepository.multiAccountClusters.get("CL-318")).isEqualTo("frozen");
                 assertThat(riskRepository.findArbitrageRow("T-318").orElseThrow().version()).isEqualTo(1L);
+                verify(userAccountControlFacade).freezeActiveUsersByUserNos(
+                        List.of("U00000001", "U00000002"), approvalReason, "risk-k2-user", "CL-318");
             } finally {
                 ffdd.opsconsole.platform.application.A2ReplayContext.exitReplay();
             }
@@ -1862,9 +1949,9 @@ class OpsRiskServiceTest {
                         LocalDateTime.now().minusDays(2), LocalDateTime.now().minusDays(1)),
                 new RiskRuleView("WR-06", "金额", "单笔 >= $500(P1 期旧线)", "manual", "archived", true, LocalDateTime.now().minusDays(30), LocalDateTime.now().minusDays(20))));
         private final List<RiskRuleHitView> withdrawHits = new ArrayList<>(List.of(
-                new RiskRuleHitView("WD-1", "usr_1", "$1,200", "WR-01", "金额", "manual", "单笔大额提现转人工", "今天 10:00"),
-                new RiskRuleHitView("WD-2", "usr_2", "$400", "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:05"),
-                new RiskRuleHitView("WD-3", "usr_3", "$500", "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:10")));
+                new RiskRuleHitView("WD-1", "usr_1", "$1,200", null, null, null, "WR-01", "金额", "manual", "单笔大额提现转人工", "今天 10:00", null),
+                new RiskRuleHitView("WD-2", "usr_2", "$400", null, null, null, "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:05", null),
+                new RiskRuleHitView("WD-3", "usr_3", "$500", null, null, null, "WR-02", "速度", "delay", "24h 提现速度过线延迟", "今天 10:10", null)));
         private final List<RiskWithdrawCandidateView> withdrawCandidates = new ArrayList<>(List.of(
                 new RiskWithdrawCandidateView("WD-K3-1", "U00000001", BigDecimal.valueOf(1_500), 1,
                         BigDecimal.valueOf(1_500), 100, "normal", "", "USDT-TRC20", "TR-DRY-ONE"),
@@ -2062,12 +2149,12 @@ class OpsRiskServiceTest {
             withdrawHits.add(new RiskRuleHitView(
                     withdrawalNo,
                     userNo,
-                    "$" + amount,
+                    "$" + amount, null, null, null,
                     rule.ruleId(),
                     rule.dimension(),
                     rule.action(),
                     rule.conditionText(),
-                    "now"));
+                    "now", null));
         }
 
         @Override
@@ -2271,7 +2358,8 @@ class OpsRiskServiceTest {
                     scoreUser.effectiveScore(),
                     scoreUser.bandLabel(),
                     scoreUser.bandTone(),
-                    scoreUser.overridden()));
+                    scoreUser.overridden(),
+                    scoreUser.scored()));
         }
 
         @Override

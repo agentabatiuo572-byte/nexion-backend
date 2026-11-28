@@ -96,13 +96,22 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             @Param("chainId") String chainId, @Param("installationId") String installationId,
             @Param("executionSupported") boolean executionSupported);
 
+    default int replaceAppSessions(long userId) {
+        return replaceSessions(userId, "APP", "APP_REPLACED");
+    }
+
+    default int replaceH5Sessions(long userId) {
+        return replaceSessions(userId, "H5", "APP_REPLACED");
+    }
+
     @Update("""
         UPDATE nx_user_session SET revoked_at=COALESCE(revoked_at,NOW()),
-          session_ended_reason='APP_REPLACED',updated_at=NOW()
-        WHERE user_id=#{userId} AND session_group='APP' AND is_deleted=0
+          session_ended_reason=#{reason},updated_at=NOW()
+        WHERE user_id=#{userId} AND session_group=#{group} AND is_deleted=0
           AND session_ended_reason IS NULL
         """)
-    int replaceAppSessions(@Param("userId") long userId);
+    int replaceSessions(@Param("userId") long userId, @Param("group") String group,
+            @Param("reason") String reason);
 
     @Update("UPDATE nx_user_session SET session_ended_reason=#{reason} WHERE session_chain_id=#{chainId} AND session_ended_reason IS NULL")
     int endChain(@Param("chainId") String chainId, @Param("reason") String reason);
@@ -111,11 +120,51 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
             + "WHERE a.user_id=nx_user_session.user_id AND a.app_session_version=nx_user_session.app_session_version "
             + "AND a.session_chain_id=nx_user_session.session_chain_id AND a.installation_id=nx_user_session.installation_id AND a.execution_supported=nx_user_session.execution_supported";
     String FIXED_CONTEXT = FIXED_CONTEXT_MATCH + " FOR UPDATE)))";
+    String READ_FIXED_CONTEXT = FIXED_CONTEXT_MATCH + ")))";
     String READ_SESSION_CONTEXT = "refresh_token_id=#{sessionId} AND user_id=#{userId} AND is_deleted=0 "
             + "AND session_ended_reason IS NULL AND " + FIXED_CONTEXT_MATCH + ")))";
     String LIVE_SESSION = "revoked_at IS NULL AND expires_at>NOW() "
             + "AND COALESCE(last_active_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)";
     String RECENT_ROTATION = "rotation_redeemed_at>DATE_SUB(NOW(),INTERVAL 10 SECOND)";
+
+    @Select("SELECT app_session_version,installation_id FROM nx_user_session "
+            + "WHERE user_id=#{userId} AND session_group='APP' AND is_deleted=0 AND session_ended_reason IS NULL "
+            + "AND " + LIVE_SESSION + " AND " + READ_FIXED_CONTEXT + " LIMIT 1")
+    UserSessionEntity findLiveAppSession(@Param("userId") long userId, @Param("idleDays") int idleDays);
+
+    @Select("""
+        SELECT a.user_id FROM nx_app_session_state a
+        JOIN nx_user u ON u.id=a.user_id AND u.status='ACTIVE' AND u.is_deleted=0 AND u.sandbox=#{sandbox}
+        WHERE a.user_id>#{after}
+          AND EXISTS(SELECT 1 FROM nx_user_session WHERE user_id=a.user_id AND session_group='APP'
+            AND session_chain_id=a.session_chain_id AND app_session_version=a.app_session_version
+            AND installation_id=a.installation_id AND execution_supported=a.execution_supported
+            AND is_deleted=0 AND session_ended_reason IS NULL AND
+            """ + LIVE_SESSION + """
+          )
+          AND EXISTS(SELECT 1 FROM nx_user_session WHERE user_id=a.user_id AND session_group='H5'
+            AND is_deleted=0 AND session_ended_reason IS NULL AND
+            """ + LIVE_SESSION + """
+          )
+        ORDER BY a.user_id LIMIT 100
+        """)
+    List<Long> legacyDualSurfaceAccounts(@Param("after") long after, @Param("sandbox") boolean sandbox,
+            @Param("idleDays") int idleDays);
+
+    @Select("""
+        WITH live AS (
+          SELECT user_id,session_group,session_chain_id,login_attempt_id FROM nx_user_session
+          WHERE user_id=#{userId} AND is_deleted=0 AND session_ended_reason IS NULL AND
+          """ + LIVE_SESSION + " AND " + READ_FIXED_CONTEXT + """
+        )
+        SELECT live.session_group FROM live
+        JOIN nx_app_login_attempt attempt ON attempt.attempt_id=live.login_attempt_id AND attempt.user_id=live.user_id
+        JOIN nx_user_session original ON original.refresh_token_id=attempt.session_id
+          AND original.user_id=live.user_id AND original.session_chain_id=live.session_chain_id
+        GROUP BY live.session_group
+        ORDER BY MAX(original.id) DESC
+        """)
+    List<String> liveSurfacesByLogin(@Param("userId") long userId, @Param("idleDays") int idleDays);
 
     @Select("SELECT EXISTS(SELECT 1 FROM nx_user_session WHERE " + READ_SESSION_CONTEXT
             + " AND (" + LIVE_SESSION + " OR (" + RECENT_ROTATION + " AND rotated_to_id IS NOT NULL"
@@ -161,11 +210,44 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
                AND session_chain_id=(SELECT session_chain_id FROM nx_user_session
                      WHERE user_id=#{userId} AND refresh_token_id=#{currentSessionId} AND is_deleted=0 LIMIT 1)
                AND revoked_at IS NULL AND expires_at>NOW() AND is_deleted=0
+               AND session_ended_reason IS NULL
                AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
+               AND """ + READ_FIXED_CONTEXT + """
              ORDER BY id DESC LIMIT 1
             """)
     UserSessionEntity currentUserSession(@Param("userId") Long userId,
             @Param("currentSessionId") String currentSessionId, @Param("idleDays") int idleDays);
+
+    @Select("""
+            WITH valid AS (
+              SELECT *, COALESCE(last_active_at,updated_at,created_at) AS activity,
+                     CASE WHEN installation_id IS NULL OR TRIM(installation_id)=''
+                          THEN CONCAT('EMPTY:',session_group,':',BINARY COALESCE(session_chain_id,refresh_token_id))
+                          ELSE CONCAT('INSTALL:',session_group,':',BINARY installation_id)
+                     END AS group_key
+                FROM nx_user_session
+               WHERE user_id=#{userId} AND is_deleted=0 AND revoked_at IS NULL
+                 AND session_ended_reason IS NULL AND expires_at>NOW()
+                 AND COALESCE(last_active_at,updated_at,created_at)>DATE_SUB(NOW(),INTERVAL #{idleDays} DAY)
+                 AND """ + READ_FIXED_CONTEXT + """
+            ), ranked AS (
+              SELECT valid.*,
+                     ROW_NUMBER() OVER (PARTITION BY group_key ORDER BY activity DESC,id DESC) AS group_rank
+                FROM valid
+            )
+            SELECT * FROM ranked
+             WHERE group_rank=1
+               AND (#{beforeId} IS NULL OR id < #{beforeId})
+               AND (#{includeCurrent}=TRUE OR #{currentGroupKey} IS NULL
+                    OR BINARY group_key <> BINARY #{currentGroupKey})
+             ORDER BY CASE WHEN #{includeCurrent}=TRUE AND #{currentGroupKey} IS NOT NULL
+                             AND BINARY group_key = BINARY #{currentGroupKey} THEN 0 ELSE 1 END,
+                      id DESC
+             LIMIT #{limit}
+            """)
+    List<UserSessionEntity> pageSessionGroups(@Param("userId") long userId, @Param("idleDays") int idleDays,
+            @Param("beforeId") Long beforeId, @Param("includeCurrent") boolean includeCurrent,
+            @Param("currentGroupKey") String currentGroupKey, @Param("limit") int limit);
 
     @Select("""
             SELECT * FROM nx_user_session
@@ -368,4 +450,73 @@ public interface AuthSessionMapper extends BaseMapper<UserSessionEntity> {
              WHERE user_id=#{userId} AND is_deleted=0
             """)
     int revokeAllUserSessions(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE nx_user_session
+               SET revoked_at=COALESCE(revoked_at,NOW()),updated_at=NOW()
+             WHERE user_id=#{userId} AND session_group=#{sessionGroup}
+               AND BINARY installation_id = BINARY #{installationId}
+               AND is_deleted=0 AND revoked_at IS NULL
+            """)
+    int revokeInstallationGroup(@Param("userId") long userId, @Param("sessionGroup") String sessionGroup,
+            @Param("installationId") String installationId);
+
+    @Update("""
+            UPDATE nx_user_session
+               SET session_ended_reason=COALESCE(session_ended_reason,'SECURITY_REVOKED')
+             WHERE user_id=#{userId} AND session_group=#{sessionGroup}
+               AND BINARY installation_id = BINARY #{installationId}
+               AND is_deleted=0
+            """)
+    int endInstallationGroup(@Param("userId") long userId, @Param("sessionGroup") String sessionGroup,
+            @Param("installationId") String installationId);
+
+    @Update("""
+            UPDATE nx_user_session
+               SET revoked_at=COALESCE(revoked_at,NOW()),updated_at=NOW()
+             WHERE user_id=#{userId} AND is_deleted=0 AND revoked_at IS NULL AND expires_at>NOW()
+               AND NOT (session_group=#{sessionGroup} AND BINARY installation_id = BINARY #{installationId})
+            """)
+    int revokeOtherInstallationGroups(@Param("userId") long userId, @Param("sessionGroup") String sessionGroup,
+            @Param("installationId") String installationId);
+
+    @Update("""
+            UPDATE nx_user_session
+               SET session_ended_reason=COALESCE(session_ended_reason,'SECURITY_REVOKED')
+             WHERE user_id=#{userId} AND is_deleted=0
+               AND NOT (session_group=#{sessionGroup} AND BINARY installation_id = BINARY #{installationId})
+            """)
+    int endOtherInstallationGroups(@Param("userId") long userId, @Param("sessionGroup") String sessionGroup,
+            @Param("installationId") String installationId);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_user_session
+             WHERE user_id=#{userId} AND session_group='APP' AND is_deleted=0
+               AND revoked_at IS NULL AND expires_at>NOW() AND session_ended_reason IS NULL
+               AND NOT (session_group=#{sessionGroup} AND BINARY installation_id = BINARY #{installationId})
+               FOR UPDATE
+            """)
+    int countAppOutsideInstallationGroup(@Param("userId") long userId, @Param("sessionGroup") String sessionGroup,
+            @Param("installationId") String installationId);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_user_session
+             WHERE user_id=#{userId} AND session_group='APP' AND is_deleted=0
+               AND revoked_at IS NULL AND expires_at>NOW() AND session_ended_reason IS NULL
+               AND BINARY installation_id = BINARY #{installationId}
+               AND """ + FIXED_CONTEXT + """
+               FOR UPDATE
+            """)
+    int countFixedAppContextInInstallationGroup(@Param("userId") long userId,
+            @Param("installationId") String installationId);
+
+    @Select("""
+            SELECT COUNT(*) FROM nx_user_session
+             WHERE user_id=#{userId} AND session_group='APP' AND is_deleted=0
+               AND revoked_at IS NULL AND expires_at>NOW() AND session_ended_reason IS NULL
+               AND session_chain_id=#{chainId}
+               AND """ + FIXED_CONTEXT + """
+               FOR UPDATE
+            """)
+    int countFixedAppContextInChain(@Param("userId") long userId, @Param("chainId") String chainId);
 }

@@ -81,6 +81,11 @@ public class DirectReferralPolicyService {
     }
     public boolean sevenLayerActive(LocalDateTime at) { var boundary=cutoverAt();return boundary!=null&&!at.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().isBefore(boundary); }
     public boolean sevenLayerActiveForUpdate(LocalDateTime at) {var boundary=cutoverAt(true);return boundary!=null&&!at.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().isBefore(boundary);}
+    boolean rankPurchaseForUpdate(LocalDateTime paidAt) {
+        var boundary = PurchaseRankPolicy.cutover(config, true);
+        return boundary != null && !paidAt.atZone(DateTimeFormatConfig.BUSINESS_ZONE).toInstant().isBefore(boundary);
+    }
+
     public boolean sevenLayerPaused() {
         return sevenLayerPaused(false);
     }
@@ -110,8 +115,16 @@ public class DirectReferralPolicyService {
         var reference=new LinkedHashMap<String,Object>();reference.put("revision",currentRead?lockSevenLayerRevision():sevenLayerRevision());
         var rows=currentRead?mapper.sevenLayerReferenceForUpdate():mapper.sevenLayerReference();var first=rows==null||rows.isEmpty()?Map.<String,Object>of():rows.get(0);
         reference.put("baseRatePct",first.get("usdtPct"));reference.put("legacyNexPerUsd",first.get("nexReward"));
+        var rankCutover = PurchaseRankPolicy.cutover(config, currentRead);
+        reference.put("purchaseBaseRateSource", rankCutover == null ? "F2" : "BENEFICIARY_RANK");
+        reference.put("purchaseRankCutoverAt", rankCutover);
         reference.put("coolingDays",(currentRead?config.activeValueForUpdate("commission/cooling-days"):config.activeValue("commission/cooling-days")).map(Integer::valueOf).orElse(null));return reference;
     }
+    public String purchaseBaseRateSummary() {
+        return PurchaseRankPolicy.active(config) ? "第 1、2 层按受益人等级"
+                : "L1 原预算 " + sevenLayerReference().get("baseRatePct") + "%";
+    }
+
     public BigDecimal price() {var value=prices.latestNexUsdtPrice();return value!=null&&value.signum()>0?value:null;}
     public Map<String,Object> current() {
         var p=at(now());var s=scope();Map<String,Object> out=new LinkedHashMap<>();
@@ -159,7 +172,7 @@ public class DirectReferralPolicyService {
         if(!valid)throw new BizException(409,"SEVEN_LAYER_ACTIVATION_STATE_CONFLICT");
         if ("ACTIVATE".equals(request.action())) {
             var rates = currentRead ? mapper.sevenLayerRatesForUpdate() : mapper.sevenLayerRates();
-            UnilevelCommissionService.requireCompleteLayerRates(rates);
+            UnilevelCommissionService.requireCompleteLayerRates(rates, PurchaseRankPolicy.cutover(config, currentRead) == null);
         }
     }
     @Transactional(rollbackFor=Exception.class)
@@ -176,11 +189,7 @@ public class DirectReferralPolicyService {
         config.activeValueForUpdate(VERSION_KEY).orElseThrow(()->new BizException(503,"DIRECT_REFERRAL_VERSION_UNAVAILABLE"));
         checkActivation(request,revision,mapper.latestVersionForUpdate(),true);
         var before=current(2);
-        if(!"PAUSE".equals(request.action())){
-            var c=coverage.snapshot();
-            if(c==null||!c.reliable()||c.coverageRatio()==null||c.redlinePct()==null)throw new BizException(503,"COVERAGE_SNAPSHOT_UNAVAILABLE");
-            if(c.coverageRatio().compareTo(c.redlinePct())<0)throw new BizException(409,"COVERAGE_BELOW_REDLINE");
-        }
+        if (!"PAUSE".equals(request.action())) requirePayoutCoverage();
         if("ACTIVATE".equals(request.action()))config.upsertAdminValue(CUTOVER_KEY,
                 clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS).toString(),"STRING","team","L1–L7 结算首次批准切换时间，不可删除或移动");
         config.upsertAdminValue(PAUSED_KEY,Boolean.toString("PAUSE".equals(request.action())),"BOOLEAN","team","仅暂停首次 L1–L7 来源准备，保留原事件和既有快照");
@@ -202,6 +211,9 @@ public class DirectReferralPolicyService {
         if(!Integer.valueOf(2).equals(request.schemaVersion())&&(request.purchaseSplit()!=null||request.expectedSevenLayerRevision()!=null))throw new BizException(422,"DIRECT_REFERRAL_POLICY_SCHEMA_INVALID");
         if(request.schemaVersion()!=null&&!Set.of(1,2).contains(request.schemaVersion()))throw new BizException(422,"DIRECT_REFERRAL_POLICY_SCHEMA_INVALID");
         request.effectivePurchase().validate();request.deviceEarning().validate();
+        if (request.effectivePurchase().level2RatePct().signum() != 0) {
+            throw new BizException(422, "DIRECT_REFERRAL_POLICY_REQUEST_INVALID");
+        }
     }
     @Transactional(rollbackFor=Exception.class)
     public Map<String,Object> publish(String key,DirectReferralPolicyRequest request) {
@@ -220,9 +232,7 @@ public class DirectReferralPolicyService {
         if(Integer.valueOf(2).equals(request.schemaVersion()))reference.put("revision",revision);
         boolean purchaseAmplifies=Integer.valueOf(2).equals(request.schemaVersion())?purchaseAmplifies(request.effectivePurchase(),before.schemaVersion()==2?before.purchase():DirectReferralPolicy.DISABLED,money(reference.get("legacyNexPerUsd")),true):request.purchase().amplifies(before.purchase());
         if(purchaseAmplifies||request.deviceEarning().amplifies(before.deviceEarning())){
-            var c=coverage.snapshot();
-            if(c==null||!c.reliable()||c.coverageRatio()==null||c.redlinePct()==null)throw new BizException(503,"COVERAGE_SNAPSHOT_UNAVAILABLE");
-            if(c.coverageRatio().compareTo(c.redlinePct())<0)throw new BizException(409,"COVERAGE_BELOW_REDLINE");
+            requirePayoutCoverage();
         }
         Instant effective=clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         try {
@@ -236,6 +246,10 @@ public class DirectReferralPolicyService {
                 .riskLevel("HIGH").detail(Map.of("policyVersion",version+1,"effectiveAt",effective.toString(),"request",request,"operationId",A2ReplayContext.operationId())).build());
         var result=current(request.schemaVersion());if(Integer.valueOf(2).equals(request.schemaVersion())){result.put("sevenLayerReference",reference);result.put("sevenLayerRevision",revision);}result.put("approvedPolicyVersion",version+1);result.put("approvedEffectiveAt",effective);return result;
     }
+    public void requirePayoutCoverage() {
+        PurchaseRankPolicy.requireCoverage(coverage.snapshot());
+    }
+
     public boolean purchaseAmplifies(DirectReferralPolicy.Rule after,DirectReferralPolicy.Rule before) {
         return purchaseAmplifies(after,before,money(sevenLayerReference().get("legacyNexPerUsd")),false);
     }

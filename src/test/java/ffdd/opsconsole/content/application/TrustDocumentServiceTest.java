@@ -136,7 +136,7 @@ class TrustDocumentServiceTest {
         when(mapper.insert(any())).thenReturn(1);
 
         TrustDocumentsView.Document result = service.upload("whitepaper", pdf("UVEL Whitepaper v1.4.pdf"),
-                new TrustDocumentUploadRequest(" v1.4 ", "English", null, null, "publish v1.4", current), "key-1", "ops-admin");
+                new TrustDocumentUploadRequest(" v1.4 ", "English", null, null, "publish v1.4", current), "key-1", "ops-admin", "7");
 
         ArgumentCaptor<TrustDocumentRow> saved = ArgumentCaptor.forClass(TrustDocumentRow.class);
         verify(mapper).insert(saved.capture());
@@ -158,12 +158,12 @@ class TrustDocumentServiceTest {
         String defaultSha = service.published().documents().get(3).sha256();
         when(mapper.find("ein")).thenReturn(null);
         when(mapper.insert(any())).thenThrow(new DuplicateKeyException("slot"));
-        assertCode(() -> service.upload("ein", pdf("ein.pdf"), request(null, "43-2288822", null, defaultSha), "k1", "a"),
+        assertCode(() -> service.upload("ein", pdf("ein.pdf"), request(null, "43-2288822", null, defaultSha), "k1", "a", "7"),
                 "TRUST_DOCUMENT_STALE");
 
         when(mapper.find("msb")).thenReturn(row("msb", "f".repeat(64)));
         when(mapper.replace(any(), eq("f".repeat(64)))).thenReturn(0);
-        assertCode(() -> service.upload("msb", pdf("msb.pdf"), request(null, "31000342955895", null, "f".repeat(64)), "k2", "a"),
+        assertCode(() -> service.upload("msb", pdf("msb.pdf"), request(null, "31000342955895", null, "f".repeat(64)), "k2", "a", "7"),
                 "TRUST_DOCUMENT_STALE");
     }
 
@@ -171,14 +171,14 @@ class TrustDocumentServiceTest {
     void registrationsNeedTheTrustSectionAuthorityWhileTheWhitePaperTakesStandardPublishing() {
         signIn("content_i4_publish_standard");
         String msb = service.published().documents().get(2).sha256();
-        assertCode(() -> service.upload("msb", pdf("msb.pdf"), request(null, "31000342955895", null, msb), "k", "a"),
+        assertCode(() -> service.upload("msb", pdf("msb.pdf"), request(null, "31000342955895", null, msb), "k", "a", "7"),
                 "TRUST_DOCUMENT_FORBIDDEN");
-        assertCode(() -> service.restoreDefault("ein", new TrustDocumentRestoreRequest("back to default", "x"), "k", "a"),
+        assertCode(() -> service.restoreDefault("ein", new TrustDocumentRestoreRequest("back to default", "x"), "k", "a", "7"),
                 "TRUST_DOCUMENT_FORBIDDEN");
 
         String whitepaper = service.published().documents().get(0).sha256();
         when(mapper.insert(any())).thenReturn(1);
-        service.upload("whitepaper", pdf("wp.pdf"), request("v2", null, null, whitepaper), "k", "a");
+        service.upload("whitepaper", pdf("wp.pdf"), request("v2", null, null, whitepaper), "k", "a", "7");
         verify(mapper).insert(any());
     }
 
@@ -188,18 +188,18 @@ class TrustDocumentServiceTest {
         String msb = service.published().documents().get(2).sha256();
         MockMultipartFile text = new MockMultipartFile("file", "a.pdf", "application/pdf", "hello".getBytes(StandardCharsets.UTF_8));
 
-        assertCode(() -> service.upload("whitepaper", text, request("v2", null, null, whitepaper), "k", "a"), "TRUST_DOCUMENT_PDF_REQUIRED");
+        assertCode(() -> service.upload("whitepaper", text, request("v2", null, null, whitepaper), "k", "a", "7"), "TRUST_DOCUMENT_PDF_REQUIRED");
         MockMultipartFile broken = new MockMultipartFile("file", "b.pdf", "application/pdf", "%PDF-1.7 not really".getBytes(StandardCharsets.US_ASCII));
-        assertCode(() -> service.upload("whitepaper", broken, request("v2", null, null, whitepaper), "k", "a"), "TRUST_DOCUMENT_PDF_REQUIRED");
-        assertCode(() -> service.upload("whitepaper", pdf("a.pdf"), request(null, null, null, whitepaper), "k", "a"), "TRUST_DOCUMENT_VERSION_REQUIRED");
-        assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, null, null, msb), "k", "a"), "TRUST_DOCUMENT_REFERENCE_REQUIRED");
-        assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, "31000342955895", "http://www.fincen.gov", msb), "k", "a"),
+        assertCode(() -> service.upload("whitepaper", broken, request("v2", null, null, whitepaper), "k", "a", "7"), "TRUST_DOCUMENT_PDF_REQUIRED");
+        assertCode(() -> service.upload("whitepaper", pdf("a.pdf"), request(null, null, null, whitepaper), "k", "a", "7"), "TRUST_DOCUMENT_VERSION_REQUIRED");
+        assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, null, null, msb), "k", "a", "7"), "TRUST_DOCUMENT_REFERENCE_REQUIRED");
+        assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, "31000342955895", "http://www.fincen.gov", msb), "k", "a", "7"),
                 "TRUST_DOCUMENT_VERIFY_URL_INVALID");
-        assertCode(() -> service.upload("msb", pdf("a.pdf"), new TrustDocumentUploadRequest(null, null, "1", null, "x \u200b y", msb), "k", "a"),
+        assertCode(() -> service.upload("msb", pdf("a.pdf"), new TrustDocumentUploadRequest(null, null, "1", null, "x \u200b y", msb), "k", "a", "7"),
                 "REASON_TOO_SHORT_MIN_3");
-        assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, "1", null, msb), " ", "a"), "IDEMPOTENCY_KEY_REQUIRED");
-        assertCode(() -> service.upload("passport", pdf("a.pdf"), request("v1", null, null, msb), "k", "a"), "TRUST_DOCUMENT_NOT_FOUND");
-        assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, "1", null, whitepaper), "k", "a"), "TRUST_DOCUMENT_STALE");
+        assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, "1", null, msb), " ", "a", "7"), "IDEMPOTENCY_KEY_REQUIRED");
+        assertCode(() -> service.upload("passport", pdf("a.pdf"), request("v1", null, null, msb), "k", "a", "7"), "TRUST_DOCUMENT_NOT_FOUND");
+        assertCode(() -> service.upload("msb", pdf("a.pdf"), request(null, "1", null, whitepaper), "k", "a", "7"), "TRUST_DOCUMENT_STALE");
         verify(storage, never()).put(anyString(), anyString(), any(), anyLong());
         verify(mapper, never()).insert(any());
         verify(mapper, never()).replace(any(), anyString());
@@ -210,16 +210,16 @@ class TrustDocumentServiceTest {
         when(mapper.find("ein")).thenReturn(row("ein", "f".repeat(64)));
         when(mapper.deleteIfCurrent("ein", "f".repeat(64))).thenReturn(1);
 
-        assertCode(() -> service.restoreDefault("ein", new TrustDocumentRestoreRequest("back to default", "0".repeat(64)), "k", "a"),
+        assertCode(() -> service.restoreDefault("ein", new TrustDocumentRestoreRequest("back to default", "0".repeat(64)), "k", "a", "7"),
                 "TRUST_DOCUMENT_STALE");
         TrustDocumentsView.Document restored = service.restoreDefault("ein",
-                new TrustDocumentRestoreRequest("back to default", "f".repeat(64)), "k2", "ops-admin");
+                new TrustDocumentRestoreRequest("back to default", "f".repeat(64)), "k2", "ops-admin", "7");
 
         verify(mapper).deleteIfCurrent("ein", "f".repeat(64));
         assertThat(restored.source()).isEqualTo("DEFAULT");
         assertThat(restored.referenceNo()).isEqualTo("43-2288822");
         when(mapper.find("msb")).thenReturn(null);
-        assertCode(() -> service.restoreDefault("msb", new TrustDocumentRestoreRequest("back to default", "x"), "k3", "a"),
+        assertCode(() -> service.restoreDefault("msb", new TrustDocumentRestoreRequest("back to default", "x"), "k3", "a", "7"),
                 "TRUST_DOCUMENT_ALREADY_DEFAULT");
     }
 

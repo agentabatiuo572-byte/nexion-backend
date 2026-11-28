@@ -8,7 +8,6 @@ import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -68,6 +67,12 @@ public final class B3FunnelAnalytics {
     public static Map<String, Object> calculate(
             List<Map<String, Object>> rawRows, String cohort, String phase, String ref,
             String trendStage, int day0WindowSeconds) {
+        return calculate(rawRows, cohort, phase, ref, trendStage, day0WindowSeconds, null);
+    }
+
+    public static Map<String, Object> calculate(
+            List<Map<String, Object>> rawRows, String cohort, String phase, String ref,
+            String trendStage, int day0WindowSeconds, LocalDate collectionFrom) {
         if (day0WindowSeconds < 30 || day0WindowSeconds > 600) {
             throw new IllegalArgumentException("A4_DAY0_POLICY_INVALID");
         }
@@ -133,7 +138,11 @@ public final class B3FunnelAnalytics {
                     "distinctUsers", "previousUsers", "cvrFromPrev", "momDelta"));
         }
 
-        Map<String, Object> aux = auxMetrics(allEvents, registered, byActor, day0WindowSeconds);
+        LocalDate firstFullDauDay = collectionFrom != null ? collectionFrom : allEvents.stream()
+                .filter(event -> event.name().equals("app.dau"))
+                .map(EventFact::at).min(LocalDateTime::compareTo)
+                .map(L1KpiAnalytics::firstFullDauDay).orElse(null);
+        Map<String, Object> aux = auxMetrics(allEvents, registered, byActor, day0WindowSeconds, firstFullDauDay);
         return linked(
                 "available", true,
                 "module", "B3",
@@ -245,11 +254,13 @@ public final class B3FunnelAnalytics {
             List<EventFact> events,
             Map<String, EventFact> registered,
             Map<String, List<EventFact>> byActor,
-            int day0WindowSeconds) {
+            int day0WindowSeconds,
+            LocalDate collectionFrom) {
         Set<String> day0Actors = new LinkedHashSet<>();
         Set<String> matureActors = new LinkedHashSet<>();
         Set<String> day7Actors = new LinkedHashSet<>();
         LocalDate today = ffdd.opsconsole.shared.config.BusinessCalendar.legacy().dateAt(java.time.Instant.now());
+        boolean day7NotCollected = false;
         for (Map.Entry<String, EventFact> entry : registered.entrySet()) {
             String actor = entry.getKey();
             EventFact registration = entry.getValue();
@@ -260,17 +271,18 @@ public final class B3FunnelAnalytics {
                     .filter(event -> event.latencySec() != null && event.latencySec() <= day0WindowSeconds)
                     .findFirst()
                     .ifPresent(event -> day0Actors.add(actor));
-            long ageDays = ChronoUnit.DAYS.between(businessDay(registration.at()), today);
-            if (ageDays >= 7) {
+            LocalDate activityDay = businessDay(registration.at()).plusDays(7);
+            if (activityDay.isBefore(today)) {
                 matureActors.add(actor);
-                boolean retained = events.stream()
-                        .filter(event -> event.actor().equals(actor))
-                        .filter(event -> event.name().equals("app.dau"))
-                        .anyMatch(event -> ChronoUnit.DAYS.between(
-                                businessDay(registration.at()), businessDay(event.at())) == 7);
-                if (retained) day7Actors.add(actor);
+                if (collectionFrom == null || activityDay.isBefore(collectionFrom)) {
+                    day7NotCollected = true;
+                } else if (byActor.get(actor).stream().anyMatch(event ->
+                        event.name().equals("app.dau") && businessDay(event.at()).equals(activityDay))) {
+                    day7Actors.add(actor);
+                }
             }
         }
+        boolean day7Available = !matureActors.isEmpty() && !day7NotCollected;
         Map<String, EventFact> storeViewed = nextStage(byActor, registered, "store.viewed");
         Map<String, EventFact> purchasedFromStore = nextStage(byActor, storeViewed, "checkout.completed");
         Map<String, Object> result = linked(
@@ -285,16 +297,20 @@ public final class B3FunnelAnalytics {
                 "day0Denominator", registered.size(),
                 "day0Target", 95,
                 "day0WindowSeconds", day0WindowSeconds,
-                "day7Retention", matureActors.isEmpty() ? null : percent(day7Actors.size(), matureActors.size()),
-                "day7Numerator", day7Actors.size(),
-                "day7Denominator", matureActors.size(),
+                "day7Retention", day7Available ? percent(day7Actors.size(), matureActors.size()) : null,
+                "day7Numerator", day7Available ? day7Actors.size() : 0,
+                "day7Denominator", day7Available ? matureActors.size() : 0,
                 "day7Target", 60,
-                "day7Mature", !matureActors.isEmpty());
+                "day7Mature", day7Available);
         List<String> suppressed = new ArrayList<>();
         protectAux(result, suppressed, "storeViewRate", "storeView", storeViewed.size(), registered.size());
         protectAux(result, suppressed, "purchaseFromStoreRate", "purchaseFromStore", purchasedFromStore.size(), storeViewed.size());
         protectAux(result, suppressed, "day0AccessRate", "day0", day0Actors.size(), registered.size());
-        protectAux(result, suppressed, "day7Retention", "day7", day7Actors.size(), matureActors.size());
+        if (day7Available) {
+            protectAux(result, suppressed, "day7Retention", "day7", day7Actors.size(), matureActors.size());
+        } else {
+            result.put("day7UnavailableReason", day7NotCollected ? "DAU_NOT_COLLECTED" : "WINDOW_IMMATURE");
+        }
         if (!suppressed.isEmpty()) result.put("suppressedMetrics", suppressed);
         return result;
     }
@@ -318,7 +334,7 @@ public final class B3FunnelAnalytics {
                 "filters", filters(cohort, phase, ref),
                 "filterOptions", linked("cohorts", List.of(), "phases", List.of(), "refs", List.of()),
                 "stages", List.of(),
-                "auxMetrics", auxMetrics(List.of(), Map.of(), Map.of(), day0WindowSeconds),
+                "auxMetrics", auxMetrics(List.of(), Map.of(), Map.of(), day0WindowSeconds, null),
                 "trend", List.of(),
                 "dailyFirstPurchaseTargetPct", 18,
                 "dailyFirstPurchase", dailyFirstPurchase(Map.of(), Map.of()),

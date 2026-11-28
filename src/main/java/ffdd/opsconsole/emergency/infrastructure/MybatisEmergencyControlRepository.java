@@ -216,6 +216,11 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     }
 
     @Override
+    public Optional<String> settingValueForUpdate(String settingKey) {
+        return Optional.ofNullable(mapper.settingValueForUpdate(settingKey));
+    }
+
+    @Override
     public void upsertSetting(
             String settingKey,
             String settingValue,
@@ -511,7 +516,12 @@ public class MybatisEmergencyControlRepository implements EmergencyControlReposi
     @Override
     public boolean hasCurrentDrillEvidence(String code) {
         ensureTables();
-        return mapper.hasCurrentDrillEvidence(code);
+        return mapper.hasDrillEvidence(code, false);
+    }
+
+    @Override
+    public boolean hasExpiredDrillEvidence(String code) {
+        return mapper.hasDrillEvidence(code, true);
     }
 
     @Override

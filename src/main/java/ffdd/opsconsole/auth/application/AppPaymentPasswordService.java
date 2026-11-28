@@ -2,6 +2,7 @@ package ffdd.opsconsole.auth.application;
 
 import java.util.Objects;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.auth.facade.PaymentAuthorizationFacade;
@@ -16,6 +17,7 @@ import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -35,6 +37,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
     private static final Set<String> PURCHASE_KINDS = Set.of("order-pay", "trial-convert", "trade-in",
             "capacity-replace", "capacity-keep");
+    private static final String CHANGE_VERIFICATION_KIND = "change-verify";
+    private static final String CHANGE_PROOF_INVALID = "PAYMENT_PASSWORD_CHANGE_PROOF_INVALID_OR_EXPIRED";
+    private static final String ATTEMPT_ALREADY_USED = "PAYMENT_PASSWORD_ATTEMPT_ALREADY_USED";
+    private static final String ATTEMPT_NO_FORMAT = "[A-Za-z0-9:_-]{8,128}";
     private final PaymentPasswordMapper repo;
     private final ObjectMapper json;
     private final Clock clock;
@@ -73,9 +79,18 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
         @Override public String toString() { return "Setup[REDACTED]"; }
     }
     public record Change(String currentPassword, String newPassword, String confirmPassword,
-                         Long expectedCredentialVersion, String attemptNo) {
+                         Long expectedCredentialVersion, String attemptNo, String changeProof) {
+        public Change(String currentPassword, String newPassword, String confirmPassword,
+                      Long expectedCredentialVersion, String attemptNo) {
+            this(currentPassword,newPassword,confirmPassword,expectedCredentialVersion,attemptNo,null);
+        }
         @Override public String toString() { return "Change[REDACTED]"; }
     }
+    public record ChangeVerification(String currentPassword, Long expectedCredentialVersion, String attemptNo) {
+        @Override public String toString() { return "ChangeVerification[REDACTED]"; }
+    }
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private record ChangeVerificationReceipt(String proofHash) {}
     public record Reset(String resetProof, String newPassword, String confirmPassword,
                         Long expectedCredentialVersion) {
         @Override public String toString() { return "Reset[REDACTED]"; }
@@ -125,12 +140,97 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                 new Authorization(request.currentPassword(),request.expectedCredentialVersion(),request.attemptNo()),() -> {
             if (request.newPassword().equals(request.currentPassword()))
                 throw new BizException(422,"PAYMENT_PASSWORD_NEW_MUST_DIFFER");
-            Map<String,Object> user=repo.user(userId,true);
-            if (user==null) throw new BizException(401,"USER_AUTH_REQUIRED");
-            writePassword(userId,request.newPassword(),verifiedPhone(userId,user));
-            auditMutation(userId,"USER_PAYMENT_PASSWORD_CHANGED");
-            return mutation(userId,key);
+            return changePassword(userId,key,request.newPassword());
         });
+    }
+
+    public ApiResult<?> changeVerify(long userId,String sessionId,ChangeVerification request) {
+        requireAvailable();
+        String sessionHash=hash(sessionId);
+        Authorization authorization=request==null ? null : new Authorization(
+                request.currentPassword(),request.expectedCredentialVersion(),request.attemptNo());
+        return independent.execute(tx -> {
+            ApiResult<State> verification=verify(userId,CHANGE_VERIFICATION_KIND,sessionHash,authorization);
+            boolean firstVerification=verification.getCode()==0;
+            if (!firstVerification && !ATTEMPT_ALREADY_USED.equals(verification.getMessage())) return verification;
+            State state=verification.getData();
+            long now=clock.millis();
+            String attemptNo=authorization.attemptNo();
+            long version=state.credentialVersion();
+            long expiresAt=now+600_000;
+            String priorProofHash=null;
+            if (!firstVerification) {
+                Map<String,Object> attempt=repo.attempt(userId,attemptNo);
+                if (!attemptNo.equals(attempt.get("attempt_no"))) return verification;
+                ChangeVerificationReceipt prior=decode(String.valueOf(attempt.get("state_json")),ChangeVerificationReceipt.class);
+                if (prior==null || prior.proofHash()==null) return verification;
+                if (state.lockedUntil()!=null) return ApiResult.fail(429,"PAYMENT_PASSWORD_LOCKED",state);
+                priorProofHash=prior.proofHash();
+                Long activeExpiry=repo.activeChangeProofExpiry(userId,sessionHash,priorProofHash,version,now);
+                if (activeExpiry==null) return verification;
+                Map<String,Object> credential=repo.credential(userId,true);
+                if (!pepperVersion.equals(credential.get("pepper_version")))
+                    return ApiResult.fail(503,"PAYMENT_PASSWORD_UNAVAILABLE",state);
+                if (!encoder.matches(secret(authorization.paymentPassword()),String.valueOf(credential.get("password_hash")))) {
+                    // Close recovery for this attempt while keeping its issued proof usable.
+                    repo.finishAttempt(userId,attemptNo,0,"{}");
+                    return verification;
+                }
+                expiresAt=activeExpiry;
+            }
+
+            String proof=UUID.randomUUID().toString()+UUID.randomUUID();
+            String proofHash=hash(proof);
+            if (firstVerification) {
+                repo.writeChangeProof(userId,sessionHash,proofHash,version,expiresAt);
+            } else if (repo.replaceChangeProof(userId,sessionHash,priorProofHash,proofHash,version,expiresAt,clock.millis())!=1) {
+                return verification;
+            }
+            repo.finishAttempt(userId,attemptNo,0,encode(new ChangeVerificationReceipt(proofHash)));
+            return ApiResult.ok(Map.of("changeProof",proof,"expiresAt",Instant.ofEpochMilli(expiresAt)));
+        });
+    }
+
+    public ApiResult<Map<String,Object>> change(long userId,String sessionId,String key,Change request) {
+        if (request==null || request.changeProof()==null) return change(userId,key,request);
+        requireAvailable();
+        if (request.currentPassword()!=null || request.changeProof().isBlank() || request.changeProof().length()>128
+                || request.expectedCredentialVersion()==null)
+            return ApiResult.fail(422,CHANGE_PROOF_INVALID);
+        requireNew(request.newPassword(),request.confirmPassword());
+        if (request.attemptNo()==null) throw new BizException(422,"PAYMENT_PASSWORD_REQUIRED");
+        if (!request.attemptNo().matches(ATTEMPT_NO_FORMAT)) throw new BizException(422,"PAYMENT_PASSWORD_INVALID");
+        String sessionHash=hash(sessionId);
+        String proofHash=hash(request.changeProof());
+        long version=request.expectedCredentialVersion();
+        List<Object> summary=List.of("change-proof",sessionHash,proofHash,version,request.attemptNo(),
+                secret("change-proof|"+userId+"|"+key+"|"+request.newPassword()));
+        return command(userId,"change",key,summary,null,() -> {
+            Map<String,Object> credential=repo.credential(userId,true);
+            Instant now=clock.instant();
+            if (credential==null || credential.get("password_hash")==null
+                    || PaymentPasswordMapper.number(credential,"credential_version")!=version
+                    || repo.consumeChangeProof(userId,sessionHash,proofHash,version,now.toEpochMilli())!=1)
+                return ApiResult.fail(422,CHANGE_PROOF_INVALID);
+            State state=stateOf(userId,credential);
+            if (state.lockedUntil()!=null) return ApiResult.fail(429,"PAYMENT_PASSWORD_LOCKED",Map.of(
+                    "configured",state.configured(),"credentialVersion",state.credentialVersion(),
+                    "lockedUntil",state.lockedUntil(),"remainingAttempts",state.remainingAttempts(),
+                    "serverTime",state.serverTime()));
+            if (!pepperVersion.equals(credential.get("pepper_version")))
+                throw new BizException(503,"PAYMENT_PASSWORD_UNAVAILABLE");
+            if (encoder.matches(secret(request.newPassword()),String.valueOf(credential.get("password_hash"))))
+                throw new BizException(422,"PAYMENT_PASSWORD_NEW_MUST_DIFFER");
+            return changePassword(userId,key,request.newPassword());
+        });
+    }
+
+    private ApiResult<Map<String,Object>> changePassword(long userId,String key,String newPassword) {
+        Map<String,Object> user=repo.user(userId,true);
+        if (user==null) throw new BizException(401,"USER_AUTH_REQUIRED");
+        writePassword(userId,newPassword,verifiedPhone(userId,user));
+        auditMutation(userId,"USER_PAYMENT_PASSWORD_CHANGED");
+        return mutation(userId,key);
     }
 
     private ApiResult<Map<String,Object>> mutation(long userId,String key) {
@@ -156,75 +256,183 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
         return command(userId,kind,key,summary,authorization,existingSuccess,action);
     }
 
+    @Override
+    public <T> ApiResult<T> executeWithAdmission(Long userId, String kind, String key, Object summary,
+            Authorization authorization, Supplier<Runnable> prepareAdmission, Supplier<ApiResult<T>> action) {
+        return command(userId, kind, key, summary, authorization, () -> null, prepareAdmission, action);
+    }
+
     private <T> ApiResult<T> command(long userId,String kind,String key,Object summary,
                                     Authorization authorization,Supplier<ApiResult<T>> action) {
         return command(userId,kind,key,summary,authorization,() -> null,action);
     }
 
+    private <T> ApiResult<T> command(long userId, String kind, String key, Object summary,
+            Authorization authorization, Supplier<ApiResult<T>> existingSuccess, Supplier<ApiResult<T>> action) {
+        return command(userId, kind, key, summary, authorization, existingSuccess, null, action);
+    }
+
     @SuppressWarnings("unchecked")
-    private <T> ApiResult<T> command(long userId,String kind,String key,Object summary,
-                                    Authorization authorization,Supplier<ApiResult<T>> existingSuccess,Supplier<ApiResult<T>> action) {
+    private <T> ApiResult<T> command(long userId, String kind, String key, Object summary,
+            Authorization authorization, Supplier<ApiResult<T>> existingSuccess,
+            Supplier<Runnable> prepareAdmission, Supplier<ApiResult<T>> action) {
         requireKey(key);
         String digest=hash(String.valueOf(summary));
+        String requestedTrialProductNo = "trial-convert".equals(kind) && summary instanceof Map<?, ?> request
+                ? trialProductNo(request.get("productNo")) : null;
+        boolean proofChange="change".equals(kind) && authorization==null;
         independent.executeWithoutResult(tx -> {
-            repo.ensure(userId);
-            repo.insertCommand(userId,kind,key,digest,clock.millis());
             String legacyScope=legacyScope(userId,kind);
-            if (legacyScope!=null) {
-                Map<String,Object> legacy=repo.legacy(legacyScope,key);
-                if (legacy!=null && "SUCCEEDED".equals(legacy.get("status")) && legacy.get("response_json")!=null) {
-                    if (!digest.equals(legacy.get("request_hash"))) throw new BizException(409,"PAYMENT_COMMAND_INPUT_CHANGED");
-                    ApiResult<?> receipt=decode(String.valueOf(legacy.get("response_json")),ApiResult.class);
-                    repo.importCommand(userId,kind,key,receipt.getCode()==0 ? "SUCCEEDED" : "REJECTED",String.valueOf(legacy.get("response_json")));
-                }
+            Map<String,Object> legacy=legacyScope==null ? null : repo.legacy(legacyScope,key);
+            if ("capacity-replace".equals(kind) && legacy==null && repo.command(userId,kind,key,false)==null) {
+                throw new BizException(409,"CAPACITY_REPLACEMENT_PURCHASE_RETIRED");
+            }
+            if (!proofChange) repo.ensure(userId);
+            repo.insertCommand(userId,kind,key,digest,clock.millis());
+            if (legacy!=null && "SUCCEEDED".equals(legacy.get("status")) && legacy.get("response_json")!=null) {
+                if (!digest.equals(legacy.get("request_hash"))) throw new BizException(409,"PAYMENT_COMMAND_INPUT_CHANGED");
+                ApiResult<?> receipt=decode(String.valueOf(legacy.get("response_json")),ApiResult.class);
+                repo.importCommand(userId,kind,key,receipt.getCode()==0 ? "SUCCEEDED" : "REJECTED",String.valueOf(legacy.get("response_json")));
             }
         });
         return transaction.execute(tx -> {
             Map<String,Object> row=repo.command(userId,kind,key,false);
             if (!digest.equals(row.get("request_hash"))) throw new BizException(409,"PAYMENT_COMMAND_INPUT_CHANGED");
-            if (row.get("response_json")!=null) return (ApiResult<T>)decode(String.valueOf(row.get("response_json")),ApiResult.class);
+            if (row.get("response_json")!=null) return (ApiResult<T>) readCommandReceipt(userId, kind, key, row.get("response_json"));
             ApiResult<T> existing=existingSuccess.get();
             if (existing!=null && existing.getCode()==0) {
                 repo.finishCommand(userId,kind,key,"SUCCEEDED",encode(existing),clock.millis());
                 return existing;
             }
-            requireAvailable();
-            if (!"setup".equals(kind) && !"reset".equals(kind)) {
-                ApiResult<State> verification=independent.execute(v -> verify(userId,kind,key,authorization));
-                if (verification.getCode()!=0) return (ApiResult<T>)(ApiResult<?>)verification;
-                Map<String,Object> credential=repo.credential(userId,true);
-                if (PaymentPasswordMapper.number(credential,"credential_version")!=authorization.credentialVersion())
-                    return (ApiResult<T>)(ApiResult<?>)ApiResult.fail(409,"PAYMENT_PASSWORD_VERSION_CONFLICT",stateOf(userId,credential));
-            } else repo.credential(userId,true);
-            ApiResult<T> result;
+            if (prepareAdmission == null) requireAvailable();
+            boolean needsVerification = !"setup".equals(kind) && !"reset".equals(kind) && !proofChange;
+            if (needsVerification) {
+                ApiResult<State> verification;
+                try {
+                    verification = independent.execute(v -> {
+                        Runnable accept = null;
+                        if (prepareAdmission != null) {
+                            // Keep the credential-to-buyer lock order used by purchase settlement.
+                            repo.credential(userId, true);
+                            accept = prepareAdmission.get();
+                            requireAvailable();
+                        }
+                        ApiResult<State> result = verify(userId, kind, key, authorization);
+                        // Admission outlives settlement rollback. Keep the buyer lock through PIN verification.
+                        if (accept != null && result.getCode() == 0) accept.run();
+                        return result;
+                    });
+                } catch (BizException rejection) {
+                    if (prepareAdmission == null || rejection.getCode() >= 500) throw rejection;
+                    return finish(userId, kind, key, null, requestedTrialProductNo,
+                            ApiResult.fail(rejection.getCode(), rejection.getMessage(), (T) rejection.errorData()));
+                }
+                if (verification.getCode() != 0) return (ApiResult<T>) (ApiResult<?>) verification;
+            }
             try {
-                result=nested.execute(savepoint -> {
+                if (needsVerification) {
+                    Map<String, Object> credential = repo.credential(userId, true);
+                    if (PaymentPasswordMapper.number(credential, "credential_version") != authorization.credentialVersion()) {
+                        ApiResult<T> conflict = (ApiResult<T>) (ApiResult<?>) ApiResult.fail(
+                                409, "PAYMENT_PASSWORD_VERSION_CONFLICT", stateOf(userId, credential));
+                        return prepareAdmission == null ? conflict
+                                : finish(userId, kind, key, authorization, requestedTrialProductNo, conflict);
+                    }
+                } else {
+                    repo.credential(userId, true);
+                }
+                ApiResult<T> result = nested.execute(savepoint -> {
                     ApiResult<T> response=action.get();
                     if (response.getCode()!=0) savepoint.setRollbackOnly();
                     return response;
                 });
+                return finish(userId, kind, key, authorization, requestedTrialProductNo, result);
             } catch (BizException rejection) {
-                result=ApiResult.fail(rejection.getCode(),rejection.getMessage());
+                return finish(userId, kind, key, authorization, requestedTrialProductNo,
+                        ApiResult.fail(rejection.getCode(), rejection.getMessage(),
+                                prepareAdmission == null ? null : (T) rejection.errorData()));
             }
-            if (result.getCode()!=0 && authorization!=null && authorization.attemptNo()!=null)
-                repo.rejectBusiness(userId,authorization.attemptNo());
-            repo.finishCommand(userId,kind,key,result.getCode()==0 ? "SUCCEEDED" : "REJECTED",encode(result),clock.millis());
-            return result;
         });
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> ApiResult<T> finish(long userId, String kind, String key, Authorization authorization,
+                                   String requestedTrialProductNo, ApiResult<T> result) {
+        if (result.getCode() != 0 && authorization != null && authorization.attemptNo() != null) {
+            repo.rejectBusiness(userId, authorization.attemptNo());
+        }
+        if ("trial-convert".equals(kind)) {
+            result = (ApiResult<T>) trialBalanceReceipt(userId, key, result, requestedTrialProductNo);
+        }
+        repo.finishCommand(userId, kind, key, result.getCode() == 0 ? "SUCCEEDED" : "REJECTED", encode(result), clock.millis());
+        return result;
+    }
+
+    private ApiResult<?> readCommandReceipt(long userId, String kind, String key, Object receiptJson) {
+        ApiResult<?> receipt = decode(String.valueOf(receiptJson), ApiResult.class);
+        return "trial-convert".equals(kind) ? trialBalanceReceipt(userId, key, receipt, null) : receipt;
+    }
+
+    @SuppressWarnings("unchecked")
+    private ApiResult<?> trialBalanceReceipt(long userId, String key, ApiResult<?> receipt, String requestedProductNo) {
+        Object payload = receipt.getData();
+        if (payload != null && !(payload instanceof Map<?, ?>) && !(payload instanceof State)) return receipt;
+        Map<String, Object> data = payload instanceof Map<?, ?> fields
+                ? new LinkedHashMap<>((Map<String, Object>) fields) : new LinkedHashMap<>();
+        String productField = trialBalanceProductField(receipt);
+        if (data.get("claimNo") != null && trialProductNo(data.get(productField)) != null) return receipt;
+
+        var snapshot = repo.trialBalanceSubmission(userId, key);
+        if (snapshot != null) data.putIfAbsent("claimNo", snapshot.claimNo());
+        if (trialProductNo(data.get(productField)) == null) {
+            String productNo = snapshot == null ? null : trialProductNo(snapshot.productNo());
+            if (productNo == null) productNo = requestedProductNo;
+            if (productNo != null) data.put(productField, productNo);
+        }
+        if (data.isEmpty()) return receipt;
+
+        if (payload instanceof State state) data.putAll(json.convertValue(state, Map.class));
+        return new ApiResult<>(receipt.getCode(), receipt.getMessage(), data);
+    }
+
+    private static String trialBalanceProductField(ApiResult<?> receipt) {
+        // These responses already carry the blocking purchase, including its own productNo.
+        return "TRIAL_BALANCE_SUBMISSION_IN_PROGRESS".equals(receipt.getMessage())
+                || "TRIAL_EXTERNAL_PAYMENT_IN_PROGRESS".equals(receipt.getMessage())
+                ? "requestedProductNo" : "productNo";
+    }
+
+    private static String trialProductNo(Object value) {
+        return value instanceof String productNo && productNo.matches("[A-Za-z0-9._-]{1,64}") ? productNo : null;
+    }
+
+    private void putTrialBalanceIdentity(Map<String, Object> result, String kind, ApiResult<?> receipt) {
+        if (!"trial-convert".equals(kind)) return;
+        Map<?, ?> data = receipt.getData() instanceof Map<?, ?> fields ? fields : Map.of();
+        result.put("claimNo", data.get("claimNo"));
+        result.put("paymentMethod", "WALLET");
+        String productNo = trialProductNo(data.get(trialBalanceProductField(receipt)));
+        if (productNo != null) result.put("productNo", productNo);
     }
 
     private ApiResult<State> verify(long userId,String kind,String key,Authorization authorization) {
         if (authorization==null || authorization.paymentPassword()==null || authorization.credentialVersion()==null
                 || authorization.attemptNo()==null) return ApiResult.fail(422,"PAYMENT_PASSWORD_REQUIRED",state(userId));
-        if (!authorization.paymentPassword().matches("[0-9]{6}") || !authorization.attemptNo().matches("[A-Za-z0-9:_-]{8,128}"))
+        if (!authorization.paymentPassword().matches("[0-9]{6}") || !authorization.attemptNo().matches(ATTEMPT_NO_FORMAT))
             return ApiResult.fail(422,"PAYMENT_PASSWORD_INVALID",state(userId));
         Map<String,Object> current=repo.credential(userId,true);
+        if (CHANGE_VERIFICATION_KIND.equals(kind)) {
+            if (current==null || current.get("password_hash")==null)
+                return ApiResult.fail(409,"PAYMENT_PASSWORD_NOT_CONFIGURED",stateOf(userId,current));
+            if (PaymentPasswordMapper.number(current,"credential_version")!=authorization.credentialVersion())
+                return ApiResult.fail(409,"PAYMENT_PASSWORD_VERSION_CONFLICT",stateOf(userId,current));
+        }
         String binding=hash(kind+"|"+key+"|"+authorization.credentialVersion());
         Map<String,Object> prior=repo.attempt(userId,authorization.attemptNo());
         if (prior!=null) {
             if (!binding.equals(prior.get("binding_hash"))) return ApiResult.fail(409,"PAYMENT_PASSWORD_ATTEMPT_CONFLICT",stateOf(userId,current));
             int code=((Number)prior.get("result_code")).intValue();
-            return code==0 ? ApiResult.fail(409,"PAYMENT_PASSWORD_ATTEMPT_ALREADY_USED",stateOf(userId,current))
+            return code==0 ? ApiResult.fail(409,ATTEMPT_ALREADY_USED,stateOf(userId,current))
                     : ApiResult.fail(code,code==429 ? "PAYMENT_PASSWORD_LOCKED" : String.valueOf(prior.get("result_message")),decode(String.valueOf(prior.get("state_json")),State.class));
         }
         State before=stateOf(userId,current);
@@ -245,7 +453,8 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
             repo.clearFailures(userId,now.toEpochMilli());
             repo.clearAttemptFailures(userId);
         }
-        repo.insertAttempt(userId,authorization.attemptNo(),binding,code,message,now.toEpochMilli(),"change".equals(kind) ? "CHANGE" : "PAYMENT");
+        String purpose="change".equals(kind) || CHANGE_VERIFICATION_KIND.equals(kind) ? "CHANGE" : "PAYMENT";
+        repo.insertAttempt(userId,authorization.attemptNo(),binding,code,message,now.toEpochMilli(),purpose);
         State after=stateOf(userId,repo.credential(userId,false));
         if (!correct && after.remainingAttempts()==0) {
             long until=now.plusSeconds(policy.lockSeconds()).toEpochMilli();
@@ -255,7 +464,8 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
             after=stateOf(userId,repo.credential(userId,false));
             code=429; message="PAYMENT_PASSWORD_LOCKED";
         }
-        repo.finishAttempt(userId,authorization.attemptNo(),code,encode(after));
+        if (!correct || !CHANGE_VERIFICATION_KIND.equals(kind))
+            repo.finishAttempt(userId,authorization.attemptNo(),code,encode(after));
         return new ApiResult<>(code,message,after);
     }
 
@@ -272,12 +482,13 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                     if (legacy!=null) {
                         String legacyStatus=String.valueOf(legacy.get("status"));
                         if ("SUCCEEDED".equals(legacyStatus) && legacy.get("response_json")!=null) {
-                            ApiResult<?> receipt=decode(String.valueOf(legacy.get("response_json")),ApiResult.class);
+                            ApiResult<?> receipt = readCommandReceipt(userId, kind, key, legacy.get("response_json"));
                             Map<String,Object> result=new LinkedHashMap<>();
                             result.put("kind",kind); result.put("commandKey",key);
                             result.put("status",receipt.getCode()==0 ? "SUCCEEDED" : "REJECTED");
                             result.put("canResumeSameKey",false); result.put("receipt",receipt.getData());
                             result.put("message",receipt.getMessage()); result.put("code",receipt.getCode());
+                            putTrialBalanceIdentity(result, kind, receipt);
                             return result;
                         }
                         if (Set.of("UNKNOWN","PROCESSING").contains(legacyStatus))
@@ -286,17 +497,29 @@ public class AppPaymentPasswordService implements PaymentAuthorizationFacade {
                             return Map.of("kind",kind,"commandKey",key,"status","INDETERMINATE","canResumeSameKey",false);
                     }
                 }
-                if (row==null || "READY".equals(row.get("status")))
+                if (row==null || "READY".equals(row.get("status"))) {
+                    if ("trial-convert".equals(kind)) {
+                        String claim = repo.trialBalanceClaim(userId, key);
+                        return Map.of("kind", kind, "commandKey", key, "status", claim == null ? "NOT_SEEN" : "PROCESSING",
+                                "canResumeSameKey", true, "paymentMethod", "WALLET",
+                                "claimNo", claim == null ? repo.currentTrialClaim(userId).orElse("") : claim);
+                    }
                     return Map.of("kind",kind,"commandKey",key,"status","NOT_SEEN","canResumeSameKey",true);
-                ApiResult<?> response=decode(String.valueOf(row.get("response_json")),ApiResult.class);
+                }
+                ApiResult<?> response = readCommandReceipt(userId, kind, key, row.get("response_json"));
                 Map<String,Object> result=new LinkedHashMap<>();
                 result.put("kind",kind); result.put("commandKey",key); result.put("status",row.get("status"));
                 result.put("canResumeSameKey",false); result.put("code",response.getCode());
+                putTrialBalanceIdentity(result, kind, response);
                 result.put("message",response.getMessage()); result.put("receipt",response.getData());
                 if (response.getData() instanceof Map<?,?> data && data.containsKey("state")) result.put("state",data.get("state"));
                 return result;
             });
         } catch (PessimisticLockingFailureException busy) {
+            if ("trial-convert".equals(kind)) {
+                return Map.of("kind", kind, "commandKey", key, "status", "PROCESSING", "canResumeSameKey", false,
+                        "paymentMethod", "WALLET", "claimNo", java.util.Objects.toString(repo.trialBalanceClaim(userId, key), ""));
+            }
             return Map.of("kind",kind,"commandKey",key,"status","PROCESSING","canResumeSameKey",false);
         } catch (ReceiptInvalidException invalid) {
             return Map.of("kind",kind,"commandKey",key,"status","INDETERMINATE","canResumeSameKey",false);

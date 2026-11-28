@@ -22,6 +22,8 @@ public class DirectReferralRecoveryScheduler {
         var calculations=mapper.waitingCalculation(scope.sourceEnvironment(),scope.runId(),calculationCursor.get());
         if(calculations.isEmpty()&&!calculationCursor.get().isEmpty()){calculationCursor.set("");calculations=mapper.waitingCalculation(scope.sourceEnvironment(),scope.runId(),"");}
         for(String no:calculations){try{service.resumeGroup(no);}catch(RuntimeException failure){log.warn("Reward calculation remains pending settlement={} reason={}",no,failure.getMessage());}finally{calculationCursor.set(no);}}
+        try { mapper.resumeCalculatedEarningDeliveries(scope.sourceEnvironment(), scope.runId()); }
+        catch (RuntimeException failure) { log.warn("Earning reward delivery recovery remains pending reason={}", failure.getMessage()); }
         var reissues=mapper.reissueRecoveryOrders(scope.sourceEnvironment(),scope.runId(),reissueCursor.get());
         if(reissues.isEmpty()&&!reissueCursor.get().isEmpty()){reissueCursor.set("");reissues=mapper.reissueRecoveryOrders(scope.sourceEnvironment(),scope.runId(),"");}
         for(String order:reissues){try{service.recoverOrderReissues(order);}catch(RuntimeException failure){log.warn("Reissue recovery remains pending order={} reason={}",order,failure.getMessage());}finally{reissueCursor.set(order);}}

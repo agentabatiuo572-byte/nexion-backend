@@ -2045,6 +2045,12 @@
             "type": ["string", "null"],
             "format": "date-time"
           },
+          "firstPurchaseCondition": {
+            "anyOf": [
+              { "$ref": "#/components/schemas/PublicFirstPurchaseCondition" },
+              { "type": "null" }
+            ]
+          },
           "rewardRules": {
             "type": "array",
             "items": {
@@ -2070,6 +2076,26 @@
           "eligibility",
           "eligibilityMessage",
           "rewardRules"
+        ],
+        "additionalProperties": false
+      },
+      "PublicFirstPurchaseCondition": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "FIRST_ELIGIBLE_ORDER",
+              "FIRST_ELIGIBLE_UNIT"
+            ]
+          },
+          "restoreAfterRefund": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mode",
+          "restoreAfterRefund"
         ],
         "additionalProperties": false
       },
@@ -2274,6 +2300,14 @@
           "quantity": {
             "$ref": "#/components/schemas/Quantity"
           },
+          "assignableSlots": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "inventoryQuantity": {
+            "type": "integer",
+            "minimum": 0
+          },
           "items": {
             "type": "array",
             "items": {
@@ -2386,6 +2420,21 @@
               },
               {
                 "type": "null"
+              }
+            ]
+          },
+          "expectedAmountUsdt": {
+            "description": "Maximum net USDT amount confirmed at checkout. Current clients send it for ordinary single-product orders without a promotion quote. Older clients may omit this field during rollout.",
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 999999999999.999999,
+                "multipleOf": 0.000001
+              },
+              {
+                "type": "string",
+                "minLength": 1
               }
             ]
           },
@@ -2833,6 +2882,28 @@
               "type": "integer",
               "minimum": 1
             }
+          },
+          "activatedDeviceIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "inventoryDeviceIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "activatedQuantity": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "inventoryQuantity": {
+            "type": "integer",
+            "minimum": 0
           },
           "instanceNos": {
             "type": "array",

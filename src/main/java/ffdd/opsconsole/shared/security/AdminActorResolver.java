@@ -81,7 +81,7 @@ public final class AdminActorResolver {
     }
 
     /** 保留前 3 位与后 2 位,中间固定 4 个星号(与展示侧同口径)。非电话形状原样返回。 */
-    static String maskPhone(String value) {
+    public static String maskPhone(String value) {
         if (!PHONE_LIKE.matcher(value).matches()) return value;
         boolean plus = value.startsWith("+");
         String digits = value.replaceAll("[\\s-]", "");

@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.canonical.mapper;
 import ffdd.opsconsole.shared.config.HardwareQuotaPeriod;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.canonical.infrastructure.CanonicalUserEntity;
+import ffdd.opsconsole.shared.canonical.OrderDeviceDelivery;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -14,7 +15,7 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, TrialSlotReservationMapper, OrderCreateReceiptMapper, PurchaseGateQuotaMapper {
-    // All purchase entrypoints count unfulfilled gift promises against the same account slots.
+    // Purchases still count active devices and earlier promises of activation slots.
     /** Old trial conversions already fulfilled a single device but used PAID/ACTIVE.
      * Preserve history and require the exact settled claim/device/order relationship.
      * A later legitimate deactivation must not resurrect the order reservation.
@@ -64,11 +65,13 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
               AND gift_order.is_deleted=0 AND (gift_order.inventory_reserved=1
                 OR UPPER(gift_order.payment_status) IN ('PAID','CONFIRMED','SUCCESS'))
             """;
+    String LEGACY_PROMOTION_SLOT_PROMISE =
+            " AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.snapshot_json,'$.inventoryOverflowAllowed')),'false')='false' ";
     String PROMOTION_RESERVED_AMOUNT_BASE = """
             SELECT SUM(r.amount) FROM nx_promotion_reservation r
                        WHERE r.beneficiary_id=#{userId} AND r.asset='DEVICE'
                          AND r.status IN ('RESERVED','COMMITTED')
-            """;
+            """ + LEGACY_PROMOTION_SLOT_PROMISE;
     String PROMOTION_RESERVED_AMOUNT = PROMOTION_RESERVED_AMOUNT_BASE+" AND EXISTS ("+PROMOTION_RESERVATION_ORDER+") ";
     String LOCK_PROMOTION_RESERVED_AMOUNT = PROMOTION_RESERVED_AMOUNT_BASE+" AND EXISTS ("+PROMOTION_RESERVATION_ORDER+" FOR SHARE) ";
     String FULFILLED_PROMOTION_RESERVATION = """
@@ -361,20 +364,25 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             """)
     UserDeviceCommandRow lockDeviceForUserCommand(@Param("deviceId") Long deviceId);
 
+    String ACTIVE_CANONICAL_COMPUTE_TASK = """
+            t.is_deleted=0 AND UPPER(t.status) IN ('CLAIMED','RUNNING')
+            AND (t.source_environment='PRODUCTION' OR NULLIF(TRIM(t.source_environment),'') IS NULL)
+            """;
+
     @Select("""
-            SELECT COUNT(1) FROM nx_compute_task
-             WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND is_deleted=0
+            SELECT EXISTS(SELECT 1 FROM nx_compute_task t
+             WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId}
                AND EXISTS (SELECT 1 FROM nx_user u WHERE u.id=#{userId} AND COALESCE(u.sandbox,0)=0)
-               AND UPPER(COALESCE(source_environment,'PRODUCTION'))='PRODUCTION'
-               AND UPPER(status) IN ('CLAIMED','RUNNING')
-            """)
+               AND
+            """ + ACTIVE_CANONICAL_COMPUTE_TASK + ")")
     boolean hasActiveTask(@Param("userId") Long userId, @Param("deviceId") Long deviceId);
 
     @Select("SELECT EXISTS(SELECT 1 FROM nx_test_cloud_request r WHERE owner_id=#{userId} AND device_id=#{deviceId} AND state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS ("
             +ffdd.opsconsole.device.mapper.LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+"))")
     boolean hasUnresolvedComputeV1Request(@Param("userId") long userId,@Param("deviceId") long deviceId);
 
-    @Select("SELECT EXISTS(SELECT 1 FROM nx_compute_task WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND is_deleted=0 AND source_environment='PRODUCTION' AND status IN ('CLAIMED','RUNNING') AND task_no NOT LIKE 'CV2-%')")
+    @Select("SELECT EXISTS(SELECT 1 FROM nx_compute_task t WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId} AND "
+            + ACTIVE_CANONICAL_COMPUTE_TASK + " AND t.task_no NOT LIKE 'CV2-%')")
     boolean hasActiveComputeV1Task(@Param("userId") long userId,@Param("deviceId") long deviceId);
 
     @Select("SELECT EXISTS(SELECT 1 FROM nx_compute_v2_event WHERE user_id=#{userId} AND user_device_id=#{deviceId} AND task_no=#{taskNo} AND generation=#{generation} AND deployment_scope=#{scope} AND kind='EXITED')")
@@ -388,6 +396,23 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
     List<ComputeV2PendingDevice> pendingComputeV2Deactivations(@Param("afterId") long afterId,@Param("limit") int limit);
     record ComputeV2PendingDevice(long deviceId,long userId) {}
 
+    @Select("""
+            SELECT t.task_no
+              FROM nx_user_device d
+              JOIN nx_device_slot_replacement r ON r.user_id=d.user_id AND r.old_device_id=d.id
+              JOIN nx_phone_binding b ON b.user_id=d.user_id AND b.user_device_id=d.id
+                    AND b.source_environment='PRODUCTION' AND b.run_id=''
+              JOIN nx_compute_task t ON t.user_id=d.user_id AND t.user_device_id=d.id
+             WHERE d.id=#{deviceId} AND d.user_id=#{userId} AND d.is_deleted=0
+               AND d.source_channel='ONBOARDING' AND d.source_environment='PRODUCTION' AND d.run_id=''
+               AND d.ownership_status='OWNED' AND UPPER(d.device_type) IN ('MOBILE','PHONE')
+               AND d.pending_deactivate=1 AND d.activated_at IS NOT NULL AND d.deactivated_at IS NULL
+               AND t.source_environment='PRODUCTION' AND t.is_deleted=0 AND t.task_no LIKE 'CTA-%'
+               AND t.status='CANCELLED' AND t.last_error='PHONE_REPLACED' AND t.updated_at>=d.activated_at
+             ORDER BY t.id DESC LIMIT 1
+            """)
+    String cancelledPendingSlotPhoneTask(@Param("userId") long userId, @Param("deviceId") long deviceId);
+
     @Update("""
         UPDATE nx_user_device d SET status='DEACTIVATED',activated_at=NULL,deactivated_at=NOW(),
             pending_deactivate=0,row_version=row_version+1,updated_at=NOW()
@@ -396,7 +421,11 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             AND d.status IN ('ACTIVE','ONLINE','BUSY','RUNNING','OFFLINE') AND d.pending_deactivate=1
             AND d.activated_at IS NOT NULL AND d.row_version=#{expectedVersion}
             AND NOT EXISTS(SELECT 1 FROM nx_compute_task t WHERE t.user_id=#{userId} AND t.user_device_id=#{deviceId}
-                AND t.is_deleted=0 AND t.source_environment='PRODUCTION' AND t.status IN ('CLAIMED','RUNNING') AND t.task_no NOT LIKE 'CV2-%')
+                AND
+        """ + ACTIVE_CANONICAL_COMPUTE_TASK + """
+                AND t.task_no NOT LIKE 'CV2-%')
+            AND NOT EXISTS(SELECT 1 FROM nx_simulated_device_runtime s WHERE s.user_device_id=d.id
+                AND s.current_task_no IS NOT NULL)
             AND NOT EXISTS(SELECT 1 FROM nx_test_cloud_request r WHERE r.owner_id=#{userId} AND r.device_id=#{deviceId}
                 AND r.state IN ('PROCESSING','UNKNOWN') AND NOT EXISTS (
         """+ffdd.opsconsole.device.mapper.LegacyZeroCreditResolutionSql.RESOLVED_REQUEST+"))")
@@ -830,6 +859,17 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
             """)
     List<ProductStock> findPurchasableProducts(@Param("productNos") List<String> productNos);
 
+    @Select("""
+            SELECT p.product_no FROM nx_product p
+             WHERE p.product_no=#{productNo} AND p.is_deleted=0
+               AND UPPER(p.status) IN ('ACTIVE','ON_SALE')
+               AND COALESCE(p.store_visible,1)=1 AND p.price_usdt>0
+               AND UPPER(p.product_type) IN ('DEVICE','SERVER')
+               AND p.inventory_mode='FINITE' AND p.stock<=0
+             LIMIT 1
+            """)
+    String findOutOfStockStorefrontProductNo(@Param("productNo") String productNo);
+
     /** Store detail observation may read an exhausted SKU; it must not inherit purchase stock gates. */
     @Select("""
             SELECT p.id
@@ -1030,6 +1070,9 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
                    ))
                AND ud.user_id = o.user_id AND ud.is_deleted = 0
              WHERE o.user_id = #{userId} AND o.is_deleted = 0
+               AND NOT (UPPER(o.payment_status) = 'EXPIRED'
+                        AND UPPER(o.order_status) = 'EXPIRED'
+                        AND o.user_hidden_at IS NOT NULL)
                <if test="beforeOrderNo != null and beforeOrderNo != ''">
                AND EXISTS (
                    SELECT 1 FROM nx_order cursor_order
@@ -1061,6 +1104,18 @@ public interface CanonicalStateMapper extends BaseMapper<CanonicalUserEntity>, T
              ORDER BY sort_order, id
             """)
     List<UserOrderLineItem> userOrderLineItems(@Param("orderNo") String orderNo);
+
+    @Select("""
+            <script>
+            SELECT source_order_no orderNo,id deviceId,activated_on_delivery activatedOnDelivery
+              FROM nx_user_device
+             WHERE user_id=#{userId} AND source_channel='ORDER' AND source_environment='PRODUCTION'
+               AND run_id='' AND activated_on_delivery IS NOT NULL AND source_order_no IN
+               <foreach collection="orderNos" item="orderNo" open="(" separator="," close=")">#{orderNo}</foreach>
+             ORDER BY id
+            </script>
+            """)
+    List<OrderDeviceDelivery> userOrderDeviceDeliveries(@Param("userId") Long userId, @Param("orderNos") List<String> orderNos);
 
     @Select("""
             SELECT COALESCE((

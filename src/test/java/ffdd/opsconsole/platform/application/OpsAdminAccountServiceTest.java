@@ -332,7 +332,7 @@ class OpsAdminAccountServiceTest {
                             false,
                             proposal.roleGate(),
                             proposal.reason(),
-                            "pending", null, false, null, null, null, false, null, null, null, true, true, null, null, null, null));
+                            "pending", null, false, null, null, null, false, null, null, null, null, true, true, null, null, null, null, null, null, null, null, null));
                 });
         when(adminMapper.insert(any(AdminEntity.class))).thenAnswer(invocation -> {
             AdminEntity entity = invocation.getArgument(0);

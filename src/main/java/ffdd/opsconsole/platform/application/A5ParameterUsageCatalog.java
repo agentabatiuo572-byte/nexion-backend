@@ -21,6 +21,7 @@ final class A5ParameterUsageCatalog {
             Map.entry("binaryDailyCap", new Usage("选中运营月的双轨日奖励上限，单位 USDT；周期上限按天数折算。", "GrowthRhythmSnapshot; BinarySettlementPolicyProvider; AppBinaryProjectionService")),
             Map.entry("withdrawCooldownDays", new Usage("选中运营月的提现冷却天数；提现评估和持有时限读取该值。", "GrowthRhythmSnapshot; AppWithdrawalService")),
             Map.entry("complianceHoldEnabled", new Usage("选中运营月的提现合规审查开关，供提现合规策略读取。", "GrowthRhythmSnapshot; WithdrawalCompliancePolicy")),
+            Map.entry("complianceReviewThresholdUsdt", new Usage("选中运营月的新链上提现合规等待金额线，严格超过才等。", "GrowthRhythmSnapshot; WithdrawalCompliancePolicy")),
             Map.entry("withdrawPenaltyFeeRate", new Usage("已退役：月份提现惩罚费率保留兼容读取和校验，当前提现不收取惩罚费。", "OpsPhaseOverviewService; AppWithdrawalService")));
 
     private static final Map<String, Usage> EXACT = """
@@ -62,6 +63,8 @@ final class A5ParameterUsageCatalog {
             withdrawal.nex_fee_offset_rate|提现策略读取的 UVT 手续费抵扣配置值。|AppWithdrawalService
             withdrawal.small_amount_threshold_usd|判定提现是否满足小额条件的金额阈值，单位 USDT。|AppWithdrawalService
             withdrawal.payout_sla_hours|提现处理时限，单位小时；由持有截止时间加该时长计算最迟处理时刻。|AppWithdrawalService
+            withdrawal.address_effective_delay_hours|链上提现地址首次绑定或更换成功后，到地址生效的小时数。|OpsFinanceService; AppPayoutAddressService
+            withdrawal.address_change_cooldown_days|链上提现地址保存成功后，到允许再次更换的天数。|OpsFinanceService; AppPayoutAddressService
             finance.payout_vnd.values|越南盾提现配置的字段集合，按 D7 配置服务解析。|PayoutVndConfigService
             finance.payout_vnd.version|越南盾提现配置版本，供 D7 读取和更新校验。|PayoutVndConfigService
             store.bundle.discount.2.rate|组合购达到两件时使用的折扣配置（比例）。|BundleDiscountPolicy
@@ -109,8 +112,8 @@ final class A5ParameterUsageCatalog {
             disclosure.gate.staking|质押相关业务的风险披露确认入口配置。|AppRepurchaseService; OpsGrowthService
             risk.k1.release.version|多账户释放规则的配置版本标识，供已发布促销关联版本时核对。|PromotionNativeContractResolver
             content.support.load.version|客服负载管理配置版本，保存时用于检查旧配置。|OpsSupportLoadConfigService
-            content.support.load.defaultCap|客服负载视图中的默认接待上限；这里不代表所有分配入口都据此过滤。|OpsSupportLoadConfigService
-            content.support.load.burstCap|客服负载管理的突发上限设置；未据此承诺所有会话入口强制执行。|OpsSupportLoadConfigService
+            content.support.load.defaultCap|客服负载管理视图的默认值。自动分配读取客服档案的同时接待上限，空值表示不限制。|OpsSupportLoadConfigService; SupportGroupMapper
+            content.support.load.burstCap|客服负载管理视图保留的突发上限。自动分配读取客服档案的同时接待上限，空值表示不限制。|OpsSupportLoadConfigService; SupportGroupMapper
             content.support.load.warnPct|仅管理读取：负载告警比例配置，单位百分比；未据此认定有告警发送。|OpsSupportLoadConfigService
             content.support.load.autoBalance|仅管理读取：客服负载自动均衡开关配置；未据此认定所有分配流程自动均衡。|OpsSupportLoadConfigService
             content.support.load.quietHourBalance|仅管理读取：安静时段均衡选项；未确认任务调度消费者。|OpsSupportLoadConfigService
@@ -126,7 +129,7 @@ final class A5ParameterUsageCatalog {
             withdrawal.fee_rate|仅管理兼容：提现通用网络费用比例配置；链上提交实际按配置的网络固定确认费读取。|OpsFinanceService; AppWithdrawalService
             withdrawal.fee_min_usdt|仅管理兼容：提现通用最低网络费配置，单位 USDT；不冒充当前链上提交的固定确认费。|OpsFinanceService; AppWithdrawalService
             withdrawal.fee_max_usdt|仅管理兼容：提现通用最高网络费配置，单位 USDT；不冒充当前链上提交的固定确认费。|OpsFinanceService; AppWithdrawalService
-            withdrawal.min_usdt|仅管理读取：提现参数中的最小金额配置，单位 USDT；是否由各通道实际使用需独立核对。|OpsFinanceService
+            withdrawal.min_usdt|D5 管理的链上最低提现金额，适用于 TRC20、BEP20、ERC20 的报价与新单提交，单位 USDT。|OpsFinanceService; AppWithdrawalService
             E.task.queueSaturation|任务计价计算读取的队列饱和度系数；管理端在计算任务价格时应用该系数。|OpsDeviceService
             team.ui.F.vrank.permanent|团队等级的保持开关；晋升引擎读取是否不降级。|VRankPromotionEngine
             wallet.nex_market.control.active_day_index|已经生效的行情曲线日序号，用于读取当前帧，不是日期。|OpsNexMarketService
@@ -154,7 +157,7 @@ final class A5ParameterUsageCatalog {
         if (agent.matches()) {
             String meaning = "busy".equals(agent.group(1))
                     ? "未确认：管理负载视图的忙碌状态取自当前坐席可用性；未核实此旧键另有生效消费者。"
-                    : "仅管理读取：该坐席配置的接待上限；不代表所有分配路径均强制执行。";
+                    : "客服负载管理视图保留的坐席上限。自动分配读取客服档案的同时接待上限，空值表示不限制。";
             return new Usage(meaning, "OpsSupportLoadConfigService");
         }
         if (key.startsWith("finance.topup.channel.card.") || key.startsWith("finance.topup.card.")

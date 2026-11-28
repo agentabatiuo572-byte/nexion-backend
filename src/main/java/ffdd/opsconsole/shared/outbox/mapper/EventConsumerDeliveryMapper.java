@@ -3,6 +3,7 @@ package ffdd.opsconsole.shared.outbox.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import ffdd.opsconsole.shared.outbox.EventConsumerDelivery;
 import ffdd.opsconsole.shared.outbox.infrastructure.EventConsumerDeliveryEntity;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
@@ -257,6 +258,33 @@ public interface EventConsumerDeliveryMapper extends BaseMapper<EventConsumerDel
     List<EventConsumerDelivery> listByStatus(@Param("consumerGroup") String consumerGroup,
                                              @Param("status") String status,
                                              @Param("limit") int limit);
+
+    @Select("""
+            <script>
+            SELECT event_id AS eventId,
+                   JSON_UNQUOTE(JSON_EXTRACT(payload, '$.targetUserId')) AS targetUserId,
+                   JSON_UNQUOTE(JSON_EXTRACT(payload, '$.userId')) AS userId,
+                   COALESCE(
+                       NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload, '$.occurredAt')), 'null'),
+                       CASE event_type
+                           WHEN 'auth.refresh_token_reuse_detected' THEN JSON_UNQUOTE(JSON_EXTRACT(payload, '$.detectedAt'))
+                           WHEN 'admin.user_impersonation_started' THEN JSON_UNQUOTE(JSON_EXTRACT(payload, '$.sessionStart'))
+                           WHEN 'admin.user_impersonation_ended' THEN JSON_UNQUOTE(JSON_EXTRACT(payload, '$.sessionEnd'))
+                       END
+                   ) AS occurredAt,
+                   COALESCE(event_ts, created_at) AS originalTimestamp
+              FROM nx_event_outbox
+             WHERE is_deleted = 0 AND event_id IN
+             <foreach collection="eventIds" item="eventId" open="(" separator="," close=")">
+                 #{eventId}
+             </foreach>
+            </script>
+            """)
+    List<OriginalAlertEvent> listOriginalAlertEvents(@Param("eventIds") List<String> eventIds);
+
+    record OriginalAlertEvent(String eventId, String targetUserId, String userId,
+                              String occurredAt, LocalDateTime originalTimestamp) {
+    }
 
     @Select("""
             SELECT

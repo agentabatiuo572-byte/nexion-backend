@@ -13,6 +13,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.*;
 import java.util.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
@@ -28,19 +29,53 @@ public class SupportLeaderboardService {
     private final SupportLeaderboardCache cache;
     private final SupportAdminAvatarService avatars;
     private final Clock clock;
+    private final SupportPerformanceReadService performance;
 
     public SupportLeaderboardService(SupportOwnershipService ownership,SupportLeaderboardAuthorizationMapper authorization,
         SupportLeaderboardCache cache,SupportAdminAvatarService avatars,Clock clock) {
+        this(ownership, authorization, cache, avatars, clock, null);
+    }
+
+    @Autowired
+    public SupportLeaderboardService(SupportOwnershipService ownership,SupportLeaderboardAuthorizationMapper authorization,
+        SupportLeaderboardCache cache,SupportAdminAvatarService avatars,Clock clock, SupportPerformanceReadService performance) {
         this.ownership=ownership;this.authorization=authorization;this.cache=cache;this.avatars=avatars;this.clock=clock;
+        this.performance=performance;
     }
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> page(Map<String,List<String>> raw) { return execute(raw,null); }
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public Map<String,Object> detail(Map<String,List<String>> raw,long agentId) { return execute(raw,agentId); }
+
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ)
+    public Map<String,Object> performance(Map<String,List<String>> raw, Long agentId) {
+        var access = authorize();
+        var query = SupportLeaderboardQuery.fromParameters(SupportPerformanceReadService.parameters(raw));
+        Instant now = clock.instant();
+        YearMonth requested;
+        try { requested = query.month() == null ? BusinessCalendar.legacy().month(now) : YearMonth.parse(query.month()); }
+        catch (DateTimeException invalid) { throw new BizException(422, "SUPPORT_LEADERBOARD_QUERY_INVALID"); }
+        var normalized = query.normalize(now, Set.of(requested), Set.of("USDT"), "USDT", access.scopes());
+        var groups = normalized.groupId() == null ? access.scopes().get(normalized.scope()) : Set.of(normalized.groupId());
+        var body = performance.leaderboard(normalized, agentId, access.actor(), groups, scopeOptions(access));
+        reauthorize(access);
+        return body;
+    }
     @Transactional(isolation=Isolation.REPEATABLE_READ)
     public SupportAttachmentService.Content avatar(Map<String,List<String>> raw,long agentId) {
         Authorization initial=authorize();
         try {
+            if (raw.containsKey("metricVersion")) {
+                if (!raw.containsKey("expectedVersion")) throw new BizException(422,"SUPPORT_LEADERBOARD_VERSION_REQUIRED");
+                var detail = performance(raw, agentId);
+                if (!(detail.get("row") instanceof Map<?,?> row) || row.get("avatarUrl") == null)
+                    throw new BizException(404,"AVATAR_NOT_FOUND");
+                var current = authorization.avatarReference(agentId);
+                reauthorize(initial);
+                if (current == null || current.assetId() == null || current.version() == null)
+                    throw new BizException(404,"AVATAR_NOT_FOUND");
+                return avatars.publicLeaderboardContent(new AvatarAuthorization(initial.actor(),agentId,current.version(),current.assetId()));
+            }
             Resolved resolved=resolve(raw,initial); Row row=SupportLeaderboard.publicSummary(resolved.publication().snapshot(),agentId,resolved.query().expectedVersion());
             reauthorize(initial);
             if(row.avatarUrl()==null) throw new BizException(404,"AVATAR_NOT_FOUND");
@@ -150,15 +185,18 @@ public class SupportLeaderboardService {
     private static <T> List<T> checked(List<T> values){if(values==null || values.stream().anyMatch(Objects::isNull))throw unavailable();return List.copyOf(values);}
     private Map<String,Object> metadata(Resolved r,Authorization a) {
         Snapshot s=r.publication().snapshot();Context c=s.context();
-        List<Map<String,Object>> options=new ArrayList<>();options.add(map("scope","all","groups",List.of()));
-        if(a.scopes().containsKey(Scope.ownGroup))options.add(map("scope","ownGroup","groups",a.own().stream().map(g->map("id",g.groupId().toString(),"name",g.name())).toList()));
-        if(a.scopes().containsKey(Scope.managedGroups))options.add(map("scope","managedGroups","groups",a.managed().stream().map(g->map("id",g.id().toString(),"name",g.name())).toList()));
         return map("viewVersion",s.viewVersion(),"queryVersion",s.viewVersion(),"sourceVersion",s.sourceVersion(),"definitionVersion",c.definitionVersion(),
             "board",c.board().name(),"rankMonth",c.rankMonth()==null?null:c.rankMonth().toString(),"referenceMonth",c.referenceMonth().toString(),"currency",ffdd.opsconsole.common.domain.LegacyUvtProof.currency(c.currency()),
             "scope",c.scope().name(),"businessZone",c.businessPeriod().zoneId(),"asOf",c.evaluatedAt().toString(),
             "publishedAt",r.publication().publishedAt().toString(),"state",s.state().name(),"candidateCoverage",s.candidateCoverage().name(),
             "stale",expired(r.publication(),r.now(),r.interval()),"refreshFailed",r.refreshFailed(),"selectableMonths",r.months().stream().map(Object::toString).toList(),
-            "currencies",SupportAnalyticsPrivateQueryService.CURRENCIES.stream().sorted().toList(),"scopeOptions",options);
+            "currencies",SupportAnalyticsPrivateQueryService.CURRENCIES.stream().sorted().toList(),"scopeOptions",scopeOptions(a));
+    }
+    private static List<Map<String,Object>> scopeOptions(Authorization a) {
+        List<Map<String,Object>> options=new ArrayList<>();options.add(map("scope","all","groups",List.of()));
+        if(a.scopes().containsKey(Scope.ownGroup))options.add(map("scope","ownGroup","groups",a.own().stream().map(g->map("id",g.groupId().toString(),"name",g.name())).toList()));
+        if(a.scopes().containsKey(Scope.managedGroups))options.add(map("scope","managedGroups","groups",a.managed().stream().map(g->map("id",g.id().toString(),"name",g.name())).toList()));
+        return options;
     }
     private Map<String,Object> row(Row r,Normalized q,String version,long actor) {
         Movement m=r.movement();
@@ -175,6 +213,9 @@ public class SupportLeaderboardService {
         if(q.rankMonth()!=null)params.put("month",q.rankMonth().toString());if(q.groupId()!=null)params.put("groupId",q.groupId().toString());
         return "/api/admin/content/support-workbench/leaderboard/"+agent+"/avatar?"+String.join("&",params.entrySet().stream()
             .map(e->e.getKey()+"="+URLEncoder.encode(e.getValue().toString(),StandardCharsets.UTF_8)).toList());
+    }
+    static String performanceAvatarUrl(long agent, Normalized query, String version) {
+        return avatarUrl(agent, query, version) + "&metricVersion=NET_INFLOW_V1";
     }
     private static Map<String,Object> map(Object... pairs){Map<String,Object> result=new LinkedHashMap<>();for(int i=0;i<pairs.length;i+=2)result.put((String)pairs[i],pairs[i+1]);return result;}
     private static BizException unavailable(){return new BizException(503,"SUPPORT_LEADERBOARD_SOURCE_FAILED");}

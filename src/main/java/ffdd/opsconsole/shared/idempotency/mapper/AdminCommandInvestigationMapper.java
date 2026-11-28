@@ -21,6 +21,18 @@ public interface AdminCommandInvestigationMapper extends BaseMapper<AdminCommand
     List<AdminIdempotencyRecordEntity> findOriginals(@Param("key") String key, @Param("method") String method,
             @Param("path") String path, @Param("actor") long actor, @Param("investigator") boolean investigator);
 
+    /** A3 content scopes contained the authenticated admin ID before origin columns were populated. */
+    @Select("""
+            SELECT * FROM nx_admin_idempotency_record
+             WHERE BINARY idempotency_key=BINARY #{key} AND is_deleted=0
+               AND (BINARY scope=BINARY #{actorScope}
+                    OR (#{investigator}=TRUE AND REGEXP_LIKE(scope, #{scopePattern}, 'c')))
+             ORDER BY id ASC
+            """)
+    List<AdminIdempotencyRecordEntity> findA3ContentOriginals(@Param("key") String key,
+            @Param("actorScope") String actorScope, @Param("scopePattern") String scopePattern,
+            @Param("investigator") boolean investigator);
+
     /** Owner proof for direct writes: the audit fact carries the server-injected command identity. */
     @Select("""
             SELECT DISTINCT actor_id FROM nx_audit_log
@@ -61,6 +73,7 @@ public interface AdminCommandInvestigationMapper extends BaseMapper<AdminCommand
                AND actor_id=#{original.originAdminId}
                AND method=#{original.originMethod} AND BINARY path=BINARY #{original.originPath}
                AND created_at >= #{original.createdAt}
+               AND (#{a3Content}=FALSE OR created_at >= DATE_SUB(#{original.expiresAt}, INTERVAL 24 HOUR))
                AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.recordId'))=CAST(#{original.id} AS CHAR)
                AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.scope'))=BINARY #{original.scope}
                AND BINARY JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$._adminCommand.commandKey'))=BINARY #{original.idempotencyKey}
@@ -68,7 +81,8 @@ public interface AdminCommandInvestigationMapper extends BaseMapper<AdminCommand
              LIMIT 1
             """)
     AuditLogRecord successEvidence(@Param("auditId") long auditId,
-                                  @Param("original") AdminIdempotencyRecordEntity original);
+                                  @Param("original") AdminIdempotencyRecordEntity original,
+                                  @Param("a3Content") boolean a3Content);
 
     @Select("""
             SELECT DISTINCT resource_id FROM nx_audit_log

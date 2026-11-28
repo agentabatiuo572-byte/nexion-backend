@@ -2,6 +2,7 @@ package ffdd.opsconsole.content.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ffdd.opsconsole.content.application.SupportBulkService;
 import ffdd.opsconsole.content.application.SupportOwnershipService;
 import ffdd.opsconsole.content.application.SupportUnboundPolicyService;
 import ffdd.opsconsole.shared.api.ApiResult;
@@ -20,14 +21,14 @@ public class OpsSupportCommandController {
     private final SupportOwnershipService ownership;
     private final ObjectMapper json;
     private final ffdd.opsconsole.content.application.SupportBindingRandomService random;
-    private final ffdd.opsconsole.content.application.SupportBulkService bulk;
+    private final SupportBulkService bulk;
     private final ffdd.opsconsole.content.mapper.ConversationTimeoutPolicyMapper timeoutPolicy;
     @org.springframework.beans.factory.annotation.Autowired private ffdd.opsconsole.content.application.SupportInviteCodeService invites;
     private static final List<String> SCOPES=List.of("SUPPORT_TRANSFER","SUPPORT_LEGACY_TRANSFER","SUPPORT_LEGACY_SINGLE","SUPPORT_RULES","SUPPORT_RANDOM",
             "SUPPORT_WELCOME","M3_SESSION_END","M3_MAINTENANCE","M3_CONVERSATION_INITIATE","M3_CONVERSATION_REPLY","M3_CONVERSATION_STATUS","M3_CONVERSATION_ARCHIVE",
             "M3_CONVERSATION_ARCHIVE_BATCH","M3_CONVERSATION_TO_TICKET","M3_CUSTOMER_TAG_ADD","M3_CUSTOMER_TAG_REMOVE",
             "M3_CUSTOMER_NOTE_ADD","M3_CUSTOMER_NOTE_REMOVE","M2_SUPPORT_TICKET_CREATE","M2_SUPPORT_TICKET_REPLY","M2_SUPPORT_TICKET_ESCALATE",
-            "M3_SUPPORT_BULK_CREATE","M3_SUPPORT_BULK_CANCEL","M3_SUPPORT_BULK_RETRY",
+            SupportBulkService.CREATE_COMMAND_SCOPE,"M3_SUPPORT_BULK_CANCEL","M3_SUPPORT_BULK_RETRY",
             "SUPPORT_GROUP_CREATE","SUPPORT_GROUP_RENAME","SUPPORT_GROUP_STATUS","SUPPORT_GROUP_OWNER",
             "SUPPORT_GROUP_MEMBER","SUPPORT_GROUP_QUALIFICATION","SUPPORT_GROUP_ROUTE","SUPPORT_INVITE_SELF","SUPPORT_INVITE_REVOKE");
 
@@ -118,7 +119,7 @@ public class OpsSupportCommandController {
             result.put("businessReason", businessReason);
             return ApiResult.ok(result);
         }
-        if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CREATE:")) return ApiResult.ok(bulk.recover(key));
+        if(receipt.getScope().equals(SupportBulkService.CREATE_COMMAND_SCOPE+":"+actor)) return ApiResult.ok(bulk.recover(key,receipt));
         if(receipt.getScope().startsWith("M3_SUPPORT_BULK_CANCEL:") || receipt.getScope().startsWith("M3_SUPPORT_BULK_RETRY:")) {
             if(!"SUCCEEDED".equals(receipt.getStatus())) return ApiResult.ok(Map.of("status",receipt.getStatus()));
             JsonNode result=json.readTree(receipt.getResponseJson()).path("data");

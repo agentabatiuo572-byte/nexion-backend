@@ -655,7 +655,7 @@ class DirectReferralMySqlRuntimeTest {
         var directRead=session.getMapper(ffdd.opsconsole.team.mapper.SupportDirectReferralReadMapper.class);
         var directBinder=proxy(new ffdd.opsconsole.finance.application.SupportFundJournalBindingService(session.getMapper(ffdd.opsconsole.finance.mapper.SupportFundJournalMapper.class),dataSource,json));
         var directCapture=proxy(new SupportDirectReferralFundAdapter(directBinder,new SupportDirectReferralReadService(directRead),directRead,json));
-        service=proxy(new DirectReferralService(mapper,policies,earnings,releaseMapper,risk,ledger,outbox,json,clock,null,null,directCapture));
+        service=proxy(new DirectReferralService(mapper,policies,earnings,releaseMapper,risk,ledger,outbox,json,clock,null,null,directCapture, null));
         var self=mock(org.springframework.beans.factory.ObjectProvider.class);when(self.getObject()).thenReturn(service);org.springframework.test.util.ReflectionTestUtils.setField(service,"self",self);
         var idempotencyMapper=session.getMapper(ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper.class);
         var expiry=proxy(new ffdd.opsconsole.shared.idempotency.AdminIdempotencyExpiryTransitionExecutor(idempotencyMapper));

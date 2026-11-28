@@ -255,7 +255,8 @@ public class AppUserAuthService {
             userMapper.invalidateOpenLoginOtpChallenges(user.getId());
             return ApiResult.fail(503, "USER_OTP_DELIVERY_FAILED");
         }
-        return ApiResult.ok(new UserOtpLoginChallengeResponse(challengeNo, policy.cooldownSeconds(), maskPhone(phone)));
+        return ApiResult.ok(new UserOtpLoginChallengeResponse(
+                challengeNo, policy.cooldownSeconds(), maskPhone(phone), policy.ttlSeconds()));
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -689,8 +690,8 @@ public class AppUserAuthService {
             return ApiResult.fail(401, message);
         String reason = session.getSessionEndedReason();
         if (!"APP".equals(session.getSessionGroup()) && !"H5".equals(session.getSessionGroup())) reason = "REAUTH_REQUIRED";
-        else if (reason == null || !List.of("APP_REPLACED", "CURRENT_LOGOUT", "SECURITY_REVOKED", "SESSION_EXPIRED", "REAUTH_REQUIRED").contains(reason)
-                || ("APP_REPLACED".equals(reason) && !"APP".equals(session.getSessionGroup()))) reason = fallback;
+        else if (reason == null || !List.of("APP_REPLACED", "H5_REPLACED", "CURRENT_LOGOUT", "SECURITY_REVOKED", "SESSION_EXPIRED", "REAUTH_REQUIRED").contains(reason))
+            reason = fallback;
         return ApiResult.fail(401, message, UserLoginResponse.ended(reason));
     }
 
@@ -917,7 +918,8 @@ public class AppUserAuthService {
         return new UserOtpLoginChallengeResponse(
                 "LOGIN-" + UUID.randomUUID().toString().replace("-", ""),
                 policy.cooldownSeconds(),
-                maskPhone(phone));
+                maskPhone(phone),
+                policy.ttlSeconds());
     }
 
     private String maskPhone(String phone) {

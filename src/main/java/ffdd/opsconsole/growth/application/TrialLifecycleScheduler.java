@@ -21,11 +21,15 @@ public class TrialLifecycleScheduler {
     private final AppTrialLifecycleMapper mapper;
     private final AppTrialLifecycleService lifecycle;
     private final CoverageRedlineAlertGate coverageRedlineAlerts = new CoverageRedlineAlertGate();
+    private DueTrialRow scanCursor;
 
     @Scheduled(fixedDelayString = "${nexion.trial.scheduler-delay-ms:60000}")
     public void settleDueTrials() {
-        List<DueTrialRow> rows = mapper.dueTrials(BATCH_SIZE);
+        List<DueTrialRow> rows = scanCursor == null ? mapper.dueTrials(BATCH_SIZE)
+                : mapper.dueTrialsAfter(BATCH_SIZE, scanCursor.dueAt(), scanCursor.claimNo());
         if (rows == null) return;
+        // Advance past held claims and wrap through the oldest due claims within the same batch.
+        scanCursor = rows.size() == BATCH_SIZE ? rows.get(BATCH_SIZE - 1) : null;
         for (DueTrialRow row : rows) {
             if (row == null || row.userId() == null || row.userId() <= 0
                     || row.claimNo() == null || row.claimNo().isBlank() || row.dueAt() == null) {

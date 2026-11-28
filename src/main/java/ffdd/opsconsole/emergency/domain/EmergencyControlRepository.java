@@ -90,6 +90,10 @@ public interface EmergencyControlRepository {
 
     Optional<String> settingValue(String settingKey);
 
+    default Optional<String> settingValueForUpdate(String settingKey) {
+        return Optional.empty();
+    }
+
     void upsertSetting(String settingKey, String settingValue, String valueType, String groupCode, String remark, String operator);
 
     default boolean insertSettingIfAbsent(String settingKey, String value, String groupCode, String operator) {
@@ -263,6 +267,11 @@ public interface EmergencyControlRepository {
 
     /** A retained successful drill row corresponding to the playbook's current last_drill_at. */
     default boolean hasCurrentDrillEvidence(String code) {
+        return false;
+    }
+
+    /** The locked playbook and its linked successful drill both date back more than 90 days. */
+    default boolean hasExpiredDrillEvidence(String code) {
         return false;
     }
 

@@ -1,11 +1,16 @@
 package ffdd.opsconsole.shared.canonical;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonDeserializer;
+import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import ffdd.opsconsole.promotion.web.PromotionItemImages;
 import ffdd.opsconsole.commerce.application.CommerceSandboxTrialService;
 import ffdd.opsconsole.finance.application.FundsSandboxProfileGuard;
 import ffdd.opsconsole.growth.application.AppTrialLifecycleService;
 import ffdd.opsconsole.growth.application.H3WeeklyParticipationObservationService;
 import ffdd.opsconsole.shared.api.ApiResult;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -52,7 +57,11 @@ public class AppCanonicalBoundaryController {
         if (clientStatus != null && result.getData() != null) {
             String serverState = String.valueOf(result.getData().get("state"));
             if (!serverState.equalsIgnoreCase(clientStatus.trim())) {
-                return service.rejectTrialStateTamper(userId);
+                String reason = String.valueOf(result.getData().get("eligibilityReason"));
+                return switch (reason) {
+                    case "in-progress", "converted", "used" -> service.rejectTrialStateTamper(userId, true);
+                    default -> service.rejectTrialStateTamper(userId);
+                };
             }
         }
         return result;
@@ -94,6 +103,26 @@ public class AppCanonicalBoundaryController {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
                 : service.deactivateDevice(userId, deviceId, request.expectedVersion(), idempotencyKey);
+    }
+
+    @PostMapping("/api/devices/slot-replacement")
+    public ApiResult<Map<String, Object>> replaceDevice(
+            @RequestBody DeviceReplacementRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String key,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.replaceDevice(userId, request.oldDeviceId(),
+                request.newDeviceId(), request.oldExpectedVersion(), request.newExpectedVersion(), key, false);
+    }
+
+    @PostMapping("/api/devices/slot-replacement/cancel")
+    public ApiResult<Map<String, Object>> cancelDeviceReplacement(
+            @RequestBody DeviceReplacementRequest request,
+            @RequestHeader(name = "Idempotency-Key", required = false) String key,
+            Authentication authentication) {
+        Long userId = userId(authentication);
+        return userId == null ? forbidden() : service.replaceDevice(userId, request.oldDeviceId(),
+                request.newDeviceId(), request.oldExpectedVersion(), request.newExpectedVersion(), key, true);
     }
 
     @PostMapping("/api/device/{deviceId}/deactivate-after-task")
@@ -146,7 +175,8 @@ public class AppCanonicalBoundaryController {
         Long userId = userId(authentication);
         return userId == null ? forbidden()
                 : service.createOrder(userId, request.orderNo(), request.productId(), request.productNo(),
-                        request.quantity(), request.voucherId(), request.promotionQuoteId(), idempotencyKey);
+                        request.quantity(), request.voucherId(), request.promotionQuoteId(),
+                        request.expectedAmountUsdt(), idempotencyKey);
     }
 
     /** Owner-only read of an ordinary create command; never creates or charges an order. */
@@ -241,13 +271,51 @@ public class AppCanonicalBoundaryController {
     public record DeviceDeactivateRequest(Long expectedVersion) {
     }
 
+    public record DeviceReplacementRequest(
+            Long oldDeviceId, Long newDeviceId, Long oldExpectedVersion, Long newExpectedVersion) {}
+
     public record OtpVerifyRequest(String challengeNo, String code, Boolean clientRegexAccepted) {
     }
 
     public record OrderCreateRequest(
-            String orderNo, Long productId, String productNo, Integer quantity, String voucherId, String promotionQuoteId) {
+            String orderNo, Long productId, String productNo, Integer quantity, String voucherId, String promotionQuoteId,
+            @JsonDeserialize(using = OrderAmountDeserializer.class) BigDecimal expectedAmountUsdt) {
+        public OrderCreateRequest(String orderNo, Long productId, String productNo, Integer quantity, String voucherId,
+                String promotionQuoteId) {
+            this(orderNo, productId, productNo, quantity, voucherId, promotionQuoteId, null);
+        }
+
         public OrderCreateRequest(String orderNo, Long productId, String productNo, Integer quantity, String voucherId) {
             this(orderNo, productId, productNo, quantity, voucherId, null);
+        }
+    }
+
+    public static class OrderAmountDeserializer extends JsonDeserializer<BigDecimal> {
+        private static final BigDecimal INVALID = BigDecimal.valueOf(-1);
+
+        @Override
+        public BigDecimal deserialize(JsonParser parser, DeserializationContext context) throws IOException {
+            String value = parser.getValueAsString();
+            if (value == null) {
+                parser.skipChildren();
+                return INVALID;
+            }
+            try {
+                return new BigDecimal(value.trim());
+            } catch (NumberFormatException invalidAmount) {
+                return INVALID;
+            }
+        }
+
+        @Override
+        public BigDecimal getNullValue(DeserializationContext context) {
+            return INVALID;
+        }
+
+        @Override
+        public BigDecimal getAbsentValue(DeserializationContext context) {
+            // Older App builds omit the amount, while explicit null is invalid.
+            return null;
         }
     }
 

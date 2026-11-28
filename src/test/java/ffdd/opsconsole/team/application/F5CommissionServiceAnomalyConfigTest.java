@@ -167,8 +167,8 @@ class F5CommissionServiceAnomalyConfigTest {
     @Test
     @SuppressWarnings("unchecked")
     void overviewUsesFullAggregatesForEightKindsAndAllSevenStatuses() {
-        when(mapper.queryEvents(null, null, null, null, null, null, 21)).thenReturn(List.of());
-        when(mapper.queryEvents(null, null, null, null, null, null, 200)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 21, null)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 200, null)).thenReturn(List.of());
         when(mapper.aggregateCommissionKinds()).thenReturn(List.of(
                 Map.of("kind", "network", "currency", "USDT", "amount", new BigDecimal("10"), "count", 1L),
                 Map.of("kind", "binary", "currency", "USDT", "amount", new BigDecimal("20"), "count", 2L),
@@ -205,8 +205,8 @@ class F5CommissionServiceAnomalyConfigTest {
 
     @Test
     void overviewFailsClosedInsteadOfRelabelingUnknownRawStatus() {
-        when(mapper.queryEvents(null, null, null, null, null, null, 21)).thenReturn(List.of());
-        when(mapper.queryEvents(null, null, null, null, null, null, 200)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 21, null)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 200, null)).thenReturn(List.of());
         when(mapper.aggregateCommissionKinds()).thenReturn(List.of());
         when(mapper.aggregateCommissionStatuses()).thenReturn(List.of(
                 Map.of("status", "unknown", "currency", "USDT", "amount", BigDecimal.ONE, "count", 1L)));

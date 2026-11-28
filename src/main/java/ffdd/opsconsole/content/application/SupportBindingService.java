@@ -459,8 +459,8 @@ public class SupportBindingService {
 
     /**
      * Supervisor preview/confirm keeps the original candidate set so a frozen ticket is compared with
-     * the same facts. The automatic first-inquiry/fallback path applies the profile pause and
-     * capacity filters (skip busy and at-limit agents); ties are resolved randomly (2026-11-19).
+     * the same facts. Automatic first-inquiry and fallback assignment skip paused agents
+     * and enforce numeric caps. Agents with a null cap have unlimited capacity.
      */
     private List<Candidate> randomCandidates(Long customer,Long group,boolean automatic) {
         Map<String,Object> pool=mapper.poolAttempt(customer);
@@ -495,8 +495,11 @@ public class SupportBindingService {
         catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
     }
     public static void validateCommand(String key,String reason) {
-        if(key==null || key.trim().length()<8 || key.trim().length()>128) throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
+        validateCommandKey(key);
         if(reason==null || reason.trim().length()<8 || reason.trim().length()>200) throw new BizException(422,"REASON_LENGTH_INVALID");
+    }
+    static void validateCommandKey(String key) {
+        if(key==null || key.trim().length()<8 || key.trim().length()>128) throw new BizException(422,"IDEMPOTENCY_KEY_INVALID");
     }
     private static boolean invalidDays(Integer d) {return d!=null && d<=0;}
     private static String blank(String s) {return s==null || s.isBlank()?null:s.trim();}

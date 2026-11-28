@@ -71,11 +71,21 @@ public interface AppExchangeMapper {
             """)
     String emergencyValue(@Param("key") String key);
 
+    // A stopped sampler cannot renew a published price. Match the price G3 formally published
+    // so a delayed sampler write cannot supersede a manual price during a pause.
     @Select("""
             SELECT price_usdt FROM nx_price_index
              WHERE metric_code IN ('UVT','UVT_USDT') AND status='ACTIVE' AND is_deleted=0
-               AND sampled_at>=DATE_SUB(NOW(),INTERVAL 5 MINUTE)
                AND sampled_at<=DATE_ADD(NOW(),INTERVAL 1 MINUTE)
+               AND CASE WHEN EXISTS (
+                   SELECT 1 FROM nx_config_item
+                    WHERE config_key='wallet.nex_market.paused' AND status=1 AND is_deleted=0
+                      AND LOWER(TRIM(config_value)) IN ('true','enabled','on','1','paused')
+               ) THEN price_usdt = (
+                   SELECT CAST(TRIM(config_value) AS DECIMAL(18,8)) FROM nx_config_item
+                    WHERE config_key='wallet.exchange.nex_usdt_price' AND status=1 AND is_deleted=0
+                      AND TRIM(config_value) REGEXP '^[0-9]{1,10}([.][0-9]{1,8})?$'
+               ) ELSE sampled_at>=DATE_SUB(NOW(),INTERVAL 5 MINUTE) END
              ORDER BY sampled_at DESC,id DESC LIMIT 1
             """)
     BigDecimal currentPrice();
@@ -114,6 +124,18 @@ public interface AppExchangeMapper {
              ORDER BY b.sampledAt,b.id
             """)
     List<MarketPoint> marketHistoryPoints();
+
+    @Select("""
+            SELECT COALESCE(SUM(CASE WHEN UPPER(o.from_asset)='USDT' THEN o.from_amount
+                                     ELSE ROUND(o.from_amount * o.rate, 6) END),0)
+              FROM nx_exchange_order o
+              JOIN nx_user u ON u.id=o.user_id AND u.is_deleted=0 AND COALESCE(u.sandbox,0)=0
+             WHERE o.is_deleted=0 AND UPPER(o.status) IN ('COMPLETED','SUCCESS')
+               AND o.updated_at>=DATE_SUB(NOW(),INTERVAL 24 HOUR) AND o.updated_at<=NOW()
+               AND ((UPPER(o.from_asset)='USDT' AND UPPER(o.to_asset) IN ('UVT','NEX'))
+                 OR (UPPER(o.from_asset) IN ('UVT','NEX') AND UPPER(o.to_asset)='USDT'))
+            """)
+    BigDecimal marketVolume24hUsdt();
 
     @Select("""
             SELECT metricCode,metricLabel,priceUsdt,deltaPercent,volume24hUsdt,sparkline,sampledAt

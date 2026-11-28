@@ -25,6 +25,8 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 class AppHomeOverviewServiceTest {
     private final AppHomeOverviewMapper mapper = org.mockito.Mockito.mock(AppHomeOverviewMapper.class);
@@ -34,9 +36,15 @@ class AppHomeOverviewServiceTest {
             org.mockito.Mockito.mock(HomePurchaseEligibilityProbe.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-08-15T00:00:00Z"), ZoneOffset.UTC);
     private final MockEnvironment environment = new MockEnvironment();
+    private final PlatformTransactionManager transactions = org.mockito.Mockito.mock(PlatformTransactionManager.class);
     private final AppHomeOverviewService service =
             new AppHomeOverviewService(mapper, verifier, publicStats, purchaseEligibility, org.mockito.Mockito.mock(HomeSharedSnapshotCache.class), clock,
-                    org.mockito.Mockito.mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService.class), environment);
+                    org.mockito.Mockito.mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService.class), environment, transactions);
+
+    @org.junit.jupiter.api.BeforeEach
+    void prepareReadTransaction() {
+        when(transactions.getTransaction(any())).thenAnswer(ignored -> new SimpleTransactionStatus());
+    }
 
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.CsvSource({"5,1,0,6", "4,1,1,6", "6,1,1,8"})
@@ -254,7 +262,7 @@ class AppHomeOverviewServiceTest {
                 Instant.parse("2026-08-14T16:00:01Z"), ZoneOffset.UTC);
         AppHomeOverviewService midnightService = new AppHomeOverviewService(
                 mapper, verifier, publicStats, purchaseEligibility, org.mockito.Mockito.mock(HomeSharedSnapshotCache.class), midnightClock,
-                org.mockito.Mockito.mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService.class), environment);
+                org.mockito.Mockito.mock(ffdd.opsconsole.device.application.DeviceMonthlyTargetReadService.class), environment, transactions);
         when(verifier.sourceEnvironment()).thenReturn("PRODUCTION");
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
 
@@ -365,7 +373,7 @@ class AppHomeOverviewServiceTest {
                         "Your phone", "phone", "TIER-3", "MOBILE", new BigDecimal("0.060000"))));
         when(mapper.marketProducts()).thenReturn(List.of(
                 new AppHomeOverviewMapper.MarketProductRow("cloud-share", "Cloud Share", "SHARE", "Share",
-                        new BigDecimal("19.90"), new BigDecimal("0.190000"), 0, "UNLIMITED"),
+                        new BigDecimal("19.90"), new BigDecimal("0.190000"), 0, "UNLIMITED", null, null, null),
                 new AppHomeOverviewMapper.MarketProductRow("stellarbox-s1", "NexGridBox S1", "DEVICE", "Entry",
                         new BigDecimal("649.00"), new BigDecimal("7.000000"), 5)));
         when(purchaseEligibility.purchaseEligibilityBatch(42L, List.of("stellarbox-s1")))
@@ -385,7 +393,7 @@ class AppHomeOverviewServiceTest {
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
         when(mapper.promo()).thenReturn(new AppHomeOverviewMapper.PromoRow(
                 "3", "1.5", 1, 0, "share-sku-01", "0.19", "active",
-                LocalDateTime.of(2026, 8, 14, 0, 0), "SHARE", new BigDecimal("19.90")));
+                LocalDateTime.of(2026, 8, 14, 0, 0), "SHARE", new BigDecimal("19.90"), null));
 
         var home = service.overview(42L).getData();
         var promo = (Map<?, ?>) home.get("weeklyPromo");
@@ -402,7 +410,7 @@ class AppHomeOverviewServiceTest {
         when(mapper.userEnvironment(42L)).thenReturn(new AppHomeOverviewMapper.UserEnvironmentRow(false));
         when(mapper.promo()).thenReturn(new AppHomeOverviewMapper.PromoRow(
                 "3", "1.5", 1, 0, "Cloud Share research device", "1.50", "active",
-                LocalDateTime.of(2026, 8, 14, 0, 0), "DEVICE", new BigDecimal("100.00")));
+                LocalDateTime.of(2026, 8, 14, 0, 0), "DEVICE", new BigDecimal("100.00"), null));
 
         var home = service.overview(42L).getData();
         var product = (Map<?, ?>) ((Map<?, ?>) home.get("weeklyPromo")).get("product");

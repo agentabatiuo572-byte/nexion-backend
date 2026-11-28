@@ -184,7 +184,7 @@ public class MultiAccountClusterBatchService {
         }
         double threshold = parse(values == null ? null : values.get("clusterFreezeSuggestThreshold"), defaults.freezeThreshold());
         if (threshold < 0d || threshold > 1d) threshold = defaults.freezeThreshold();
-        int maxIp = boundedInt(values == null ? null : values.get("maxSignupPerIp24h"), defaults.maxSignupPerIp24h(), 1, 10);
+        int maxIp = boundedInt(values == null ? null : values.get("maxSignupPerIp24h"), defaults.maxSignupPerIp24h(), 1, 50);
         int maxDevice = boundedInt(values == null ? null : values.get("maxAccountsPerDevice"), defaults.maxAccountsPerDevice(), 1, 5);
         int maxPayment = boundedInt(values == null ? null : values.get("maxAccountsPerPaymentInstrument"), defaults.maxAccountsPerPaymentInstrument(), 1, 5);
         return new MultiAccountClusterEngine.Config(device, payment, ip, threshold, maxIp, maxDevice, maxPayment);

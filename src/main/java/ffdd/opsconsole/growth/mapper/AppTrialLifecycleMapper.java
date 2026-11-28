@@ -1,6 +1,7 @@
 package ffdd.opsconsole.growth.mapper;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -14,7 +15,8 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 // Statement-only trial lifecycle boundary spanning users, claims, wallets and devices.
 @SuppressWarnings("MybatisPlusBaseMapper")
-public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper {
+public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonical.mapper.HardwareQuotaPurchaseMapper,
+        ffdd.opsconsole.shared.canonical.mapper.StandardTrialSkuMapper {
 
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
             + "AND COALESCE(sandbox,0)=0 FOR UPDATE")
@@ -23,6 +25,25 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
     @Select("SELECT id FROM nx_user WHERE id=#{userId} AND status='ACTIVE' AND is_deleted=0 "
             + "AND COALESCE(sandbox,0)=0 LIMIT 1")
     Long activeUser(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT EXISTS(SELECT 1 FROM nx_audit_log
+             WHERE resource_type='TRIAL_SESSION' AND resource_id IN (#{claimNo}, CONCAT('trial-', #{claimNo}))
+               AND action='H2_TRIAL_SESSION_CANCELLED' AND actor_type='ADMIN'
+               AND CAST(JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.userId')) AS UNSIGNED)=#{userId}
+               AND JSON_UNQUOTE(JSON_EXTRACT(detail_json,'$.idempotencyKey')) COLLATE utf8mb4_0900_ai_ci=#{key}
+               AND is_deleted=0)
+              OR EXISTS(SELECT 1 FROM nx_audit_log_archive
+               WHERE content_sha256 IS NOT NULL
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceType'))='TRIAL_SESSION'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.resourceId')) IN (#{claimNo}, CONCAT('trial-', #{claimNo}))
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.action'))='H2_TRIAL_SESSION_CANCELLED'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.actorType'))='ADMIN'
+                 AND JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.userId'))=CAST(#{userId} AS CHAR)
+                 AND JSON_UNQUOTE(JSON_EXTRACT(JSON_UNQUOTE(JSON_EXTRACT(cold_payload,'$.detail')),'$.idempotencyKey'))
+                   COLLATE utf8mb4_0900_ai_ci=#{key})
+            """)
+    boolean legacyOpsCancelled(@Param("userId") Long userId, @Param("claimNo") String claimNo, @Param("key") String key);
 
     @Select("""
             SELECT id FROM nx_user
@@ -89,6 +110,39 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
              WHERE user_id=#{userId} AND is_deleted=0 LIMIT 1
             """)
     TrialRow trial(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialClaimNo')) claimNo,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.pricingAsOf')) pricingAsOf,
+                   payment_method paymentMethod, expires_at deadline, provider_expires_at providerDeadline, reason, status,
+                   intent_no intentNo,paid_at paidAt,confirmed_at confirmedAt,
+                   JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.productNo')) productNo,
+                   JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.expectedAmountUsdt')) confirmedAmount,
+                   NULLIF(JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.businessAmountUsdt')), 'null') amountUsdt,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialDeviceName')) deviceName,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialImageSku')) imageSku,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialImageAssetId')) imageAssetId,
+                   JSON_UNQUOTE(JSON_EXTRACT(quote_json,'$.trialImageObjectKey')) imageObjectKey
+              FROM nx_purchase_payment_intent
+             WHERE user_id=#{userId} AND kind='TRIAL_CONVERT'
+               AND receipt_json IS NULL AND refund_receipt_json IS NULL
+               AND (status NOT IN ('DELIVERED','EXPIRED') OR (status='EXPIRED' AND reconciliation_status='QUERY_UNKNOWN'))
+             ORDER BY created_at DESC,intent_no DESC
+            """)
+    List<TrialExternalPayment> openTrialExternalPayments(@Param("userId") Long userId);
+
+    record TrialExternalPayment(String claimNo, String pricingAsOf, String paymentMethod, Instant deadline,
+                                Instant providerDeadline, String reason, String status, String intentNo, Instant paidAt, Instant confirmedAt,
+                                String productNo, String confirmedAmount, String amountUsdt, String deviceName,
+                                String imageSku, String imageAssetId, String imageObjectKey) {
+        @org.apache.ibatis.annotations.AutomapConstructor
+        public TrialExternalPayment {}
+
+        public TrialExternalPayment(String claimNo, String pricingAsOf, String paymentMethod, Instant deadline, String reason) {
+            this(claimNo, pricingAsOf, paymentMethod, deadline, null, reason, null, null,
+                    null, null, null, null, null, null, null, null, null);
+        }
+    }
 
     @Select("""
             SELECT id,product_no productNo,name,tier,price_usdt priceUsdt,stock,unlock_phase unlockPhase,
@@ -182,6 +236,17 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             """)
     List<PolicyRow> policies();
 
+    @Select("""
+            <script>
+            SELECT policy_key policyKey,current_value currentValue
+              FROM nx_growth_trial_policy FORCE INDEX (uk_growth_trial_policy_key)
+             WHERE is_deleted=0 AND policy_key IN
+             <foreach item="key" collection="keys" open="(" separator="," close=")">#{key}</foreach>
+             FOR UPDATE
+            </script>
+            """)
+    List<PolicyRow> lockStartPolicies(@Param("keys") List<String> keys);
+
     @Insert("""
             INSERT INTO nx_growth_trial_daily_quota(quota_date,daily_limit,claimed_count)
             VALUES(#{quotaDate},#{dailyLimit},0)
@@ -195,11 +260,17 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             SELECT GREATEST(COALESCE((
                      SELECT CAST(current_value AS SIGNED) FROM nx_growth_trial_policy
                       WHERE policy_key='seatsLeftToday' AND is_deleted=0 LIMIT 1
-                   ),0)-claimed_count,0)
+                   ),0)-CAST(claimed_count AS SIGNED),0)
               FROM nx_growth_trial_daily_quota
              WHERE quota_date=#{quotaDate}
             """)
     Integer trialQuotaRemaining(@Param("quotaDate") LocalDate quotaDate);
+
+    @Select("""
+            SELECT GREATEST(CAST(daily_limit AS SIGNED)-CAST(claimed_count AS SIGNED),0)
+              FROM nx_growth_trial_daily_quota WHERE quota_date=#{quotaDate} FOR UPDATE
+            """)
+    Integer lockedTrialQuotaRemaining(@Param("quotaDate") LocalDate quotaDate);
 
     @Update("""
             UPDATE nx_growth_trial_daily_quota
@@ -208,7 +279,7 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             """)
     int consumeTrialQuota(@Param("quotaDate") LocalDate quotaDate);
 
-    @Select("""
+    String DUE_TRIALS = """
             SELECT user_id userId,
                    claim_no claimNo,
                    CASE
@@ -219,10 +290,18 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
              WHERE is_deleted=0
                AND UPPER(status) IN ('CLAIMED','ACTIVE','GRACE','EXTENDED')
             HAVING dueAt <= NOW()
-             ORDER BY expires_at, id
+            """;
+
+    @Select(DUE_TRIALS + " ORDER BY dueAt, claimNo LIMIT #{limit}")
+    List<DueTrialRow> dueTrials(@Param("limit") int limit);
+
+    @Select(DUE_TRIALS + """
+             ORDER BY (dueAt, claimNo) <= (#{afterDueAt}, #{afterClaimNo}), dueAt, claimNo
              LIMIT #{limit}
             """)
-    List<DueTrialRow> dueTrials(@Param("limit") int limit);
+    List<DueTrialRow> dueTrialsAfter(@Param("limit") int limit,
+                                   @Param("afterDueAt") LocalDateTime afterDueAt,
+                                   @Param("afterClaimNo") String afterClaimNo);
 
     @Select("""
             SELECT COUNT(*) FROM nx_risk_signal
@@ -396,16 +475,18 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
                status,hashrate,daily_usdt,daily_nex,purchased_at,activated_at,created_at,updated_at,is_deleted,
                gpu_model,vram_total_gb,dc_location)
             SELECT #{userId},#{sourceOrderNo},p.id,p.product_no,#{productTier},p.series_code,#{instanceNo},#{deviceName},
-               #{deviceType},1,CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)),
-               #{priceUsdt},'OWNED','TRIAL','ACTIVE',0,p.estimated_daily_usdt,p.daily_nex,NOW(),NOW(),NOW(),NOW(),0,
-               p.gpu_model,p.vram_total_gb,#{hostingCenter}
+               #{deviceType},GREATEST(COALESCE(p.generation,1),1),
+               CASE WHEN UPPER(p.product_type)='SHARE' THEN 0
+                    ELSE CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6)) END,
+               #{priceUsdt},'OWNED','TRIAL','ACTIVE',GREATEST(COALESCE(p.hashrate,0),0),
+               GREATEST(COALESCE(p.estimated_daily_usdt,0),0),GREATEST(COALESCE(p.daily_nex,0),0),NOW(),NOW(),NOW(),NOW(),0,
+               COALESCE(p.gpu_model,''),COALESCE(p.vram_total_gb,0),#{hostingCenter}
               FROM nx_product p
-              JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
+              LEFT JOIN nx_admin_device_sku s ON s.sku_id=p.product_no AND s.is_deleted=0
              WHERE p.id=#{productId} AND p.product_no=#{productCode} AND p.is_deleted=0
-               AND p.estimated_daily_usdt>0 AND p.daily_nex>0
-               AND TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0
+               AND (UPPER(p.product_type)='SHARE' OR (TRIM(p.gpu_model)<>'' AND p.vram_total_gb>0
                AND UPPER(TRIM(s.power_text)) REGEXP '^([0-9]{1,12}|[0-9]{1,3}(,[0-9]{3}){1,3})([.][0-9]{1,6})?[[:space:]]*(W([[:space:]]+TDP|[[:space:]]*(（(单卡额定|显卡额定合计)）|[(](单卡额定|显卡额定合计|PER-GPU RATED|COMBINED GPU RATED)[)]))?)?\\\\z'
-               AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6))>0
+               AND CAST(REPLACE(REGEXP_SUBSTR(s.power_text,'[0-9][0-9,.]*'),',','') AS DECIMAL(18,6))>0))
             """)
     int insertPurchasedDevice(
             @Param("userId") Long userId,
@@ -417,6 +498,16 @@ public interface AppTrialLifecycleMapper extends ffdd.opsconsole.shared.canonica
             @Param("instanceNo") String instanceNo,
             @Param("deviceName") String deviceName,
             @Param("priceUsdt") BigDecimal priceUsdt, @Param("hostingCenter") String hostingCenter);
+
+    @Select("""
+            SELECT i.product_no productNo,i.product_name name,d.device_type productType
+              FROM nx_order o JOIN nx_order_item i ON i.order_no=o.order_no AND i.is_deleted=0
+              LEFT JOIN nx_user_device d ON d.id=#{deviceId} AND d.user_id=o.user_id
+             WHERE o.order_no=#{orderNo} AND o.user_id=#{userId} AND o.order_type='TRIAL_CONVERT'
+             LIMIT 1
+            """)
+    java.util.Map<String, Object> purchasedDevice(@Param("orderNo") String orderNo, @Param("userId") Long userId,
+                                                  @Param("deviceId") Long deviceId);
 
     @Select("SELECT id FROM nx_user_device WHERE instance_no=#{instanceNo} AND is_deleted=0 LIMIT 1")
     Long deviceIdByInstanceNo(@Param("instanceNo") String instanceNo);

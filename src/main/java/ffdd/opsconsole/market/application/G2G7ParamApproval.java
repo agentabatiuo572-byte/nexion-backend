@@ -196,7 +196,15 @@ public class G2G7ParamApproval {
         // Approval replay revalidates the exact old value bound at proposal time. G7's official service
         // does not carry expectedValue, so this check must happen before it; G2 also keeps its own check.
         String current = currentValue(command);
-        if (current == null || !expectedValue.equals(current)) {
+        if (!expectedValue.equals(current)) {
+            if (current != null && hasAuthority(makerAuthority(command))) {
+                String currentSnapshot = canonicalRecheckValue(command, paramKey, current);
+                String expectedSnapshot = canonicalRecheckValue(command, paramKey, expectedValue);
+                if (currentSnapshot != null && expectedSnapshot != null && !currentSnapshot.equals(expectedSnapshot)
+                        && (!G2.equals(command.op()) || market.matchesExchangeApprovalSnapshot(paramKey, current))) {
+                    throw new OldValueChangedRecheck(command);
+                }
+            }
             return ApiResult.fail(409, staleCode(command));
         }
         String candidate = candidateValue(command, value);
@@ -212,6 +220,12 @@ public class G2G7ParamApproval {
                         new OpsRepurchaseAdminService.UpdateRequest(value, reason, context.operator(), null));
     }
 
+    public static final class OldValueChangedRecheck extends BizException {
+        private OldValueChangedRecheck(AuditReplayCommand command) {
+            super(409, staleCode(command));
+        }
+    }
+
     private String currentValue(AuditReplayCommand command) {
         String paramKey = text(command.params() == null ? null : command.params().get("paramKey"));
         return G2.equals(command.op())
@@ -224,6 +238,16 @@ public class G2G7ParamApproval {
         return G2.equals(command.op())
                 ? market.exchangeParamCandidateValue(paramKey, rawValue)
                 : market.repurchaseParamCandidateValue(paramKey, rawValue);
+    }
+
+    private String canonicalRecheckValue(AuditReplayCommand command, String paramKey, String rawValue) {
+        String value = rawValue.trim();
+        // Snapshot evidence must be plain numeric text or a recognized queue mode.
+        if (!"queueMode".equals(paramKey) && !value.matches("[0-9]+(?:\\.[0-9]+)?")) {
+            return null;
+        }
+        String canonical = candidateValue(command, value);
+        return canonical == null || canonical.isEmpty() ? null : canonical;
     }
 
     private boolean amplifies(AuditReplayCommand command, String oldValue, String newValue) {

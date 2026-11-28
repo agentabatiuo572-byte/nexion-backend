@@ -23,7 +23,9 @@ fresh_db/03_app_runtime_tables.sql
 fresh_db/04_event_registry_restore.sql
 # Install the producer contracts after the fresh event registry has been restored.
 migrations/20261120_lc02_hdpay_withdrawal_schema.sql
+migrations/20261127_e3_tradein_current_price_event.sql
 migrations/20261120_lc_bi_dau.sql
+migrations/20261125_bi11_dau_event_timestamp_property.sql
 migrations/20261120_lc_bi_registration_phase.sql
 # The registry restore replays the older G2 batch property list.
 migrations/20261106_g2_queue_batch_event_fields.sql
@@ -42,6 +44,7 @@ migrations/20260927_h3_quest_claim_event_schema.sql
 fresh_db/05_growth_event_rules.sql
 # The July wheel seed can predate the rule table installed by the step above.
 migrations/20261118_bug456_legacy_spring_spin_status.sql
+migrations/20261124_bug663_retire_duplicate_wheel_seed.sql
 migrations/20261104_h4_holding_retire.sql
 # Repair legacy notification visibility after the reminder table exists and H4 triggers are retired.
 migrations/20261025_h4_reminder_visibility.sql
@@ -62,3 +65,17 @@ migrations/20261109_phone_menu_visibility.sql
 # The migration inserts only when the registry row, lifecycle row and domain extension are absent.
 migrations/20261118_h4_wheel_award_event_registry.sql
 fresh_db/09_h9_home_display_batch.sql
+migrations/20261123_device_slot_replacement.sql
+migrations/20261123_purchase_device_placement.sql
+migrations/20261124_b81_order_user_hide.sql
+migrations/20261123_b79_earning_push_preference.sql
+migrations/20261123_b79_native_push_earning_capability.sql
+migrations/20261124_b79_earning_notifications.sql
+migrations/20261124_b79_earning_push.sql
+migrations/20261124_b79_earning_push_notification_index.sql
+migrations/20261124_d5_min_withdrawal.sql
+migrations/20261124_h1_compliance_threshold.sql
+migrations/20261124_d5_payout_address_protection.sql
+migrations/20261124_b83_purchase_rank.sql
+migrations/20261125_b87_vrank_salary.sql
+migrations/20261127_e1_storefront_sort_order.sql

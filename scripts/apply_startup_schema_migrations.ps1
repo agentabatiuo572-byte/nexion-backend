@@ -311,6 +311,8 @@ $migrations = @(
   # Complete the retry-compatible install before replaying the immutable historical file.
   (Join-Path $root "scripts\migrations\20261028_00_cregis_deposit_policy_retry_compat.sql")
   (Join-Path $root "scripts\migrations\20261028_cregis_deposit_policy.sql")
+  (Join-Path $root "scripts\migrations\20261124_b84_a_exposure_alert.sql")
+  (Join-Path $root "scripts\migrations\20261124_b84_b_deposit_decimal_cutover.sql")
   (Join-Path $root "scripts\migrations\20261007_growth_promotions.sql")
   # Grant H4 capabilities only after the promotion permission rows exist on a fresh database.
   (Join-Path $root "scripts\migrations\20261022_04_h4_superadmin_permissions.sql")
@@ -390,8 +392,11 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261030_test_cloud_fleet_binding.sql")
   (Join-Path $root "scripts\migrations\20261030_test_cloud_legacy_admission.sql")
   (Join-Path $root "scripts\migrations\20261030_native_push_direct_providers.sql")
+  (Join-Path $root "scripts\migrations\20261123_native_push_test_nova.sql")
+  (Join-Path $root "scripts\migrations\20261123_test_ios_update_push.sql")
   (Join-Path $root "scripts\migrations\20261030_business_notification_session_indexes.sql")
   (Join-Path $root "scripts\migrations\20261030_payment_password.sql")
+  (Join-Path $root "scripts\migrations\20261125_b95_payment_password_change_proof.sql")
   (Join-Path $root "scripts\migrations\20261031_l6_payment_password_route.sql")
   (Join-Path $root "scripts\migrations\20261031_payment_password_permissions.sql")
   # The schema baseline already owns nx_order.activation_status on both local paths.
@@ -457,6 +462,7 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261105_d2_preserve_review_reason.sql")
   (Join-Path $root "scripts\migrations\20261105_b0_snapshot_export_permission.sql")
   (Join-Path $root "scripts\migrations\20261106_h4_approval_command_capacity.sql"),
+  (Join-Path $root "scripts\migrations\20261126_b103_a2_operator_role_capacity.sql"),
   (Join-Path $root "scripts\migrations\20261106_a4_app_event_registry_restore.sql"),
   (Join-Path $root "scripts\migrations\20261106_h2_discount_rate_percent.sql"),
   (Join-Path $root "scripts\migrations\20261106_h2_trial_deadline_snapshots.sql"),
@@ -464,6 +470,8 @@ $migrations = @(
   (Join-Path $root "scripts\migrations\20261106_b32_user_daily_active.sql"),
   (Join-Path $root "scripts\migrations\20261106_b32_daily_flow_wallet_index.sql"),
   (Join-Path $root "scripts\migrations\20261120_lc_bi_dau.sql"),
+  (Join-Path $root "scripts\migrations\20261125_bi11_dau_event_timestamp_property.sql"),
+  (Join-Path $root "scripts\migrations\20261126_b121_tamper_server_finding.sql"),
   (Join-Path $root "scripts\migrations\20261120_lc_bi_registration_phase.sql"),
   (Join-Path $root "scripts\migrations\20261106_g2_queue_batch_event_fields.sql"),
   (Join-Path $root "scripts\migrations\20261106_g2_restore_queue_batch_event_fields.sql"),
@@ -541,19 +549,66 @@ $migrations = @(
   # BUG-522: store E3 trade-in eligibility as stable codes (known legacy values only, one-shot).
   (Join-Path $root "scripts\migrations\20261120_e6_bug522_tradein_eligibility_codes.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_tradein_rules.sql")
+  (Join-Path $root "scripts\migrations\20261124_e3_tradein_default_all.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_e3_capacity_defaults.sql")
   (Join-Path $root "scripts\migrations\20261101_compute_v2_task_policy.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_phone_tasks.sql")
+  # B85 seeds empty DEVICE pools before LC2 so a fresh install has only the new catalog.
+  (Join-Path $root "scripts\migrations\20261124_b85_device_task_catalog.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_catalog.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_a4_event_registry.sql")
+  (Join-Path $root "scripts\migrations\20261127_e3_tradein_current_price_event.sql")
   (Join-Path $root "scripts\migrations\20261120_lc02_hdpay_withdrawal_schema.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_h9_launch_display.sql")
   (Join-Path $root "scripts\migrations\20261120_lc_h9_active_jobs_display.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_storage_timezone.sql")
+  (Join-Path $root "scripts\migrations\20261124_b85_phone_task_duration.sql")
+  (Join-Path $root "scripts\migrations\20261125_b86_phone_task_duration_tiers.sql")
+  (Join-Path $root "scripts\migrations\20261126_h9_phone_catalog_created_at.sql")
+  (Join-Path $root "scripts\migrations\20261128_b152_phone_task_rewards.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_fin.sql")
+  (Join-Path $root "scripts\migrations\20261121_lc2_growth_team_rank_defaults.sql")
   (Join-Path $root "scripts\migrations\20261121_lc2_growth_team_support.sql")
+  (Join-Path $root "scripts\migrations\20261124_bug698_h8_epoch_policy.sql")
+  (Join-Path $root "scripts\migrations\20261123_lc3_support_cap_unlimited.sql")
+  (Join-Path $root "scripts\migrations\20261123_lc3_help_center_faq.sql")
   (Join-Path $root "scripts\migrations\20261122_app_update_policy.sql")
   (Join-Path $root "scripts\migrations\20261122_app_update_resource.sql")
+  # B66: publish the UVT hero for the nexNarrative version that still carries the July seed.
+  # Runs last so an operator-published version (or the fresh-install draft) stays authoritative.
+  (Join-Path $root "scripts\migrations\20261122_b66_uvt_trust_hero.sql")
+  (Join-Path $root "scripts\migrations\20261123_b70_product_tagline_translations.sql")
+  (Join-Path $root "scripts\migrations\20261125_b97_product_store_display_controls.sql")
+  (Join-Path $root "scripts\migrations\20261127_e1_storefront_sort_order.sql")
+  (Join-Path $root "scripts\migrations\20261127_b138_e1_sku_numbering.sql")
+  (Join-Path $root "scripts\migrations\20261128_b140_test_wallet_reset_proof.sql")
+  (Join-Path $root "scripts\migrations\20261123_device_slot_replacement.sql")
+  (Join-Path $root "scripts\migrations\20261123_purchase_device_placement.sql")
+  (Join-Path $root "scripts\migrations\20261124_purchase_payment_refund_closeout.sql")
+  (Join-Path $root "scripts\migrations\20261125_b90_trial_purchase_options.sql")
+  (Join-Path $root "scripts\migrations\20261127_b125_trial_purchase_option_pricing.sql")
+  (Join-Path $root "scripts\migrations\20261124_bug663_retire_duplicate_wheel_seed.sql")
+  (Join-Path $root "scripts\migrations\20261124_b81_order_user_hide.sql")
+  (Join-Path $root "scripts\migrations\20261124_b83_purchase_rank.sql")
+  (Join-Path $root "scripts\migrations\20261125_b87_vrank_salary.sql")
+  (Join-Path $root "scripts\migrations\20261124_ios_phone_binding_recovery.sql")
+  (Join-Path $root "scripts\migrations\20261123_b79_earning_push_preference.sql")
+  (Join-Path $root "scripts\migrations\20261123_b79_native_push_earning_capability.sql")
+  # B79: register the one-time earning cutover and retire the dailySummary channel once.
+  (Join-Path $root "scripts\migrations\20261124_b79_earning_notifications.sql")
+  (Join-Path $root "scripts\migrations\20261124_b79_earning_push.sql")
+  (Join-Path $root "scripts\migrations\20261124_b79_earning_push_notification_index.sql")
+  (Join-Path $root "scripts\migrations\20261124_d5_min_withdrawal.sql"),
+  (Join-Path $root "scripts\migrations\20261127_b142_finance_launch_defaults.sql")
+  (Join-Path $root "scripts\migrations\20261127_d5_small_amount_launch_default.sql")
+  (Join-Path $root "scripts\migrations\20261127_h3_quest_claim_reward_tier_event.sql")
+  (Join-Path $root "scripts\migrations\20261127_b147_withdrawal_compliance_threshold_event.sql")
+  (Join-Path $root "scripts\migrations\20261124_h1_compliance_threshold.sql")
+  (Join-Path $root "scripts\migrations\20261124_d5_payout_address_protection.sql")
+  # B80-BE-06: M performance export permissions and task/token tables.
+  (Join-Path $root "scripts\migrations\20261124_b80_performance_exports.sql")
+  (Join-Path $root "scripts\migrations\20261124_b80_performance_coverage.sql")
+  (Join-Path $root "scripts\migrations\20261124_b80_performance_z_export_employment.sql")
 )
 
 # Retirement invariant: the normal dev/prod startup chain can apply canonical
@@ -657,6 +712,15 @@ SELECT f.id, f.original_nickname, f.target_nickname
     if ($LASTEXITCODE -ne 0) {
       throw "Required startup schema migration failed with mysql exit code $LASTEXITCODE. Backend startup has been stopped."
     }
+  }
+  $numberedCatalog = & $MySql @mysqlArgs -N -B -e "SELECT COUNT(*) FROM nx_config_item WHERE config_key='E.catalog.b140.numbered' AND config_value='true' AND is_deleted=0;"
+  if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the catalog numbering state.' }
+  if ($numberedCatalog -eq '1') {
+    # Both legacy schema migrations were required before B140. Their data steps
+    # would refill intentionally empty E6 and H3 storefront targets with old IDs.
+    $migrations = @($migrations | Where-Object {
+      [IO.Path]::GetFileName($_) -notin '20261119_b53_product_series.sql', '20260901_h3_mission_presentation_config.sql'
+    })
   }
   $readerModeSql = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'local/support_fund_reader_replay.sql')
   $readerMode = & $MySql @mysqlArgs -N -B -e $readerModeSql

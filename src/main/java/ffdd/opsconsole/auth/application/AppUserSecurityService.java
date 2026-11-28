@@ -19,6 +19,7 @@ import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.audit.AuditLogWriteRequest;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.security.SupportedUserPhonePolicy;
+import ffdd.opsconsole.shared.security.UserSessionRevocationService;
 import ffdd.opsconsole.shared.security.UserAuthEnvironment;
 import ffdd.opsconsole.shared.security.infrastructure.UserSessionEntity;
 import ffdd.opsconsole.shared.security.mapper.AuthSessionMapper;
@@ -160,13 +161,14 @@ public class AppUserSecurityService {
             } catch (NumberFormatException ex) { throw new BizException(422, "SECURITY_CURSOR_INVALID"); }
         }
         int idleDays = effectiveSessionIdleDays();
-        var rows = sessionMapper.pageOtherUserSessions(userId, currentSessionId, idleDays, beforeId);
-        List<AppSecurityStateResponse.Session> sessions = new java.util.ArrayList<>();
-        if (beforeId == null) {
-            var current = sessionMapper.currentUserSession(userId, currentSessionId, idleDays);
-            if (current != null) sessions.add(toResponse(current, true));
-        }
-        rows.stream().limit(20).map(row -> toResponse(row, false)).forEach(sessions::add);
+        UserSessionEntity current = sessionMapper.currentUserSession(userId, currentSessionId, idleDays);
+        String currentKey = UserSessionRevocationService.sessionGroupKey(current);
+        var rows = sessionMapper.pageSessionGroups(userId, idleDays, beforeId, beforeId == null,
+                currentKey, 21);
+        List<AppSecurityStateResponse.Session> sessions = rows.stream().limit(20)
+                .map(row -> toResponse(row, currentKey != null
+                        && currentKey.equals(UserSessionRevocationService.sessionGroupKey(row))))
+                .toList();
         String nextCursor = rows.size() > 20 ? String.valueOf(rows.get(19).getId()) : null;
         return new AppSecurityStateResponse(
                 securityMapper.twoFactorEnabled(userId),
@@ -225,12 +227,18 @@ public class AppUserSecurityService {
         if (!normalizedTarget.matches(SESSION_ID_PATTERN)) {
             throw new BizException(422, "SESSION_ID_INVALID");
         }
-        if (currentSessionId.equals(normalizedTarget)
+        UserSessionEntity target = sessionMapper.findOwnedSession(normalizedTarget, userId);
+        if (target == null) throw new BizException(404, "SESSION_NOT_ACTIVE_OR_NOT_OWNED");
+        UserSessionEntity current = sessionMapper.findOwnedSession(currentSessionId, userId);
+        String currentGroup = UserSessionRevocationService.sessionGroupKey(current);
+        String targetGroup = UserSessionRevocationService.sessionGroupKey(target);
+        if ((currentGroup != null && currentGroup.equals(targetGroup))
+                || currentSessionId.equals(normalizedTarget)
                 || sessionMapper.countSameUserSessionChain(userId, currentSessionId, normalizedTarget) > 0) {
             throw new BizException(409, "CURRENT_SESSION_REVOKE_FORBIDDEN");
         }
-        int revoked = revocations.revokeOwned(userId, normalizedTarget);
-        if (revoked != 1) {
+        int revoked = revocations.revokeGroup(userId, normalizedTarget);
+        if (revoked <= 0) {
             throw new BizException(404, "SESSION_NOT_ACTIVE_OR_NOT_OWNED");
         }
         recordRequired(userId, "USER_SESSION_REVOKED", "USER_SESSION", shortId(normalizedTarget),
@@ -241,7 +249,7 @@ public class AppUserSecurityService {
     @Transactional
     public AppSecurityMutationResponse revokeOtherSessions(Long userId, String currentSessionId) {
         requireContext(userId, currentSessionId);
-        int revoked = revocations.revokeOthers(userId, currentSessionId);
+        int revoked = revocations.revokeOthersInGroup(userId, currentSessionId);
         recordRequired(userId, "USER_OTHER_SESSIONS_REVOKED", "USER_SESSION", String.valueOf(userId),
                 Map.of("scope", "ALL_OTHER_SESSIONS", "revokedSessionCount", revoked));
         return AppSecurityMutationResponse.sessions(revoked);
@@ -281,6 +289,11 @@ public class AppUserSecurityService {
                 user.getCountryCode(), user.getPhone())) {
             throw new PreWriteRejection(422, "USER_PHONE_INVALID");
         }
+        int cooldownSeconds = AppOtpPolicy.sendCooldownSeconds(configFacade);
+        Integer retryAfterSeconds = userMapper.securityOtpRetryAfterSeconds(userId, cooldownSeconds);
+        if (retryAfterSeconds != null) {
+            throw new TwoFactorChallengeCooldown(retryAfterSeconds);
+        }
         if (!otpDeliveryService.available(user.getCountryCode())) {
             throw new PreWriteRejection(503, "USER_OTP_DELIVERY_UNAVAILABLE");
         }
@@ -300,13 +313,14 @@ public class AppUserSecurityService {
             otpDeliveryService.deliver(user.getCountryCode(), user.getPhone(), challengeNo, code,
                     TWO_FACTOR_OTP_TTL_MINUTES, InterfaceLanguages.baseCode(user.getLanguage()));
         } catch (RuntimeException ex) {
-            userMapper.invalidateOpenSecurityOtpChallenges(userId);
-            throw new PreWriteRejection(503, "USER_OTP_DELIVERY_UNAVAILABLE");
+            throw new BizException(503, "USER_OTP_DELIVERY_UNAVAILABLE");
         }
+        // Start the resend window after delivery accepts the challenge.
+        userMapper.markSecurityOtpChallengeSent(userId, challengeNo, TWO_FACTOR_OTP_TTL_MINUTES);
         recordRequired(userId, "USER_TWO_FACTOR_CHALLENGE_SENT", "USER_SECURITY", String.valueOf(userId),
                 Map.of("targetEnabled", request.enabled(), "challengeNo", shortId(challengeNo)));
         return Map.of("challengeNo", challengeNo, "expiresInSeconds", TWO_FACTOR_OTP_TTL_MINUTES * 60,
-                "phoneMasked", maskPhone(user.getPhone()));
+                "phoneMasked", maskPhone(user.getPhone()), "resendAfterSeconds", cooldownSeconds);
     }
 
     @Transactional(noRollbackFor = PreWriteRejection.class)
@@ -532,9 +546,22 @@ public class AppUserSecurityService {
      * subtype preserves the verification counter/audit (or a successful guard clear) while an
      * audit/outbox failure after a real mutation still rolls the whole transaction back.
      */
-    static final class PreWriteRejection extends BizException {
+    static class PreWriteRejection extends BizException {
         PreWriteRejection(int code, String message) {
             super(code, message);
+        }
+    }
+
+    public static final class TwoFactorChallengeCooldown extends PreWriteRejection {
+        private final int retryAfterSeconds;
+
+        TwoFactorChallengeCooldown(int retryAfterSeconds) {
+            super(429, "USER_OTP_SEND_RATE_LIMITED");
+            this.retryAfterSeconds = retryAfterSeconds;
+        }
+
+        public int retryAfterSeconds() {
+            return retryAfterSeconds;
         }
     }
 }

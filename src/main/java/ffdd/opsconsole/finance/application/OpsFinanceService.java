@@ -41,6 +41,7 @@ import ffdd.opsconsole.risk.domain.RiskOpsRepository;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskContext;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskDecision;
 import ffdd.opsconsole.risk.facade.WithdrawalRiskRuleFacade;
+import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.seed.OpsReadTimeSeedPolicy;
 import ffdd.opsconsole.shared.security.AdminActorResolver;
 import ffdd.opsconsole.shared.idempotency.AdminIdempotencyService;
@@ -58,6 +59,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -369,7 +371,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         Set<String> changedFields = request.changedD5Fields();
         String actor = AdminActorResolver.resolve(request.getOperator());
-        String requestHash = sha256(String.join("|",
+        String requestMaterial = String.join("|",
                 "D5_WITHDRAWAL_LIMITS_UPDATE",
                 String.valueOf(request.getExpectedVersion()),
                 changedFields.stream().sorted().toList().toString(),
@@ -383,7 +385,17 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 String.valueOf(request.getNetworkEnabled()),
                 String.valueOf(request.getSmallAmountThresholdUsd()),
                 String.valueOf(request.getPayoutSlaHours()),
-                request.getReason().trim(), trimToEmpty(actor)));
+                request.getReason().trim(), trimToEmpty(actor));
+        if (changedFields.contains("minUsdt")) {
+            requestMaterial += "|" + request.getMinUsdt().stripTrailingZeros().toPlainString();
+        }
+        if (changedFields.contains(PayoutAddressProtection.EFFECTIVE_DELAY_FIELD)) {
+            requestMaterial += "|" + request.getAddressEffectiveDelayHours().intValueExact();
+        }
+        if (changedFields.contains(PayoutAddressProtection.CHANGE_COOLDOWN_FIELD)) {
+            requestMaterial += "|" + request.getAddressChangeCooldownDays().intValueExact();
+        }
+        String requestHash = sha256(requestMaterial);
         return (ApiResult<Map<String, Object>>) (ApiResult) idempotencyService.execute(
                 "D5_WITHDRAWAL_LIMITS_UPDATE",
                 idempotencyKey.trim(),
@@ -399,7 +411,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return validation;
         }
         Set<String> changedFields = request.changedD5Fields();
-        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(request, changedFields, false);
+        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(request, changedFields, false, false);
         if (result.getCode() != 0) {
             return ApiResult.fail(result.getCode(), result.getMessage());
         }
@@ -410,23 +422,40 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         Map<String, String> before = new LinkedHashMap<>();
         Map<String, String> after = new LinkedHashMap<>();
+        List<Map<String, Object>> changes = new ArrayList<>();
         for (String field : changedFields.stream().sorted().toList()) {
-            switch (field) {
-                case "networkConfirmFeeUsd" -> {
-                    before.put(field, d5NetworkSummary(d5NetworkFees(change.before())));
-                    after.put(field, d5NetworkSummary(request.getNetworkConfirmFeeUsd()));
-                }
-                case "networkEnabled" -> {
-                    before.put(field, d5NetworkSummary(change.beforeNetworkEnabled()));
-                    after.put(field, d5NetworkSummary(request.getNetworkEnabled()));
-                }
-                default -> {
-                    before.put(field, d5SummaryValue(change.before().get(field)));
-                    after.put(field, d5SummaryValue(requestedWithdrawalLimitValue(field, request)));
-                }
+            if ("networkConfirmFeeUsd".equals(field)) {
+                var original = d5NetworkFees(change.before());
+                var proposed = request.getNetworkConfirmFeeUsd();
+                before.put(field, d5NetworkSummary(original));
+                after.put(field, d5NetworkSummary(proposed));
+                changes.add(Map.of("field", field, "before", original, "after", proposed, "unit", "USDT"));
+            } else if ("networkEnabled".equals(field)) {
+                var original = change.beforeNetworkEnabled();
+                var proposed = request.getNetworkEnabled();
+                before.put(field, d5NetworkSummary(original));
+                after.put(field, d5NetworkSummary(proposed));
+                changes.add(Map.of("field", field, "before", original, "after", proposed, "unit", "boolean"));
+            } else {
+                BigDecimal original = change.before().get(field);
+                BigDecimal proposed = requestedWithdrawalLimitValue(field, request);
+                before.put(field, d5SummaryValue(original));
+                after.put(field, d5SummaryValue(proposed));
+                String unit = switch (field) {
+                    case "dailyLimitCount" -> "count";
+                    case "balanceMaxRatio", "networkFeeRatio" -> "ratio";
+                    case "minUsdt", "networkFeeMin", "networkFeeMax", "smallAmountThresholdUsd" -> "USDT";
+                    case "nexFeeOffsetRate" -> "USDT/UVT";
+                    case "payoutSlaHours", PayoutAddressProtection.EFFECTIVE_DELAY_FIELD -> "hours";
+                    case PayoutAddressProtection.CHANGE_COOLDOWN_FIELD -> "days";
+                    default -> throw new IllegalArgumentException("Unsupported D5 field");
+                };
+                boolean integer = "count".equals(unit) || "hours".equals(unit) || "days".equals(unit);
+                changes.add(Map.of("field", field, "before", integer ? original.intValueExact() : original,
+                        "after", integer ? proposed.intValueExact() : proposed, "unit", unit));
             }
         }
-        return ApiResult.ok(Map.of("before", before.toString(), "after", after.toString()));
+        return ApiResult.ok(Map.of("before", before.toString(), "after", after.toString(), "changes", changes));
     }
 
     @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
@@ -441,13 +470,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         if (validation != null) {
             return validation;
         }
-        // A2 owns the transaction and idempotency key. A failed replay leaves the ticket retryable.
+        // A2 owns the transaction and idempotency key.
         return updateWithdrawalLimitsNew(idempotencyKey.trim(), request, request.changedD5Fields(),
                 AdminActorResolver.resolve(request.getOperator()), approvalOperationId);
     }
 
     private ApiResult<D5WithdrawalChange> readWithdrawalLimitsChange(
-            WithdrawalLimitsUpdateRequest request, Set<String> changedFields, boolean lock) {
+            WithdrawalLimitsUpdateRequest request, Set<String> changedFields, boolean lock, boolean approving) {
         long currentVersion;
         try {
             currentVersion = (lock ? configFacade.activeValueForUpdate("withdrawal.d5.version")
@@ -459,8 +488,11 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         } catch (RuntimeException ex) {
             return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
         }
-        if (currentVersion != request.getExpectedVersion()) {
-            return ApiResult.fail(409, "CONFIG_VERSION_CONFLICT");
+        long expectedVersion = request.getExpectedVersion();
+        ApiResult<D5WithdrawalChange> versionConflict = currentVersion == expectedVersion
+                ? null : ApiResult.fail(409, "CONFIG_VERSION_CONFLICT");
+        if (versionConflict != null && (!approving || expectedVersion <= 0 || currentVersion < expectedVersion)) {
+            return versionConflict;
         }
 
         Map<String, BigDecimal> before;
@@ -469,7 +501,14 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             before = currentD5OwnedValues();
             beforeNetworkEnabled = currentD5NetworkEnabledValues();
         } catch (IllegalStateException ex) {
-            return ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
+            return versionConflict != null ? versionConflict : ApiResult.fail(503, "D5_CONFIG_UNAVAILABLE");
+        }
+        if (changedFields.stream().anyMatch(field -> PayoutAddressProtection.isField(field) && !before.containsKey(field))) {
+            return versionConflict != null ? versionConflict : ApiResult.fail(503, PayoutAddressProtection.UNAVAILABLE);
+        }
+        if (versionConflict != null) {
+            if (!hasValidD5VersionEvidence(before, changedFields)) return versionConflict;
+            throw new WithdrawalLimitsVersionAdvanced();
         }
         BigDecimal nextFeeMin = changedFields.contains("networkFeeMin")
                 ? request.getNetworkFeeMin() : before.get("networkFeeMin");
@@ -490,6 +529,27 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             return loosensWithdrawalLimit(field, before.get(field), requestedWithdrawalLimitValue(field, request));
         });
         return ApiResult.ok(new D5WithdrawalChange(currentVersion, before, beforeNetworkEnabled, amplifies));
+    }
+
+    private boolean hasValidD5VersionEvidence(Map<String, BigDecimal> values, Set<String> changedFields) {
+        BigDecimal balanceRatio = values.get("balanceMaxRatio");
+        BigDecimal feeMin = values.get("networkFeeMin");
+        BigDecimal feeMax = values.get("networkFeeMax");
+        boolean changesFeeRange = changedFields.contains("networkFeeMin") || changedFields.contains("networkFeeMax");
+        return wholeD5ValueInRange(values.get("dailyLimitCount"), 1, 10)
+                && balanceRatio.signum() > 0 && balanceRatio.compareTo(BigDecimal.ONE) <= 0
+                && d5NetworkFees(values).values().stream().allMatch(this::validNetworkConfirmFee)
+                && values.get("nexFeeOffsetRate").signum() > 0
+                && inRange(values.get("smallAmountThresholdUsd"), BigDecimal.ZERO, BigDecimal.valueOf(500))
+                && wholeD5ValueInRange(values.get("payoutSlaHours"), 1, 168)
+                && feeMin.compareTo(feeMax) <= 0
+                && (!changesFeeRange || (validLegacyD5FeeBound(feeMin) && validLegacyD5FeeBound(feeMax)))
+                && (!changedFields.contains("networkFeeRatio") || validLegacyD5FeeRatio(values.get("networkFeeRatio")));
+    }
+
+    private boolean wholeD5ValueInRange(BigDecimal value, int min, int max) {
+        return inRange(value, BigDecimal.valueOf(min), BigDecimal.valueOf(max))
+                && value.stripTrailingZeros().scale() <= 0;
     }
 
     private ApiResult<Map<String, Object>> requireWithdrawalLimitsAmplification(D5WithdrawalChange change) {
@@ -514,7 +574,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             Set<String> changedFields,
             String actor,
             String approvalOperationId) {
-        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(request, changedFields, true);
+        ApiResult<D5WithdrawalChange> result = readWithdrawalLimitsChange(
+                request, changedFields, true, approvalOperationId != null);
         if (result.getCode() != 0) {
             return ApiResult.fail(result.getCode(), result.getMessage());
         }
@@ -590,8 +651,10 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
             String configKey = canonicalD5ConfigKey(field);
             configFacade.upsertAdminValue(configKey, nextValue.toPlainString(), "NUMBER", "wallet",
                     "D5 canonical withdrawal limit");
-            configFacade.upsertAdminValue(walletD5ConfigKey(field), nextValue.toPlainString(), "NUMBER", "wallet",
-                    "D5 withdrawal limit mirror");
+            if (!PayoutAddressProtection.isField(field)) {
+                configFacade.upsertAdminValue(walletD5ConfigKey(field), nextValue.toPlainString(), "NUMBER", "wallet",
+                        "D5 withdrawal limit mirror");
+            }
             detail.put("before", before.get(field));
             detail.put("after", nextValue);
             auditRequired("D5_WITHDRAWAL_PARAM_CHANGED", "WITHDRAWAL_PARAM", configKey, actor, detail);
@@ -599,6 +662,14 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         configFacade.upsertAdminValue("withdrawal.d5.version", String.valueOf(currentVersion + 1),
                 "NUMBER", "wallet", "D5 aggregate config version");
+        if (changedFields.stream().allMatch(PayoutAddressProtection::isField)) {
+            // Address changes get an admin revision without invalidating pending withdrawal quotes.
+            configFacade.insertAdminValueIfMissing(PayoutAddressProtection.QUOTE_VERSION_KEY, String.valueOf(currentVersion),
+                    "NUMBER", "wallet", "D5 withdrawal quote version");
+        } else {
+            configFacade.upsertAdminValue(PayoutAddressProtection.QUOTE_VERSION_KEY, String.valueOf(currentVersion + 1),
+                    "NUMBER", "wallet", "D5 withdrawal quote version");
+        }
         Map<String, Object> response = withdrawalLimitsData();
         response.put("updatedFields", changedFields.stream().sorted().toList());
         return ApiResult.ok(response);
@@ -615,6 +686,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     }
 
     public ApiResult<PageResult<WithdrawalOrderView>> withdrawals(WithdrawalQueryRequest request) {
+        LocalDate createdFrom = parseWithdrawalDate(request == null ? null : request.createdFrom());
+        LocalDate createdTo = parseWithdrawalDate(request == null ? null : request.createdTo());
+        if (createdFrom != null && createdTo != null && createdFrom.isAfter(createdTo)) {
+            throw new BizException(400, "WITHDRAWAL_DATE_RANGE_INVALID");
+        }
+        LocalDateTime createdAtFrom = createdFrom == null ? null : WithdrawalDayWindow.storageStart(createdFrom);
+        LocalDateTime createdAtToExclusive = createdTo == null ? null : WithdrawalDayWindow.storageStart(createdTo.plusDays(1));
         ensureD2FallbackSeedData();
         int pageNum = clamp(request == null || request.pageNum() == null ? 1 : request.pageNum(), 1, 10_000);
         int pageSize = clamp(request == null || request.pageSize() == null ? 20 : request.pageSize(), 1, 100);
@@ -645,7 +723,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 ? "asc" : "desc";
         return ApiResult.ok(withdrawalRepository.page(
                 status, userId, keyword, minAmount, maxAmount, minRiskScore,
-                ipSegment, sortBy, sortDirection, pageNum, pageSize));
+                ipSegment, sortBy, sortDirection, pageNum, pageSize, createdAtFrom, createdAtToExclusive));
     }
 
     public ApiResult<PageResult<WithdrawalReviewView>> withdrawalsForReview(WithdrawalQueryRequest request) {
@@ -653,6 +731,20 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         BigDecimal threshold = D2WithdrawalReviewThreshold.read(configFacade);
         return ApiResult.ok(new PageResult<>(page.getTotal(), page.getPageNum(), page.getPageSize(),
                 page.getRecords().stream().map(order -> withD2ReviewThreshold(order, threshold)).toList()));
+    }
+
+    private static LocalDate parseWithdrawalDate(String value) {
+        if (value == null) {
+            return null;
+        }
+        if (!value.matches("[0-9]{4}-[0-9]{2}-[0-9]{2}")) {
+            throw new BizException(400, "WITHDRAWAL_DATE_RANGE_INVALID");
+        }
+        try {
+            return LocalDate.parse(value);
+        } catch (DateTimeParseException ex) {
+            throw new BizException(400, "WITHDRAWAL_DATE_RANGE_INVALID");
+        }
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -1012,7 +1104,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         }
         if ("APPROVE".equals(action)) {
             if (WithdrawalCompliancePolicy.supports(order.chain()))
-                compliance = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot());
+                compliance = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot())
+                        .withOrderThreshold(withdrawalRepository.findComplianceThreshold(order.withdrawalNo()));
             BigDecimal threshold = batchThreshold == null ? D2WithdrawalReviewThreshold.require(configFacade) : batchThreshold;
             strongReview = D2WithdrawalReviewThreshold.applies(threshold, order.amount());
             currentRisk = currentD2Risk(order, LocalDateTime.now(clock));
@@ -1198,7 +1291,8 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 && WithdrawalCompliancePolicy.h1Hold(order.lifecycleOwner(), order.previousStatus());
         var compliance = scopedH1Hold ? WithdrawalCompliancePolicy.read(growthRhythmFacade.snapshot()) : null;
         LocalDateTime effectiveHoldUntil = compliance == null ? order.holdUntil()
-                : compliance.holdUntil(order.chain(), order.amount(), order.createdAt());
+                : compliance.withOrderThreshold(withdrawalRepository.findComplianceThreshold(order.withdrawalNo()))
+                        .holdUntil(order.chain(), order.amount(), order.createdAt());
         if (effectiveHoldUntil.isAfter(effectiveNow)) return D2LifecycleReleaseResult.NOT_DUE;
         if (isWithdrawalLockedByA2(order.withdrawalNo())) {
             return D2LifecycleReleaseResult.LOCKED;
@@ -2197,6 +2291,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         LocalDateTime holdUntil = order.holdUntil();
         if (WithdrawalCompliancePolicy.supports(order.chain())) {
             LocalDateTime complianceUntil = WithdrawalCompliancePolicy.require(growthRhythmFacade.snapshot())
+                    .withOrderThreshold(withdrawalRepository.findComplianceThreshold(order.withdrawalNo()))
                     .holdUntil(order.chain(), order.amount(), order.createdAt());
             boolean independentHold = StringUtils.hasText(order.lifecycleOwner())
                     && !WithdrawalCompliancePolicy.h1Hold(order.lifecycleOwner(), order.previousStatus())
@@ -2349,6 +2444,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("version", requiredConfigDecimal("withdrawal.d5.version").longValueExact());
         response.put("dailyLimitCount", owned.get("dailyLimitCount").intValueExact());
+        response.put("minUsdt", owned.get("minUsdt"));
         // Wire contract stays aligned with the existing PC flat request/response key.
         // The PC view model renames this to maxBalanceRatio after validation.
         response.put("balanceMaxRatio", owned.get("balanceMaxRatio"));
@@ -2366,14 +2462,17 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         response.put("cooldownDays", rhythm.withdrawCooldownDays());
         response.put("penaltyFeeRate", rhythm.withdrawPenaltyFeeRate().movePointLeft(2));
         response.put("complianceHoldEnabled", rhythm.complianceHoldEnabled());
-        response.put("complianceReviewThresholdUsdt", WithdrawalCompliancePolicy.REVIEW_THRESHOLD_USDT);
+        if (rhythm.complianceReviewThresholdUsdt() != null) {
+            response.put("complianceReviewThresholdUsdt", rhythm.complianceReviewThresholdUsdt());
+        }
         response.put("currentPhase", rhythm.currentPhase());
         response.put("currentMonth", rhythm.currentMonth());
         response.put("coverageRatio", coverage.coverageRatio());
         response.put("redlinePct", coverage.redlinePct());
         response.put("coverageReliable", coverage.reliable());
-        response.put("sourceByField", Map.ofEntries(
+        Map<String, String> sourceByField = new LinkedHashMap<>(Map.ofEntries(
                 Map.entry("dailyLimitCount", "d5"),
+                Map.entry("minUsdt", "d5"),
                 Map.entry("balanceMaxRatio", "d5"),
                 Map.entry("networkConfirmFeeUsd", "d5"),
                 Map.entry("networkEnabled", "d5"),
@@ -2382,8 +2481,17 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 Map.entry("payoutSlaHours", "d5"),
                 Map.entry("cooldownDays", "phase-h1"),
                 Map.entry("penaltyFeeRate", "phase-h1"),
-                Map.entry("complianceHoldEnabled", "phase-h1"),
-                Map.entry("complianceReviewThresholdUsdt", "compliance-rule")));
+                Map.entry("complianceHoldEnabled", "phase-h1")));
+        if (rhythm.complianceReviewThresholdUsdt() != null) {
+            sourceByField.put("complianceReviewThresholdUsdt", "compliance-rule");
+        }
+        for (String field : List.of(PayoutAddressProtection.EFFECTIVE_DELAY_FIELD, PayoutAddressProtection.CHANGE_COOLDOWN_FIELD)) {
+            if (owned.containsKey(field)) {
+                response.put(field, owned.get(field).intValueExact());
+                sourceByField.put(field, "d5");
+            }
+        }
+        response.put("sourceByField", sourceByField);
         return response;
     }
 
@@ -2411,7 +2519,15 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         values.put("networkConfirmFeeUsd.bep20", requiredConfigDecimal("withdrawal.network_confirm_fee_usd.bep20"));
         values.put("networkConfirmFeeUsd.erc20", requiredConfigDecimal("withdrawal.network_confirm_fee_usd.erc20"));
         values.put("smallAmountThresholdUsd", requiredConfigDecimal("withdrawal.small_amount_threshold_usd"));
+        BigDecimal minimum = requiredConfigDecimal(WithdrawalMinimumAmount.CONFIG_KEY);
+        if (!WithdrawalMinimumAmount.valid(minimum)) throw new IllegalStateException("D5_MIN_USDT_INVALID");
+        values.put("minUsdt", minimum);
         values.put("payoutSlaHours", requiredConfigDecimal("withdrawal.payout_sla_hours"));
+        PayoutAddressProtection protection = PayoutAddressProtection.read(configFacade);
+        if (protection != null) {
+            values.put(PayoutAddressProtection.EFFECTIVE_DELAY_FIELD, BigDecimal.valueOf(protection.effectiveDelayHours()));
+            values.put(PayoutAddressProtection.CHANGE_COOLDOWN_FIELD, BigDecimal.valueOf(protection.changeCooldownDays()));
+        }
         return values;
     }
 
@@ -2443,6 +2559,12 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private record D5WithdrawalChange(long version, Map<String, BigDecimal> before,
             Map<String, Boolean> beforeNetworkEnabled, boolean amplifies) {}
 
+    public static final class WithdrawalLimitsVersionAdvanced extends BizException {
+        private WithdrawalLimitsVersionAdvanced() {
+            super(409, "CONFIG_VERSION_CONFLICT");
+        }
+    }
+
     private ApiResult<Map<String, Object>> validateWithdrawalLimitsCommand(
             WithdrawalLimitsUpdateRequest request, String idempotencyKey, boolean preview) {
         if (request != null && request.hasPhaseFields()) {
@@ -2471,16 +2593,13 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 && !inRange(request.getBalanceMaxRatio(), new BigDecimal("0.50"), BigDecimal.ONE)) {
             return ApiResult.fail(400, "BALANCE_MAX_RATIO_INVALID");
         }
-        if (changedFields.contains("networkFeeRatio")
-                && !inRange(request.getNetworkFeeRatio(), BigDecimal.ZERO, new BigDecimal("0.05"))) {
+        if (changedFields.contains("networkFeeRatio") && !validLegacyD5FeeRatio(request.getNetworkFeeRatio())) {
             return ApiResult.fail(400, "NETWORK_FEE_RATIO_INVALID");
         }
-        if (changedFields.contains("networkFeeMin")
-                && !inRange(request.getNetworkFeeMin(), BigDecimal.ZERO, new BigDecimal("1000000"))) {
+        if (changedFields.contains("networkFeeMin") && !validLegacyD5FeeBound(request.getNetworkFeeMin())) {
             return ApiResult.fail(400, "NETWORK_FEE_MIN_INVALID");
         }
-        if (changedFields.contains("networkFeeMax")
-                && !inRange(request.getNetworkFeeMax(), BigDecimal.ZERO, new BigDecimal("1000000"))) {
+        if (changedFields.contains("networkFeeMax") && !validLegacyD5FeeBound(request.getNetworkFeeMax())) {
             return ApiResult.fail(400, "NETWORK_FEE_MAX_INVALID");
         }
         if (changedFields.contains("nexFeeOffsetRate")
@@ -2506,10 +2625,21 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
                 && !inRange(request.getSmallAmountThresholdUsd(), BigDecimal.ZERO, new BigDecimal("500"))) {
             return ApiResult.fail(400, "SMALL_AMOUNT_THRESHOLD_INVALID");
         }
+        if (changedFields.contains("minUsdt") && !WithdrawalMinimumAmount.valid(request.getMinUsdt())) {
+            return ApiResult.fail(400, "D5_MIN_USDT_INVALID");
+        }
         if (changedFields.contains("payoutSlaHours")
                 && (request.getPayoutSlaHours() == null
                 || request.getPayoutSlaHours() < 1 || request.getPayoutSlaHours() > 168)) {
             return ApiResult.fail(400, "PAYOUT_SLA_HOURS_INVALID");
+        }
+        if (changedFields.contains(PayoutAddressProtection.EFFECTIVE_DELAY_FIELD)
+                && !PayoutAddressProtection.valid(request.getAddressEffectiveDelayHours(), PayoutAddressProtection.MAX_HOURS)) {
+            return ApiResult.fail(400, "PAYOUT_ADDRESS_EFFECTIVE_DELAY_INVALID");
+        }
+        if (changedFields.contains(PayoutAddressProtection.CHANGE_COOLDOWN_FIELD)
+                && !PayoutAddressProtection.valid(request.getAddressChangeCooldownDays(), PayoutAddressProtection.MAX_DAYS)) {
+            return ApiResult.fail(400, "PAYOUT_ADDRESS_CHANGE_INTERVAL_INVALID");
         }
         return null;
     }
@@ -2517,6 +2647,14 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private boolean validNetworkConfirmFee(BigDecimal value) {
         return inRange(value, BigDecimal.ZERO, new BigDecimal("25"))
                 && value.multiply(new BigDecimal("2")).stripTrailingZeros().scale() <= 0;
+    }
+
+    private boolean validLegacyD5FeeRatio(BigDecimal value) {
+        return inRange(value, BigDecimal.ZERO, new BigDecimal("0.05"));
+    }
+
+    private boolean validLegacyD5FeeBound(BigDecimal value) {
+        return inRange(value, BigDecimal.ZERO, BigDecimal.valueOf(1_000_000));
     }
 
     private boolean inRange(BigDecimal value, BigDecimal min, BigDecimal max) {
@@ -2527,12 +2665,15 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return switch (field) {
             case "dailyLimitCount" -> BigDecimal.valueOf(request.getDailyLimitCount());
             case "balanceMaxRatio" -> request.getBalanceMaxRatio();
+            case "minUsdt" -> request.getMinUsdt();
             case "networkFeeRatio" -> request.getNetworkFeeRatio();
             case "networkFeeMin" -> request.getNetworkFeeMin();
             case "networkFeeMax" -> request.getNetworkFeeMax();
             case "nexFeeOffsetRate" -> request.getNexFeeOffsetRate();
             case "smallAmountThresholdUsd" -> request.getSmallAmountThresholdUsd();
             case "payoutSlaHours" -> BigDecimal.valueOf(request.getPayoutSlaHours());
+            case PayoutAddressProtection.EFFECTIVE_DELAY_FIELD -> request.getAddressEffectiveDelayHours();
+            case PayoutAddressProtection.CHANGE_COOLDOWN_FIELD -> request.getAddressChangeCooldownDays();
             default -> throw new IllegalArgumentException("Unsupported D5 field");
         };
     }
@@ -2540,7 +2681,9 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
     private boolean loosensWithdrawalLimit(String field, BigDecimal before, BigDecimal after) {
         return switch (field) {
             case "dailyLimitCount", "balanceMaxRatio", "nexFeeOffsetRate", "smallAmountThresholdUsd" -> after.compareTo(before) > 0;
-            case "networkFeeRatio", "networkFeeMin", "networkFeeMax", "payoutSlaHours" -> after.compareTo(before) < 0;
+            case "minUsdt", "networkFeeRatio", "networkFeeMin", "networkFeeMax", "payoutSlaHours",
+                    PayoutAddressProtection.EFFECTIVE_DELAY_FIELD, PayoutAddressProtection.CHANGE_COOLDOWN_FIELD
+                    -> after.compareTo(before) < 0;
             default -> false;
         };
     }
@@ -2549,12 +2692,15 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return switch (field) {
             case "dailyLimitCount" -> "withdrawal.daily_count_limit";
             case "balanceMaxRatio" -> "withdrawal.max_balance_pct";
+            case "minUsdt" -> WithdrawalMinimumAmount.CONFIG_KEY;
             case "networkFeeRatio" -> "withdrawal.fee_rate";
             case "networkFeeMin" -> "withdrawal.fee_min_usdt";
             case "networkFeeMax" -> "withdrawal.fee_max_usdt";
             case "nexFeeOffsetRate" -> "withdrawal.nex_fee_offset_rate";
             case "smallAmountThresholdUsd" -> "withdrawal.small_amount_threshold_usd";
             case "payoutSlaHours" -> "withdrawal.payout_sla_hours";
+            case PayoutAddressProtection.EFFECTIVE_DELAY_FIELD -> PayoutAddressProtection.EFFECTIVE_DELAY_KEY;
+            case PayoutAddressProtection.CHANGE_COOLDOWN_FIELD -> PayoutAddressProtection.CHANGE_COOLDOWN_KEY;
             default -> throw new IllegalArgumentException("Unsupported D5 field");
         };
     }
@@ -2563,6 +2709,7 @@ public class OpsFinanceService implements ffdd.opsconsole.platform.domain.AuditR
         return switch (field) {
             case "dailyLimitCount" -> "wallet.withdrawal.daily_count_limit";
             case "balanceMaxRatio" -> "wallet.withdrawal.max_balance_pct";
+            case "minUsdt" -> "wallet." + WithdrawalMinimumAmount.CONFIG_KEY;
             case "networkFeeRatio" -> "wallet.withdrawal.fee_rate";
             case "networkFeeMin" -> "wallet.withdrawal.fee_min_usdt";
             case "networkFeeMax" -> "wallet.withdrawal.fee_max_usdt";

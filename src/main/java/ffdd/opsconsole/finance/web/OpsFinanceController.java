@@ -170,10 +170,12 @@ public class OpsFinanceController {
             @RequestParam(required = false) Integer minRiskScore,
             @RequestParam(required = false) String ipSegment,
             @RequestParam(required = false) String sortBy,
-            @RequestParam(required = false) String sortDirection) {
+            @RequestParam(required = false) String sortDirection,
+            @RequestParam(required = false) String createdFrom,
+            @RequestParam(required = false) String createdTo) {
         return financeService.withdrawalsForReview(new WithdrawalQueryRequest(
                 status, userId, keyword, pageNum, pageSize, minAmount, maxAmount, minRiskScore,
-                ipSegment, sortBy, sortDirection));
+                ipSegment, sortBy, sortDirection, createdFrom, createdTo));
     }
 
     /** Compatibility entry used by existing controller-level tests and internal callers. */

@@ -1,6 +1,8 @@
 package ffdd.opsconsole.device.compute.v2;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import ffdd.opsconsole.device.compute.v2.ComputeV2Event.*;
+import ffdd.opsconsole.shared.exception.BizException;
 import java.time.*;
 import java.util.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,6 +20,7 @@ public class ComputeV2Runtime {
     private final ComputeV2Persistence persistence;
     public record RuntimeView(ComputeV2Event event, String status, String executorId, Instant leaseExpiresAt,
             long pendingUsdtMicros, long pendingNexMicros) { }
+    public record ReplacementView(ComputeV2Event event, String status, boolean executing, boolean exited) { }
     public record PendingSummary(long pendingUsdtMicros,long pendingNexMicros,long pendingTaskCount,long pendingNexTaskCount) { }
     public record PendingVerifiedSnapshot(PendingSummary summary,List<ComputeV2Event> events) {
         public PendingVerifiedSnapshot { events = List.copyOf(events); }
@@ -134,18 +137,88 @@ public class ComputeV2Runtime {
         return stageAndSend(event(Kind.FAILED,userId,deviceId,current.instanceNo(),current.taskNo(),generation,
                 clock.instant(),current.task(),null,reason));
     }
-    public boolean cancelQueued(long userId,long deviceId,long generation,String reason) {
+    /** Runs under the device command lock and atomically registers the cancellation for MQ delivery. */
+    public Optional<ComputeV2Event> reserveQueuedCancellation(long userId,long deviceId,long generation,String reason) {
         var current = require(userId,deviceId,generation);
         var failed = event(Kind.FAILED,userId,deviceId,current.instanceNo(),current.taskNo(),generation,
                 clock.instant(),current.task(),null,reason);
-        String original = store.execute("cancel",current.taskNo(),Long.toString(generation),failed.eventId(),store.encode(failed));
-        if (original == null || original.isEmpty()) return false;
-        send(store.decode(original,ComputeV2Event.class)); return true;
+        String original = store.execute("cancel",current.taskNo(),Long.toString(generation),failed.eventId(),store.encode(failed),
+                Long.toString(clock.millis()),Integer.toString(config.getUnpersistedCapacity()));
+        return original == null || original.isEmpty() ? Optional.empty() : Optional.of(store.decode(original,ComputeV2Event.class));
+    }
+
+    public void confirmQueuedCancellation(ComputeV2Event reserved) {
+        if (reserved.kind()!=Kind.FAILED || reserved.task().startedAt()!=null)
+            throw new IllegalArgumentException("Reserved queued cancellation required");
+        send(reserved);
     }
     public ComputeV2Event fenceExpired(long userId,long deviceId,long generation) {
         var current = require(userId,deviceId,generation);
         return stageAndSend(event(Kind.FENCED,userId,deviceId,current.instanceNo(),current.taskNo(),generation,
                 clock.instant(),current.task(),null,"LEASE_EXPIRED"));
+    }
+
+    /** Retries immutable staged outcomes and fences expired work restored without a terminal event. */
+    public void retryExecutionTerminations() {
+        long now = clock.millis();
+        String recoveredAt = store.value("recovered-at");
+        for (String permit : store.members("permits")) {
+            int delimiter = permit.lastIndexOf(':');
+            String task = permit.substring(0,delimiter);
+            String state = store.field("states",task);
+            Kind kind;
+            if ("VERIFYING".equals(state)) kind = Kind.VERIFIED;
+            else if ("RECOVERING".equals(state)) kind = Kind.FENCED;
+            else if ("FAILING".equals(state)) kind = Kind.FAILED;
+            else continue;
+            long generation = Long.parseLong(permit.substring(delimiter+1));
+            String id = ComputeV2Event.eventId(task,generation,kind);
+            String staged = store.field("staged",id);
+            if (staged != null) {
+                if (store.field("outgoing",id) == null) send(store.decode(staged,ComputeV2Event.class));
+                continue;
+            }
+            if (kind == Kind.FENCED && "RECOVERY_REQUIRED".equals(store.field("executors",task))
+                    && store.field("lifecycle-events",id) == null && recoveredAt != null
+                    && now >= Long.parseLong(recoveredAt) + config.getLeaseSeconds()*1000L) {
+                Double lease = store.score("leases",task);
+                if (lease != null && lease <= now && !completionPending(task,generation)) {
+                    var current = event(task).orElseThrow();
+                    fenceExpired(current.userId(),current.deviceId(),generation);
+                }
+            }
+        }
+    }
+
+    public List<Long> executingDevices() {
+        return store.members("permits").stream()
+                .map(permit -> permit.substring(0,permit.lastIndexOf(':')))
+                .map(task -> store.field("task-devices",task)).filter(Objects::nonNull)
+                .map(Long::parseLong).distinct().toList();
+    }
+
+    /** The device slot may move once the old generation is durably unable to settle a new result. */
+    public boolean hasExpiredTerminalResult(RuntimeView view) {
+        var current = view.event();
+        if (persistence == null || current.task().startedAt() == null || view.leaseExpiresAt() == null
+                || view.leaseExpiresAt().isAfter(clock.instant())) return false;
+        if ("RECOVERY_REQUIRED".equals(view.executorId())) {
+            String recoveredAt = store.value("recovered-at");
+            if (recoveredAt == null || clock.millis() < Long.parseLong(recoveredAt) + config.getLeaseSeconds()*1000L) return false;
+        }
+        Kind terminal;
+        if ("COMPLETED".equals(view.status()) && current.kind() == Kind.VERIFIED) terminal = Kind.VERIFIED;
+        else if ("RECOVERING".equals(view.status())) terminal = Kind.FENCED;
+        else if ("FAILED".equals(view.status())) terminal = Kind.FAILED;
+        else return false;
+        String task = current.taskNo();
+        long generation = current.generation();
+        if (terminal != Kind.VERIFIED && (current.kind() == Kind.VERIFIED || completionPending(task,generation)
+                || persistence.findLifecycle(ComputeV2Event.eventId(task,generation,Kind.VERIFIED)).isPresent())) return false;
+        return persistence.findLifecycle(ComputeV2Event.eventId(task,generation,terminal))
+                .filter(event -> event.userId() == current.userId() && event.deviceId() == current.deviceId()
+                        && event.instanceNo().equals(current.instanceNo()) && event.deploymentScope().equals(current.deploymentScope()))
+                .isPresent();
     }
     /** Called only by the trusted process observer after the inference process actually exits. */
     public ComputeV2Event executionExited(long userId,long deviceId,long generation,String executorId) {
@@ -183,6 +256,51 @@ public class ComputeV2Runtime {
                 store.field("executors",taskNo),lease == null ? null : Instant.ofEpochMilli(lease.longValue()),
                 amount("pending-usdt",userId),amount("pending-nex",userId)));
     }
+
+    /** Reads the pointer, generation and exit evidence together while terminal cleanup can run. */
+    public Optional<ReplacementView> replacementView(long userId,long deviceId) {
+        var values = store.reserve("replacement-view",Long.toString(deviceId),Long.toString(userId));
+        switch (values.get(0).toString()) {
+            case "EMPTY": return Optional.empty();
+            case "UNAVAILABLE": throw replacementUnavailable();
+            case "OWNER_MISMATCH": throw new BizException(409,"COMPUTE_V2_OWNER_CHANGED");
+            case "PRESENT": break;
+            default: throw new IllegalStateException("Invalid compute replacement view");
+        }
+        String taskNo = values.get(1).toString();
+        String generationText = values.get(2).toString();
+        String instanceNo = values.get(3).toString();
+        String payload = values.get(8).toString();
+        long generation;
+        ComputeV2Event current;
+        try {
+            generation = Long.parseLong(generationText);
+            if (generation <= 0 || !Long.toString(generation).equals(generationText)) throw replacementUnavailable();
+            if ("EVENT".equals(values.get(7))) {
+                current = store.decode(payload,ComputeV2Event.class);
+            } else {
+                var task = store.decode(payload,TaskSnapshot.class);
+                if (task == null) throw replacementUnavailable();
+                current = event(Kind.ISSUED,userId,deviceId,instanceNo,taskNo,generation,task.issuedAt(),task,null,null);
+            }
+        } catch (IllegalArgumentException invalid) {
+            throw replacementUnavailable();
+        } catch (IllegalStateException invalid) {
+            if (invalid.getCause() instanceof JsonProcessingException) throw replacementUnavailable();
+            throw invalid;
+        }
+        if (current == null) throw replacementUnavailable();
+        if (current.userId()!=userId || current.deviceId()!=deviceId || !taskNo.equals(current.taskNo())
+                || generation!=current.generation() || !instanceNo.equals(current.instanceNo()))
+            throw new BizException(409,"COMPUTE_V2_OWNER_CHANGED");
+        return Optional.of(new ReplacementView(current,values.get(4).toString(),
+                "1".equals(values.get(5)),"1".equals(values.get(6))));
+    }
+
+    private BizException replacementUnavailable() {
+        return new BizException(503,"COMPUTE_V2_RUNTIME_RECOVERING");
+    }
+
     /** Internal scheduler lookup. Public callers must always use the authenticated-owner overload. */
     public Optional<RuntimeView> viewDevice(long deviceId) {
         String taskNo = store.field("devices",Long.toString(deviceId));
@@ -272,7 +390,8 @@ public class ComputeV2Runtime {
                     event.generation(),event.occurredAt(),event.task(),zero,null));
         }
         String original = store.execute("stage",event.taskNo(),Long.toString(event.generation()),event.eventId(),store.encode(event),
-                event.kind().name(),Long.toString(clock.millis()),entitlement,zeroReward,Integer.toString(config.getDedupRetentionSeconds()));
+                event.kind().name(),Long.toString(clock.millis()),entitlement,zeroReward,Integer.toString(config.getDedupRetentionSeconds()),
+                Long.toString(config.getLeaseSeconds()*1000L));
         return send(store.decode(original,ComputeV2Event.class));
     }
     private ComputeV2Event sameProof(ComputeV2Event original,Verified evidence) {

@@ -246,13 +246,16 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
     public AppNotificationPage pageUserNotifications(Long userId, Long cursorId, String priority, int limit, String category) {
         List<AppNotificationView> rows = campaignMapper.selectUserNotifications(
-                userId, cursorId, priority, Math.max(1, Math.min(limit, 100)) + 1, category);
+                        userId, cursorId, priority, Math.max(1, Math.min(limit, 100)) + 1, category).stream()
+                .map(NotificationCampaignMapper.NotificationPageRow::view)
+                .toList();
         boolean hasMore = rows.size() > limit;
         List<AppNotificationView> items = hasMore ? rows.subList(0, limit) : rows;
         String nextCursor = hasMore && !items.isEmpty()
                 ? String.valueOf(items.get(items.size() - 1).id())
                 : null;
-        return new AppNotificationPage(List.copyOf(items), nextCursor, campaignMapper.countUnreadForUser(userId));
+        var counts = campaignMapper.countUnreadForUser(userId);
+        return new AppNotificationPage(List.copyOf(items), nextCursor, counts.unread(), counts.actionableUnread());
     }
 
     @Override
@@ -460,6 +463,8 @@ public class MybatisNotificationCampaignRepository implements NotificationCampai
     }
 
     private void applyRetention(Long userId, LocalDateTime now) {
+        // Independent from every priority cap and from I3 locked/configured values.
+        campaignMapper.pruneEarningOverCap(30, userId);
         for (NotificationCapRuleView rule : listCapRules()) {
             if (rule.locked() || "critical".equalsIgnoreCase(rule.tier())) {
                 continue;

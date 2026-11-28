@@ -3805,13 +3805,15 @@ class OpsDeviceServiceTest {
         }
 
         @Override
-        public DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth) {
+        public DeviceTradeinOverviewView e3TradeinOverview(LocalDateTime since, LocalDateTime monthStart, int cliffMonth, int midEnd) {
             lastTradeinSince = since;
             lastTradeinMonthStart = monthStart;
             lastTradeinCliffMonth = cliffMonth;
             return new DeviceTradeinOverviewView(
                     new BigDecimal("5.2"),
                     3L,
+                    0L,
+                    0L,
                     4L,
                     new BigDecimal("284.00"),
                     1L,
@@ -3849,6 +3851,16 @@ class OpsDeviceServiceTest {
         }
 
         @Override
+        public boolean restoreOccupiesProductionSlot(Long deviceId) {
+            return device != null && deviceId.equals(device.id()) && "RECYCLED".equals(device.status()) && device.activatedAt() != null;
+        }
+
+        @Override
+        public boolean deviceHasPendingReplacement(Long userId, Long deviceId) {
+            return false;
+        }
+
+        @Override
         public long countOccupiedSlotsForE5Activation(Long userId) {
             return activeDevicesByUser + trialReservedSlots + orderReservedSlots;
         }
@@ -3883,7 +3895,7 @@ class OpsDeviceServiceTest {
         }
 
         @Override
-        public int resumeDevicesByUser(Long userId, LocalDateTime now) {
+        public int resumeDevicesByUser(Long userId, List<Long> deviceIds, LocalDateTime now) {
             pausedUserId = null;
             return 1;
         }

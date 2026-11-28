@@ -22,10 +22,13 @@ public class TreasuryEmergencySignalFacadeAdapter implements TreasuryEmergencySi
     public TreasuryEmergencySignalSnapshot snapshot() {
         BigDecimal reserve = decimal(treasuryService.reserve().getData().get("reserveTotalUsdt"));
         BigDecimal withdrawalRequests24h = safe(ledgerRepository.sumWithdrawalRequested24hUsdt());
+        BigDecimal reconciliationGap = safe(ledgerRepository.walletLedgerReconciliationGapUsdt()).stripTrailingZeros();
+        BigDecimal redlinePct = bankRunRedlinePct();
         return new TreasuryEmergencySignalSnapshot(
                 bankRunRatio(reserve, withdrawalRequests24h),
-                safe(ledgerRepository.walletLedgerReconciliationGapUsdt()).stripTrailingZeros(),
-                bankRunRedlinePct());
+                reconciliationGap,
+                redlinePct,
+                BankRunThresholdPolicy.reached(withdrawalRequests24h, reserve, redlinePct));
     }
 
     @Override

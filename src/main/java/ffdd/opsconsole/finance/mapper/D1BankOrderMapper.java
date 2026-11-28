@@ -1,5 +1,7 @@
 package ffdd.opsconsole.finance.mapper;
 
+import static ffdd.opsconsole.finance.hdpay.HdPayOrderMapper.TERMINAL_SUBMISSION_ERRORS;
+
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -13,6 +15,8 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface D1BankOrderMapper extends BaseMapper<Object> {
+    String UNCONFIRMED_REJECTION = "h.submission_status = 'REJECTED'"
+            + " AND COALESCE(h.last_error_code, '') NOT IN " + TERMINAL_SUBMISSION_ERRORS;
     String DISPLAY_STATUS = """
                      CASE
                        WHEN i.status <> 'AWAITING_PAYMENT' THEN i.status
@@ -20,6 +24,9 @@ public interface D1BankOrderMapper extends BaseMapper<Object> {
                        WHEN i.payment_rail = 'MANUAL' THEN 'AWAITING_PAYMENT'
                        WHEN h.settlement_status IN ('MANUAL_REVIEW','CREDITED') THEN 'PROCESSING'
                        WHEN h.submission_status = 'SUBMIT_UNKNOWN' THEN 'UNKNOWN'
+                       WHEN
+            """ + UNCONFIRMED_REJECTION + """
+                        THEN 'UNKNOWN'
                        WHEN h.submission_status = 'REJECTED' THEN 'FAILED'
                        WHEN h.submission_status = 'CREATED' THEN 'AWAITING_PAYMENT'
                        ELSE 'CREATING'
@@ -66,7 +73,10 @@ public interface D1BankOrderMapper extends BaseMapper<Object> {
                      i.expires_at AS expiresAt,
                      COALESCE(m.received_at, i.matched_at) AS receivedAt,
                      i.created_at AS createdAt, i.updated_at AS updatedAt, i.version,
-                     h.version AS providerVersion, h.submission_status AS submissionStatus,
+                     h.version AS providerVersion,
+                     CASE WHEN
+            """ + UNCONFIRMED_REJECTION + """
+                       THEN 'SUBMIT_UNKNOWN' ELSE h.submission_status END AS submissionStatus,
                      h.provider_status AS providerStatus, h.settlement_status AS settlementStatus,
                      h.amount_vnd AS providerAmountVnd, h.payment_url AS paymentUrl,
                      m.confirmation_no AS manualConfirmationNo,

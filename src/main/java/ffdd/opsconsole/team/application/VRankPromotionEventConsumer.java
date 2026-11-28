@@ -18,7 +18,7 @@ import org.springframework.util.StringUtils;
  * F1 V-Rank 晋升事件消费者(Sprint4)。
  *
  * <p>订阅 outbox 分发的 {@link EventOutboxMessage}(eventType=VRANK_PROMOTION_COMPLETED),
- * 找晋升者的 L1 上级 sponsor → 触发上级 re-evaluate(下家晋升可能使上级也满足更高阶,链式级联)。
+ * 晋升者的 L1 和 L2 上级分别重新评估。
  *
  * <h2>级联终止保障</h2>
  * <ul>
@@ -74,20 +74,19 @@ public class VRankPromotionEventConsumer {
                 }
                 throw new IllegalStateException("VRANK_PROMOTION_DELIVERY_NOT_COMPLETE:" + claim.status());
             }
-            // 级联:找 L1 上级 sponsor(findSponsorUserId 含 nx_sponsorship→nx_team_member L1 fallback)
-            Long sponsorUserId = commissionRepository.findSponsorUserId(userId);
-            if (sponsorUserId == null) {
-                log.debug("VRANK_PROMOTION_COMPLETED cascade ends (no L1 sponsor): user={} toCode={}", userId, toCode);
-                deliveryService.markSuccess(CONSUMER_GROUP, claim.eventId(), 0);
-                return;
+            Long sponsor = commissionRepository.findSponsorUserId(userId);
+            if (sponsor != null && !sponsor.equals(userId)) {
+                Long nextSponsor = commissionRepository.findSponsorUserId(sponsor);
+                vRankPromotionEngine.evaluate(new VRankPromotionContext(
+                        sponsor, VRankPromotionContext.TriggerType.SYSTEM_EVALUATION, claim.eventId(), "ENGINE"));
+                if (nextSponsor != null && !nextSponsor.equals(userId) && !nextSponsor.equals(sponsor)) {
+                    vRankPromotionEngine.evaluate(new VRankPromotionContext(
+                            nextSponsor, VRankPromotionContext.TriggerType.SYSTEM_EVALUATION, claim.eventId(), "ENGINE"));
+                }
+                log.info("VRANK_PROMOTION_COMPLETED cascade done: user={} toCode={} L1={} L2={}",
+                        userId, toCode, sponsor, nextSponsor);
             }
-            log.info("VRANK_PROMOTION_COMPLETED cascade: re-evaluate sponsor={} (descendant={} → {})",
-                    sponsorUserId, userId, toCode);
-            String sponsorRank = vRankPromotionEngine.evaluate(new VRankPromotionContext(
-                    sponsorUserId, VRankPromotionContext.TriggerType.SYSTEM_EVALUATION,
-                    claim.eventId(), "ENGINE"));
             deliveryService.markSuccess(CONSUMER_GROUP, claim.eventId(), 0);
-            log.info("VRANK_PROMOTION_COMPLETED cascade done: sponsor={} evaluated rank={}", sponsorUserId, sponsorRank);
         } catch (JsonProcessingException ex) {
             log.error("VRANK_PROMOTION_COMPLETED payload parse failed: eventId={}, err={}",
                     message.getEventId(), ex.getMessage());

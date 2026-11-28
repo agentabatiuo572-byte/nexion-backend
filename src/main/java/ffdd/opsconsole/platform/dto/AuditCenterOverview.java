@@ -1,8 +1,11 @@
 package ffdd.opsconsole.platform.dto;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.JsonNode;
 import ffdd.opsconsole.shared.audit.AuditLogRecord;
 import ffdd.opsconsole.shared.audit.AuditStatsBucket;
 import ffdd.opsconsole.shared.audit.AuditStatsSummaryResponse;
+import ffdd.opsconsole.team.domain.F4SettlementResult;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
@@ -64,12 +67,81 @@ public record AuditCenterOverview(
             String objDisplayName,
             RoleGrantsDiff roleGrantsDiff,
             @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
-            com.fasterxml.jackson.databind.JsonNode disclosureReview) {
+            com.fasterxml.jackson.databind.JsonNode disclosureReview,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            CommissionReverseEvidence evidence,
+            @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+            V8PromotionSnapshot v8PromotionSnapshot,
+            @JsonInclude(JsonInclude.Include.NON_NULL) JsonNode changes,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String approvalFailureReason,
+            @JsonInclude(JsonInclude.Include.NON_NULL) F4SettlementResult businessResult,
+            @JsonInclude(JsonInclude.Include.NON_NULL) F4SettlementResult lastApprovalAttemptResult,
+            @JsonInclude(JsonInclude.Include.NON_NULL) H3MissionTarget missionTarget,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String createRequestId,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String resultSkuId) {
+        public AuditOperationTicket(
+                String id, String action, String obj, String beforeValue, String afterValue, String operator,
+                String operatorRole, String type, boolean amplifies, boolean sos, String ts, boolean mine, String roleGate,
+                String reason, String status, String phoneCalibrationProposal, boolean coverageCheckOnApproval,
+                String operationCode, FundEffect fundEffect, String refundOrderNo, boolean retiredOperation,
+                String ruleTaskAction, Map<String,Object> ambassadorMaterialProposal, BigDecimal originalAmountUsdt,
+                BigDecimal refundAmountUsdt, boolean canApprove, boolean canReject, Integer approveDeniedCode,
+                String approveDeniedMessage, Integer rejectDeniedCode, String rejectDeniedMessage, String objDisplayName,
+                RoleGrantsDiff roleGrantsDiff, JsonNode disclosureReview, CommissionReverseEvidence evidence,
+                V8PromotionSnapshot v8PromotionSnapshot) {
+            this(id, action, obj, beforeValue, afterValue, operator, operatorRole, type, amplifies, sos, ts, mine,
+                    roleGate, reason, status, phoneCalibrationProposal, coverageCheckOnApproval, operationCode,
+                    fundEffect, refundOrderNo, retiredOperation, ruleTaskAction, ambassadorMaterialProposal,
+                    originalAmountUsdt, refundAmountUsdt, canApprove, canReject, approveDeniedCode, approveDeniedMessage,
+                    rejectDeniedCode, rejectDeniedMessage, objDisplayName, roleGrantsDiff, disclosureReview, evidence,
+                    v8PromotionSnapshot, null, null);
+        }
+
+        public AuditOperationTicket(
+                String id, String action, String obj, String beforeValue, String afterValue, String operator,
+                String operatorRole, String type, boolean amplifies, boolean sos, String ts, boolean mine, String roleGate,
+                String reason, String status, String phoneCalibrationProposal, boolean coverageCheckOnApproval,
+                String operationCode, FundEffect fundEffect, String refundOrderNo, boolean retiredOperation,
+                String ruleTaskAction, Map<String,Object> ambassadorMaterialProposal, BigDecimal originalAmountUsdt,
+                BigDecimal refundAmountUsdt, boolean canApprove, boolean canReject, Integer approveDeniedCode,
+                String approveDeniedMessage, Integer rejectDeniedCode, String rejectDeniedMessage, String objDisplayName,
+                RoleGrantsDiff roleGrantsDiff, JsonNode disclosureReview, CommissionReverseEvidence evidence,
+                V8PromotionSnapshot v8PromotionSnapshot, JsonNode changes) {
+            this(id, action, obj, beforeValue, afterValue, operator, operatorRole, type, amplifies, sos, ts, mine,
+                    roleGate, reason, status, phoneCalibrationProposal, coverageCheckOnApproval, operationCode,
+                    fundEffect, refundOrderNo, retiredOperation, ruleTaskAction, ambassadorMaterialProposal,
+                    originalAmountUsdt, refundAmountUsdt, canApprove, canReject, approveDeniedCode, approveDeniedMessage,
+                    rejectDeniedCode, rejectDeniedMessage, objDisplayName, roleGrantsDiff, disclosureReview, evidence,
+                    v8PromotionSnapshot, changes, null);
+        }
+
+        public AuditOperationTicket(
+                String id, String action, String obj, String beforeValue, String afterValue, String operator,
+                String operatorRole, String type, boolean amplifies, boolean sos, String ts, boolean mine, String roleGate,
+                String reason, String status, String phoneCalibrationProposal, boolean coverageCheckOnApproval,
+                String operationCode, FundEffect fundEffect, String refundOrderNo, boolean retiredOperation,
+                String ruleTaskAction, Map<String,Object> ambassadorMaterialProposal, BigDecimal originalAmountUsdt,
+                BigDecimal refundAmountUsdt, boolean canApprove, boolean canReject, Integer approveDeniedCode,
+                String approveDeniedMessage, Integer rejectDeniedCode, String rejectDeniedMessage, String objDisplayName,
+                RoleGrantsDiff roleGrantsDiff, JsonNode disclosureReview, CommissionReverseEvidence evidence,
+                V8PromotionSnapshot v8PromotionSnapshot, JsonNode changes, String approvalFailureReason) {
+            this(id, action, obj, beforeValue, afterValue, operator, operatorRole, type, amplifies, sos, ts, mine,
+                    roleGate, reason, status, phoneCalibrationProposal, coverageCheckOnApproval, operationCode,
+                    fundEffect, refundOrderNo, retiredOperation, ruleTaskAction, ambassadorMaterialProposal,
+                    originalAmountUsdt, refundAmountUsdt, canApprove, canReject, approveDeniedCode, approveDeniedMessage,
+                    rejectDeniedCode, rejectDeniedMessage, objDisplayName, roleGrantsDiff, disclosureReview, evidence,
+                    v8PromotionSnapshot, changes, approvalFailureReason, null, null, null, null, null);
+        }
+
         public AuditOperationTicket withViewerMetadata(boolean ownedByViewer, String code, FundEffect effect,
                                                        String orderNo, boolean retired, String displayedRoleGate,
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> approve,
                                                        ffdd.opsconsole.shared.api.ApiResult<Void> reject,
-                                                       com.fasterxml.jackson.databind.JsonNode authorizedDisclosureReview) {
+                                                       com.fasterxml.jackson.databind.JsonNode authorizedDisclosureReview,
+                                                       CommissionReverseEvidence authorizedEvidence,
+                                                       V8PromotionSnapshot authorizedV8PromotionSnapshot,
+                                                       JsonNode authorizedChanges,
+                                                       F4SettlementResult authorizedLastApprovalAttemptResult) {
             return new AuditOperationTicket(id, action, obj, beforeValue, afterValue, operator, operatorRole,
                     type, amplifies, sos, ts, ownedByViewer, displayedRoleGate, reason, status, phoneCalibrationProposal,
                     coverageCheckOnApproval, code, effect, orderNo, retired, ruleTaskAction, ambassadorMaterialProposal,
@@ -79,9 +151,22 @@ public record AuditCenterOverview(
                     approve.getCode() == 0 ? null : approve.getMessage(),
                     reject.getCode() == 0 ? null : reject.getCode(),
                     reject.getCode() == 0 ? null : reject.getMessage(), objDisplayName, roleGrantsDiff,
-                    authorizedDisclosureReview);
+                    authorizedDisclosureReview, authorizedEvidence, authorizedV8PromotionSnapshot, authorizedChanges,
+                    approvalFailureReason, businessResult, authorizedLastApprovalAttemptResult, missionTarget,
+                    createRequestId, resultSkuId);
         }
     }
+
+    public record H3MissionTarget(String actionRoute, String productName) {}
+
+    public record CommissionReverseEvidence(String type, String value) {}
+
+    public record V8PromotionSnapshot(String originalRank, List<Map<String, Object>> v8Rewards,
+                                     VRankBenefits v7, VRankBenefits v8) {
+        public static final String FIELD = "v8PromotionSnapshot";
+    }
+
+    public record VRankBenefits(BigDecimal purchaseL1Rate, BigDecimal purchaseL2Rate, String monthlySalaryUsdt) {}
 
     public record RoleGrantsDiff(
             List<String> permissionCodesAdded,

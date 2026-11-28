@@ -40,8 +40,8 @@ class F5CommissionReadVersionTest {
         source.put("version", 6L);
         source.put("frozenFromStatus", "COOLING");
         source.put("ledgerBizNo", "F2-NETWORK-71");
-        when(mapper.queryEvents(null, null, null, null, null, null, 21)).thenReturn(List.of(source));
-        when(mapper.queryEvents(null, null, null, null, null, null, 200)).thenReturn(List.of(source));
+        when(mapper.queryEvents(null, null, null, null, null, null, 21, null)).thenReturn(List.of(source));
+        when(mapper.queryEvents(null, null, null, null, null, null, 200, null)).thenReturn(List.of(source));
         when(mapper.recentOperations(50)).thenReturn(List.of());
         when(mapper.activeSuspensions(100)).thenReturn(List.of());
         when(config.activeValue(anyString())).thenReturn(Optional.empty());
@@ -64,8 +64,8 @@ class F5CommissionReadVersionTest {
     @Test
     void overviewFailsClosedWhenOperationHistoryCannotBeRead() {
         F5CommissionMapper mapper = mock(F5CommissionMapper.class);
-        when(mapper.queryEvents(null, null, null, null, null, null, 21)).thenReturn(List.of());
-        when(mapper.queryEvents(null, null, null, null, null, null, 200)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 21, null)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 200, null)).thenReturn(List.of());
         when(mapper.recentOperations(50)).thenThrow(new IllegalStateException("operation table unavailable"));
         F5CommissionService service = service(mapper);
 
@@ -78,8 +78,8 @@ class F5CommissionReadVersionTest {
     @Test
     void overviewFailsClosedWhenActiveSuspensionsCannotBeRead() {
         F5CommissionMapper mapper = mock(F5CommissionMapper.class);
-        when(mapper.queryEvents(null, null, null, null, null, null, 21)).thenReturn(List.of());
-        when(mapper.queryEvents(null, null, null, null, null, null, 200)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 21, null)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 200, null)).thenReturn(List.of());
         when(mapper.recentOperations(50)).thenReturn(List.of());
         when(mapper.activeSuspensions(100)).thenThrow(new IllegalStateException("suspension table unavailable"));
         F5CommissionService service = service(mapper);
@@ -93,8 +93,8 @@ class F5CommissionReadVersionTest {
     @Test
     void overviewFailsClosedWhenFullAggregateContainsALegacyCurrency() {
         F5CommissionMapper mapper = mock(F5CommissionMapper.class);
-        when(mapper.queryEvents(null, null, null, null, null, null, 21)).thenReturn(List.of());
-        when(mapper.queryEvents(null, null, null, null, null, null, 200)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 21, null)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 200, null)).thenReturn(List.of());
         when(mapper.aggregateCommissionKinds()).thenReturn(List.of(Map.of(
                 "kind", "network", "currency", "BTC", "amount", BigDecimal.ONE, "count", 1L)));
         when(mapper.aggregateCommissionStatuses()).thenReturn(List.of());
@@ -110,8 +110,8 @@ class F5CommissionReadVersionTest {
     @Test
     void overviewFailsClosedWhenAFullTableProbeFindsALegacyKind() {
         F5CommissionMapper mapper = mock(F5CommissionMapper.class);
-        when(mapper.queryEvents(null, null, null, null, null, null, 21)).thenReturn(List.of());
-        when(mapper.queryEvents(null, null, null, null, null, null, 200)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 21, null)).thenReturn(List.of());
+        when(mapper.queryEvents(null, null, null, null, null, null, 200, null)).thenReturn(List.of());
         when(mapper.aggregateCommissionKinds()).thenReturn(List.of());
         when(mapper.aggregateCommissionStatuses()).thenReturn(List.of());
         when(mapper.unknownCommissionKindCount()).thenReturn(1L);

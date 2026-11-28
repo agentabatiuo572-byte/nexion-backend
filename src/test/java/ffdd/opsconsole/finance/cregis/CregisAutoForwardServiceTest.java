@@ -18,6 +18,7 @@ import org.springframework.transaction.*;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
 class CregisAutoForwardServiceTest {
+    final String platform = "0x" + "1".repeat(40), counterparty = "0x" + "2".repeat(40);
     final CregisProperties config=new CregisProperties();
     final CregisAutoForwardMapper db=mock(CregisAutoForwardMapper.class);
     final CregisFundsPreparationMapper addresses=mock(CregisFundsPreparationMapper.class);
@@ -44,10 +45,11 @@ class CregisAutoForwardServiceTest {
     final Map<String,Object> policy=new HashMap<>(),event=new HashMap<>(),task=new HashMap<>();
     @BeforeEach void setup(){
         config.setMode(CregisProperties.Mode.PROVIDER);config.setProjectId(42);config.setApiKey("offline-test-key");config.setCallbackSourceIps("127.0.0.1");
+        config.setBep20PlatformAddress(platform);config.setBep20CounterpartyAddress(counterparty);
         policy.put("collectionEnabled",false);policy.put("paymentEnabled",false);policy.put("startEventId",null);policy.put("version",0L);policy.put("makerId",null);
         event.putAll(Map.of("id",100L,"address",source,"status","CREDITED","grossAmount",new BigDecimal("5"),"netAmount",new BigDecimal("4"),"feeAmount",BigDecimal.ONE,"txid",depositTx,"logIndex",2,"blockNumber",90L));
         event.put("chainId",CregisConstants.BSC_CHAIN_ID);
-        task.putAll(Map.of("id","1","eventId","100","sourceAddress",source,"platformAddress",CregisFundsPreparationService.PLATFORM,"counterpartyAddress",CregisFundsPreparationService.COUNTERPARTY,"grossAmount","5.000000","netAmount","4.000000","feeAmount","1.000000","paymentKey","CA-P-42-100"));
+        task.putAll(Map.of("id","1","eventId","100","sourceAddress",source,"platformAddress",platform,"counterpartyAddress",counterparty,"grossAmount","5.000000","netAmount","4.000000","feeAmount","1.000000","paymentKey","CA-P-42-100"));
         task.put("chainId",CregisConstants.BSC_CHAIN_ID);
         task.put("state","WAIT_COLLECTION");task.put("version",0L);
         when(db.policy(eq(42L),any())).thenAnswer(c->new HashMap<>(policy));when(db.lockPolicy(eq(42L),any())).thenAnswer(c->new HashMap<>(policy));
@@ -58,17 +60,17 @@ class CregisAutoForwardServiceTest {
             if(!Objects.equals(row.get("version"),task.get("version")))return 0;
             task.putAll(row);task.put("state",c.getArgument(2));task.put("lastError",c.getArgument(3));task.put("version",((Number)task.get("version")).longValue()+1);return 1;});
         when(deposits.lockProvisionGate()).thenReturn(Map.of("state","IDLE"));when(payout.enabled(any())).thenReturn(true);when(payout.requiredConfirmations()).thenReturn(15);
-        when(addresses.config(42)).thenReturn(Map.of("platformAddress",CregisFundsPreparationService.PLATFORM,"counterpartyAddress",CregisFundsPreparationService.COUNTERPARTY,"network","BSC","asset","USDT"));
+        when(addresses.config(42)).thenReturn(Map.of("platformAddress",platform,"counterpartyAddress",counterparty,"network","BSC","asset","USDT"));
         when(router.provider()).thenReturn(vendor);when(router.payoutCallbackUrl()).thenReturn("https://example.invalid/cregis/payout");
         when(vendor.addressBelongs(CregisConstants.BSC_CHAIN_ID,source)).thenReturn(true);
-        when(chain.preparationBalance(anyString())).thenReturn(new BscDepositProof.PreparationBalance("100","1",100,"0x"+"e".repeat(64)));
-        when(chain.verifyExact(eq(depositTx),eq(2),eq(source),any(),eq(90L))).thenReturn(new BscDepositProof.TransferProof(2,90,"0x"+"e".repeat(64),15,source,source,new BigDecimal("5"),true));
-        when(chain.verifyPayout(eq(CregisNetwork.BEP20),eq(collectTx),eq(CregisFundsPreparationService.PLATFORM),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,110,"0x"+"e".repeat(64),15,source)));
-        when(chain.verifyPayout(eq(CregisNetwork.BEP20),eq(paymentTx),eq(CregisFundsPreparationService.COUNTERPARTY),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,120,"0x"+"e".repeat(64),15,CregisFundsPreparationService.PLATFORM)));
+        when(chain.preparationBalance(eq(CregisNetwork.BEP20),anyString())).thenReturn(new BscDepositProof.PreparationBalance("100","1",100,"0x"+"e".repeat(64)));
+        when(chain.verifyExact(eq(CregisNetwork.BEP20),eq(depositTx),eq(2),eq(source),any(),eq(90L))).thenReturn(new BscDepositProof.TransferProof(2,90,"0x"+"e".repeat(64),15,source,source,new BigDecimal("5"),true));
+        when(chain.verifyPayout(eq(CregisNetwork.BEP20),eq(collectTx),eq(platform),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,110,"0x"+"e".repeat(64),15,source)));
+        when(chain.verifyPayout(eq(CregisNetwork.BEP20),eq(paymentTx),eq(counterparty),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,120,"0x"+"e".repeat(64),15,platform)));
         when(vendor.createCollection(any())).thenAnswer(c->{assertThat(task.get("state")).isEqualTo("COLLECTION_SUBMITTING");assertThat(commits).isPositive();return 123L;});
         when(vendor.queryCollection(eq(123L),any())).thenReturn(Optional.of(new CregisGateway.CollectionOrder(123,1,collectTx)));
         when(vendor.createAutoForwardPayout(any())).thenReturn(new CregisGateway.PayoutSubmission(456,"CA-P-42-100"));
-        when(vendor.queryPayout(any())).thenReturn(new CregisGateway.PayoutOrder(456,CregisConstants.USDT_BEP20_CURRENCY,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,CregisFundsPreparationService.COUNTERPARTY,new BigDecimal("4"),"CA-P-42-100",CregisGateway.PayoutStatus.SUCCEEDED,paymentTx));
+        when(vendor.queryPayout(any())).thenReturn(new CregisGateway.PayoutOrder(456,CregisConstants.USDT_BEP20_CURRENCY,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,counterparty,new BigDecimal("4"),"CA-P-42-100",CregisGateway.PayoutStatus.SUCCEEDED,paymentTx));
         when(admins.require(true)).thenReturn(7L);
         when(permissions.getPermissionCodes(anyLong())).thenReturn(Set.of("finance_d1_read","finance_d1_channel_manage","finance_d2_withdrawal_approve"));
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken("7","unused",List.of(new SimpleGrantedAuthority("finance_d2_withdrawal_approve"))));
@@ -86,14 +88,14 @@ class CregisAutoForwardServiceTest {
     @Test void fullAutomaticPathCollectsGrossThenPaysNetExactlyOnce(){enable();ticks(8);
         assertThat(task.get("state")).isEqualTo("COMPLETED");
         var collected=org.mockito.ArgumentCaptor.forClass(CregisGateway.CollectionRequest.class);verify(vendor).createCollection(collected.capture());
-        assertThat(collected.getValue().amount()).isEqualByComparingTo("5");assertThat(collected.getValue().fromAddress()).isEqualTo(source);assertThat(collected.getValue().toAddress()).isEqualTo(CregisFundsPreparationService.PLATFORM);
+        assertThat(collected.getValue().amount()).isEqualByComparingTo("5");assertThat(collected.getValue().fromAddress()).isEqualTo(source);assertThat(collected.getValue().toAddress()).isEqualTo(platform);
         var paid=org.mockito.ArgumentCaptor.forClass(CregisGateway.PayoutRequest.class);verify(vendor).createAutoForwardPayout(paid.capture());
-        assertThat(paid.getValue().amount()).isEqualByComparingTo("4");assertThat(paid.getValue().address()).isEqualTo(CregisFundsPreparationService.COUNTERPARTY);
+        assertThat(paid.getValue().amount()).isEqualByComparingTo("4");assertThat(paid.getValue().address()).isEqualTo(counterparty);
         assertThat(mockingDetails(deposits).getInvocations()).allMatch(i->i.getMethod().getName().equals("lockProvisionGate"));
         verify(vendor,never()).createPayout(any());verify(db,times(2)).resolveUnknown(42,1);
     }
     @Test void providerSuccessWithoutFifteenChainConfirmationsCannotStartPayment(){enable();
-        when(chain.verifyPayout(eq(collectTx),anyString(),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,110,"0x"+"e".repeat(64),14,source)));
+        when(chain.verifyPayout(eq(CregisNetwork.BEP20),eq(collectTx),anyString(),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,110,"0x"+"e".repeat(64),14,source)));
         ticks(4);assertThat(task.get("state")).isEqualTo("COLLECTION_PENDING");verify(vendor,never()).createAutoForwardPayout(any());}
     @Test void timeoutAndRestartIntentNeverResendAndRaiseExistingRiskHold(){enable();
         doThrow(new CregisGatewayException(CregisGatewayException.Kind.SUBMISSION_UNKNOWN,"CREGIS_SUBMISSION_UNKNOWN")).when(vendor).createCollection(any());
@@ -104,10 +106,10 @@ class CregisAutoForwardServiceTest {
     @Test void pauseStopsNewPaymentButAlreadySentCollectionStillGetsObserved(){enable();service.tick();config.setAutoForwardEnabled(false);policy.put("collectionEnabled",false);policy.put("paymentEnabled",false);
         ticks(3);assertThat(task.get("state")).isEqualTo("WAIT_PAYMENT");verify(vendor,atLeastOnce()).queryCollection(eq(123L),any());verify(vendor,never()).createAutoForwardPayout(any());}
     @Test void reorgWrongSourceAndMissingGasCannotSend(){enable();event.put("status","REORG_INVESTIGATING");ticks(2);verify(vendor,never()).createCollection(any());
-        event.put("status","CREDITED");when(chain.preparationBalance(anyString())).thenReturn(new BscDepositProof.PreparationBalance("100","0",100,"hash"));ticks(2);
+        event.put("status","CREDITED");when(chain.preparationBalance(eq(CregisNetwork.BEP20),anyString())).thenReturn(new BscDepositProof.PreparationBalance("100","0",100,"hash"));ticks(2);
         assertThat(task.get("lastError")).isEqualTo("CREGIS_AUTO_BNB_REQUIRED");verify(vendor,never()).createCollection(any());
-        when(chain.preparationBalance(anyString())).thenReturn(new BscDepositProof.PreparationBalance("100","1",100,"hash"));service.tick();
-        when(chain.verifyPayout(eq(collectTx),anyString(),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,110,"hash",15,CregisFundsPreparationService.COUNTERPARTY)));
+        when(chain.preparationBalance(eq(CregisNetwork.BEP20),anyString())).thenReturn(new BscDepositProof.PreparationBalance("100","1",100,"hash"));service.tick();
+        when(chain.verifyPayout(eq(CregisNetwork.BEP20),eq(collectTx),anyString(),any())).thenReturn(Optional.of(new BscDepositProof.Proof(1,110,"hash",15,counterparty)));
         ticks(3);assertThat(task.get("state")).isEqualTo("COLLECTION_PENDING");verify(vendor,never()).createAutoForwardPayout(any());}
     @Test void explicitCreateRejectionCanBeRetriedButUnknownCannot(){enable();
         doThrow(new CregisGatewayException(CregisGatewayException.Kind.REJECTED,"CREGIS_PROVIDER_REJECTED")).when(vendor).createCollection(any());service.tick();
@@ -129,17 +131,17 @@ class CregisAutoForwardServiceTest {
         when(permissions.getPermissionCodes(8L)).thenReturn(Set.of("finance_d1_read"));
         assertThatThrownBy(()->service.policy(CregisNetwork.BEP20,"lost","APPROVE",0,null,null,reason)).hasMessage("ADMIN_FINANCE_AUTH_REQUIRED");verify(db,never()).apply(anyLong(),any(),anyLong(),anyInt(),anyInt(),anyString());}
     @Test void collectionReorgAfterIntentCommitCannotDispatchSupplierPayment(){enable();task.put("state","WAIT_PAYMENT");task.put("collectionCid",123L);task.put("collectionTxid",collectTx);task.put("collectionFloor",100L);
-        afterCommit=()->{if(task.get("state").equals("PAYMENT_SUBMITTING"))doThrow(new IllegalStateException("SIMULATED_REORG_AFTER_INTENT")).when(chain).verifyPayout(eq(collectTx),anyString(),any());};
+        afterCommit=()->{if(task.get("state").equals("PAYMENT_SUBMITTING"))doThrow(new IllegalStateException("SIMULATED_REORG_AFTER_INTENT")).when(chain).verifyPayout(eq(CregisNetwork.BEP20),eq(collectTx),anyString(),any());};
         service.tick();assertThat(task.get("state")).isEqualTo("WAIT_PAYMENT");verify(vendor,never()).createAutoForwardPayout(any());}
     @Test void confirmedUnsignedProviderRejectionResolvesOnlyItsUnknownHoldWithoutResending(){
         task.put("state","PAYMENT_UNKNOWN");task.put("paymentCid",456L);task.put("intentAt",LocalDateTime.now());
-        when(vendor.queryPayout(any())).thenReturn(new CregisGateway.PayoutOrder(456,CregisConstants.USDT_BEP20_CURRENCY,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,CregisFundsPreparationService.COUNTERPARTY,new BigDecimal("4"),"CA-P-42-100",CregisGateway.PayoutStatus.fromProviderCode(2),null));
+        when(vendor.queryPayout(any())).thenReturn(new CregisGateway.PayoutOrder(456,CregisConstants.USDT_BEP20_CURRENCY,"2510",CregisConstants.USDT_BEP20_TOKEN_ID,counterparty,new BigDecimal("4"),"CA-P-42-100",CregisGateway.PayoutStatus.fromProviderCode(2),null));
         service.tick();assertThat(task.get("state")).isEqualTo("PAYMENT_FAILED");verify(db).resolveUnknown(42,1);
         verify(vendor,never()).createAutoForwardPayout(any());verify(vendor,never()).createCollection(any());
     }
     @Test void signedCallbackOnlyBindsQueryIdentityAndNeverMarksPaidOrSends(){
         task.put("state","PAYMENT_UNKNOWN");task.put("intentAt",LocalDateTime.now());
-        Map<String,Object> body=new HashMap<>(Map.of("pid",42L,"cid",456L,"third_party_id","CA-P-42-100","address",CregisFundsPreparationService.COUNTERPARTY,"amount","4.000000","chain_id","2510","token_id",CregisConstants.USDT_BEP20_TOKEN_ID,"currency",CregisConstants.USDT_BEP20_CURRENCY,"nonce","abc123","timestamp",Instant.now().toEpochMilli()));
+        Map<String,Object> body=new HashMap<>(Map.of("pid",42L,"cid",456L,"third_party_id","CA-P-42-100","address",counterparty,"amount","4.000000","chain_id","2510","token_id",CregisConstants.USDT_BEP20_TOKEN_ID,"currency",CregisConstants.USDT_BEP20_CURRENCY,"nonce","abc123","timestamp",Instant.now().toEpochMilli()));
         body.put("status",6);body.put("txid",paymentTx);body.put("sign",signer.sign(config.getApiKey(),body));when(db.byKey(42,"CA-P-42-100")).thenAnswer(c->new HashMap<>(task));
         assertThat(service.callback(body,"192.0.2.1")).isFalse();assertThat(service.callback(body,"127.0.0.1")).isTrue();
         assertThat(task.get("state")).isEqualTo("PAYMENT_PENDING");verifyNoInteractions(vendor,chain);

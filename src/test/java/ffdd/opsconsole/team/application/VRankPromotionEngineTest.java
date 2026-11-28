@@ -568,6 +568,9 @@ class VRankPromotionEngineTest {
      * (引擎测试用独立 fake,避免与 OpsTeamServiceTest 共享状态。)
      */
     static final class FakeTeamCommissionRepository implements TeamCommissionRepository {
+        @Override
+        public int countEventUserSuspended(long eventId) { return 0; }
+
 
         @Override public Map<String, Object> commissionEventById(long eventId) { return Map.of(); }
 
@@ -604,6 +607,11 @@ class VRankPromotionEngineTest {
         @Override
         public boolean updateVRankThreshold(String rank, String field, Object value) {
             return false;
+        }
+
+        @Override
+        public List<Map<String, Object>> f2PayoutStatistics() {
+            return List.of();
         }
 
         @Override
@@ -649,6 +657,11 @@ class VRankPromotionEngineTest {
         @Override
         public Map<String, Object> leadershipPoolSummary() {
             return Map.of();
+        }
+
+        @Override
+        public List<Map<String, Object>> leadershipVoterRanks(int minRank) {
+            return leadershipRanks();
         }
 
         @Override

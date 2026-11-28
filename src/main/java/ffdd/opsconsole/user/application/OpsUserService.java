@@ -34,6 +34,7 @@ import ffdd.opsconsole.user.domain.UserAssetAdjustmentView;
 import ffdd.opsconsole.user.domain.UserCredentialParamView;
 import ffdd.opsconsole.user.domain.UserImpersonationSessionView;
 import ffdd.opsconsole.user.domain.UserOpsRepository;
+import ffdd.opsconsole.user.domain.UserInviterView;
 import ffdd.opsconsole.user.domain.UserProfileExportFile;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskK1GuardView;
 import ffdd.opsconsole.user.domain.UserRegistrationRiskOverview;
@@ -74,6 +75,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -85,6 +87,7 @@ import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -332,6 +335,26 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         return profilePage(request, false);
     }
 
+    /** Batch direct-inviter read for C1 list rows; a failed read maps every requested row to UNKNOWN. */
+    @Transactional(readOnly = true)
+    public Map<Long, UserInviterView> inviters(Collection<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) return Map.of();
+        List<Long> ids = userIds.stream().filter(id -> id != null && id > 0).distinct().toList();
+        if (ids.isEmpty()) return Map.of();
+        Map<Long, UserInviterView> found;
+        try {
+            found = userRepository.findInviters(ids);
+        } catch (DataAccessException ex) {
+            found = Map.of();
+        }
+        if (found == null) found = Map.of();
+        Map<Long, UserInviterView> result = new LinkedHashMap<>();
+        for (Long id : ids) {
+            result.put(id, found.getOrDefault(id, UserInviterView.unknown(UserInviterView.Reason.SOURCE_READ_FAILED)));
+        }
+        return result;
+    }
+
     @Transactional
     public ApiResult<PageResult<UserAccountView>> supportProfilePage(UserQueryRequest request) {
         return profilePage(request, true);
@@ -339,6 +362,15 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
 
     @Transactional
     public ApiResult<PageResult<UserAccountView>> supportWorkbenchProfilePage(UserQueryRequest request) {
+        String keyword = request == null ? "" : text(request.keyword()).trim();
+        if (keyword.matches("[1-9][0-9]{9,11}") && request.userId() == null) {
+            // In this workbench a long numeric UID is an exact account lookup, never a phone keyword.
+            request = new UserQueryRequest(null, request.status(), request.riskMin(), request.pageNum(),
+                    request.pageSize(), request.limit(), Long.parseLong(keyword), request.phoneHash(),
+                    request.phoneMasked(), request.tier(), request.vRank(), request.referralCode(),
+                    request.depositMin(), request.depositMax(), request.walletUsdtMin(), request.walletUsdtMax(),
+                    request.walletNexMin(), request.walletNexMax(), request.riskBand(), request.joinedFrom(), request.joinedTo());
+        }
         return profilePage(request, false, true);
     }
 
@@ -642,6 +674,12 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
                     .warn("User profile projection unavailable: {}", ex.getClass().getSimpleName());
             return ApiResult.fail(503, "USER_PROFILE_UNAVAILABLE");
         }
+    }
+
+    /** Existing lookup-key path used by detail projections; no new read grant is implied. */
+    public Long userIdByUserNo(String userNo) {
+        if (userNo == null || userNo.isBlank()) return null;
+        return userRepository.findUserIdByLookupKey(userNo.trim()).orElse(null);
     }
 
     private boolean supportReader() { return supportOwnership.currentSupportReader(); }
@@ -2443,12 +2481,19 @@ public class OpsUserService implements ffdd.opsconsole.platform.domain.AuditRepl
         }
         String currentStatus = normalizeAdjustmentStatus(before.status());
         if (!REVIEWABLE_ADJUSTMENT_STATUSES.contains(currentStatus)) {
-            return c3Reject(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), OpsErrorCode.INVALID_STATE_TRANSITION.name(),
+            String conflict = A2ReplayContext.isReplaying() && "APPROVED".equals(nextStatus)
+                    ? "ASSET_ADJUSTMENT_NOT_REVIEWABLE" : OpsErrorCode.INVALID_STATE_TRANSITION.name();
+            return c3Reject(OpsErrorCode.INVALID_STATE_TRANSITION.httpStatus(), conflict,
                     normalizedNo, before.userId(), operator, idempotencyKey);
         }
         String reason = request.reason().trim();
         TreasuryCoverageSnapshot coverage = coverageFacade.snapshot();
         BigDecimal amountUsd = before.amountUsd() == null ? before.amount() : before.amountUsd();
+        if (A2ReplayContext.isReplaying() && "APPROVED".equals(nextStatus) && before.credit()
+                && (coverage == null || !coverage.reliable() || coverage.coverageRatio() == null
+                    || coverage.redlinePct() == null || coverage.redlinePct().signum() <= 0)) {
+            return c3Reject(503, "C3_COVERAGE_UNRELIABLE", normalizedNo, before.userId(), operator, idempotencyKey);
+        }
         if ("APPROVED".equals(nextStatus) && before.credit()
                 && (!coverage.reliable() || projectedCoverageRatio(coverage, before.direction(), amountUsd)
                         .compareTo(coverage.redlinePct()) < 0)) {

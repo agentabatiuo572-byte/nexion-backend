@@ -11,12 +11,16 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.audit.AuditLogService;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.outbox.EventOutboxService;
+import ffdd.opsconsole.team.domain.F4SettlementResult;
 import ffdd.opsconsole.team.domain.TeamCommissionRepository;
 import ffdd.opsconsole.team.mapper.TeamCommissionMapper;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageFacade;
+import ffdd.opsconsole.treasury.facade.TreasuryCoverageSnapshot;
 import ffdd.opsconsole.treasury.facade.TreasuryLedgerPostingFacade;
 import java.math.BigDecimal;
 import java.time.ZoneOffset;
@@ -46,6 +50,7 @@ class LeadershipPoolServiceTest {
     @Mock private AuditLogService auditLogService;
     @Mock private EventOutboxService eventOutboxService;
     @Mock private LeadershipPoolConfigAlertService settlementConfigAlertService;
+    @Mock private TreasuryCoverageFacade coverageFacade;
 
     private LeadershipPoolService service;
 
@@ -54,7 +59,7 @@ class LeadershipPoolServiceTest {
         service = new LeadershipPoolService(
                 teamCommissionMapper, commissionRepository, ledgerPostingFacade, configFacade,
                 auditLogService, eventOutboxService, new LeadershipPoolConfigGuard(configFacade),
-                settlementConfigAlertService);
+                settlementConfigAlertService, coverageFacade);
     }
 
     private Map<String, Object> voter(long userId, int votes) {
@@ -97,6 +102,30 @@ class LeadershipPoolServiceTest {
         assertThat(service.configuredPeriodPrize("week")).isEqualByComparingTo("50000");
         assertThat(service.configuredPeriodPrize("month")).isEqualByComparingTo("250000");
         assertThat(service.configuredPeriodPrize("allTime")).isEqualByComparingTo("1000000");
+    }
+
+    @Test
+    void approvedLeaderboardReceiptTotalsTheCreditedSharesAfterRounding() {
+        when(coverageFacade.snapshot()).thenReturn(new TreasuryCoverageSnapshot(BigDecimal.valueOf(100), BigDecimal.valueOf(80)));
+        when(configFacade.activeValue("team.ui.F.pool.periodPrize")).thenReturn(Optional.of("{\"allTime\":1}"));
+        when(teamCommissionMapper.lockLeadershipSettlementMutex(anyInt())).thenReturn(1L);
+        when(commissionRepository.leaderboardCandidates(eq("allTime"), any(), any(), eq(BigDecimal.ONE), eq(100)))
+                .thenReturn(List.of(Map.of("userId", 7L, "computePoints", 2), Map.of("userId", 8L, "computePoints", 1)));
+        when(commissionRepository.insertCommissionEvent(anyLong(), eq("leaderboard_prize"), any(), eq("USDT"),
+                any(), any(), eq("UNLOCKED"), eq(0), anyString())).thenReturn(11L, 12L);
+
+        A2ReplayContext.enterReplay("WO-F4");
+        try {
+            var result = service.settleApprovedLeaderboardResult("allTime", null, "checker", "confirm rounded payout");
+            assertThat(result.status()).isEqualTo(F4SettlementResult.Status.EXECUTED);
+            assertThat(result.creditedCount()).isEqualTo(2);
+            assertThat(result.settlementKey()).isEqualTo("allTime:lifetime");
+            assertThat(result.amountsByCurrency()).containsExactlyEntriesOf(Map.of("USDT", new BigDecimal("0.999999")));
+            verify(ledgerPostingFacade).releaseCommissionFunds(11L);
+            verify(ledgerPostingFacade).releaseCommissionFunds(12L);
+        } finally {
+            A2ReplayContext.exitReplay();
+        }
     }
 
     @Test
@@ -215,6 +244,25 @@ class LeadershipPoolServiceTest {
         verify(commissionRepository, never()).insertCommissionEvent(anyLong(), anyString(), any(),
                 anyString(), any(BigDecimal.class), any(BigDecimal.class), anyString(),
                 anyInt(), anyString());
+    }
+
+    @Test
+    void zeroPayoutCompletionSkipsAnotherSettlementForTheSameWeek() {
+        stubValidSettlementConfig();
+        when(teamCommissionMapper.currentYearWeek()).thenReturn(202630);
+        when(teamCommissionMapper.lockLeadershipSettlementMutex(202630)).thenReturn(1L);
+        when(teamCommissionMapper.hasCompletedEmptyLeadershipWeek("202630")).thenReturn(true);
+
+        A2ReplayContext.enterReplay("WO-F4-ZERO");
+        try {
+            var replay = service.settleApprovedCurrentWeekResult("reviewer", "Repeat a completed weekly settlement");
+            assertThat(replay.reasonCode()).isEqualTo("F4_POOL_ALREADY_SETTLED");
+            assertThat(replay.creditedCount()).isZero();
+        } finally {
+            A2ReplayContext.exitReplay();
+        }
+        verify(teamCommissionMapper, never()).weeklyPlatformVolume(anyInt());
+        org.mockito.Mockito.verifyNoInteractions(coverageFacade, ledgerPostingFacade, commissionRepository);
     }
 
     @Test

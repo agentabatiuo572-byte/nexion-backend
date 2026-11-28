@@ -50,6 +50,9 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    c.team_compute_points AS teamComputePoints,
                    c.required_downline_count AS legCount,
                    c.required_downline_rank AS legRank,
+                   c.purchase_l1_rate AS purchaseL1Rate,
+                   c.purchase_l2_rate AS purchaseL2Rate,
+                   c.monthly_salary_usdt AS monthlySalaryUsdt,
                    c.unilevel_depth AS unilevelDepth,
                    c.peer_bonus_rate AS peerBonusRate,
                    c.leadership_votes AS votes,
@@ -80,8 +83,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                AND c.status = 1
              GROUP BY c.id, c.rank_code, c.title_cn, c.self_compute_points, c.direct_refs,
                       c.team_compute_points, c.required_downline_count, c.required_downline_rank,
-                      c.unilevel_depth, c.peer_bonus_rate, c.leadership_votes,
-                      c.status, c.physical_reward, c.sort_order
+                      c.unilevel_depth, c.peer_bonus_rate, c.leadership_votes, c.purchase_l1_rate, c.purchase_l2_rate,
+                      c.status, c.physical_reward, c.sort_order, c.monthly_salary_usdt
              ORDER BY c.sort_order ASC, c.id ASC
             """)
     List<Map<String, Object>> vRankRows();
@@ -92,13 +95,40 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                    direct_refs AS directRefs,
                    team_compute_points AS teamGv,
                    required_downline_count AS legCount,
-                   required_downline_rank AS legRank
+                   required_downline_rank AS legRank,
+                   purchase_l1_rate AS purchaseL1Rate, purchase_l2_rate AS purchaseL2Rate,
+                   monthly_salary_usdt AS monthlySalaryUsdt
               FROM nx_v_rank_config
              WHERE rank_code = #{rank} AND is_deleted = 0 AND status = 1
              FOR UPDATE
             """)
     @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
     Map<String, Object> lockVRankPolicy(@Param("rank") String rank);
+
+    @Update("UPDATE nx_v_rank_config SET purchase_l1_rate=#{value} WHERE rank_code=#{rank} AND is_deleted=0")
+    int updatePurchaseL1Rate(@Param("rank") String rank, @Param("value") Object value);
+
+    @Update("UPDATE nx_v_rank_config SET purchase_l2_rate=#{value} WHERE rank_code=#{rank} AND is_deleted=0")
+    int updatePurchaseL2Rate(@Param("rank") String rank, @Param("value") Object value);
+
+    @Update("UPDATE nx_v_rank_config SET monthly_salary_usdt=#{value} WHERE rank_code=#{rank} AND is_deleted=0")
+    int updateMonthlySalary(@Param("rank") String rank, @Param("value") Object value);
+
+    @Insert("""
+            INSERT INTO nx_v_rank_salary_rate(rank_code,effective_at,amount_usdt)
+            VALUES(#{rank},NOW(6),#{value})
+            """)
+    int insertMonthlySalaryRate(@Param("rank") String rank, @Param("value") Object value);
+
+    @Select("SELECT monthly_salary_usdt FROM nx_v_rank_config WHERE rank_code=#{rank} AND is_deleted=0 FOR SHARE")
+    @Options(useCache = false, flushCache = Options.FlushCachePolicy.TRUE)
+    java.math.BigDecimal lockMonthlySalaryForArrival(@Param("rank") String rank);
+
+    @Select("""
+            SELECT rank_code AS rankCode, purchase_l1_rate AS purchaseL1Rate, purchase_l2_rate AS purchaseL2Rate
+              FROM nx_v_rank_config WHERE is_deleted=0 AND status=1 ORDER BY rank_code
+            """)
+    List<Map<String, Object>> purchaseRankRates();
 
     @Update("""
             UPDATE nx_v_rank_config
@@ -412,6 +442,21 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     int deleteVRankReward(@Param("rank") String rank, @Param("rewardId") String rewardId);
 
+    String LEADERSHIP_CURRENT_WEEK = "YEARWEEK(" + VietnamBusinessPeriodSql.NOW + ", 1)";
+    String LEADERSHIP_WEEK_REMARK = " CONCAT('F4 leadership pool | week=', ";
+
+    String COMPLETED_EMPTY_LEADERSHIP_WEEK = """
+            SELECT 1
+              FROM nx_audit_log
+             WHERE is_deleted = 0
+               AND resource_type = 'LEADERSHIP_POOL_SETTLEMENT'
+               AND action = 'F4_LEADERSHIP_POOL_SETTLED'
+               AND result = 'SUCCESS'
+               AND JSON_UNQUOTE(JSON_EXTRACT(detail_json, '$.settledUsers')) = '0'
+               AND JSON_UNQUOTE(JSON_EXTRACT(detail_json, '$.totalVotes')) REGEXP '^0([.]0+)?$'
+               AND resource_id = CAST(
+            """;
+
     String LEADERSHIP_POOL_SUMMARY = """
             SELECT (
                      SELECT COALESCE(SUM(o.subtotal_usdt), 0)
@@ -420,8 +465,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                         AND o.order_status NOT IN ('REFUNDED', 'CHARGEBACK')
                         AND o.paid_at IS NOT NULL
                         AND YEARWEEK(""" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_HEAD + "o.paid_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_MID + "o.paid_at" + ffdd.opsconsole.shared.config.BusinessPeriodSql.GrowthTeam.BUSINESS_TIME_TAIL + """
-                        , 1) = YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
-                        , 1)
+                        , 1) = """ + LEADERSHIP_CURRENT_WEEK + """
                         AND o.is_deleted = 0
                    ) AS weeklyGmvUsd,
                    (
@@ -429,15 +473,17 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                        FROM nx_commission_event e
                       WHERE e.is_deleted = 0
                         AND LOWER(e.commission_type) = 'leadership'
-                        AND e.remark LIKE CONCAT('%', YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
-                        , 1), '%')
+                        AND CONCAT(e.remark, ' ') LIKE """ + LEADERSHIP_WEEK_REMARK + LEADERSHIP_CURRENT_WEEK + """
+                        , ' %')
                    ) AS weeklyInjectedUsd,
                    (
                      SELECT COUNT(*) FROM nx_commission_event e
                       WHERE e.is_deleted = 0 AND LOWER(e.commission_type) = 'leadership'
-                        AND e.remark LIKE CONCAT('%', YEARWEEK(""" + VietnamBusinessPeriodSql.NOW + """
-                        , 1), '%')
+                        AND CONCAT(e.remark, ' ') LIKE """ + LEADERSHIP_WEEK_REMARK + LEADERSHIP_CURRENT_WEEK + """
+                        , ' %')
                    ) AS weeklySettledCount,
+                   EXISTS (""" + COMPLETED_EMPTY_LEADERSHIP_WEEK + LEADERSHIP_CURRENT_WEEK + """
+                   AS CHAR)) AS weeklyEmptySettlementConfirmed,
                    (
                      SELECT COALESCE(SUM(e.amount_usdt), 0)
                        FROM nx_commission_event e
@@ -1015,7 +1061,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     List<Map<String, Object>> commissionEvents(@Param("limit") int limit);
 
     @Select("""
-            SELECT status, version, unlock_at AS unlockAt,
+            SELECT status, version, unlock_at AS unlockAt, LOWER(commission_type) AS kind,
                    CONCAT('U', LPAD(user_id, GREATEST(8, CHAR_LENGTH(CAST(user_id AS CHAR))), '0')) AS user,
                    CASE
                      WHEN UPPER(status) = 'FROZEN' THEN 'frozen'
@@ -1326,14 +1372,26 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
     int syncMemberVRankProjections(@Param("userId") Long userId,
                                    @Param("newRank") String newRank);
 
+    @Select("""
+            SELECT EXISTS (
+                SELECT 1 FROM nx_user_level_log
+                 WHERE user_id = #{userId} AND level_type = 'VRANK' AND is_deleted = 0
+                   AND ((UPPER(TRIM(from_code)) REGEXP '^V([0-9]|1[0-2])$'
+                         AND CAST(SUBSTRING(TRIM(from_code), 2) AS UNSIGNED) >= #{rankLevel})
+                     OR (UPPER(TRIM(to_code)) REGEXP '^V([0-9]|1[0-2])$'
+                         AND CAST(SUBSTRING(TRIM(to_code), 2) AS UNSIGNED) >= #{rankLevel}))
+            )
+            """)
+    boolean hasPreviouslyReachedVRank(@Param("userId") Long userId, @Param("rankLevel") int rankLevel);
+
     /** INSERT nx_user_level_log 晋升流水(含 Sprint1 新增 operator/snapshot/trigger_event_id/audit_no/is_manual 列)。 */
     @Insert("""
             INSERT INTO nx_user_level_log
               (user_id, level_type, from_code, to_code, reason,
-               operator, snapshot, trigger_event_id, audit_no, is_manual)
+               operator, snapshot, trigger_event_id, audit_no, is_manual, salary_usdt, created_at)
             VALUES
               (#{userId}, 'VRANK', #{fromCode}, #{toCode}, #{reason},
-               #{operator}, #{snapshotJson}, #{triggerEventId}, #{auditNo}, #{isManual})
+               #{operator}, #{snapshotJson}, #{triggerEventId}, #{auditNo}, #{isManual}, #{salary}, NOW(6))
             """)
     int insertUserLevelLog(@Param("userId") Long userId,
                            @Param("fromCode") String fromCode,
@@ -1343,7 +1401,8 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
                            @Param("snapshotJson") String snapshotJson,
                            @Param("triggerEventId") String triggerEventId,
                            @Param("auditNo") String auditNo,
-                           @Param("isManual") int isManual);
+                           @Param("isManual") int isManual,
+                           @Param("salary") java.math.BigDecimal salary);
 
     // ============================================================
     // F1 V-Rank 奖励派发(Sprint 3)
@@ -1367,24 +1426,22 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     List<Map<String, Object>> selectVRankRewardRulesByRank(@Param("rankCode") String rankCode);
 
-    /**
-     * 查培育奖接收方 L1 上线 sponsor。
-     * 优先 nx_sponsorship.sponsor_user_id;表无记录时 fallback 到 nx_team_member L1 直推上级
-     * (user_id WHERE member_user_id=userId AND level=1),防 sponsor 数据缺失时误派本人。
-     */
+    /** Find the direct upline using the same active team edge as the performance queries. */
     @Select("""
             SELECT COALESCE(
+                (SELECT m.user_id
+                   FROM nx_team_member m
+                  WHERE m.member_user_id = #{userId}
+                    AND m.user_id <> #{userId}
+                    AND m.level = 1
+                    AND m.is_deleted = 0
+                  ORDER BY m.id
+                  LIMIT 1),
                 (SELECT s.sponsor_user_id
                    FROM nx_sponsorship s
                   WHERE s.user_id = #{userId}
                     AND s.is_deleted = 0
                     AND s.sponsor_user_id IS NOT NULL
-                  LIMIT 1),
-                (SELECT m.user_id
-                   FROM nx_team_member m
-                  WHERE m.member_user_id = #{userId}
-                    AND m.level = 1
-                    AND m.is_deleted = 0
                   LIMIT 1)
             )
             """)
@@ -1411,7 +1468,6 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE user_id = #{userId}
                AND rank_code = #{rankCode}
                AND reward_type = #{rewardType}
-               AND status IN ('GRANTED', 'PENDING_GRANT', 'REISSUED')
             """)
     int countVRankRewardPayout(@Param("userId") Long userId,
                                @Param("rankCode") String rankCode,
@@ -1618,15 +1674,19 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
             """)
     java.math.BigDecimal monthlyLeadershipAmount();
 
-    /** F4 幂等:某周(weekKey)领导池是否已结算(commission_type=leadership + remark 含 weekKey)。 */
+    /** The recorded week token, excluding coincidental matches in the vote counts. */
     @Select("""
             SELECT COUNT(1)
               FROM nx_commission_event
              WHERE LOWER(commission_type) = 'leadership'
-               AND remark LIKE CONCAT('%', #{weekKey}, '%')
+               AND CONCAT(remark, ' ') LIKE """ + LEADERSHIP_WEEK_REMARK + """
+                   #{weekKey}, ' %')
                AND is_deleted = 0
             """)
     int countLeadershipByWeek(@Param("weekKey") String weekKey);
+
+    @Select("SELECT EXISTS (" + COMPLETED_EMPTY_LEADERSHIP_WEEK + "#{weekKey} AS CHAR))")
+    boolean hasCompletedEmptyLeadershipWeek(@Param("weekKey") String weekKey);
 
     @Select("""
             SELECT COUNT(1)
@@ -1770,7 +1830,7 @@ public interface TeamCommissionMapper extends BaseMapper<Object> {
              WHERE is_deleted = 0 AND level_type = 'VRANK'
                AND created_at >= #{from} AND created_at < #{until}
                AND from_code REGEXP '^[Vv][0-9]+$' AND to_code REGEXP '^[Vv][0-9]+$'
-               AND CAST(SUBSTRING(to_code, 2) AS UNSIGNED) > CAST(SUBSTRING(from_code, 2) AS UNSIGNED)
+               AND CAST(SUBSTRING(TRIM(to_code), 2) AS UNSIGNED) > CAST(SUBSTRING(TRIM(from_code), 2) AS UNSIGNED)
             """)
     long countUpwardPromotions(@Param("from") LocalDateTime from, @Param("until") LocalDateTime until);
 

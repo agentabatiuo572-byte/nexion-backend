@@ -8,6 +8,7 @@ public record RiskScoreUserSearchView(
         Integer effectiveScore,
         String bandLabel,
         String bandTone,
-        Boolean overridden
+        Boolean overridden,
+        boolean scored
 ) {
 }

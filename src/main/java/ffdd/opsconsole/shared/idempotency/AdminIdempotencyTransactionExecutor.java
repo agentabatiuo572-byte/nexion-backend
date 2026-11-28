@@ -7,6 +7,7 @@ import ffdd.opsconsole.common.api.OpsErrorCode;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.exception.BizException;
 import ffdd.opsconsole.shared.idempotency.mapper.AdminIdempotencyRecordMapper;
+import ffdd.opsconsole.shared.security.AdminActorResolver;
 import java.time.LocalDateTime;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -29,6 +30,7 @@ public class AdminIdempotencyTransactionExecutor {
     private static final String STATUS_SUCCEEDED = "SUCCEEDED";
     private static final String STATUS_FAILED = "FAILED";
     private static final String STATUS_UNKNOWN = "UNKNOWN";
+    private static final String D3_RESERVE_INJECTION = "D3_RESERVE_INJECTION";
 
     private final AdminIdempotencyRecordMapper recordMapper;
     private final ObjectMapper objectMapper;
@@ -65,15 +67,20 @@ public class AdminIdempotencyTransactionExecutor {
             String scope, String idempotencyKey, String requestHash, Class<T> responseType) {
         AdminIdempotencyRecordEntity record = recordMapper.selectCurrent(scope, idempotencyKey);
         var status = recoveryStatus(record, requestHash);
-        if (status != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) {
+        boolean failed = status == AdminIdempotencyService.RecoveryStatus.FAILED;
+        boolean hasRecordedFailure = failed && (AdminIdempotencyService.eventFailureReceiptScope(scope)
+                || AdminIdempotencyService.salaryClaimReceiptScope(scope)
+                || AdminIdempotencyService.trialLifecycleReceiptScope(scope))
+                && StringUtils.hasText(record.getResponseJson());
+        if (status != AdminIdempotencyService.RecoveryStatus.SUCCEEDED && !hasRecordedFailure) {
             return new AdminIdempotencyService.RecoveryResult<>(status, null);
         }
+        var missingResponseStatus = failed ? status : AdminIdempotencyService.RecoveryStatus.UNKNOWN;
         try {
             T response = objectMapper.readValue(record.getResponseJson(), responseType);
-            return new AdminIdempotencyService.RecoveryResult<>(response == null
-                    ? AdminIdempotencyService.RecoveryStatus.UNKNOWN : status, response);
+            return new AdminIdempotencyService.RecoveryResult<>(response == null ? missingResponseStatus : status, response);
         } catch (JsonProcessingException ex) {
-            return new AdminIdempotencyService.RecoveryResult<>(AdminIdempotencyService.RecoveryStatus.UNKNOWN, null);
+            return new AdminIdempotencyService.RecoveryResult<>(missingResponseStatus, null);
         }
     }
 
@@ -87,11 +94,33 @@ public class AdminIdempotencyTransactionExecutor {
     }
 
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public AdminIdempotencyService.ActiveReceipt retainedReceipt(String scope, String idempotencyKey) {
+        var record = recordMapper.selectCurrent(scope, idempotencyKey);
+        if (record == null || recoveryStatus(record, record.getRequestHash()) != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) {
+            return null;
+        }
+        return new AdminIdempotencyService.ActiveReceipt(record.getId(), record.getRequestHash());
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
     public AdminIdempotencyService.ActiveRequest activeRequest(String scope, String idempotencyKey) {
         var record = recordMapper.selectActive(scope, idempotencyKey);
         if (record == null) return null;
         return new AdminIdempotencyService.ActiveRequest(record.getRequestHash(), record.getUpdatedAt(),
                 recoveryStatus(record, record.getRequestHash()) == AdminIdempotencyService.RecoveryStatus.SUCCEEDED);
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public <T> T replayActiveSuccess(String scope, String key, String requestHash, Class<T> responseType) {
+        var record = recordMapper.selectActive(scope, key);
+        if (recoveryStatus(record, requestHash) != AdminIdempotencyService.RecoveryStatus.SUCCEEDED) return null;
+        return resolveKnownRecord(record, requestHash, null, responseType, AdminCommandOrigin.current(scope)).replayResponse();
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public String retainedRequestHash(String scope, String idempotencyKey) {
+        var record = recordMapper.selectCurrent(scope, idempotencyKey);
+        return record == null || !Integer.valueOf(0).equals(record.getIsDeleted()) ? null : record.getRequestHash();
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
@@ -125,6 +154,11 @@ public class AdminIdempotencyTransactionExecutor {
     private <T> Claim<T> claimInternal(String scope, String idempotencyKey, String requestHash,
                                       LocalDateTime expiresAt, Class<T> responseType, boolean retainSuccess,
                                       AdminCommandOrigin origin) {
+        var a3Content = AdminCommandOrigin.A3Content.forScope(scope);
+        if (a3Content != null && origin != null) {
+            // Serialize the check and claim even before the first configuration row exists.
+            recordMapper.lockA3ContentClaims(a3Content.scopePrefix);
+        }
         boolean scopeUsesOriginRetention = originAddsRetention(scope);
         boolean originRetains = origin != null && scopeUsesOriginRetention;
         retainSuccess = retainSuccess || originRetains;
@@ -142,6 +176,11 @@ public class AdminIdempotencyTransactionExecutor {
         } else if (current != null && (retainSuccess
                 || scopeUsesOriginRetention && current.getOriginAdminId() != null)
                 && (STATUS_SUCCEEDED.equals(current.getStatus()) || STATUS_FAILED.equals(current.getStatus()))) {
+            if (a3Content != null && STATUS_FAILED.equals(current.getStatus())) {
+                if (!requestHash.equals(current.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+                throw conflict(AdminIdempotencyRollbackEvidence.confirmed(current)
+                        ? "IDEMPOTENCY_PREVIOUS_REQUEST_FAILED" : "IDEMPOTENCY_RESULT_UNKNOWN");
+            }
             // Never recycle a retained success; FAILED retries use a status CAS,
             // so a concurrent completion cannot be overwritten by an expiry reset.
             return resolveKnownRecord(current, requestHash, expiresAt, responseType, origin);
@@ -153,7 +192,7 @@ public class AdminIdempotencyTransactionExecutor {
             // deliberately attempted even when this JVM has a different zone.
             int transitioned = expiryTransitionExecutor.markCurrentExpiredProcessingUnknown(
                     current.getId(), scope, idempotencyKey);
-            if (transitioned == 1) {
+            if (transitioned == 1 && !AdminIdempotencyService.salaryClaimReceiptScope(scope)) {
                 throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
             }
             AdminIdempotencyRecordEntity refreshed = expiryTransitionExecutor.loadCurrentCommitted(
@@ -171,16 +210,18 @@ public class AdminIdempotencyTransactionExecutor {
         } else if (record == null && current != null) {
             AdminIdempotencyRecordEntity raced = recordMapper.selectActive(scope, idempotencyKey);
             if (raced != null) {
-                return Claim.replayed(replay(raced, requestHash, responseType));
+                return Claim.replayed(replay(raced, requestHash, responseType, origin));
             }
             throw conflict("IDEMPOTENCY_RECLAIM_CONFLICT");
         } else if (record == null) {
             String targetsJson = origin == null || origin.targets().isEmpty() ? null : writeJson(origin.targets());
-            if (targetsJson != null && recordMapper.countUnresolvedTargets(targetsJson, scope, idempotencyKey,
+            if (a3Content != null && origin != null) {
+                requireA3ContentAvailable(a3Content, scope, idempotencyKey);
+            } else if (targetsJson != null && recordMapper.countUnresolvedTargets(targetsJson, scope, idempotencyKey,
                     permittedBatchParent(scope, idempotencyKey, targetsJson)) > 0) {
                 throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
             }
-            if (origin != null && origin.target() != null && recordMapper.countUnresolvedOrigin(
+            if (a3Content == null && origin != null && origin.target() != null && recordMapper.countUnresolvedOrigin(
                     scope, origin.method(), origin.path(), origin.target(), idempotencyKey) > 0) {
                 throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
             }
@@ -209,7 +250,7 @@ public class AdminIdempotencyTransactionExecutor {
                 AdminIdempotencyRecordEntity duplicate =
                         expiryTransitionExecutor.loadActiveCommitted(scope, idempotencyKey);
                 if (duplicate != null) {
-                    return Claim.replayed(replay(duplicate, requestHash, responseType));
+                    return Claim.replayed(replay(duplicate, requestHash, responseType, origin));
                 }
                 throw conflict("IDEMPOTENCY_KEY_CONFLICT");
             }
@@ -256,6 +297,15 @@ public class AdminIdempotencyTransactionExecutor {
                 throw conflict("IDEMPOTENCY_SUCCESS_STATE_LOST");
             }
             return result;
+        } catch (BizException failure) {
+            if (D3_RESERVE_INJECTION.equals(original.getScope()) && original.getOriginAdminId() != null
+                    && original.getOriginAdminId().toString().equals(AdminActorResolver.subjectId())
+                    && d3ReserveBusinessRejection(failure.getCode(), failure.getMessage())) {
+                // Retain the fixed D3 rejection only after the business transaction rolls back.
+                throw new AdminCommandBusinessRejection(failure.getCode(), failure.getMessage(),
+                        ApiResult.fail(failure.getCode(), failure.getMessage()));
+            }
+            throw failure;
         } finally {
             AdminIdempotencyExecutionContext.restore(previous);
         }
@@ -276,12 +326,29 @@ public class AdminIdempotencyTransactionExecutor {
         }
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW, isolation = Isolation.READ_COMMITTED, rollbackFor = Exception.class)
+    public void markA2RecheckFailed(Long recordId, Object response, Runnable finalizeTicket) {
+        var original = recordMapper.selectCurrentByIdForUpdate(recordId);
+        if (original == null || !"A2_COMMAND".equals(original.getScope())
+                || !STATUS_PROCESSING.equals(original.getStatus()) || response == null) {
+            throw conflict("IDEMPOTENCY_FAILURE_STATE_LOST");
+        }
+        markFailed(recordId, "ApprovalRecheckFailed", response);
+        var previous = AdminIdempotencyExecutionContext.enter(original);
+        try {
+            finalizeTicket.run();
+        } finally {
+            AdminIdempotencyExecutionContext.restore(previous);
+        }
+    }
+
     private <T> Claim<T> resolveKnownRecord(
             AdminIdempotencyRecordEntity record,
             String requestHash,
             LocalDateTime expiresAt,
             Class<T> responseType,
             AdminCommandOrigin origin) {
+        replaySupportBulkCreateRejection(record, requestHash);
         if (AdminCommandOrigin.g2ParameterKey(record.getScope()) != null && record.getOriginAdminId() != null) {
             if (origin == null || !Long.valueOf(origin.actorId()).equals(record.getOriginAdminId())) {
                 throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
@@ -292,10 +359,12 @@ public class AdminIdempotencyTransactionExecutor {
                 return Claim.replayed(readJson(record.getResponseJson(), responseType));
             }
         }
-        if (conversationSendScope(record.getScope()) && STATUS_FAILED.equals(record.getStatus())
+        if ((conversationSendScope(record.getScope()) || AdminIdempotencyService.salaryClaimReceiptScope(record.getScope())
+                || AdminIdempotencyService.trialLifecycleReceiptScope(record.getScope()))
+                && STATUS_FAILED.equals(record.getStatus())
                 && StringUtils.hasText(record.getResponseJson())) {
             if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
-            // A conversation send that was rejected before any message write must never execute again under the same key.
+            // Retain the original rejection after the business transaction rolled back.
             return Claim.replayed(readJson(record.getResponseJson(), responseType));
         }
         if ("A2_COMMAND".equals(record.getScope()) && STATUS_FAILED.equals(record.getStatus())) {
@@ -314,11 +383,16 @@ public class AdminIdempotencyTransactionExecutor {
                 replayA2Rejection(record, null, record.getResponseJson());
             }
         }
-        if (!STATUS_FAILED.equals(record.getStatus())) {
-            return Claim.replayed(replay(record, requestHash, responseType));
+        if (!STATUS_FAILED.equals(record.getStatus()) || retainedD3ReserveRejection(record)
+                || !requestHash.equals(record.getRequestHash())) {
+            return Claim.replayed(replay(record, requestHash, responseType, origin));
         }
-        if (!requestHash.equals(record.getRequestHash())) {
-            return Claim.replayed(replay(record, requestHash, responseType));
+        var a3Content = AdminCommandOrigin.A3Content.forScope(record.getScope());
+        if (a3Content != null && AdminIdempotencyRollbackEvidence.confirmed(record)) {
+            throw conflict("IDEMPOTENCY_PREVIOUS_REQUEST_FAILED");
+        }
+        if (a3Content != null && origin != null) {
+            requireA3ContentAvailable(a3Content, record.getScope(), record.getIdempotencyKey());
         }
         if (origin != null && !origin.targets().isEmpty()) {
             String currentTargets = writeJson(origin.targets());
@@ -335,19 +409,32 @@ public class AdminIdempotencyTransactionExecutor {
                         record.getScope(), record.getIdempotencyKey(), record.getOriginTargets())) > 0) {
             throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
         }
-        if (recordMapper.resetFailedById(record.getId(), requestHash, expiresAt) == 1) {
+        boolean bulkCreate = record.getScope().startsWith(SupportBulkCreateRejection.COMMAND_SCOPE + ":");
+        // A concurrent bulk retry may have replaced a legacy failure with a terminal rejection.
+        int reset = bulkCreate
+                ? recordMapper.resetSupportBulkCreateFailure(record.getId(), requestHash, expiresAt, record.getResponseJson())
+                : recordMapper.resetFailedById(record.getId(), requestHash, expiresAt);
+        if (reset == 1) {
             return Claim.claimed(record.getId());
         }
         // A lost retry CAS must reload outside the claim's REPEATABLE_READ snapshot.
-        AdminIdempotencyRecordEntity raced = expiryTransitionExecutor.loadActiveCommitted(
-                record.getScope(), record.getIdempotencyKey());
+        AdminIdempotencyRecordEntity raced = bulkCreate
+                ? expiryTransitionExecutor.loadCurrentCommitted(record.getScope(), record.getIdempotencyKey())
+                : expiryTransitionExecutor.loadActiveCommitted(record.getScope(), record.getIdempotencyKey());
         if (raced != null) {
-            return Claim.replayed(replay(raced, requestHash, responseType));
+            return Claim.replayed(replay(raced, requestHash, responseType, origin));
         }
         throw conflict("IDEMPOTENCY_RETRY_CONFLICT");
     }
 
-    private <T> T replay(AdminIdempotencyRecordEntity record, String requestHash, Class<T> responseType) {
+    private void requireA3ContentAvailable(AdminCommandOrigin.A3Content content, String scope, String key) {
+        if (recordMapper.countUnresolvedA3Content(content.scopePattern, scope, key) > 0) {
+            throw conflict("IDEMPOTENCY_ORIGINAL_OPERATION_REQUIRES_INVESTIGATION");
+        }
+    }
+
+    private <T> T replay(AdminIdempotencyRecordEntity record, String requestHash, Class<T> responseType,
+                         AdminCommandOrigin origin) {
         if (!requestHash.equals(record.getRequestHash())) {
             throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
         }
@@ -356,6 +443,16 @@ public class AdminIdempotencyTransactionExecutor {
             return readJson(record.getResponseJson(), responseType);
         }
         if (STATUS_FAILED.equals(record.getStatus())) {
+            replaySupportBulkCreateRejection(record, requestHash);
+            if (retainedD3ReserveRejection(record)) {
+                if (origin == null || origin.actorId() != record.getOriginAdminId()) {
+                    throw conflict("IDEMPOTENCY_RESULT_UNKNOWN");
+                }
+                ApiResult<?> rejection = readJson(record.getResponseJson(), ApiResult.class);
+                if (rejection != null && d3ReserveBusinessRejection(rejection.getCode(), rejection.getMessage())) {
+                    throw new BizException(rejection.getCode(), rejection.getMessage());
+                }
+            }
             throw conflict("IDEMPOTENCY_PREVIOUS_REQUEST_FAILED");
         }
         if (STATUS_UNKNOWN.equals(record.getStatus())) {
@@ -365,6 +462,23 @@ public class AdminIdempotencyTransactionExecutor {
             throw conflict("IDEMPOTENCY_INVESTIGATION_" + record.getStatus());
         }
         throw conflict("IDEMPOTENCY_REQUEST_IN_PROGRESS");
+    }
+
+    private void replaySupportBulkCreateRejection(AdminIdempotencyRecordEntity record, String requestHash) {
+        var rejection = SupportBulkCreateRejection.read(objectMapper, record);
+        if (rejection == null) return;
+        if (!requestHash.equals(record.getRequestHash())) throw conflict("IDEMPOTENCY_KEY_PAYLOAD_MISMATCH");
+        throw new BizException(rejection.code(), rejection.reason());
+    }
+
+    private static boolean retainedD3ReserveRejection(AdminIdempotencyRecordEntity record) {
+        return D3_RESERVE_INJECTION.equals(record.getScope()) && record.getOriginAdminId() != null
+                && StringUtils.hasText(record.getResponseJson());
+    }
+
+    private static boolean d3ReserveBusinessRejection(int code, String message) {
+        return (code == 409 && "VOUCHER_ALREADY_REGISTERED".equals(message))
+                || (code == 400 && "VOUCHER_NO_INVALID".equals(message));
     }
 
     /** Only the existing D2 batch-to-selected-review child relation may share its parent's PROCESSING fence. */

@@ -1,6 +1,7 @@
 package ffdd.opsconsole.finance.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -12,6 +13,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ffdd.opsconsole.finance.dto.PayoutVndChannelUpdateRequest;
 import ffdd.opsconsole.finance.dto.PayoutVndConfigUpdateRequest;
 import ffdd.opsconsole.finance.mapper.VietnamPaymentMapper;
+import ffdd.opsconsole.platform.application.A2ReplayContext;
 import ffdd.opsconsole.platform.facade.PlatformConfigFacade;
 import ffdd.opsconsole.shared.api.ApiResult;
 import ffdd.opsconsole.shared.audit.AuditLogService;
@@ -142,37 +144,81 @@ class PayoutVndConfigServiceTest {
     }
 
     @Test
-    void amplifyingConfigurationRejectsUnreliableOrBelowRedlineCoverage() {
+    void previewAndD6SharedGateStillBlockCoverageBelowRedline() {
         when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
-                new BigDecimal("90"), new BigDecimal("100"), true));
-        PayoutVndConfigUpdateRequest amplifying = new PayoutVndConfigUpdateRequest(
-                new BigDecimal("1.0"), 20, new BigDecimal("3"), new BigDecimal("0.5"),
-                new BigDecimal("0.5"), new BigDecimal("20"), new BigDecimal("10"),
-                new BigDecimal("6000"), 4L, "amplify payout capacity", false);
+                new BigDecimal("90"), new BigDecimal("100"), true,
+                new BigDecimal("900"), new BigDecimal("1000"), BigDecimal.ONE));
 
-        ApiResult<Map<String, Object>> result = service.update(amplifying);
-
+        ApiResult<Map<String, Object>> result = service.previewUpdate(amplifyingUpdate());
         assertThat(result.getCode()).isEqualTo(409);
         assertThat(result.getMessage()).isEqualTo("D7_TREASURY_COVERAGE_BLOCKED");
+        assertThat(service.coverageHealthy()).isFalse();
+        assertThat(service.update(amplifyingUpdate()).getMessage()).isEqualTo("D7_PAYOUT_VND_CONFIG_APPROVAL_REQUIRED");
+        verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(audit, never()).recordRequired(any());
     }
 
     @Test
-    void amplifyingConfigurationRejectsZeroLiabilityCoverageInsteadOfTreatingItAsHealthy() {
+    void replayRejectsConfirmedCoverageBreachUsingOneExactSnapshot() {
         when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
         when(coverage.snapshot()).thenReturn(new TreasuryCoverageSnapshot(
-                new BigDecimal("100"), new BigDecimal("70"), true,
-                new BigDecimal("1000"), BigDecimal.ZERO, BigDecimal.ONE,
-                new BigDecimal("1000"), BigDecimal.ZERO));
-        PayoutVndConfigUpdateRequest amplifying = new PayoutVndConfigUpdateRequest(
-                new BigDecimal("1.0"), 20, new BigDecimal("3"), new BigDecimal("0.5"),
-                new BigDecimal("0.5"), new BigDecimal("20"), new BigDecimal("10"),
-                new BigDecimal("6000"), 4L, "zero denominator must block payout", false);
+                new BigDecimal("100.00"), new BigDecimal("100"), true,
+                new BigDecimal("999.96"), new BigDecimal("1000"), BigDecimal.ONE,
+                new BigDecimal("999.96"), new BigDecimal("1000"), null, true));
 
-        ApiResult<Map<String, Object>> result = service.update(amplifying);
+        A2ReplayContext.enterReplay("WO-D7-1");
+        try {
+            assertThatThrownBy(() -> service.replayUpdate(amplifyingUpdate()))
+                    .isInstanceOfSatisfying(PayoutVndConfigService.ConfirmedCoverageBreach.class,
+                            failure -> assertThat(failure.getCode()).isEqualTo(409))
+                    .hasMessage("D7_TREASURY_COVERAGE_BLOCKED");
+        } finally {
+            A2ReplayContext.exitReplay();
+        }
+        verify(coverage).snapshot();
+        verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
+        verify(audit, never()).recordRequired(any());
+    }
 
-        assertThat(result.getCode()).isEqualTo(409);
-        assertThat(result.getMessage()).isEqualTo("D7_TREASURY_COVERAGE_BLOCKED");
+    @Test
+    void replayKeepsUnavailableCoverageRecoverable() {
+        when(config.activeValueForUpdate(PayoutVndConfigService.VERSION_KEY)).thenReturn(Optional.of("4"));
+        var healthy = coverage.snapshot();
+        var low = new BigDecimal("90");
+        var line = new BigDecimal("100");
+        when(coverage.snapshot())
+                .thenReturn(null,
+                        new TreasuryCoverageSnapshot(low, line, false, low, line, BigDecimal.ONE),
+                        new TreasuryCoverageSnapshot(null, line, true, low, line, BigDecimal.ONE),
+                        new TreasuryCoverageSnapshot(low, null, true, low, line, BigDecimal.ONE),
+                        new TreasuryCoverageSnapshot(low, line, true, low, line, BigDecimal.ONE, low, BigDecimal.ZERO),
+                        new TreasuryCoverageSnapshot(low, line, true, low, line, BigDecimal.ONE, low.negate(), line),
+                        new TreasuryCoverageSnapshot(low, line, true, low, line, BigDecimal.ONE, null, line),
+                        new TreasuryCoverageSnapshot(low, line, true, low, line, BigDecimal.ONE, low, null))
+                .thenThrow(new IllegalStateException("coverage unavailable"))
+                .thenReturn(healthy);
+
+        A2ReplayContext.enterReplay("WO-D7-2");
+        try {
+            var request = amplifyingUpdate();
+            for (int attempt = 0; attempt < 9; attempt++) {
+                var blocked = service.replayUpdate(request);
+                assertThat(blocked.getCode()).isEqualTo(409);
+                assertThat(blocked.getMessage()).isEqualTo("D7_TREASURY_COVERAGE_BLOCKED");
+            }
+            verify(config, never()).upsertAdminValue(anyString(), anyString(), anyString(), anyString(), anyString());
+            verify(audit, never()).recordRequired(any());
+
+            var recovered = service.replayUpdate(request);
+            assertThat(recovered.getCode()).isZero();
+            assertThat(recovered.getData()).containsEntry("version", 5L).containsEntry("quoteTtlMinWithdraw", 11);
+        } finally {
+            A2ReplayContext.exitReplay();
+        }
+        verify(config).upsertAdminValue(
+                PayoutVndConfigService.VERSION_KEY, "5", "NUMBER", "finance", "D7 payout VND config version");
+        verify(audit).recordRequired(any());
     }
 
     @Test void obsoleteProviderFlagFailuresCannotBlockSharedConfiguration() {
@@ -206,6 +252,13 @@ class PayoutVndConfigServiceTest {
                 new BigDecimal("1.75"), 9, new BigDecimal("1.5"), new BigDecimal("1.2"),
                 new BigDecimal("2"), new BigDecimal("30"), new BigDecimal("30"),
                 new BigDecimal("4500"), version, "tighten payout parameters", false);
+    }
+
+    private PayoutVndConfigUpdateRequest amplifyingUpdate() {
+        return new PayoutVndConfigUpdateRequest(
+                new BigDecimal("1.5"), 11, new BigDecimal("2"), BigDecimal.ONE,
+                BigDecimal.ONE, new BigDecimal("25"), new BigDecimal("20"), new BigDecimal("5000"),
+                4L, "extend payout quote lifetime", false);
     }
 
     private String values(boolean channelEnabled) {
